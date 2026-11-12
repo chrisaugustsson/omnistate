@@ -6,7 +6,7 @@
 // The app is rendered with its own router on a memory history and the
 // browser's fetch is replaced by a fake of the API.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 
@@ -73,11 +73,20 @@ function feature(id: string, name: string) {
   };
 }
 
+/** An open question on `nodeId` of the list GET .../behaviour/questions?state=open sends. */
+function openQuestion(id: string, nodeId: string, askedBy: Record<string, unknown>) {
+  return { id, node_id: nodeId, node_path: "", question: "Which putt counts?", state: "open", asked_by: askedBy, answers: [], created_at: AT, version: 1 };
+}
+
+const BY_AGENT = { kind: "agent", run: "r1", role: "grill", model: "m", harness: "h" };
+const BY_PERSON = { kind: "human", user_id: USER.id };
+
 /**
  * A fake of the API whose behaviour list answers with `behaviour` and whose
  * home data holds `features`, or never arrives when `features` is "pending".
+ * The open questions are `questions`; without them that request fails.
  */
-function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = []) {
+function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], questions?: unknown[]) {
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
@@ -106,6 +115,9 @@ function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = []) {
           return json(200, { project_id: PROJECT_ID, comments: [] });
         case `${API}/features/${FEATURE_ID}/behaviour`:
           return json(behaviour.status, behaviour.body);
+        case `${API}/features/${FEATURE_ID}/behaviour/questions`:
+          if (!questions) return json(404, { error: "not_found" });
+          return json(200, { questions });
         default:
           return json(404, { error: "not_found" });
       }
@@ -228,6 +240,47 @@ describe("the Behaviour screen's folders", () => {
     fireEvent.click(chevron(aside, "Player: create an account and get set up") as HTMLElement);
     expect(within(aside).getByText("Player skips the setup").className).toMatch(/\bline-through\b/);
     expect(within(aside).getByText("Player signs up with an email").className).not.toMatch(/\bline-through\b/);
+  });
+});
+
+// US-225: a row's badge counts the questions that wait for an answer: those an
+// agent asked. A question a person asked is a remark and never counts (C2). A
+// closed row with something under it adds up its own and everything under it;
+// an open row counts only its own.
+describe("the Behaviour screen's waiting badges in the folders", () => {
+  /** The row whose title is `title`, whatever marks follow the title. */
+  function rowTitled(aside: HTMLElement, title: string) {
+    const found = rows(aside).find((candidate) => within(candidate).queryByText(title) !== null);
+    expect(found, `a row "${title}"`).toBeTruthy();
+    return found as HTMLElement;
+  }
+
+  const badge = (aside: HTMLElement, title: string) =>
+    rowTitled(aside, title).querySelector<HTMLElement>('[data-mark="waiting"]');
+
+  test("a closed row adds up the questions agents asked on it and under it, an open row counts its own, and remarks never count", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } }, [], [
+      openQuestion("q1", SIGNS_UP, BY_AGENT),
+      openQuestion("q2", CONFIRMS, BY_AGENT),
+      openQuestion("q3", CONFIRMS, BY_PERSON),
+      openQuestion("q4", SKIPS, BY_PERSON),
+    ]);
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    const story = "Player: create an account and get set up";
+
+    await waitFor(() => expect(badge(aside, story)?.textContent).toBe("2"));
+    expect(badge(aside, story)!.title).toBe("Open questions here and inside");
+
+    fireEvent.click(within(rowTitled(aside, story)).getByRole("button"));
+    expect(badge(aside, story)).toBeNull();
+    expect(badge(aside, "Player signs up with an email")?.textContent).toBe("2");
+    expect(badge(aside, "Player signs up with an email")!.title).toBe("Open questions here and inside");
+    expect(badge(aside, "Player skips the setup")).toBeNull();
+
+    fireEvent.click(within(rowTitled(aside, "Player signs up with an email")).getByRole("button"));
+    expect(badge(aside, "Player signs up with an email")?.textContent).toBe("1");
+    expect(badge(aside, "Player confirms the email")?.textContent).toBe("1");
   });
 });
 

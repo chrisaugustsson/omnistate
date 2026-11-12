@@ -6,7 +6,7 @@
 // (X + px * K, Y + py * K) in the graph area.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { loadWaitingNodes } from "./api/behaviour";
+import type { TreeNode } from "./api/behaviour";
 import { Graph } from "./components/behaviour/graph";
 import { testTree } from "./testing/behaviour-test-tree";
 
@@ -268,32 +268,89 @@ describe("the small map", () => {
   });
 });
 
-describe("the nodes marked as waiting", () => {
-  test("are the nodes of open questions an agent asked; a question a person asked is a remark and is left out", async () => {
-    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-    const question = (id: string, nodeId: string, askedBy: Record<string, unknown>) => ({
-      id,
-      node_id: nodeId,
-      node_path: "",
-      question: "Which putt counts?",
-      state: "open",
-      asked_by: askedBy,
-      answers: [],
-      created_at: "2026-11-12T09:00:00Z",
-      version: 1,
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        json({
-          questions: [
-            question("q1", "node-asked-by-agent", { kind: "agent", run: "r1", role: "grill", model: "m", harness: "h" }),
-            question("q2", "node-with-remark", { kind: "human", user_id: "u1" }),
-          ],
-        }),
-      ),
-    );
+// US-225: what a box shows. Its status (a signal ring before the title of an open
+// node), its marks (a badge of waiting questions, a diamond for answers given
+// by default, a pointer mark, ↻ for a node waiting for the next grill pass) and,
+// below 30% zoom, the colour of its bar: signal for a waiting question, ink for
+// a node that needs another pass, ink when it has both (P12).
 
-    expect(await loadWaitingNodes("w", "p", "f")).toEqual(["node-asked-by-agent"]);
+const SEARCHES = "player-adds-friend/player-searches-for-player";
+const SHARES_LINK = "player-adds-friend/player-shares-invite-link";
+const NO_PROGRAM = "player-picks-program/new-player-has-no-program";
+const OPENS_LIST = "player-picks-program/player-opens-program-list";
+
+/** The test tree with `changes` applied to some of its nodes. */
+function treeWith(changes: Record<string, Partial<TreeNode>>): TreeNode[] {
+  return testTree().map((node) => ({ ...node, ...changes[node.id] }));
+}
+
+function box(container: HTMLElement, id: string) {
+  return container.querySelector<HTMLElement>(`[data-node="${id}"]`)!;
+}
+
+/** The colours a box's bar is given below 30% zoom, as its classes for that zoom name them. */
+function barColours(container: HTMLElement, id: string) {
+  return [...box(container, id).classList].filter((name) => /^group-data-\[far\]:bg-/.test(name));
+}
+
+describe("a box's status and marks", () => {
+  test("below 30% the bar of a node with a waiting question is signal, of a node needing another pass ink, and ink when it has both", () => {
+    const nodes = treeWith({
+      [SEARCHES]: { status: "open", needs_pass: true },
+      [NO_PROGRAM]: { status: "open" },
+      [SHARES_LINK]: { status: "open", needs_pass: true },
+    });
+    const waiting = new Map([
+      [SEARCHES, 1],
+      [NO_PROGRAM, 1],
+    ]);
+    const { container } = render(<Graph nodes={nodes} waiting={waiting} />);
+    // The whole test tree is fitted at 14%, so the boxes are bars.
+    expect(graphArea(container).hasAttribute("data-far")).toBe(true);
+
+    expect(barColours(container, NO_PROGRAM)).toEqual(["group-data-[far]:bg-signal"]);
+    expect(barColours(container, SHARES_LINK)).toEqual(["group-data-[far]:bg-foreground"]);
+    expect(barColours(container, SEARCHES)).toEqual(["group-data-[far]:bg-foreground"]);
+  });
+
+  test("a node needing another pass shows ↻ and has no ring unless a question still waits on it", () => {
+    const nodes = treeWith({
+      [SEARCHES]: { status: "open", needs_pass: true },
+      [SHARES_LINK]: { status: "open", needs_pass: true },
+      [NO_PROGRAM]: { status: "open" },
+    });
+    const { container } = render(<Graph nodes={nodes} waiting={new Map([[SEARCHES, 1]])} />);
+    const ring = (id: string) => box(container, id).querySelector("[data-open-ring]");
+    const passMark = (id: string) => box(container, id).querySelector('[data-mark="pass"]')?.textContent;
+
+    expect(passMark(SHARES_LINK)).toBe("↻");
+    expect(ring(SHARES_LINK)).toBeNull();
+    expect(passMark(SEARCHES)).toBe("↻");
+    expect(ring(SEARCHES)).not.toBeNull();
+    expect(passMark(NO_PROGRAM)).toBeUndefined();
+    expect(ring(NO_PROGRAM)).not.toBeNull();
+    expect(ring(OPENS_LIST)).toBeNull();
+  });
+
+  test("a pointer shows ↪ or ⇢ with the target's short title after Same as or Hands off to as its tooltip", () => {
+    const nodes = treeWith({
+      [SEARCHES]: { same_as: { id: "player-picks-program", path: "player-picks-program" } },
+      [SHARES_LINK]: { handoff: { id: NO_PROGRAM, path: NO_PROGRAM } },
+    });
+    const { container } = render(<Graph nodes={nodes} />);
+    const pointer = (id: string) => box(container, id).querySelector<HTMLElement>('[data-mark="pointer"]')!;
+
+    expect(pointer(SEARCHES).textContent).toBe("↪");
+    expect(pointer(SEARCHES).title).toBe(`Same as: ${PICK_PROGRAM_STORY}`);
+    expect(pointer(SHARES_LINK).textContent).toBe("⇢");
+    expect(pointer(SHARES_LINK).title).toBe("Hands off to: Player has no active program");
+  });
+
+  test("a node with an answer given by default shows a diamond and a node with none does not", () => {
+    const nodes = treeWith({ [SEARCHES]: { default_answers: 1 } });
+    const { container } = render(<Graph nodes={nodes} />);
+
+    expect(box(container, SEARCHES).querySelector('[data-mark="default"]')).not.toBeNull();
+    expect(box(container, SHARES_LINK).querySelector('[data-mark="default"]')).toBeNull();
   });
 });
