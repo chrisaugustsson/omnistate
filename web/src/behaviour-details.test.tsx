@@ -603,3 +603,106 @@ describe("changing an answer", () => {
     expect(within(questionEl(details, "q-default")).getByRole("button", { name: "Save new answer" })).toHaveProperty("disabled", false);
   });
 });
+
+// US-230: any node takes a person's question or remark with
+// POST .../behaviour/nodes/<node>/questions. It opens the node again for the
+// next grill pass; a person's open question is a remark and has no answer field.
+describe("adding a question or remark", () => {
+  const ASK_PATH = `${NODE_PATH}none/questions`;
+
+  /**
+   * GET .../behaviour/nodes/none answers with `questions()` as they are at that
+   * moment; a POST of a question is handed to `post` with its body.
+   */
+  function fakeNone(questions: () => unknown[], post: (body: unknown) => Promise<Response> | Response) {
+    const read = () => ({
+      node: { id: "none", parent_id: "search", path: "none", position: 0, level: 3, title: "No player is found", summary: "", status: "answered", situation: "", behaviour: "", needs_pass: false, created_at: LONG_AGO, created_by: AGENT, updated_at: LONG_AGO, version: 1 },
+      chain: [],
+      children: [],
+      siblings: [],
+      questions: questions(),
+      rules: [],
+    });
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url === `${NODE_PATH}none` && (init?.method ?? "GET") === "GET") return json(200, read());
+        if (url === ASK_PATH && init?.method === "POST") return post(JSON.parse(String(init.body)));
+        return json(404, { error: "not_found" });
+      }),
+    );
+  }
+
+  const REMARK = question("q-remark", "The confirmation is easy to miss.", { state: "open", asked_by: PERSON_ME });
+  const accepted = () => new Response(JSON.stringify({ question: REMARK }), { status: 201, headers: { "content-type": "application/json" } });
+
+  async function remarkField(details: HTMLElement) {
+    const field = (await within(details).findByRole("textbox", { name: "Add a question or remark" })) as HTMLTextAreaElement;
+    return { field, button: within(details).getByRole("button", { name: "Add to this node" }) as HTMLButtonElement };
+  }
+
+  test("sends the trimmed text to the node, and Add to this node is disabled while the text is empty or only spaces", async () => {
+    const sent: unknown[] = [];
+    fakeNone(
+      () => [],
+      (body) => {
+        sent.push(body);
+        return accepted();
+      },
+    );
+    const details = renderChosen();
+    const { field, button } = await remarkField(details);
+    expect(button.disabled).toBe(true);
+
+    fireEvent.change(field, { target: { value: "  \n " } });
+    expect(button.disabled).toBe(true);
+
+    fireEvent.change(field, { target: { value: "  The confirmation is easy to miss. \n" } });
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(sent).toEqual([{ question: "The confirmation is easy to miss." }]));
+  });
+
+  test("keeps Add to this node disabled while the remark is on its way; a failure says it could not be saved and keeps the text, until pressed again", async () => {
+    let answerWith: (response: Response) => void = () => {};
+    fakeNone(
+      () => [],
+      () => new Promise<Response>((resolve) => (answerWith = resolve)),
+    );
+    const details = renderChosen();
+    const { field, button } = await remarkField(details);
+
+    fireEvent.change(field, { target: { value: "The confirmation is easy to miss." } });
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+
+    answerWith(new Response(JSON.stringify({ error: "internal" }), { status: 500, headers: { "content-type": "application/json" } }));
+
+    await waitFor(() => expect(details.textContent).toContain("The remark could not be saved. Try again in a moment."));
+    expect(field.value).toBe("The confirmation is easy to miss.");
+    expect(button.disabled).toBe(false);
+
+    fireEvent.click(button);
+    expect(details.textContent).not.toContain("The remark could not be saved.");
+  });
+
+  test("names a remark by the signed-in member You and one by another member A member", async () => {
+    fakeNone(
+      () => [
+        question("q-mine", "The confirmation is easy to miss.", { state: "open", asked_by: PERSON_ME }),
+        question("q-theirs", "The button is hard to reach.", { state: "open", asked_by: PERSON_OTHER }),
+      ],
+      accepted,
+    );
+    const details = renderChosen();
+    await waitFor(() => expect(details.querySelectorAll("[data-question]")).toHaveLength(2));
+
+    expect(questionEl(details, "q-mine").textContent).toContain("You ·");
+    expect(questionEl(details, "q-mine").textContent).not.toContain("A member");
+    expect(questionEl(details, "q-theirs").textContent).toContain("A member ·");
+    expect(questionEl(details, "q-theirs").textContent).not.toContain("You");
+  });
+});

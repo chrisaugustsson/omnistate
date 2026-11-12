@@ -701,3 +701,68 @@ describe("answering a waiting question in the Behaviour screen", () => {
     await waitFor(() => expect(badge(aside)?.textContent).toBe("1"));
   });
 });
+
+// US-230: after a person's remark the screen reads the tree, the open questions
+// and the chosen node again, so the node shows the remark and needs another pass.
+describe("adding a remark in the Behaviour screen", () => {
+  const ASK_PATH = `${API}/features/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
+  const REMARK = { ...openQuestion("q-remark", SIGNS_UP, BY_PERSON), question: "The confirmation is easy to miss." };
+
+  function readOf(questions: unknown[]) {
+    return {
+      node: { ...node(SIGNS_UP, SIGN_UP_STORY, TREE[2].title), level: 2, situation: "", behaviour: "", created_at: AT, created_by: BY_AGENT, updated_at: AT },
+      chain: [],
+      children: [],
+      siblings: [],
+      questions,
+      rules: [],
+    };
+  }
+
+  /** The tree with nothing open; once a question is posted on "Player signs up with an email" it is open again and needs another pass. */
+  function fakeRemarking() {
+    const list = { status: 200, body: { nodes: TREE } };
+    const questions: unknown[] = [];
+    const reads: Record<string, unknown> = { [SIGNS_UP]: readOf([]) };
+    fakeApi(list, [], questions, reads);
+    const api = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (new URL(url, "http://localhost:3000").pathname !== ASK_PATH || init?.method !== "POST") return api(input, init);
+        list.body = { nodes: TREE.map((one) => (one.id === SIGNS_UP ? { ...one, needs_pass: true, needs_pass_since: AT, status: "open" } : one)) };
+        questions.push(REMARK);
+        reads[SIGNS_UP] = readOf([REMARK]);
+        return new Response(JSON.stringify({ question: REMARK }), { status: 201, headers: { "content-type": "application/json" } });
+      }),
+    );
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("an added remark empties the field, shows as a Remark by You today that waits for the next grill pass, and the node needs another grill pass", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-12T15:00:00Z") });
+    fakeRemarking();
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    fireEvent.click(within(rows(aside).find((one) => within(one).queryByText("Player: create an account and get set up"))!).getByRole("button"));
+    fireEvent.click(within(aside).getByText("Player signs up with an email"));
+    const details = screen.getByRole("region", { name: "Details" });
+    const field = (await within(details).findByRole("textbox", { name: "Add a question or remark" })) as HTMLTextAreaElement;
+    expect(within(details).queryByText("↻ Needs another grill pass")).toBeNull();
+
+    fireEvent.change(field, { target: { value: "The confirmation is easy to miss." } });
+    fireEvent.click(within(details).getByRole("button", { name: "Add to this node" }));
+
+    await waitFor(() => expect(details.querySelector('[data-question="q-remark"]')).not.toBeNull());
+    const remark = details.querySelector<HTMLElement>('[data-question="q-remark"]')!;
+    expect(within(remark).getByText("Remark")).toBeTruthy();
+    expect(remark.textContent).toContain("You · today · waits for the next grill pass");
+    expect(within(remark).queryByRole("textbox", { name: "Your answer" })).toBeNull();
+    expect(field.value).toBe("");
+    await waitFor(() => expect(within(details).queryByText("↻ Needs another grill pass")).not.toBeNull());
+  });
+});
