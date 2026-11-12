@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { loadTree } from "@/api/behaviour";
+import { loadTree, loadWaitingNodes } from "@/api/behaviour";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { featureNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
@@ -26,6 +26,13 @@ export function BehaviourScreen({
 }) {
   const load = useCallback(() => loadTree(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
   const { value: nodes, failed } = useReloading(load);
+  // Which nodes have a question waiting; without the list nothing is marked as waiting.
+  const loadWaiting = useCallback(
+    () => loadWaitingNodes(workspaceId, projectId, featureId).catch(() => [] as string[]),
+    [workspaceId, projectId, featureId],
+  );
+  const { value: waitingIds } = useReloading(loadWaiting);
+  const waiting = useMemo(() => new Set(waitingIds ?? []), [waitingIds]);
   const { home } = useHome(workspaceId, projectId);
   const featureName = home ? (featureNames(home).get(featureId) ?? "") : "";
   // Every node starts closed.
@@ -78,7 +85,7 @@ export function BehaviourScreen({
               <Folders nodes={nodes} open={open} onToggle={toggle} />
             </aside>
             <main aria-label="Tree as a graph" className="min-w-0">
-              <Graph nodes={nodes} />
+              <Graph nodes={nodes} waiting={waiting} />
             </main>
             <section aria-label="Details" className="border-l" />
           </>
