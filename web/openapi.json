@@ -714,8 +714,22 @@
       },
       "CreateNodeRequest": {
         "properties": {
+          "handoff": {
+            "description": "A node of the feature, a story or one in a story, that the user carries on in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "parent_id": {
             "description": "The node's parent. A child of the root when left out.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "same_as": {
+            "description": "A node of the feature that describes the same situation.",
             "type": [
               "string",
               "null"
@@ -2028,6 +2042,16 @@
             "description": "`{kind: \"agent\", run, role, model, harness}` or `{kind: \"human\", user_id}`.",
             "type": "object"
           },
+          "handoff": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PointerDetailBody"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -2047,6 +2071,16 @@
           "position": {
             "format": "int32",
             "type": "integer"
+          },
+          "same_as": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PointerDetailBody"
+              }
+            ]
           },
           "situation": {
             "type": "string"
@@ -2141,11 +2175,31 @@
       "NodeChildBody": {
         "description": "A direct child of a node, as the read of the node gives it.",
         "properties": {
+          "handoff": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PointerBody"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
           "path": {
             "type": "string"
+          },
+          "same_as": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PointerBody"
+              }
+            ]
           },
           "slug": {
             "type": [
@@ -2229,6 +2283,17 @@
       "NodeSummaryBody": {
         "description": "A node as the list of a feature's nodes gives it: no text.",
         "properties": {
+          "handoff": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PointerBody",
+                "description": "The story, or the node in one, that the user carries on in, or `null`."
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -2252,6 +2317,17 @@
             "description": "The order among siblings.",
             "format": "int32",
             "type": "integer"
+          },
+          "same_as": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PointerBody",
+                "description": "The node that describes the same situation, or `null`."
+              }
+            ]
           },
           "slug": {
             "description": "`null` for the root.",
@@ -2335,6 +2411,20 @@
             "description": "The `version` the caller last read.",
             "format": "int64",
             "type": "integer"
+          },
+          "handoff": {
+            "description": "A node of the feature; `null` clears it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "same_as": {
+            "description": "A node of the feature; `null` clears it.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "situation": {
             "type": [
@@ -2454,6 +2544,46 @@
         },
         "required": [
           "expected_version"
+        ],
+        "type": "object"
+      },
+      "PointerBody": {
+        "description": "The node a pointer leads to.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path"
+        ],
+        "type": "object"
+      },
+      "PointerDetailBody": {
+        "description": "The node a pointer leads to, as the read of a node gives it.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "title",
+          "summary"
         ],
         "type": "object"
       },
@@ -6845,7 +6975,7 @@
                 }
               }
             },
-            "description": "A sibling has the slug (`slug_taken`)"
+            "description": "A sibling has the slug (`slug_taken`), or the parent has a pointer (`points_elsewhere`)"
           },
           "422": {
             "content": {
@@ -6855,7 +6985,7 @@
                 }
               }
             },
-            "description": "A blank title (`invalid_title`) or a slug that does not fit `^[a-z0-9]+(-[a-z0-9]+)*$` and 80 characters (`invalid_slug`)"
+            "description": "A blank title (`invalid_title`), a slug that does not fit `^[a-z0-9]+(-[a-z0-9]+)*$` and 80 characters (`invalid_slug`), both pointers (`two_pointers`), or a pointer to a node that is not in the feature (`pointer_target_unknown`)"
           }
         },
         "summary": "Adds a node to a feature's behaviour tree.",
@@ -7043,7 +7173,7 @@
                 }
               }
             },
-            "description": "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`"
+            "description": "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, or `has_children` (a pointer set on a node that has children)"
           },
           "422": {
             "content": {
@@ -7053,7 +7183,7 @@
                 }
               }
             },
-            "description": "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), or a status other than `open`, `done` and `out_of_scope` (`invalid_status`)"
+            "description": "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)"
           }
         },
         "summary": "Rewrites a node's text or sets its status.",
@@ -7163,7 +7293,7 @@
                 }
               }
             },
-            "description": "`conflict` with `current_version` when `expected_version` is stale; else `cycle` (the parent is the node or below it) or `slug_taken` (the parent has a child with the node's slug)"
+            "description": "`conflict` with `current_version` when `expected_version` is stale; else `cycle` (the parent is the node or below it) `slug_taken` (the parent has a child with the node's slug) or `points_elsewhere` (the parent has a pointer)"
           },
           "422": {
             "content": {

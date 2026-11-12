@@ -28,6 +28,27 @@ const MAX_SLUG: usize = 80;
 /// The longest slug that is derived from a title.
 const DERIVED_SLUG: usize = 60;
 
+/// The node a pointer leads to.
+#[derive(Serialize, ToSchema)]
+pub struct PointerBody {
+    pub id: String,
+    pub path: String,
+}
+
+/// The node a pointer leads to, as the read of a node gives it.
+#[derive(Serialize, ToSchema)]
+pub struct PointerDetailBody {
+    pub id: String,
+    pub path: String,
+    pub title: String,
+    pub summary: String,
+}
+
+/// Keeps `null` apart from a missing field: `Some(None)` is `null`.
+fn nullable<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
 /// A node as the list of a feature's nodes gives it: no text.
 #[derive(Serialize, ToSchema)]
 pub struct NodeSummaryBody {
@@ -48,6 +69,10 @@ pub struct NodeSummaryBody {
     pub status: String,
     /// 1 on creation, plus 1 on every accepted write.
     pub version: i32,
+    /// The node that describes the same situation, or `null`.
+    pub same_as: Option<PointerBody>,
+    /// The story, or the node in one, that the user carries on in, or `null`.
+    pub handoff: Option<PointerBody>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -65,6 +90,8 @@ pub struct NodeBody {
     pub version: i32,
     pub situation: String,
     pub behaviour: String,
+    pub same_as: Option<PointerDetailBody>,
+    pub handoff: Option<PointerDetailBody>,
     /// `{kind: "agent", run, role, model, harness}` or `{kind: "human", user_id}`.
     #[schema(value_type = Object)]
     pub created_by: Value,
@@ -87,6 +114,8 @@ pub struct NodeChildBody {
     pub summary: String,
     /// `open`, `done` or `out_of_scope`.
     pub status: String,
+    pub same_as: Option<PointerBody>,
+    pub handoff: Option<PointerBody>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -120,6 +149,10 @@ pub struct CreateNodeRequest {
     pub summary: Option<String>,
     /// The node's parent. A child of the root when left out.
     pub parent_id: Option<String>,
+    /// A node of the feature that describes the same situation.
+    pub same_as: Option<String>,
+    /// A node of the feature, a story or one in a story, that the user carries on in.
+    pub handoff: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -135,6 +168,14 @@ pub struct PatchNodeRequest {
     pub behaviour: Option<String>,
     /// `open`, `done` or `out_of_scope`.
     pub status: Option<String>,
+    /// A node of the feature; `null` clears it.
+    #[serde(default, deserialize_with = "nullable")]
+    #[schema(value_type = Option<String>)]
+    pub same_as: Option<Option<String>>,
+    /// A node of the feature; `null` clears it.
+    #[serde(default, deserialize_with = "nullable")]
+    #[schema(value_type = Option<String>)]
+    pub handoff: Option<Option<String>>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -156,6 +197,8 @@ struct NodeRow {
     situation: String,
     behaviour: String,
     status: String,
+    same_as_id: Option<String>,
+    handoff_id: Option<String>,
     version: i32,
     created_by: String,
     created_at: String,
@@ -164,7 +207,7 @@ struct NodeRow {
 
 const NODE_COLUMNS: &str = concat!(
     "id::text, parent_id::text, slug, position, title, summary, situation, behaviour, status, ",
-    "version, created_by::text, ",
+    "same_as_id::text, handoff_id::text, version, created_by::text, ",
     "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, ",
     "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS updated_at"
 );
@@ -215,6 +258,24 @@ impl Tree {
         (slugs.join("/"), level)
     }
 
+    fn pointer(&self, id: &Option<String>) -> Option<PointerBody> {
+        let at = self.find(id.as_deref()?)?;
+        Some(PointerBody {
+            id: self.rows[at].id.clone(),
+            path: self.place(at).0,
+        })
+    }
+
+    fn pointer_detail(&self, id: &Option<String>) -> Option<PointerDetailBody> {
+        let at = self.find(id.as_deref()?)?;
+        Some(PointerDetailBody {
+            id: self.rows[at].id.clone(),
+            path: self.place(at).0,
+            title: self.rows[at].title.clone(),
+            summary: self.rows[at].summary.clone(),
+        })
+    }
+
     fn body(&self, at: usize) -> NodeBody {
         let (path, level) = self.place(at);
         let row = &self.rows[at];
@@ -231,6 +292,8 @@ impl Tree {
             version: row.version,
             situation: row.situation.clone(),
             behaviour: row.behaviour.clone(),
+            same_as: self.pointer_detail(&row.same_as_id),
+            handoff: self.pointer_detail(&row.handoff_id),
             created_by: serde_json::from_str(&row.created_by).unwrap_or(Value::Null),
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
@@ -251,6 +314,8 @@ impl Tree {
             summary: row.summary.clone(),
             status: row.status.clone(),
             version: row.version,
+            same_as: self.pointer(&row.same_as_id),
+            handoff: self.pointer(&row.handoff_id),
         }
     }
 
@@ -264,6 +329,18 @@ impl Tree {
             title: row.title.clone(),
             summary: row.summary.clone(),
             status: row.status.clone(),
+            same_as: self.pointer(&row.same_as_id),
+            handoff: self.pointer(&row.handoff_id),
+        }
+    }
+
+    /// The id a pointer in a request names: a node of the feature other than `from`.
+    fn target(&self, given: &str, from: Option<&str>) -> Result<String, ApiError> {
+        let id = parse_uuid(given).filter(|id| self.find(id).is_some());
+        match id {
+            Some(id) if Some(id.as_str()) == from => Err(invalid_field("pointer_to_itself")),
+            Some(id) => Ok(id),
+            None => Err(invalid_field("pointer_target_unknown")),
         }
     }
 
@@ -381,6 +458,8 @@ struct NewNode<'a> {
     slug: Option<&'a str>,
     title: &'a str,
     summary: &'a str,
+    same_as_id: Option<&'a str>,
+    handoff_id: Option<&'a str>,
     author: &'a Value,
 }
 
@@ -391,11 +470,11 @@ async fn insert_node(
 ) -> Result<String, ApiError> {
     sqlx::query_scalar(
         "INSERT INTO behaviour_nodes (workspace_id, project_id, feature_id, parent_id, slug, \
-         position, title, summary, created_by) \
+         position, title, summary, created_by, same_as_id, handoff_id) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, \
          (SELECT coalesce(max(position) + 1, 0) FROM behaviour_nodes \
           WHERE feature_id = $3::uuid AND parent_id IS NOT DISTINCT FROM $4::uuid), \
-         $6, $7, $8::text::jsonb) RETURNING id::text",
+         $6, $7, $8::text::jsonb, $9::uuid, $10::uuid) RETURNING id::text",
     )
     .bind(new.workspace_id)
     .bind(new.project_id)
@@ -405,6 +484,8 @@ async fn insert_node(
     .bind(new.title)
     .bind(new.summary)
     .bind(new.author.to_string())
+    .bind(new.same_as_id)
+    .bind(new.handoff_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(ApiError::database)
@@ -425,8 +506,8 @@ async fn insert_node(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such feature in this project and workspace, or no such parent in the feature", body = ErrorBody),
-        (status = 409, description = "A sibling has the slug (`slug_taken`)", body = ErrorBody),
-        (status = 422, description = "A blank title (`invalid_title`) or a slug that does not fit `^[a-z0-9]+(-[a-z0-9]+)*$` and 80 characters (`invalid_slug`)", body = ErrorBody),
+        (status = 409, description = "A sibling has the slug (`slug_taken`), or the parent has a pointer (`points_elsewhere`)", body = ErrorBody),
+        (status = 422, description = "A blank title (`invalid_title`), a slug that does not fit `^[a-z0-9]+(-[a-z0-9]+)*$` and 80 characters (`invalid_slug`), both pointers (`two_pointers`), or a pointer to a node that is not in the feature (`pointer_target_unknown`)", body = ErrorBody),
     )
 )]
 pub async fn create_node(
@@ -453,6 +534,9 @@ pub async fn create_node(
     if new.slug.as_deref().is_some_and(|slug| !slug_fits(slug)) {
         return Err(invalid_field("invalid_slug"));
     }
+    if new.same_as.is_some() && new.handoff.is_some() {
+        return Err(invalid_field("two_pointers"));
+    }
     let mut tree = Tree::load(&mut tx, &feature_id).await?;
     let mut events = Vec::new();
     let root = match tree.rows.iter().position(|row| row.parent_id.is_none()) {
@@ -471,6 +555,8 @@ pub async fn create_node(
                     slug: None,
                     title: &feature_name,
                     summary: "",
+                    same_as_id: None,
+                    handoff_id: None,
                     author: &author,
                 },
             )
@@ -491,6 +577,22 @@ pub async fn create_node(
         }
         None => root,
     };
+    if tree
+        .find(&parent_id)
+        .is_some_and(|at| tree.rows[at].same_as_id.is_some() || tree.rows[at].handoff_id.is_some())
+    {
+        return Err(ApiError::conflict("points_elsewhere"));
+    }
+    let same_as_id = new
+        .same_as
+        .as_deref()
+        .map(|given| tree.target(given, None))
+        .transpose()?;
+    let handoff_id = new
+        .handoff
+        .as_deref()
+        .map(|given| tree.target(given, None))
+        .transpose()?;
     let siblings: Vec<&str> = tree
         .rows
         .iter()
@@ -523,6 +625,8 @@ pub async fn create_node(
             slug: Some(&slug),
             title: &title,
             summary: new.summary.as_deref().unwrap_or_default(),
+            same_as_id: same_as_id.as_deref(),
+            handoff_id: handoff_id.as_deref(),
             author: &author,
         },
     )
@@ -671,8 +775,8 @@ pub async fn show_node(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
-        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`", body = StoryConflictBody),
-        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), or a status other than `open`, `done` and `out_of_scope` (`invalid_status`)", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, or `has_children` (a pointer set on a node that has children)", body = StoryConflictBody),
+        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)", body = ErrorBody),
     )
 )]
 pub async fn patch_node(
@@ -695,6 +799,8 @@ pub async fn patch_node(
         ("situation", patch.situation.is_some()),
         ("behaviour", patch.behaviour.is_some()),
         ("status", patch.status.is_some()),
+        ("same_as", patch.same_as.is_some()),
+        ("handoff", patch.handoff.is_some()),
     ] {
         if present {
             fields.push(name);
@@ -717,11 +823,15 @@ pub async fn patch_node(
     {
         return Err(invalid_field("invalid_status").into());
     }
+    if matches!(patch.same_as, Some(Some(_))) && matches!(patch.handoff, Some(Some(_))) {
+        return Err(invalid_field("two_pointers").into());
+    }
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_feature(&mut tx, &project_id, &feature_id).await?;
-    let current: Option<(i32, bool)> = sqlx::query_as(
-        "SELECT version, parent_id IS NULL FROM behaviour_nodes \
+    let current: Option<(i32, bool, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT version, parent_id IS NULL, same_as_id::text, handoff_id::text \
+         FROM behaviour_nodes \
          WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
     )
     .bind(&node_id)
@@ -730,7 +840,7 @@ pub async fn patch_node(
     .fetch_optional(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    let (version, is_root) = current.ok_or(ApiError::NotFound)?;
+    let (version, is_root, same_as_now, handoff_now) = current.ok_or(ApiError::NotFound)?;
     if i64::from(version) != patch.expected_version {
         return Err(StoryError::Stale(version));
     }
@@ -751,10 +861,32 @@ pub async fn patch_node(
             return Err(ApiError::conflict("slug_taken").into());
         }
     }
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let resolve = |given: &Option<Option<String>>, now: Option<String>| match given {
+        None => Ok(now),
+        Some(None) => Ok(None),
+        Some(Some(given)) => tree.target(given, Some(&node_id)).map(Some),
+    };
+    let same_as = resolve(&patch.same_as, same_as_now)?;
+    let handoff = resolve(&patch.handoff, handoff_now)?;
+    if same_as.is_some() && handoff.is_some() {
+        return Err(invalid_field("two_pointers").into());
+    }
+    let sets_pointer =
+        matches!(patch.same_as, Some(Some(_))) || matches!(patch.handoff, Some(Some(_)));
+    if sets_pointer
+        && tree
+            .rows
+            .iter()
+            .any(|row| row.parent_id.as_deref() == Some(node_id.as_str()))
+    {
+        return Err(ApiError::conflict("has_children").into());
+    }
     sqlx::query(
         "UPDATE behaviour_nodes SET title = COALESCE($2, title), slug = COALESCE($3, slug), \
          summary = COALESCE($4, summary), situation = COALESCE($5, situation), \
          behaviour = COALESCE($6, behaviour), status = COALESCE($7, status), \
+         same_as_id = $8::uuid, handoff_id = $9::uuid, \
          version = version + 1, updated_at = clock_timestamp() WHERE id = $1::uuid",
     )
     .bind(&node_id)
@@ -764,6 +896,8 @@ pub async fn patch_node(
     .bind(&patch.situation)
     .bind(&patch.behaviour)
     .bind(&patch.status)
+    .bind(&same_as)
+    .bind(&handoff)
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
@@ -801,7 +935,7 @@ pub async fn patch_node(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such node, or no such parent, in this feature, project and workspace", body = ErrorBody),
-        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `cycle` (the parent is the node or below it) or `slug_taken` (the parent has a child with the node's slug)", body = StoryConflictBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `cycle` (the parent is the node or below it) `slug_taken` (the parent has a child with the node's slug) or `points_elsewhere` (the parent has a pointer)", body = StoryConflictBody),
         (status = 422, description = "The node is the root (`root_cannot_move`)", body = ErrorBody),
     )
 )]
@@ -841,6 +975,12 @@ pub async fn move_node(
     let tree = Tree::load(&mut tx, &feature_id).await?;
     if tree.find(&parent_id).is_none() {
         return Err(ApiError::NotFound.into());
+    }
+    if tree
+        .find(&parent_id)
+        .is_some_and(|at| tree.rows[at].same_as_id.is_some() || tree.rows[at].handoff_id.is_some())
+    {
+        return Err(ApiError::conflict("points_elsewhere").into());
     }
     let mut above = Some(parent_id.as_str());
     while let Some(id) = above {

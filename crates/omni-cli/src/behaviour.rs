@@ -9,11 +9,12 @@ use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
 use crate::projects::{creation_feature, is_uuid, project_id};
 
-const ADD_USAGE: &str =
-    "omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>]";
+const ADD_USAGE: &str = "omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>] \
+     [--same-as <node>] [--handoff <node>]";
 const READ_USAGE: &str = "omni behaviour read <node>";
 const EDIT_USAGE: &str = "omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>] \
-     [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]";
+     [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope] \
+     [--same-as <node>] [--handoff <node>]";
 
 const MOVE_USAGE: &str = "omni behaviour move <node> --to <parent>";
 
@@ -93,6 +94,12 @@ pub fn add(args: &Args) -> Result<()> {
     if let Some(parent) = &args.parent {
         let (id, _) = node_ref(&agent, &base, parent)?;
         fields.push(format!("\"parent_id\":{}", quote(&id)));
+    }
+    for (name, given) in [("same_as", &args.same_as), ("handoff", &args.handoff)] {
+        if let Some(given) = given {
+            let (id, _) = node_ref(&agent, &base, given)?;
+            fields.push(format!("\"{name}\":{}", quote(&id)));
+        }
     }
     let body = format!("{{{}}}", fields.join(","));
     let response = agent.request("POST", &format!("{base}/nodes"), Some(body.as_bytes()))?;
@@ -179,8 +186,15 @@ pub fn list(args: &Args, node: Option<&str>) -> Result<()> {
             _ => title,
         };
         let summary = node.str_at("summary").filter(|s| !s.is_empty());
+        let pointer = [("same-as", "same_as"), ("handoff", "handoff")]
+            .iter()
+            .find_map(|(word, key)| {
+                let path = node.get(key)?.str_at("path")?;
+                Some(format!(" → {word} {path}"))
+            })
+            .unwrap_or_default();
         say(&format!(
-            "{}{name} — {} ({})",
+            "{}{name} — {} ({}){pointer}",
             "  ".repeat(level_of(node)?.saturating_sub(top)),
             summary.unwrap_or(title),
             node.str_at("status").unwrap_or("?")
@@ -215,12 +229,22 @@ pub fn edit(args: &Args, node: Option<&str>) -> Result<()> {
         };
         fields.push(format!("\"status\":{}", quote(status)));
     }
-    if fields.is_empty() {
+    if fields.is_empty() && args.same_as.is_none() && args.handoff.is_none() {
         bail!("this command needs something to change: {EDIT_USAGE}");
     }
     let agent = agent(args)?;
     let base = behaviour_path(args, &agent)?;
     let (id, version) = node_ref(&agent, &base, given)?;
+    for (name, pointer) in [("same_as", &args.same_as), ("handoff", &args.handoff)] {
+        match pointer.as_deref() {
+            Some("") => fields.push(format!("\"{name}\":null")),
+            Some(given) => {
+                let (target, _) = node_ref(&agent, &base, given)?;
+                fields.push(format!("\"{name}\":{}", quote(&target)));
+            }
+            None => {}
+        }
+    }
     let body = format!("{{\"expected_version\":{version},{}}}", fields.join(","));
     let response =
         agent.request_conflicting("PATCH", &format!("{base}/nodes/{id}"), body.as_bytes())?;

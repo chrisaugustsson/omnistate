@@ -208,6 +208,7 @@ Usage:
                                       Each write reads the story first and sends its version; a
                                       stale one is a conflict (exit 3).
   omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>]
+                     [--same-as <node>] [--handoff <node>]
                                       add a node to the feature's behaviour tree, the last child
                                       of --parent (the root when left out; the first add also
                                       creates the root, titled with the feature's name); prints
@@ -224,9 +225,14 @@ Usage:
                                       With --json the API's list
   omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>]
                      [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]
+                     [--same-as <node>] [--handoff <node>]
                                       rewrite a node's text or set its status; reads the node
                                       first and sends its version (a stale one is exit 3);
-                                      prints the path and the status. The root has no slug
+                                      prints the path and the status. The root has no slug.
+                                      --same-as points to the node that describes the same
+                                      situation, --handoff to the story (or a node in one) the
+                                      user carries on in; an empty value clears it. One pointer per node,
+                                      and a node with one has no children
   omni behaviour move <node> --to <parent>
                                       move a node, with everything below it, to be the last child
                                       of <parent> (an ID, a path or .); prints the new path. Not
@@ -282,6 +288,8 @@ Options (before or after the command):
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
   --slug <slug>         `omni behaviour add`: the node's slug, lowercase words joined by -
   --parent <node>       `omni behaviour add`: the node to add under (an ID, a path or .)
+  --same-as <node>      `omni behaviour add|edit`: point to the node that is the same situation
+  --handoff <node>      `omni behaviour add|edit`: point to the story the user carries on in
   --situation <text>    `omni behaviour edit`: when the node applies
   --behaviour <text>    `omni behaviour edit`: what the product does then (`--behavior` too)
   --priority <n>        `omni story add`: the story's priority, 0 to 3 (3 by default)

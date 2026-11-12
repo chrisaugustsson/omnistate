@@ -229,7 +229,9 @@ export const CreateFeatureRequestSchema = z.object({
 export type CreateFeatureRequest = z.infer<typeof CreateFeatureRequestSchema>;
 
 export const CreateNodeRequestSchema = z.object({
+  handoff: z.string().nullable().optional(),
   parent_id: z.string().nullable().optional(),
+  same_as: z.string().nullable().optional(),
   slug: z.string().nullable().optional(),
   summary: z.string().nullable().optional(),
   title: z.string(),
@@ -635,15 +637,31 @@ export const MoveStoryRequestSchema = z.object({
 });
 export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
 
+export const PointerDetailBodySchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  summary: z.string(),
+  title: z.string(),
+});
+export type PointerDetailBody = z.infer<typeof PointerDetailBodySchema>;
+
 export const NodeBodySchema = z.object({
   behaviour: z.string(),
   created_at: z.string(),
   created_by: z.record(z.string(), z.unknown()),
+  handoff: z.union([
+    z.null(),
+    PointerDetailBodySchema,
+  ]).optional(),
   id: z.string(),
   level: z.number().int(),
   parent_id: z.string().nullable().optional(),
   path: z.string(),
   position: z.number().int(),
+  same_as: z.union([
+    z.null(),
+    PointerDetailBodySchema,
+  ]).optional(),
   situation: z.string(),
   slug: z.string().nullable().optional(),
   status: z.string(),
@@ -654,9 +672,23 @@ export const NodeBodySchema = z.object({
 });
 export type NodeBody = z.infer<typeof NodeBodySchema>;
 
-export const NodeChildBodySchema = z.object({
+export const PointerBodySchema = z.object({
   id: z.string(),
   path: z.string(),
+});
+export type PointerBody = z.infer<typeof PointerBodySchema>;
+
+export const NodeChildBodySchema = z.object({
+  handoff: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
+  id: z.string(),
+  path: z.string(),
+  same_as: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
   slug: z.string().nullable().optional(),
   status: z.string(),
   summary: z.string(),
@@ -665,11 +697,19 @@ export const NodeChildBodySchema = z.object({
 export type NodeChildBody = z.infer<typeof NodeChildBodySchema>;
 
 export const NodeSummaryBodySchema = z.object({
+  handoff: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
   id: z.string(),
   level: z.number().int(),
   parent_id: z.string().nullable().optional(),
   path: z.string(),
   position: z.number().int(),
+  same_as: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
   slug: z.string().nullable().optional(),
   status: z.string(),
   summary: z.string(),
@@ -698,6 +738,8 @@ export type NodeResponse = z.infer<typeof NodeResponseSchema>;
 export const PatchNodeRequestSchema = z.object({
   behaviour: z.string().nullable().optional(),
   expected_version: z.number().int(),
+  handoff: z.string().nullable().optional(),
+  same_as: z.string().nullable().optional(),
   situation: z.string().nullable().optional(),
   slug: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
@@ -994,6 +1036,8 @@ export const schemas = {
   OpResultBody: OpResultBodySchema,
   PatchNodeRequest: PatchNodeRequestSchema,
   PatchStoryRequest: PatchStoryRequestSchema,
+  PointerBody: PointerBodySchema,
+  PointerDetailBody: PointerDetailBodySchema,
   PostBody: PostBodySchema,
   PostResponse: PostResponseSchema,
   ProjectBody: ProjectBodySchema,
