@@ -302,6 +302,18 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+        Some(r#"{"question":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
         Some(r#"{"title":"intruder","text":"","topic":"","criteria":[]}"#),
         Kind::Workspace,
@@ -1127,6 +1139,21 @@ fn fixture() -> &'static Fixture {
                 "add a node to the feature's behaviour tree",
             );
             let node_id = created["node"]["id"].as_str().expect("an id").to_string();
+            // A question on that node, so the behaviour_questions table has
+            // rows of the workspace.
+            let body =
+                json!({ "question": unique(&format!("{name}-question-on-node")) }).to_string();
+            must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/features/{feature_id}/behaviour/nodes/{node_id}/questions"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "ask a question on the node",
+            );
             // A file of the workspace's own.
             let attachment_name = format!("{name}-notes.txt");
             let attachment_text = unique(&format!("{name}-file-content"));

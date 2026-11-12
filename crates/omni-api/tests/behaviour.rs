@@ -1,4 +1,4 @@
-//! US-201 to US-205: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-206: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -60,6 +60,17 @@
 //!   (409 `points_elsewhere`), a pointer set on a node with a child (409
 //!   `has_children`). The database refuses a pointer out of the feature and
 //!   two pointers on one row.
+//! - `POST /nodes/{id}/questions` with `{question}` answers 201 `{question}`:
+//!   `open`, no `answered_by`, `asked_by` the author, `version` 1, and emits
+//!   `behaviour.question_changed` with `{feature_id, node_id, question_id,
+//!   state}`. A `done` node becomes `open` (version + 1, `node_changed` with
+//!   `fields: ["status"]`); any other status stays. `done` on a node with an
+//!   open question is 409 `open_questions`. The read gives the node's
+//!   `questions`, the list each node's `open_questions` count, and `GET
+//!   /questions?state=&under=` the questions in tree order of their nodes,
+//!   then oldest first. Refused with nothing asked: a blank question (422
+//!   `invalid_question`), a node of another feature (404), an API key without
+//!   a run (400 `identity_required`); an unknown `state` is 422.
 
 mod common;
 
@@ -2001,4 +2012,428 @@ fn the_database_refuses_a_pointer_out_of_the_feature_and_two_pointers_on_one_nod
     assert_eq!(out_of_feature, "23503", "a foreign key violation");
     assert_eq!(same_as_out_of_feature, "23503", "a foreign key violation");
     assert_eq!(two, "23514", "a check violation");
+}
+
+// ---------------------------------------------------------------------------
+// Asking a question on a node (US-206)
+// ---------------------------------------------------------------------------
+
+const SOLD_OUT: &str = "What if the product sold out between page load and the click?";
+
+fn post_question(
+    f: &Fixture,
+    project: &str,
+    feature: &str,
+    auth: Auth,
+    node: &str,
+    question: &str,
+) -> Response {
+    call(
+        f,
+        "POST",
+        &format!("{}/nodes/{node}/questions", tree_path(f, project, feature)),
+        auth,
+        Some(&json!({ "question": question })),
+    )
+}
+
+/// Asks a question as the agent; returns the `question` of the answer.
+fn ask(f: &Fixture, project: &str, feature: &str, node: &str, question: &str) -> Value {
+    must(
+        post_question(f, project, feature, Auth::Agent, node, question),
+        201,
+        "ask a question",
+    )["question"]
+        .clone()
+}
+
+/// The text of the questions that `GET /questions` gives with `query`, in
+/// its order.
+fn questions_listed(f: &Fixture, project: &str, feature: &str, query: &str) -> Vec<Value> {
+    let listed = must(
+        call(
+            f,
+            "GET",
+            &format!("{}/questions{query}", tree_path(f, project, feature)),
+            Auth::Agent,
+            None,
+        ),
+        200,
+        "list the questions",
+    );
+    listed["questions"]
+        .as_array()
+        .expect("`questions` is a list")
+        .iter()
+        .map(|question| question["question"].clone())
+        .collect()
+}
+
+/// A story `customer-buys-product` with the situation `user-presses-buy`
+/// below it: `(story, situation)`.
+fn buy_tree(f: &Fixture, project: &str, feature: &str) -> (Value, Value) {
+    let story = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": STORY, "slug": "customer-buys-product" }),
+    );
+    let press = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "User presses buy", "slug": "user-presses-buy", "parent_id": id_of(&story) }),
+    );
+    (story, press)
+}
+
+#[test]
+fn an_agents_question_is_open_without_an_answerer_reads_back_on_its_node_and_is_announced() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let question = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    assert_eq!(question["node_id"], press["id"]);
+    assert_eq!(
+        question["node_path"],
+        "customer-buys-product/user-presses-buy"
+    );
+    assert_eq!(question["question"], SOLD_OUT);
+    assert_eq!(question["state"], "open");
+    assert_eq!(question["answered_by"], Value::Null);
+    assert_eq!(question["asked_by"]["kind"], "agent");
+    assert_eq!(question["asked_by"]["run"], "t1");
+    assert_eq!(question["asked_by"]["role"], "grill");
+    assert_eq!(question["version"], 1);
+    let node = read_node(f, &project, &feature, &id_of(&press));
+    assert_eq!(node["status"], "open");
+    assert_eq!(node["version"], 1);
+    assert_eq!(
+        events_of(&project, "behaviour.question_changed"),
+        vec![json!({
+            "feature_id": feature,
+            "node_id": press["id"],
+            "question_id": question["id"],
+            "state": "open",
+        })]
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn a_read_gives_the_nodes_own_questions_oldest_first_as_the_ask_answered_them() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (story, press) = buy_tree(f, &project, &feature);
+    ask(f, &project, &feature, &id_of(&story), "Who may buy?");
+    let first = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+    let second = ask(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        "And if the cart is full?",
+    );
+
+    let read = must(read(f, &project, &feature, &id_of(&press)), 200, "read");
+
+    assert_eq!(read["questions"], json!([first, second]));
+}
+
+#[test]
+fn asking_on_a_done_node_sets_it_open_adds_1_to_its_version_and_announces_the_status() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let node = read_node(f, &project, &feature, &id_of(&press));
+    assert_eq!(node["status"], "open");
+    assert_eq!(node["version"], 3);
+    let changed = events_of(&project, "behaviour.node_changed");
+    assert_eq!(changed.len(), 2, "{changed:?}");
+    assert_eq!(
+        changed[1],
+        json!({
+            "feature_id": feature,
+            "node_id": press["id"],
+            "path": "customer-buys-product/user-presses-buy",
+            "fields": ["status"],
+        })
+    );
+}
+
+#[test]
+fn asking_on_an_out_of_scope_node_leaves_it_out_of_scope_at_its_version() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "status": "out_of_scope" }),
+    );
+
+    ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let node = read_node(f, &project, &feature, &id_of(&press));
+    assert_eq!(node["status"], "out_of_scope");
+    assert_eq!(node["version"], 2);
+    assert_eq!(events_of(&project, "behaviour.node_changed").len(), 1);
+}
+
+#[test]
+fn done_on_a_node_with_an_open_question_is_409_open_questions_and_a_node_without_one_can_be_done() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (story, press) = buy_tree(f, &project, &feature);
+    ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let refused = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "status": "done", "title": "Pressed" }),
+    );
+    let story_done = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&story),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    assert_error(&refused, 409, "open_questions");
+    let node = read_node(f, &project, &feature, &id_of(&press));
+    assert_eq!(node["status"], "open");
+    assert_eq!(node["title"], "User presses buy");
+    assert_eq!(node["version"], 1);
+    assert_eq!(story_done.status, 200, "body: {}", story_done.text());
+    assert_eq!(events_of(&project, "behaviour.node_changed").len(), 1);
+}
+
+#[test]
+fn the_list_counts_the_open_questions_of_each_node() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (story, press) = buy_tree(f, &project, &feature);
+    add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Returns", "slug": "returns" }),
+    );
+    ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+    ask(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        "And if the cart is full?",
+    );
+    ask(f, &project, &feature, &id_of(&story), "Who may buy?");
+
+    let counts: Vec<(Value, Value)> = listed(f, &project, &feature)
+        .iter()
+        .map(|node| (node["path"].clone(), node["open_questions"].clone()))
+        .collect();
+
+    assert_eq!(
+        counts,
+        vec![
+            (json!(""), json!(0)),
+            (json!("customer-buys-product"), json!(1)),
+            (json!("customer-buys-product/user-presses-buy"), json!(2)),
+            (json!("returns"), json!(0)),
+        ]
+    );
+}
+
+#[test]
+fn the_questions_come_in_tree_order_of_their_nodes_then_oldest_first() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (story, press) = buy_tree(f, &project, &feature);
+    let returns = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Returns", "slug": "returns" }),
+    );
+    ask(f, &project, &feature, &id_of(&returns), "first on returns");
+    ask(f, &project, &feature, &id_of(&press), "on press");
+    ask(f, &project, &feature, &id_of(&story), "on the story");
+    ask(f, &project, &feature, &id_of(&returns), "second on returns");
+
+    let all = questions_listed(f, &project, &feature, "");
+    let open = questions_listed(f, &project, &feature, "?state=open");
+
+    let expected = vec![
+        json!("on the story"),
+        json!("on press"),
+        json!("first on returns"),
+        json!("second on returns"),
+    ];
+    assert_eq!(all, expected);
+    assert_eq!(open, expected);
+}
+
+#[test]
+fn under_a_node_lists_the_questions_on_it_and_below_it_only() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (story, press) = buy_tree(f, &project, &feature);
+    let returns = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "Returns", "slug": "returns" }),
+    );
+    let root = must(read(f, &project, &feature, &id_of(&story)), 200, "read")["chain"][0]["id"]
+        .as_str()
+        .expect("the story has the root above it")
+        .to_string();
+    ask(f, &project, &feature, &root, "on the root");
+    ask(f, &project, &feature, &id_of(&returns), "on returns");
+    ask(f, &project, &feature, &id_of(&story), "on the story");
+    ask(f, &project, &feature, &id_of(&press), "on press");
+
+    let under_story = questions_listed(
+        f,
+        &project,
+        &feature,
+        &format!("?state=open&under={}", id_of(&story)),
+    );
+    let under_press = questions_listed(f, &project, &feature, &format!("?under={}", id_of(&press)));
+
+    assert_eq!(under_story, vec![json!("on the story"), json!("on press")]);
+    assert_eq!(under_press, vec![json!("on press")]);
+}
+
+#[test]
+fn a_state_other_than_open_or_answered_is_422_invalid_state() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let response = call(
+        f,
+        "GET",
+        &format!(
+            "{}/questions?state=closed",
+            tree_path(f, &project, &feature)
+        ),
+        Auth::Agent,
+        None,
+    );
+
+    assert_error(&response, 422, "invalid_state");
+}
+
+#[test]
+fn a_blank_question_is_422_invalid_question_and_nothing_is_asked() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let response = post_question(f, &project, &feature, Auth::Agent, &id_of(&press), "   ");
+
+    assert_error(&response, 422, "invalid_question");
+    assert_eq!(
+        questions_listed(f, &project, &feature, ""),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.question_changed"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn a_node_of_another_feature_is_404_to_ask_on_and_nothing_is_asked() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    buy_tree(f, &project, &feature);
+    // A second feature of the same project, so only the feature tells the
+    // nodes apart.
+    let created = must(
+        call(
+            f,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/features", f.workspace),
+            Auth::Agent,
+            Some(&json!({ "name": unique("Returns") })),
+        ),
+        201,
+        "create a second feature",
+    );
+    let other_feature = created["feature"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let theirs = add(f, &project, &other_feature, &json!({ "title": "Returns" }));
+
+    let response = post_question(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&theirs),
+        SOLD_OUT,
+    );
+
+    assert_error(&response, 404, "not_found");
+    assert_eq!(
+        questions_listed(f, &project, &feature, ""),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        questions_listed(f, &project, &other_feature, ""),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.question_changed"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn a_question_with_an_api_key_without_a_run_is_400_identity_required_and_nothing_is_asked() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let response = post_question(
+        f,
+        &project,
+        &feature,
+        Auth::AgentWithoutRun,
+        &id_of(&press),
+        SOLD_OUT,
+    );
+
+    assert_error(&response, 400, "identity_required");
+    assert_eq!(
+        questions_listed(f, &project, &feature, ""),
+        Vec::<Value>::new()
+    );
 }

@@ -1,4 +1,4 @@
-//! US-201 to US-205: `omni behaviour add`, `read`, `edit`, `list` and `move`, tested as the built binary against
+//! US-201 to US-206: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask` and `questions`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -33,6 +33,11 @@
 //!   flags together are sent, and the API's 422 is the error. `list` ends
 //!   the line of a node with a pointer in ` → same-as <path>` or
 //!   ` → handoff <path>`.
+//! - `omni behaviour ask <node> <question>` posts `{question}` to the
+//!   questions route of the node the list gives, and prints the question's
+//!   id. `omni behaviour questions [<node>] [--open]` asks for `state=open`
+//!   with `--open` and `under=<id>` with a node, and prints `<node path>
+//!   <question id>  <question>` per question, the root's path as `.`.
 
 mod common;
 
@@ -45,6 +50,10 @@ const ROOT: &str = "01900000-0000-7000-8000-000000000200";
 const STORY: &str = "01900000-0000-7000-8000-000000000201";
 const OTHER: &str = "01900000-0000-7000-8000-000000000202";
 const NEW: &str = "01900000-0000-7000-8000-000000000203";
+
+const QUESTION: &str = "01900000-0000-7000-8000-000000000301";
+const ROOT_QUESTION: &str = "01900000-0000-7000-8000-000000000302";
+const SOLD_OUT: &str = "What if the product sold out between page load and the click?";
 
 fn tree_path() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features/{FEATURE}/behaviour")
@@ -136,8 +145,39 @@ fn mock() -> MockServer {
                 story["version"] = json!(4);
                 Reply::json(200, &json!({ "node": story }))
             }
+            ("POST", path) if path == format!("{base}/nodes/{STORY}/questions") => Reply::json(
+                201,
+                &json!({ "question": question(QUESTION, STORY, "customer-buys-product", SOLD_OUT) }),
+            ),
+            ("GET", path) if path == format!("{base}/questions?state=open") => Reply::json(
+                200,
+                &json!({ "questions": [
+                    question(ROOT_QUESTION, ROOT, "", "Who may buy?"),
+                    question(QUESTION, STORY, "customer-buys-product", SOLD_OUT)
+                ] }),
+            ),
+            ("GET", path) if path == format!("{base}/questions?under={STORY}") => Reply::json(
+                200,
+                &json!({ "questions": [
+                    question(QUESTION, STORY, "customer-buys-product", SOLD_OUT)
+                ] }),
+            ),
             _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
+    })
+}
+
+fn question(id: &str, node: &str, path: &str, text: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": node,
+        "node_path": path,
+        "question": text,
+        "state": "open",
+        "answered_by": null,
+        "asked_by": { "kind": "agent", "run": "t1", "role": "grill" },
+        "version": 1,
+        "created_at": "2026-11-12T10:00:00.000000Z"
     })
 }
 
@@ -626,5 +666,51 @@ fn list_ends_the_line_of_a_node_with_a_pointer_in_the_pointer_and_its_path() {
          \x20 user-presses-buy — Product goes to the cart, or the user sees why it can't. (done)\n\
          \x20   product-out-of-stock — Product is out of stock (open) → handoff customer-returns-product\n\
          \x20 product-is-sold-out — Product is sold out (open) → same-as customer-buys-product/user-presses-buy/product-out-of-stock\n"
+    );
+}
+
+#[test]
+fn ask_on_a_path_posts_the_question_to_that_nodes_id_and_prints_the_question_id() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &["behaviour", "ask", "customer-buys-product", SOLD_OUT],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, format!("{QUESTION}\n"));
+    assert_eq!(posts(&server), vec![json!({ "question": SOLD_OUT })]);
+}
+
+#[test]
+fn questions_open_prints_path_id_and_question_per_line_with_the_root_as_a_dot() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "questions", "--open"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            ".  {ROOT_QUESTION}  Who may buy?\n\
+             customer-buys-product  {QUESTION}  {SOLD_OUT}\n"
+        )
+    );
+}
+
+#[test]
+fn questions_of_a_path_asks_for_those_under_that_nodes_id() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "questions", "customer-buys-product"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!("customer-buys-product  {QUESTION}  {SOLD_OUT}\n")
     );
 }
