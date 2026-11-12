@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 import { Text } from "./text";
-import { ancestorsOf, shortTitle } from "./tree";
+import { ancestorsOf, descendantsOf, shortTitle } from "./tree";
 
 // The chosen node, read in full: path, title, status, text, questions with their answers, rules.
 
@@ -32,6 +32,7 @@ export function who(answer: Pick<AnswerBody, "author" | "given_by">, me: string 
 }
 
 const CONFLICT = "Someone answered this first; it has been reloaded.";
+const CHANGE_CONFLICT = "Someone changed this first; it has been reloaded.";
 
 const pill = "h-5 whitespace-nowrap rounded-full bg-muted px-2 text-[11.5px] font-medium leading-5 text-muted-foreground";
 
@@ -209,7 +210,7 @@ function Chosen({
               <Text source={read.node.behaviour} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
-          <Questions questions={read.questions} me={me} ids={ids} said={said} onWritten={written} />
+          <Questions questions={read.questions} me={me} ids={ids} said={said} below={descendantsOf(tree, listed.id).length} onWritten={written} />
           <Rules rules={read.rules} nodeId={read.node.id} byId={byId} />
         </>
       )}
@@ -267,17 +268,98 @@ function AnswerField({
   );
 }
 
+/** The Change button under an answered question, and the field it opens. */
+function ChangeField({
+  question,
+  ids,
+  below,
+  onWritten,
+}: {
+  question: QuestionBody;
+  ids: Ids;
+  below: number;
+  onWritten: (id: string, message: string) => void;
+}) {
+  const current = question.answer?.answer ?? "";
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const start = () => {
+    setText(current);
+    setError("");
+    setOpen(true);
+  };
+  const save = async () => {
+    const answer = text.trim();
+    if (busy) return;
+    if (!answer || answer === current.trim()) {
+      setOpen(false);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer, change: true });
+      setBusy(false);
+      setOpen(false);
+      onWritten(
+        question.id,
+        below > 0 ? `Recorded. This node and the ${below} below it now wait for the next grill pass.` : "Recorded. This node now waits for the next grill pass.",
+      );
+    } catch (failure) {
+      setBusy(false);
+      if (failure instanceof ApiError && failure.status === 409) {
+        setOpen(false);
+        onWritten(question.id, CHANGE_CONFLICT);
+      } else setError("The answer could not be saved. Try again in a moment.");
+    }
+  };
+  if (!open) {
+    return (
+      <Button type="button" variant="ghost" size="sm" className="mt-1.5 -ml-2 h-6 px-2 text-xs" onClick={start}>
+        Change
+      </Button>
+    );
+  }
+  return (
+    <>
+      <textarea
+        aria-label="New answer"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <Button type="button" size="sm" disabled={busy} onClick={save}>
+          Save new answer
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
+      <p className="mt-2 text-xs leading-normal text-muted-foreground">
+        The old answer is kept under the new one.
+        {below > 0 && ` Saving marks this node and the ${below} below it for the next grill pass.`}
+      </p>
+      {error && <p className="mt-2 text-xs text-foreground">{error}</p>}
+    </>
+  );
+}
+
 function Questions({
   questions,
   me,
   ids,
   said,
+  below,
   onWritten,
 }: {
   questions: QuestionBody[];
   me: string | null;
   ids: Ids;
   said: Record<string, string>;
+  below: number;
   onWritten: (id: string, message: string) => void;
 }) {
   const sorted = questions.map((question, at) => ({ question, at })).sort((a, b) => rank(a.question) - rank(b.question) || a.at - b.at);
@@ -314,12 +396,13 @@ function Questions({
                       {who(answer, me)} · {fmtDate(answer.at)}
                     </span>
                   </p>
+                  <ChangeField question={question} ids={ids} below={below} onWritten={onWritten} />
                 </>
               )
             )}
             {said[question.id] && (
               <p className="mt-2 flex gap-1.5 text-xs leading-normal">
-                {said[question.id] !== CONFLICT && <span className="font-semibold">↻</span>}
+                {said[question.id] !== CONFLICT && said[question.id] !== CHANGE_CONFLICT && <span className="font-semibold">↻</span>}
                 {said[question.id]}
               </p>
             )}
