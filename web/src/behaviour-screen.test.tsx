@@ -733,6 +733,175 @@ describe("choosing a node in the Behaviour screen", () => {
       expect(boxCount()).toBe(322 - 7);
     });
   });
+
+  // US-233: a field above the folders searches the tree. While its query holds
+  // a word the folders give way to the nodes found, in tree order, and the
+  // graph dims the others without moving.
+  describe("searching the tree", () => {
+    const PUTTS = "0192d7a0-8888-7000-8000-000000000007";
+    const STORY = "Player: create an account and get set up";
+    const SET_UP_STORY = "player-sets-up-account";
+    // "invite link" in the test tree's titles: the first, second and last of the 11 found.
+    const FIRST = "player-sets-up-account/player-opens-friend-invite-link";
+    const SECOND = `${FIRST}/invite-not-recognized`;
+    const LAST = "player-adds-friend/player-opens-invite-link/player-is-offline";
+
+    const field = () => screen.getByRole("textbox", { name: "Search the tree" }) as HTMLInputElement;
+    const type = (text: string) => fireEvent.change(field(), { target: { value: text } });
+    const fieldKey = (key: string) => fireEvent.keyDown(field(), { key });
+    const marks = (result: HTMLElement) => [...result.querySelectorAll("mark")].map((mark) => mark.textContent);
+    const muted = (element: HTMLElement) => element.className.split(/\s+/).includes("opacity-50");
+
+    test("a query lists the nodes found in tree order by their short titles, each typed word marked and the path above beneath", async () => {
+      fakeApi({ status: 200, body: { nodes: [...TREE, node(PUTTS, PROGRAM_STORY, "Player putts again (once more)")] } });
+      renderAt(BEHAVIOUR_PATH);
+      const aside = await folders();
+
+      type("EMAIL player");
+
+      expect(screen.getByText("2 found")).toBeTruthy();
+      const [signsUp, confirms] = rows(aside);
+      expect(rows(aside)).toHaveLength(2);
+      expect(signsUp.firstElementChild!.textContent).toBe("Player signs up with an email");
+      expect(marks(signsUp)).toEqual(["Player", "email"]);
+      expect(signsUp.lastElementChild!.textContent).toBe(STORY);
+      expect(confirms.firstElementChild!.textContent).toBe("Player confirms the email");
+      expect(confirms.lastElementChild!.textContent).toBe(`${STORY} › Player signs up with an email`);
+
+      type("program");
+      expect(rows(aside)).toHaveLength(1);
+      expect(rows(aside)[0].firstElementChild!.textContent).toBe("Player: pick a training program");
+      expect(marks(rows(aside)[0])).toEqual(["program"]);
+      expect(rows(aside)[0].lastElementChild!.textContent).toBe("Feature");
+
+      // The typed words are marked as written, not read as a pattern.
+      type("(once");
+      expect(marks(rows(aside)[0])).toEqual(["(once"]);
+
+      fireEvent.click(rows(aside)[0]);
+      expect(rows(aside)[0].getAttribute("aria-current")).toBe("true");
+      expect(rows(aside)).toHaveLength(1);
+      expect(detailsTitle()).toBe("Player putts again (once more)");
+    });
+
+    test("a query of only spaces keeps the folders, and words that find nothing say so", async () => {
+      fakeApi({ status: 200, body: { nodes: TREE } });
+      renderAt(BEHAVIOUR_PATH);
+      const aside = await folders();
+      const before = rowTexts(aside);
+
+      type("   ");
+      expect(rowTexts(aside)).toEqual(before);
+
+      type("zebra");
+      expect(screen.getByText("0 found")).toBeTruthy();
+      expect(rowTexts(aside)).toEqual(['Nothing in the tree matches "zebra".']);
+    });
+
+    test("arrow down, arrow up and Enter in the field step through the results, wrapping at both ends, and jump the view", async () => {
+      fakeApi({ status: 200, body: { nodes: testTree() } });
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      await openingView();
+      press(boxOf(SET_UP_STORY));
+      type("invite link");
+      expect(screen.getByText("11 found")).toBeTruthy();
+
+      /** Presses `key` in the field and returns what it chose, checking the view moved at once. */
+      const step = (key: string) => {
+        const before = currentView();
+        fieldKey(key);
+        expect(currentView()).not.toEqual(before);
+        return document.querySelector<HTMLElement>("aside [aria-current]")?.dataset.row;
+      };
+
+      // From a chosen node outside the results, up goes to the last and down to the first.
+      expect(step("ArrowUp")).toBe(LAST);
+      expect(step("ArrowDown")).toBe(FIRST);
+      expect(step("Enter")).toBe(SECOND);
+      expect(step("ArrowUp")).toBe(FIRST);
+      expect(step("ArrowUp")).toBe(LAST);
+      press(boxOf(SET_UP_STORY));
+      expect(step("ArrowDown")).toBe(FIRST);
+      expect(document.querySelectorAll("aside [data-result]")).toHaveLength(11);
+
+      // With nothing found the keys choose nothing.
+      type("zebra");
+      const view = currentView();
+      fieldKey("ArrowDown");
+      fieldKey("Enter");
+      expect(currentView()).toEqual(view);
+      expect(detailsTitle()).toBe("Player opens a friend's invite link without having an account");
+    });
+
+    test("while a query is typed the graph stays still and dims the boxes not found", async () => {
+      fakeApi({ status: 200, body: { nodes: testTree() } });
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      const opening = await openingView();
+
+      type("invite link");
+
+      expect(muted(boxOf(FIRST))).toBe(false);
+      expect(muted(boxOf(SET_UP_STORY))).toBe(true);
+      // Any eased move would have landed by now.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(currentView()).toEqual(opening);
+    });
+
+    test("the key / puts the cursor in the field with its text selected, unless a field has focus or a modifier is held", async () => {
+      fakeApi({ status: 200, body: { nodes: TREE } });
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      type("email");
+      field().blur();
+      const other = document.body.appendChild(document.createElement("input"));
+
+      for (const modifier of ["metaKey", "ctrlKey", "altKey"]) fireEvent.keyDown(document.body, { key: "/", [modifier]: true });
+      fireEvent.keyDown(other, { key: "/" });
+      expect(document.activeElement).not.toBe(field());
+
+      // fireEvent returns false when the key's default, typing "/", was stopped.
+      expect(fireEvent.keyDown(document.body, { key: "/" })).toBe(false);
+      expect(document.activeElement).toBe(field());
+      expect([field().selectionStart, field().selectionEnd]).toEqual([0, 5]);
+      other.remove();
+    });
+
+    test("Esc in the field and the clear button bring the folders back with the chosen row in view, and Esc elsewhere clears the query", async () => {
+      const scrolled = vi.fn();
+      Element.prototype.scrollIntoView = scrolled;
+      fakeApi({ status: 200, body: { nodes: TREE } });
+      renderAt(BEHAVIOUR_PATH);
+      const aside = await folders();
+      field().focus();
+      type("email");
+      fieldKey("ArrowDown");
+      expect(rowOf(SIGNS_UP)!.getAttribute("aria-current")).toBe("true");
+
+      fieldKey("Escape");
+      expect(field().value).toBe("");
+      expect(document.activeElement).not.toBe(field());
+      expect(rowTexts(aside)).toContain("Player signs up with an email");
+      expect(scrolled.mock.contexts.at(-1)).toBe(rowOf(SIGNS_UP));
+
+      field().focus();
+      type("email");
+      // A press moves the focus to the button, as a pointer would.
+      const clear = screen.getByRole("button", { name: "Clear search" });
+      clear.focus();
+      fireEvent.click(clear);
+      expect(field().value).toBe("");
+      expect(document.activeElement).toBe(field());
+      expect(rowTexts(aside)).toContain("Player signs up with an email");
+      expect(scrolled.mock.contexts.at(-1)).toBe(rowOf(SIGNS_UP));
+
+      type("email");
+      field().blur();
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(field().value).toBe("");
+    });
+  });
 });
 
 describe("the Behaviour screen's details", () => {
@@ -1006,6 +1175,36 @@ describe("filtering the Behaviour screen", () => {
     expect(rowTexts(aside)).toEqual(before);
     expect(screen.queryByText("1 of 6 nodes, with what lies above them")).toBeNull();
     expect(screen.getByLabelText("Legend")).toBeTruthy();
+  });
+
+  // US-233: under a filter only the nodes it picks out are found, and the count says which.
+  test("with a filter on only the nodes it picks out are found, and the count names the filter", async () => {
+    fakeApi({
+      status: 200,
+      body: {
+        nodes: [
+          ...FILTERED.filter((one) => one.id !== SKIPS),
+          node(SKIPS, SIGN_UP_STORY, "Player skips the setup", { status: "out_of_scope", position: 1, needs_pass: true }),
+        ],
+      },
+    });
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    const found = () => rows(aside).map((one) => one.dataset.row);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search the tree" }), { target: { value: "player" } });
+    expect(screen.getByText("5 found")).toBeTruthy();
+
+    fireEvent.click(choice(/^Only open/));
+    expect(screen.getByText("1 found in open nodes")).toBeTruthy();
+    expect(found()).toEqual([SIGNS_UP]);
+
+    fireEvent.click(choice(/^Only by default/));
+    expect(screen.getByText("1 found in nodes answered by default")).toBeTruthy();
+    expect(found()).toEqual([CONFIRMS]);
+
+    fireEvent.click(choice(/^Only needing a grill pass/));
+    expect(screen.getByText("1 found in nodes needing a grill pass")).toBeTruthy();
+    expect(found()).toEqual([SKIPS]);
   });
 
   test("turning a filter on fits the drawing it shows at once, and pressing the choice that is on goes back to All and fits the whole drawing at once", async () => {

@@ -396,4 +396,21 @@ describe("the fold pills", () => {
     rerender(<Graph nodes={testTree()} shown={shown} folded={new Set([STORY])} />);
     expect(pill(container, STORY)?.textContent).toBe("+4");
   });
+
+  // US-233: while a query is typed, a fold with found nodes under it says how many.
+  test("while searching a folded box with found nodes under it reads +N · M found, and one without reads +N", () => {
+    const found = new Set([
+      SHARES_LINK,
+      `${SHARES_LINK}/player-resets-invite-link`,
+      `${STORY}/player-opens-invite-link`,
+      `${STORY}/player-opens-invite-link/player-opens-own-link`,
+      `${STORY}/player-opens-invite-link/already-friends`,
+      `${STORY}/player-opens-invite-link/invite-link-not-valid`,
+      `${STORY}/player-opens-invite-link/player-is-offline`,
+    ]);
+    const { container } = render(<Graph nodes={testTree()} found={found} folded={new Set([STORY, "player-picks-program"])} />);
+
+    expect(pill(container, STORY)?.textContent).toBe("+32 · 7 found");
+    expect(pill(container, "player-picks-program")?.textContent).toBe("+27");
+  });
 });
