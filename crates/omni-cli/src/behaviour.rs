@@ -14,7 +14,7 @@ const ADD_USAGE: &str = "omni behaviour add --title <t> [--slug <s>] [--summary 
 const READ_USAGE: &str = "omni behaviour read <node>";
 const EDIT_USAGE: &str = "omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>] \
      [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope] \
-     [--same-as <node>] [--handoff <node>]";
+     [--same-as <node>] [--handoff <node>] [--grilled]";
 
 const MOVE_USAGE: &str = "omni behaviour move <node> --to <parent>";
 const ANSWER_USAGE: &str = "omni behaviour answer <question id> <answer> [--change] [--by human]";
@@ -159,9 +159,17 @@ pub fn read(args: &Args, node: Option<&str>) -> Result<()> {
 pub fn list(args: &Args, node: Option<&str>) -> Result<()> {
     let agent = agent(args)?;
     let base = behaviour_path(args, &agent)?;
-    let url = match node {
-        Some(given) => format!("{base}?under={}", node_ref(&agent, &base, given)?.0),
-        None => base,
+    let mut query = Vec::new();
+    if let Some(given) = node {
+        query.push(format!("under={}", node_ref(&agent, &base, given)?.0));
+    }
+    if args.needs_pass {
+        query.push("needs_pass=true".to_string());
+    }
+    let url = if query.is_empty() {
+        base
+    } else {
+        format!("{base}?{}", query.join("&"))
     };
     let response = agent.request("GET", &url, None)?;
     let text = response.text();
@@ -181,6 +189,25 @@ pub fn list(args: &Args, node: Option<&str>) -> Result<()> {
     let Some(first) = nodes.first() else {
         return Ok(());
     };
+    if args.needs_pass {
+        for node in nodes {
+            let path = match node.str_at("path") {
+                Some("") => ".",
+                Some(path) => path,
+                None => "?",
+            };
+            let summary = node
+                .str_at("summary")
+                .filter(|s| !s.is_empty())
+                .or(node.str_at("title"))
+                .unwrap_or_default();
+            say(&format!(
+                "{path} — {summary} ({})",
+                node.str_at("status").unwrap_or("?")
+            ));
+        }
+        return Ok(());
+    }
     let top = level_of(first)?;
     for node in nodes {
         let title = node.str_at("title").unwrap_or_default();
@@ -189,6 +216,10 @@ pub fn list(args: &Args, node: Option<&str>) -> Result<()> {
             _ => title,
         };
         let summary = node.str_at("summary").filter(|s| !s.is_empty());
+        let marked = match node.get("needs_pass") {
+            Some(Value::Bool(true)) => " [needs another pass]",
+            _ => "",
+        };
         let pointer = [("same-as", "same_as"), ("handoff", "handoff")]
             .iter()
             .find_map(|(word, key)| {
@@ -197,7 +228,7 @@ pub fn list(args: &Args, node: Option<&str>) -> Result<()> {
             })
             .unwrap_or_default();
         say(&format!(
-            "{}{name} — {} ({}){pointer}",
+            "{}{name} — {} ({}){pointer}{marked}",
             "  ".repeat(level_of(node)?.saturating_sub(top)),
             summary.unwrap_or(title),
             node.str_at("status").unwrap_or("?")
@@ -231,6 +262,9 @@ pub fn edit(args: &Args, node: Option<&str>) -> Result<()> {
             other => bail!("{other:?} is not a status: use open, done or out-of-scope"),
         };
         fields.push(format!("\"status\":{}", quote(status)));
+    }
+    if args.grilled {
+        fields.push("\"needs_pass\":false".to_string());
     }
     if fields.is_empty() && args.same_as.is_none() && args.handoff.is_none() {
         bail!("this command needs something to change: {EDIT_USAGE}");

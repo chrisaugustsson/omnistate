@@ -222,10 +222,14 @@ Usage:
                                       <node> and the nodes below it, in tree order, indented two
                                       spaces per level: `<slug> — <summary> (<status>)`; the title
                                       stands in for an empty summary and for the root's slug.
-                                      With --json the API's list
+                                      A node marked for another pass ends in
+                                      ` [needs another pass]`. With --json the API's list
+  omni behaviour list --needs-pass [<node>]
+                                      only the marked nodes, one `<path> — <summary> (<status>)`
+                                      per line, not indented
   omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>]
                      [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]
-                     [--same-as <node>] [--handoff <node>]
+                     [--same-as <node>] [--handoff <node>] [--grilled]
                                       rewrite a node's text or set its status; reads the node
                                       first and sends its version (a stale one is exit 3);
                                       prints the path and the status. The root has no slug.
@@ -324,6 +328,8 @@ Options (before or after the command):
   --status <status>     `omni story list`: only the stories in this status
   --open                `omni thread list`: only the threads without a conclusion; `omni behaviour questions`: only the open ones
   --default             `omni behaviour questions`: only the answers an agent gave on its own
+  --needs-pass          `omni behaviour list`: only the nodes marked for another grill pass
+  --grilled             `omni behaviour edit`: clear the node's mark for another pass
   --change              `omni behaviour answer`: change the answer of an answered question
   --answer <text>       `omni behaviour ask`: create the question answered
   --pickable            `omni story list`: only the stories that can be picked

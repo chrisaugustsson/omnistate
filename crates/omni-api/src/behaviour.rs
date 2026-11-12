@@ -77,6 +77,10 @@ pub struct NodeSummaryBody {
     pub open_questions: i64,
     /// How many questions on the node have a current answer an agent gave on its own.
     pub default_answers: i64,
+    /// Whether the next grill run should revisit the node.
+    pub needs_pass: bool,
+    /// When the node was marked, or `null`.
+    pub needs_pass_since: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -96,6 +100,10 @@ pub struct NodeBody {
     pub behaviour: String,
     pub same_as: Option<PointerDetailBody>,
     pub handoff: Option<PointerDetailBody>,
+    /// Whether the next grill run should revisit the node.
+    pub needs_pass: bool,
+    /// When the node was marked, or `null`.
+    pub needs_pass_since: Option<String>,
     /// `{kind: "agent", run, role, model, harness}` or `{kind: "human", user_id}`.
     #[schema(value_type = Object)]
     pub created_by: Value,
@@ -298,6 +306,7 @@ async fn load_questions(
 #[derive(Deserialize)]
 pub struct ListQuery {
     under: Option<String>,
+    needs_pass: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -344,6 +353,9 @@ pub struct PatchNodeRequest {
     #[serde(default, deserialize_with = "nullable")]
     #[schema(value_type = Option<String>)]
     pub handoff: Option<Option<String>>,
+    /// `false` clears the node's mark (an API key only, 403 with a session);
+    /// `true` is 422: marks come from the rules.
+    pub needs_pass: Option<bool>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -368,6 +380,7 @@ struct NodeRow {
     same_as_id: Option<String>,
     handoff_id: Option<String>,
     version: i32,
+    needs_pass_since: Option<String>,
     created_by: String,
     created_at: String,
     updated_at: String,
@@ -375,7 +388,9 @@ struct NodeRow {
 
 const NODE_COLUMNS: &str = concat!(
     "id::text, parent_id::text, slug, position, title, summary, situation, behaviour, status, ",
-    "same_as_id::text, handoff_id::text, version, created_by::text, ",
+    "same_as_id::text, handoff_id::text, version, ",
+    "to_char(needs_pass_since AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS needs_pass_since, ",
+    "created_by::text, ",
     "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, ",
     "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS updated_at"
 );
@@ -462,6 +477,8 @@ impl Tree {
             behaviour: row.behaviour.clone(),
             same_as: self.pointer_detail(&row.same_as_id),
             handoff: self.pointer_detail(&row.handoff_id),
+            needs_pass: row.needs_pass_since.is_some(),
+            needs_pass_since: row.needs_pass_since.clone(),
             created_by: serde_json::from_str(&row.created_by).unwrap_or(Value::Null),
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
@@ -486,6 +503,8 @@ impl Tree {
             handoff: self.pointer(&row.handoff_id),
             open_questions: 0,
             default_answers: 0,
+            needs_pass: row.needs_pass_since.is_some(),
+            needs_pass_since: row.needs_pass_since.clone(),
         }
     }
 
@@ -553,6 +572,42 @@ fn author_of(actor: &Actor, identity: &AgentIdentity) -> Value {
         }
         Actor::Human { user_id, .. } => json!({ "kind": "human", "user_id": user_id }),
     }
+}
+
+/// Marks a node, the nodes below it, or both, for another grill pass and announces
+/// it once. Sets `needs_pass_since` where it is null; nothing else changes.
+async fn mark(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: &str,
+    project_id: &str,
+    feature_id: &str,
+    node_id: &str,
+    itself: bool,
+    below: bool,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "WITH RECURSIVE sub AS (SELECT id FROM behaviour_nodes WHERE parent_id = $1::uuid \
+         UNION ALL SELECT n.id FROM behaviour_nodes n JOIN sub ON n.parent_id = sub.id) \
+         UPDATE behaviour_nodes SET needs_pass_since = clock_timestamp() \
+         WHERE feature_id = $2::uuid AND needs_pass_since IS NULL \
+         AND (($3 AND id = $1::uuid) OR ($4 AND id IN (SELECT id FROM sub)))",
+    )
+    .bind(node_id)
+    .bind(feature_id)
+    .bind(itself)
+    .bind(below)
+    .execute(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        tx,
+        workspace_id,
+        project_id,
+        "behaviour.marked",
+        &json!({ "feature_id": feature_id, "node_id": node_id, "below": below }),
+    )
+    .await?;
+    Ok(())
 }
 
 fn slug_fits(slug: &str) -> bool {
@@ -832,6 +887,7 @@ pub async fn create_node(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("feature_id" = String, Path, description = "The feature's UUID"),
         ("under" = Option<String>, Query, description = "Only this node and the nodes below it"),
+        ("needs_pass" = Option<bool>, Query, description = "`true`: only the nodes marked for another grill pass"),
     ),
     responses(
         (status = 200, description = "Every node of the feature in tree order; empty when the feature has no tree", body = NodeListResponse),
@@ -879,6 +935,7 @@ pub async fn list_nodes(
     }
     let nodes = order
         .into_iter()
+        .filter(|at| query.needs_pass != Some(true) || tree.rows[*at].needs_pass_since.is_some())
         .map(|at| {
             let mut summary = tree.summary(at);
             summary.open_questions = open_counts.get(summary.id.as_str()).copied().unwrap_or(0);
@@ -974,7 +1031,8 @@ pub async fn show_node(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, `has_children` (a pointer set on a node that has children), or `open_questions` (status `done` while a question on the node is open)", body = StoryConflictBody),
-        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)", body = ErrorBody),
+        (status = 403, description = "A session sent `needs_pass`: only an API key clears a mark", body = ErrorBody),
+        (status = 422, description = "No field but `expected_version` (`no_changes`), `needs_pass: true` (`invalid_needs_pass`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)", body = ErrorBody),
     )
 )]
 pub async fn patch_node(
@@ -999,6 +1057,7 @@ pub async fn patch_node(
         ("status", patch.status.is_some()),
         ("same_as", patch.same_as.is_some()),
         ("handoff", patch.handoff.is_some()),
+        ("needs_pass", patch.needs_pass.is_some()),
     ] {
         if present {
             fields.push(name);
@@ -1023,6 +1082,12 @@ pub async fn patch_node(
     }
     if matches!(patch.same_as, Some(Some(_))) && matches!(patch.handoff, Some(Some(_))) {
         return Err(invalid_field("two_pointers").into());
+    }
+    if patch.needs_pass == Some(true) {
+        return Err(invalid_field("invalid_needs_pass").into());
+    }
+    if patch.needs_pass.is_some() && matches!(request.actor, Actor::Human { .. }) {
+        return Err(ApiError::Forbidden.into());
     }
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
@@ -1098,6 +1163,7 @@ pub async fn patch_node(
          summary = COALESCE($4, summary), situation = COALESCE($5, situation), \
          behaviour = COALESCE($6, behaviour), status = COALESCE($7, status), \
          same_as_id = $8::uuid, handoff_id = $9::uuid, \
+         needs_pass_since = CASE WHEN $10 THEN NULL ELSE needs_pass_since END, \
          version = version + 1, updated_at = clock_timestamp() WHERE id = $1::uuid",
     )
     .bind(&node_id)
@@ -1109,6 +1175,7 @@ pub async fn patch_node(
     .bind(&patch.status)
     .bind(&same_as)
     .bind(&handoff)
+    .bind(patch.needs_pass == Some(false))
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
@@ -1371,6 +1438,18 @@ pub async fn ask_question(
         }),
     )
     .await?;
+    if matches!(request.actor, Actor::Human { .. }) {
+        mark(
+            &mut tx,
+            workspace_id,
+            &project_id,
+            &feature_id,
+            &node_id,
+            true,
+            false,
+        )
+        .await?;
+    }
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
     Ok((
@@ -1528,6 +1607,19 @@ pub async fn answer_question(
         }),
     )
     .await?;
+    let by_person = matches!(request.actor, Actor::Human { .. });
+    if by_person || write.change {
+        mark(
+            &mut tx,
+            workspace_id,
+            &project_id,
+            &feature_id,
+            &node_id,
+            by_person,
+            write.change,
+        )
+        .await?;
+    }
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(workspace_id, &project_id);
     Ok((

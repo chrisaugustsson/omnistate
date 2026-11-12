@@ -597,7 +597,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.marked", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -678,6 +678,8 @@ export const NodeBodySchema = z.object({
   ]).optional(),
   id: z.string(),
   level: z.number().int(),
+  needs_pass: z.boolean(),
+  needs_pass_since: z.string().nullable().optional(),
   parent_id: z.string().nullable().optional(),
   path: z.string(),
   position: z.number().int(),
@@ -727,6 +729,8 @@ export const NodeSummaryBodySchema = z.object({
   ]).optional(),
   id: z.string(),
   level: z.number().int(),
+  needs_pass: z.boolean(),
+  needs_pass_since: z.string().nullable().optional(),
   open_questions: z.number().int(),
   parent_id: z.string().nullable().optional(),
   path: z.string(),
@@ -783,6 +787,7 @@ export const PatchNodeRequestSchema = z.object({
   behaviour: z.string().nullable().optional(),
   expected_version: z.number().int(),
   handoff: z.string().nullable().optional(),
+  needs_pass: z.boolean().nullable().optional(),
   same_as: z.string().nullable().optional(),
   situation: z.string().nullable().optional(),
   slug: z.string().nullable().optional(),
@@ -1475,6 +1480,7 @@ export const operations = {
       "200": NodeResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": StoryConflictBodySchema,
       "422": ErrorBodySchema,

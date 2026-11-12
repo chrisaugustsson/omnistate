@@ -106,6 +106,9 @@ pub struct Args {
     pub default_answers: bool,
     /// `omni behaviour answer --change`.
     pub change: bool,
+    /// `omni behaviour list --needs-pass`, `omni behaviour edit --grilled`.
+    pub needs_pass: bool,
+    pub grilled: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -160,6 +163,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--change" => {
                 parsed.change = true;
+                continue;
+            }
+            "--needs-pass" => {
+                parsed.needs_pass = true;
+                continue;
+            }
+            "--grilled" => {
+                parsed.grilled = true;
                 continue;
             }
             "--default" => {

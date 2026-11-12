@@ -1847,6 +1847,7 @@
           "behaviour.node_created",
           "behaviour.node_changed",
           "behaviour.question_changed",
+          "behaviour.marked",
           "comment.created",
           "comment.replied",
           "comment.deleted",
@@ -2142,6 +2143,17 @@
             "format": "int32",
             "type": "integer"
           },
+          "needs_pass": {
+            "description": "Whether the next grill run should revisit the node.",
+            "type": "boolean"
+          },
+          "needs_pass_since": {
+            "description": "When the node was marked, or `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "parent_id": {
             "type": [
               "string",
@@ -2203,6 +2215,7 @@
           "version",
           "situation",
           "behaviour",
+          "needs_pass",
           "created_by",
           "created_at",
           "updated_at"
@@ -2398,6 +2411,17 @@
             "format": "int32",
             "type": "integer"
           },
+          "needs_pass": {
+            "description": "Whether the next grill run should revisit the node.",
+            "type": "boolean"
+          },
+          "needs_pass_since": {
+            "description": "When the node was marked, or `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "open_questions": {
             "description": "How many questions on the node are open.",
             "format": "int64",
@@ -2463,7 +2487,8 @@
           "status",
           "version",
           "open_questions",
-          "default_answers"
+          "default_answers",
+          "needs_pass"
         ],
         "type": "object"
       },
@@ -2519,6 +2544,13 @@
             "description": "A node of the feature; `null` clears it.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "needs_pass": {
+            "description": "`false` clears the node's mark (an API key only, 403 with a session);\n`true` is 422: marks come from the rules.",
+            "type": [
+              "boolean",
               "null"
             ]
           },
@@ -7043,6 +7075,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "`true`: only the nodes marked for another grill pass",
+            "in": "query",
+            "name": "needs_pass",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -7355,6 +7396,16 @@
             },
             "description": "No valid API key or session"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A session sent `needs_pass`: only an API key clears a mark"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -7383,7 +7434,7 @@
                 }
               }
             },
-            "description": "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)"
+            "description": "No field but `expected_version` (`no_changes`), `needs_pass: true` (`invalid_needs_pass`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)"
           }
         },
         "summary": "Rewrites a node's text or sets its status.",
