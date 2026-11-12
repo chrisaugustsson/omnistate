@@ -242,11 +242,21 @@ Usage:
                                       put a question or a remark on a node; prints the question's
                                       ID. A done node becomes open again, and a node with an open
                                       question cannot be set to done (409 open_questions)
-  omni behaviour questions [<node>] [--open]
+  omni behaviour ask <node> <question> --answer <text> [--by human]
+                                      create the question already answered; a done node stays
+                                      done. The answer is an agent's own (a default) unless
+                                      --by human says a person gave it
+  omni behaviour answer <question ID> <answer> [--by human]
+                                      answer an open question; prints its ID. The answer is
+                                      yours, a default, unless --by human says a person gave it
+                                      and you only wrote it down (409 already_answered if it
+                                      has an answer)
+  omni behaviour questions [<node>] [--open|--default]
                                       print `<node path>  <question ID>  <question>` for every
                                       question of the feature, or of <node> and the nodes below
-                                      it, in tree order; --open only the open ones. With --json
-                                      the API's list
+                                      it, in tree order; --open only the open ones; --default
+                                      only those an agent answered on its own, each line ending
+                                      in ` → <answer>`. With --json the API's list
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -305,6 +315,8 @@ Options (before or after the command):
   --number-from <n>     `omni story add`: the number the project's first story starts after
   --status <status>     `omni story list`: only the stories in this status
   --open                `omni thread list`: only the threads without a conclusion; `omni behaviour questions`: only the open ones
+  --default             `omni behaviour questions`: only the answers an agent gave on its own
+  --answer <text>       `omni behaviour ask`: create the question answered
   --pickable            `omni story list`: only the stories that can be picked
   --summary             `omni story list`: count the stories per status; `omni post` takes
                         --summary <text> instead

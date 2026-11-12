@@ -100,6 +100,10 @@ pub struct Args {
     /// `omni behaviour add|edit --same-as <node> --handoff <node>`.
     pub same_as: Option<String>,
     pub handoff: Option<String>,
+    /// `omni behaviour ask --answer <text> [--by human]`, `omni behaviour
+    /// questions --default`.
+    pub answer: Option<String>,
+    pub default_answers: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -150,6 +154,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--open" => {
                 parsed.open = true;
+                continue;
+            }
+            "--default" => {
+                parsed.default_answers = true;
                 continue;
             }
             "--pickable" => {
@@ -216,6 +224,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--behaviour" | "--behavior" => &mut parsed.behaviour,
             "--same-as" => &mut parsed.same_as,
             "--handoff" => &mut parsed.handoff,
+            "--answer" => &mut parsed.answer,
             "--priority" => &mut parsed.priority,
             "--number-from" => &mut parsed.number_from,
             "--status" => &mut parsed.status,

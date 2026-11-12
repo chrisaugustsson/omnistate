@@ -75,6 +75,8 @@ pub struct NodeSummaryBody {
     pub handoff: Option<PointerBody>,
     /// How many questions on the node are open.
     pub open_questions: i64,
+    /// How many questions on the node have a current answer an agent gave on its own.
+    pub default_answers: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -149,6 +151,21 @@ pub struct QuestionBody {
     /// 1 on creation, plus 1 on every accepted write.
     pub version: i32,
     pub created_at: String,
+    /// The current answer, or `null` while the question is open.
+    pub answer: Option<AnswerBody>,
+}
+
+/// An answer to a question.
+#[derive(Serialize, ToSchema)]
+pub struct AnswerBody {
+    pub answer: String,
+    /// `human`, or `agent` for an answer an agent gave on its own (an answer by default).
+    pub given_by: String,
+    /// Whoever made the call: `{kind: "agent", run, role, model, harness}` or `{kind: "human", user_id}`.
+    #[schema(value_type = Object)]
+    pub author: Value,
+    /// When the answer was given.
+    pub at: String,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -165,6 +182,7 @@ pub struct QuestionListResponse {
 #[derive(Deserialize)]
 pub struct QuestionQuery {
     state: Option<String>,
+    by: Option<String>,
     under: Option<String>,
 }
 
@@ -172,6 +190,22 @@ pub struct QuestionQuery {
 pub struct AskRequest {
     /// Not blank.
     pub question: String,
+    /// Creates the question answered. Not blank.
+    pub answer: Option<String>,
+    /// With `answer`: `human` or `agent`; see `AnswerRequest`.
+    pub by: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct AnswerRequest {
+    /// The question's `version` as the caller read it.
+    pub expected_version: i64,
+    /// Not blank.
+    pub answer: String,
+    /// `human` or `agent`. A session always gives `human` and refuses `agent`. An API
+    /// key gives `agent`, an answer by default, unless this says `human`: the agent
+    /// wrote down what a person said.
+    pub by: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -184,11 +218,16 @@ struct QuestionRow {
     asked_by: String,
     version: i32,
     created_at: String,
+    answer: Option<String>,
 }
 
 const QUESTION_COLUMNS: &str = concat!(
     "id::text, node_id::text, question, state, answered_by, asked_by::text, version, ",
-    "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
+    "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, ",
+    "(SELECT jsonb_build_object('answer', a.answer, 'given_by', a.given_by, 'author', a.author, ",
+    "'at', to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'))::text ",
+    "FROM behaviour_answers a WHERE a.question_id = behaviour_questions.id ",
+    "ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS answer"
 );
 
 impl QuestionRow {
@@ -207,6 +246,15 @@ impl QuestionRow {
             asked_by: serde_json::from_str(&self.asked_by).unwrap_or(Value::Null),
             version: self.version,
             created_at: self.created_at,
+            answer: self.answer.and_then(|text| {
+                let value: Value = serde_json::from_str(&text).ok()?;
+                Some(AnswerBody {
+                    answer: value["answer"].as_str()?.to_string(),
+                    given_by: value["given_by"].as_str()?.to_string(),
+                    author: value["author"].clone(),
+                    at: value["at"].as_str()?.to_string(),
+                })
+            }),
         }
     }
 }
@@ -416,6 +464,7 @@ impl Tree {
             same_as: self.pointer(&row.same_as_id),
             handoff: self.pointer(&row.handoff_id),
             open_questions: 0,
+            default_answers: 0,
         }
     }
 
@@ -788,8 +837,13 @@ pub async fn list_nodes(
     let open = load_questions(&mut tx, &feature_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     let mut open_counts: HashMap<&str, i64> = HashMap::new();
-    for question in open.iter().filter(|q| q.state == "open") {
-        *open_counts.entry(question.node_id.as_str()).or_default() += 1;
+    let mut default_counts: HashMap<&str, i64> = HashMap::new();
+    for question in &open {
+        if question.state == "open" {
+            *open_counts.entry(question.node_id.as_str()).or_default() += 1;
+        } else if question.answered_by.as_deref() == Some("agent") {
+            *default_counts.entry(question.node_id.as_str()).or_default() += 1;
+        }
     }
     let mut order = tree.in_order();
     if let Some(under) = under {
@@ -807,6 +861,10 @@ pub async fn list_nodes(
         .map(|at| {
             let mut summary = tree.summary(at);
             summary.open_questions = open_counts.get(summary.id.as_str()).copied().unwrap_or(0);
+            summary.default_answers = default_counts
+                .get(summary.id.as_str())
+                .copied()
+                .unwrap_or(0);
             summary
         })
         .collect();
@@ -1178,11 +1236,11 @@ pub async fn move_node(
     ),
     request_body = AskRequest,
     responses(
-        (status = 201, description = "The new open question. A node that was `done` is `open` again", body = QuestionResponse),
+        (status = 201, description = "The new question: open (a node that was `done` is `open` again), or answered when the body has `answer` (the node's status is left alone)", body = QuestionResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
-        (status = 422, description = "A blank question (`invalid_question`)", body = ErrorBody),
+        (status = 422, description = "A blank question (`invalid_question`), a blank answer (`invalid_answer`), `by` without `answer`, a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)", body = ErrorBody),
     )
 )]
 pub async fn ask_question(
@@ -1217,9 +1275,16 @@ pub async fn ask_question(
     if text.is_empty() {
         return Err(invalid_field("invalid_question"));
     }
+    let answer = match &ask.answer {
+        Some(answer) => Some(checked_answer(answer, ask.by.as_deref(), &request.actor)?),
+        None if ask.by.is_some() => return Err(invalid_field("invalid_by")),
+        None => None,
+    };
+    let given_by = answer.as_ref().map(|(_, by)| *by);
     let question_id: String = sqlx::query_scalar(
         "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, \
-         question, asked_by) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::text::jsonb) \
+         question, asked_by, state, answered_by) VALUES ($1::uuid, $2::uuid, $3::uuid, \
+         $4::uuid, $5, $6::text::jsonb, CASE WHEN $7::text IS NULL THEN 'open' ELSE 'answered' END, $7) \
          RETURNING id::text",
     )
     .bind(workspace_id)
@@ -1228,11 +1293,24 @@ pub async fn ask_question(
     .bind(&node_id)
     .bind(text)
     .bind(author.to_string())
+    .bind(given_by)
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
+    if let Some((text, by)) = &answer {
+        insert_answer(
+            &mut tx,
+            workspace_id,
+            &feature_id,
+            &question_id,
+            text,
+            by,
+            &author,
+        )
+        .await?;
+    }
     let tree = Tree::load(&mut tx, &feature_id).await?;
-    if status == "done" {
+    if status == "done" && answer.is_none() {
         sqlx::query(
             "UPDATE behaviour_nodes SET status = 'open', version = version + 1, \
              updated_at = clock_timestamp() WHERE id = $1::uuid",
@@ -1268,7 +1346,158 @@ pub async fn ask_question(
         "behaviour.question_changed",
         &json!({
             "feature_id": feature_id, "node_id": node_id, "question_id": question_id,
-            "state": "open",
+            "state": if answer.is_some() { "answered" } else { "open" },
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
+    Ok((
+        StatusCode::CREATED,
+        Json(QuestionResponse {
+            question: row.body(&tree),
+        }),
+    ))
+}
+
+/// The trimmed answer and who gave it. A session is always a person and refuses
+/// `agent`; an API key is an agent giving its own answer unless `by` says `human`.
+fn checked_answer<'a>(
+    answer: &'a str,
+    by: Option<&str>,
+    actor: &Actor,
+) -> Result<(&'a str, &'static str), ApiError> {
+    let by = match by {
+        None | Some("agent") if matches!(actor, Actor::Agent) => "agent",
+        Some("human") => "human",
+        Some("agent") if matches!(actor, Actor::Human { .. }) => {
+            return Err(invalid_field("invalid_by"));
+        }
+        None => "human",
+        Some(_) => return Err(invalid_field("invalid_by")),
+    };
+    let text = answer.trim();
+    if text.is_empty() {
+        return Err(invalid_field("invalid_answer"));
+    }
+    Ok((text, by))
+}
+
+async fn insert_answer(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: &str,
+    feature_id: &str,
+    question_id: &str,
+    answer: &str,
+    given_by: &str,
+    author: &Value,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        "INSERT INTO behaviour_answers (workspace_id, feature_id, question_id, answer, \
+         given_by, author) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::text::jsonb)",
+    )
+    .bind(workspace_id)
+    .bind(feature_id)
+    .bind(question_id)
+    .bind(answer)
+    .bind(given_by)
+    .bind(author.to_string())
+    .execute(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    Ok(())
+}
+
+/// Answers an open question.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("question_id" = String, Path, description = "The question's UUID"),
+    ),
+    request_body = AnswerRequest,
+    responses(
+        (status = 201, description = "The question, answered, with its new `version`", body = QuestionResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such question in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`already_answered`, else `conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
+        (status = 422, description = "A blank answer (`invalid_answer`), a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)", body = ErrorBody),
+    )
+)]
+pub async fn answer_question(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id, question_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<QuestionResponse>), StoryError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let question_id = parse_uuid(&question_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<AnswerRequest>(&body);
+    let author = author_of(&request.actor, &identity);
+    let workspace_id = &request.workspace_id;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let locked: Option<(String, String, i32)> = sqlx::query_as(
+        "SELECT node_id::text, state, version FROM behaviour_questions \
+         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+    )
+    .bind(&question_id)
+    .bind(&feature_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let (node_id, current_state, version) = locked.ok_or(ApiError::NotFound)?;
+    let write = write?;
+    let (text, by) = checked_answer(&write.answer, write.by.as_deref(), &request.actor)?;
+    if current_state == "answered" {
+        return Err(ApiError::conflict("already_answered").into());
+    }
+    if write.expected_version != i64::from(version) {
+        return Err(StoryError::Stale(version));
+    }
+    insert_answer(
+        &mut tx,
+        workspace_id,
+        &feature_id,
+        &question_id,
+        text,
+        by,
+        &author,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE behaviour_questions SET state = 'answered', answered_by = $2, \
+         version = version + 1, updated_at = clock_timestamp() WHERE id = $1::uuid",
+    )
+    .bind(&question_id)
+    .bind(by)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let row = sqlx::query_as::<_, QuestionRow>(&format!(
+        "SELECT {QUESTION_COLUMNS} FROM behaviour_questions WHERE id = $1::uuid"
+    ))
+    .bind(&question_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        workspace_id,
+        &project_id,
+        "behaviour.question_changed",
+        &json!({
+            "feature_id": feature_id, "node_id": node_id, "question_id": question_id,
+            "state": "answered",
         }),
     )
     .await?;
@@ -1291,13 +1520,14 @@ pub async fn ask_question(
         ("project_id" = String, Path, description = "The project's UUID"),
         ("feature_id" = String, Path, description = "The feature's UUID"),
         ("state" = Option<String>, Query, description = "`open` or `answered`; both when left out"),
+        ("by" = Option<String>, Query, description = "`agent` or `human`: only the answered questions whose current answer was given that way"),
         ("under" = Option<String>, Query, description = "Only the questions on this node and the nodes below it"),
     ),
     responses(
         (status = 200, description = "The questions in tree order of their nodes, then oldest first", body = QuestionListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such feature in this project and workspace, or `under` is not a node of it", body = ErrorBody),
-        (status = 422, description = "A `state` other than `open` and `answered` (`invalid_state`)", body = ErrorBody),
+        (status = 422, description = "A `state` other than `open` and `answered` (`invalid_state`), or a `by` other than `agent` and `human` (`invalid_by`)", body = ErrorBody),
     )
 )]
 pub async fn list_questions(
@@ -1314,6 +1544,13 @@ pub async fn list_questions(
         .is_some_and(|state| !["open", "answered"].contains(&state))
     {
         return Err(invalid_field("invalid_state"));
+    }
+    if query
+        .by
+        .as_deref()
+        .is_some_and(|by| !["agent", "human"].contains(&by))
+    {
+        return Err(invalid_field("invalid_by"));
     }
     let under = match &query.under {
         Some(id) => Some(parse_uuid(id).ok_or(ApiError::NotFound)?),
@@ -1342,6 +1579,10 @@ pub async fn list_questions(
             .state
             .as_deref()
             .is_none_or(|state| state == row.state)
+            && query
+                .by
+                .as_deref()
+                .is_none_or(|by| Some(by) == row.answered_by.as_deref())
         {
             by_node.entry(row.node_id.clone()).or_default().push(row);
         }

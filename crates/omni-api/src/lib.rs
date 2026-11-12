@@ -371,6 +371,10 @@ pub fn router(state: AppState) -> Router {
             get(behaviour::list_questions),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+            post(behaviour::answer_question),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
             get(stories::list_stories).post(stories::create_story),
         )

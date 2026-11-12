@@ -1,4 +1,4 @@
-//! `omni behaviour add`, `read`, `list`, `edit`, `move`, `ask` and `questions`: the behaviour tree of a feature. A node is
+//! `omni behaviour add`, `read`, `list`, `edit`, `move`, `ask`, `answer` and `questions`: the behaviour tree of a feature. A node is
 //! named by its uuid, by its path (the slugs from the story down, joined by
 //! `/`) or by `.` for the root. The project and the feature are found as for
 //! `omni story add`.
@@ -17,6 +17,7 @@ const EDIT_USAGE: &str = "omni behaviour edit <node> [--title <t>] [--slug <s>] 
      [--same-as <node>] [--handoff <node>]";
 
 const MOVE_USAGE: &str = "omni behaviour move <node> --to <parent>";
+const ANSWER_USAGE: &str = "omni behaviour answer <question id> <answer> [--by human]";
 const ASK_USAGE: &str = "omni behaviour ask <node> <question>";
 
 fn unreadable() -> CliError {
@@ -302,7 +303,14 @@ pub fn ask(args: &Args, node: Option<&str>, question: Option<&str>) -> Result<()
     let agent = agent(args)?;
     let base = behaviour_path(args, &agent)?;
     let (id, _) = node_ref(&agent, &base, given)?;
-    let body = format!("{{\"question\":{}}}", quote(question));
+    let mut body = format!("{{\"question\":{}", quote(question));
+    if let Some(answer) = &args.answer {
+        body.push_str(&format!(",\"answer\":{}", quote(answer)));
+    }
+    if let Some(by) = &args.by {
+        body.push_str(&format!(",\"by\":{}", quote(by)));
+    }
+    body.push('}');
     let response = agent.request(
         "POST",
         &format!("{base}/nodes/{id}/questions"),
@@ -326,7 +334,10 @@ pub fn questions(args: &Args, node: Option<&str>) -> Result<()> {
     let agent = agent(args)?;
     let base = behaviour_path(args, &agent)?;
     let mut query = Vec::new();
-    if args.open {
+    if args.default_answers {
+        query.push("state=answered".to_string());
+        query.push("by=agent".to_string());
+    } else if args.open {
         query.push("state=open".to_string());
     }
     if let Some(given) = node {
@@ -353,11 +364,59 @@ pub fn questions(args: &Args, node: Option<&str>) -> Result<()> {
             Some(path) => path,
             None => "?",
         };
-        say(&format!(
+        let mut line = format!(
             "{path}  {}  {}",
             question.str_at("id").unwrap_or("?"),
             question.str_at("question").unwrap_or_default()
-        ));
+        );
+        if args.default_answers
+            && let Some(answer) = question.get("answer").and_then(|a| a.str_at("answer"))
+        {
+            line.push_str(&format!(" → {answer}"));
+        }
+        say(&line);
     }
+    Ok(())
+}
+
+/// `omni behaviour answer <question id> <answer> [--by human]`
+pub fn answer(args: &Args, question: Option<&str>, answer: Option<&str>) -> Result<()> {
+    let (Some(given), Some(answer)) = (question, answer) else {
+        bail!("this command needs a question ID and an answer: {ANSWER_USAGE}");
+    };
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let response = agent.request("GET", &format!("{base}/questions"), None)?;
+    let listed = Value::parse(&response.text()).map_err(|_| unreadable())?;
+    let questions = listed
+        .get("questions")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?;
+    let Some(found) = questions
+        .iter()
+        .find(|question| question.str_at("id") == Some(given))
+    else {
+        bail!("not_found: no question {given} in this feature");
+    };
+    let version = version_of(found)?;
+    let mut body = format!(
+        "{{\"expected_version\":{version},\"answer\":{}",
+        quote(answer)
+    );
+    if let Some(by) = &args.by {
+        body.push_str(&format!(",\"by\":{}", quote(by)));
+    }
+    body.push('}');
+    let response = agent.request_conflicting(
+        "POST",
+        &format!("{base}/questions/{given}/answers"),
+        body.as_bytes(),
+    )?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    say(given);
     Ok(())
 }

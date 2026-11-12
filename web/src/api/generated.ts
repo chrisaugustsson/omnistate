@@ -75,6 +75,21 @@ export const ActorBodySchema = z.object({
 });
 export type ActorBody = z.infer<typeof ActorBodySchema>;
 
+export const AnswerBodySchema = z.object({
+  answer: z.string(),
+  at: z.string(),
+  author: z.record(z.string(), z.unknown()),
+  given_by: z.string(),
+});
+export type AnswerBody = z.infer<typeof AnswerBodySchema>;
+
+export const AnswerRequestSchema = z.object({
+  answer: z.string(),
+  by: z.string().nullable().optional(),
+  expected_version: z.number().int(),
+});
+export type AnswerRequest = z.infer<typeof AnswerRequestSchema>;
+
 export const ApiKeyBodySchema = z.object({
   created_at: z.string(),
   id: z.string(),
@@ -91,6 +106,8 @@ export const AppSummarySchema = z.object({
 export type AppSummary = z.infer<typeof AppSummarySchema>;
 
 export const AskRequestSchema = z.object({
+  answer: z.string().nullable().optional(),
+  by: z.string().nullable().optional(),
   question: z.string(),
 });
 export type AskRequest = z.infer<typeof AskRequestSchema>;
@@ -702,6 +719,7 @@ export const NodeChildBodySchema = z.object({
 export type NodeChildBody = z.infer<typeof NodeChildBodySchema>;
 
 export const NodeSummaryBodySchema = z.object({
+  default_answers: z.number().int(),
   handoff: z.union([
     z.null(),
     PointerBodySchema,
@@ -730,6 +748,10 @@ export const NodeListResponseSchema = z.object({
 export type NodeListResponse = z.infer<typeof NodeListResponseSchema>;
 
 export const QuestionBodySchema = z.object({
+  answer: z.union([
+    z.null(),
+    AnswerBodySchema,
+  ]).optional(),
   answered_by: z.string().nullable().optional(),
   asked_by: z.record(z.string(), z.unknown()),
   created_at: z.string(),
@@ -989,6 +1011,8 @@ export const schemas = {
   ActivityItem: ActivityItemSchema,
   ActivityListResponse: ActivityListResponseSchema,
   ActorBody: ActorBodySchema,
+  AnswerBody: AnswerBodySchema,
+  AnswerRequest: AnswerRequestSchema,
   ApiKeyBody: ApiKeyBodySchema,
   AppSummary: AppSummarySchema,
   AskRequest: AskRequestSchema,
@@ -1480,6 +1504,17 @@ export const operations = {
       "200": QuestionListResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers": {
+    request: AnswerRequestSchema,
+    responses: {
+      "201": QuestionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
       "422": ErrorBodySchema,
     },
   },
