@@ -330,6 +330,8 @@ describe("a box's status and marks", () => {
     expect(passMark(NO_PROGRAM)).toBeUndefined();
     expect(ring(NO_PROGRAM)).not.toBeNull();
     expect(ring(OPENS_LIST)).toBeNull();
+    expect(box(container, SEARCHES).querySelector('[data-mark="waiting"]')?.textContent).toBe("1");
+    expect(box(container, "player-adds-friend").querySelector('[data-mark="waiting"]')).toBeNull();
   });
 
   test("a pointer shows ↪ or ⇢ with the target's short title after Same as or Hands off to as its tooltip", () => {
