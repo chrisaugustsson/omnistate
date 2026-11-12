@@ -1758,3 +1758,381 @@ pub async fn list_questions(
     }
     Ok(Json(QuestionListResponse { questions }))
 }
+
+/// A rule a node imposes beyond itself.
+#[derive(Serialize, ToSchema)]
+pub struct RuleBody {
+    pub id: String,
+    /// The node that imposes the rule.
+    pub node_id: String,
+    /// The path of that node; `""` for the root.
+    pub node_path: String,
+    pub text: String,
+    /// `node` (the node and below), `story` (every node of its story) or `feature`.
+    pub scope: String,
+    /// `true` for a rule that is no longer in force; it stays readable.
+    pub withdrawn: bool,
+    /// `{kind: "agent", run, role, model, harness}` or `{kind: "human", user_id}`.
+    #[schema(value_type = Object)]
+    pub author: Value,
+    /// 1 on creation, plus 1 on every accepted write.
+    pub version: i32,
+    pub created_at: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RuleResponse {
+    pub rule: RuleBody,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RuleListResponse {
+    /// In tree order of their nodes, then oldest first; withdrawn rules included.
+    pub rules: Vec<RuleBody>,
+}
+
+#[derive(Deserialize)]
+pub struct RuleQuery {
+    scope: Option<String>,
+    under: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateRuleRequest {
+    /// Not blank.
+    pub text: String,
+    /// `node` (the default), `story` or `feature`. `story` on the root is 422 `no_story`.
+    pub scope: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct PatchRuleRequest {
+    /// The rule's `version` as the caller read it.
+    pub expected_version: i64,
+    /// Not blank.
+    pub text: Option<String>,
+    /// `node`, `story` or `feature`. `story` on a rule of the root is 422 `no_story`.
+    pub scope: Option<String>,
+    /// `true` withdraws the rule, `false` puts it back in force.
+    pub withdrawn: Option<bool>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RuleRow {
+    id: String,
+    node_id: String,
+    text: String,
+    scope: String,
+    withdrawn: bool,
+    author: String,
+    version: i32,
+    created_at: String,
+}
+
+const RULE_COLUMNS: &str = concat!(
+    "id::text, node_id::text, text, scope, withdrawn_at IS NOT NULL AS withdrawn, author::text, version, ",
+    "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
+);
+
+impl RuleRow {
+    fn body(self, tree: &Tree) -> RuleBody {
+        let node_path = tree
+            .find(&self.node_id)
+            .map(|at| tree.place(at).0)
+            .unwrap_or_default();
+        RuleBody {
+            id: self.id,
+            node_id: self.node_id,
+            node_path,
+            text: self.text,
+            scope: self.scope,
+            withdrawn: self.withdrawn,
+            author: serde_json::from_str(&self.author).unwrap_or(Value::Null),
+            version: self.version,
+            created_at: self.created_at,
+        }
+    }
+}
+
+fn scope_known(scope: &str) -> bool {
+    ["node", "story", "feature"].contains(&scope)
+}
+
+/// Adds a rule on a node.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("node_id" = String, Path, description = "The node's UUID"),
+    ),
+    request_body = CreateRuleRequest,
+    responses(
+        (status = 201, description = "The rule, at version 1", body = RuleResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
+        (status = 422, description = "A blank text (`invalid_text`), a scope other than `node`, `story` and `feature` (`invalid_scope`), or `story` on the root (`no_story`)", body = ErrorBody),
+    )
+)]
+pub async fn create_rule(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<RuleResponse>), ApiError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
+    let write = parse_body::<CreateRuleRequest>(&body);
+    let author = author_of(&request.actor, &identity);
+    let workspace_id = &request.workspace_id;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let node: Option<(bool,)> = sqlx::query_as(
+        "SELECT parent_id IS NULL FROM behaviour_nodes \
+         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+    )
+    .bind(&node_id)
+    .bind(&feature_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let (is_root,) = node.ok_or(ApiError::NotFound)?;
+    let write = write?;
+    let text = write.text.trim();
+    if text.is_empty() {
+        return Err(invalid_field("invalid_text"));
+    }
+    let scope = write.scope.as_deref().unwrap_or("node");
+    if !scope_known(scope) {
+        return Err(invalid_field("invalid_scope"));
+    }
+    if is_root && scope == "story" {
+        return Err(invalid_field("no_story"));
+    }
+    let rule_id: String = sqlx::query_scalar(
+        "INSERT INTO behaviour_rules (workspace_id, project_id, feature_id, node_id, text, \
+         scope, author) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb) \
+         RETURNING id::text",
+    )
+    .bind(workspace_id)
+    .bind(&project_id)
+    .bind(&feature_id)
+    .bind(&node_id)
+    .bind(text)
+    .bind(scope)
+    .bind(author.to_string())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let row = sqlx::query_as::<_, RuleRow>(&format!(
+        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE id = $1::uuid"
+    ))
+    .bind(&rule_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        workspace_id,
+        &project_id,
+        "behaviour.rule_changed",
+        &json!({ "feature_id": feature_id, "node_id": node_id, "rule_id": rule_id }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
+    Ok((
+        StatusCode::CREATED,
+        Json(RuleResponse {
+            rule: row.body(&tree),
+        }),
+    ))
+}
+
+/// Rewrites a rule, changes its scope, or withdraws it. A rule is never deleted.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("rule_id" = String, Path, description = "The rule's UUID"),
+    ),
+    request_body = PatchRuleRequest,
+    responses(
+        (status = 200, description = "The rule with its new `version`", body = RuleResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such rule in this feature, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
+        (status = 422, description = "Nothing to change (`no_changes`), a blank text (`invalid_text`), an unknown scope (`invalid_scope`), or `story` on a rule of the root (`no_story`)", body = ErrorBody),
+    )
+)]
+pub async fn patch_rule(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id, rule_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<RuleResponse>, StoryError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let rule_id = parse_uuid(&rule_id).ok_or(ApiError::NotFound)?;
+    let patch = parse_body::<PatchRuleRequest>(&body)?;
+    if patch.text.is_none() && patch.scope.is_none() && patch.withdrawn.is_none() {
+        return Err(invalid_field("no_changes").into());
+    }
+    let text = patch.text.as_ref().map(|text| text.trim().to_string());
+    if text.as_ref().is_some_and(|text| text.is_empty()) {
+        return Err(invalid_field("invalid_text").into());
+    }
+    if patch
+        .scope
+        .as_deref()
+        .is_some_and(|scope| !scope_known(scope))
+    {
+        return Err(invalid_field("invalid_scope").into());
+    }
+    let workspace_id = &request.workspace_id;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let current: Option<(String, i32, bool, String)> = sqlx::query_as(
+        "SELECT r.node_id::text, r.version, n.parent_id IS NULL, r.scope \
+         FROM behaviour_rules r JOIN behaviour_nodes n ON n.id = r.node_id \
+         WHERE r.id = $1::uuid AND r.feature_id = $2::uuid AND r.project_id = $3::uuid \
+         FOR UPDATE OF r",
+    )
+    .bind(&rule_id)
+    .bind(&feature_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let (node_id, version, is_root, scope_now) = current.ok_or(ApiError::NotFound)?;
+    if i64::from(version) != patch.expected_version {
+        return Err(StoryError::Stale(version));
+    }
+    let scope = patch.scope.as_deref().unwrap_or(&scope_now);
+    if is_root && scope == "story" {
+        return Err(invalid_field("no_story").into());
+    }
+    sqlx::query(
+        "UPDATE behaviour_rules SET text = COALESCE($2, text), scope = $3, \
+         withdrawn_at = CASE WHEN $4::boolean IS NULL THEN withdrawn_at \
+         WHEN $4 THEN COALESCE(withdrawn_at, clock_timestamp()) ELSE NULL END, \
+         version = version + 1, updated_at = clock_timestamp() WHERE id = $1::uuid",
+    )
+    .bind(&rule_id)
+    .bind(text)
+    .bind(scope)
+    .bind(patch.withdrawn)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let row = sqlx::query_as::<_, RuleRow>(&format!(
+        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE id = $1::uuid"
+    ))
+    .bind(&rule_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        workspace_id,
+        &project_id,
+        "behaviour.rule_changed",
+        &json!({ "feature_id": feature_id, "node_id": node_id, "rule_id": rule_id }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
+    Ok(Json(RuleResponse {
+        rule: row.body(&tree),
+    }))
+}
+
+/// The rules of a feature's behaviour tree.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("scope" = Option<String>, Query, description = "`node`, `story` or `feature`; every scope when left out"),
+        ("under" = Option<String>, Query, description = "Only the rules imposed on this node and the nodes below it"),
+    ),
+    responses(
+        (status = 200, description = "The rules in tree order of their nodes, then oldest first, withdrawn ones included and flagged", body = RuleListResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such feature in this project and workspace, or `under` is not a node of it", body = ErrorBody),
+        (status = 422, description = "A `scope` other than `node`, `story` and `feature` (`invalid_scope`)", body = ErrorBody),
+    )
+)]
+pub async fn list_rules(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Query(query): Query<RuleQuery>,
+) -> Result<Json<RuleListResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    if query
+        .scope
+        .as_deref()
+        .is_some_and(|scope| !scope_known(scope))
+    {
+        return Err(invalid_field("invalid_scope"));
+    }
+    let under = match &query.under {
+        Some(id) => Some(parse_uuid(id).ok_or(ApiError::NotFound)?),
+        None => None,
+    };
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    require_project(&mut tx, &project_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let rows = sqlx::query_as::<_, RuleRow>(&format!(
+        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE feature_id = $1::uuid \
+         AND ($2::text IS NULL OR scope = $2) ORDER BY created_at, id"
+    ))
+    .bind(&feature_id)
+    .bind(&query.scope)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let mut order = tree.in_order();
+    if let Some(under) = under {
+        let top = tree.find(&under).ok_or(ApiError::NotFound)?;
+        let start = order.iter().position(|at| *at == top).unwrap_or(0);
+        let level = tree.place(top).1;
+        let below = order[start + 1..]
+            .iter()
+            .take_while(|at| tree.place(**at).1 > level)
+            .count();
+        order = order[start..=start + below].to_vec();
+    }
+    let mut by_node: HashMap<String, Vec<RuleRow>> = HashMap::new();
+    for row in rows {
+        by_node.entry(row.node_id.clone()).or_default().push(row);
+    }
+    let mut rules = Vec::new();
+    for at in order {
+        for row in by_node.remove(&tree.rows[at].id).unwrap_or_default() {
+            rules.push(row.body(&tree));
+        }
+    }
+    Ok(Json(RuleListResponse { rules }))
+}

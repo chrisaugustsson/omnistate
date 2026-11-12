@@ -269,6 +269,19 @@ Usage:
                                       it, in tree order; --open only the open ones; --default
                                       only those an agent answered on its own, each line ending
                                       in ` → <answer>`. With --json the API's list
+  omni behaviour rule add <node> <text> [--scope node|story|feature]
+                                      record a rule the node imposes, reaching the node and
+                                      below (node, the default), its whole story or the whole
+                                      feature; prints the rule's ID. `--scope story` is
+                                      refused on `.`
+  omni behaviour rule edit <rule ID> [--text <t>] [--scope <s>] [--withdraw]
+                                      change a rule; --withdraw takes it out of force (it
+                                      is never deleted)
+  omni behaviour rules [<node>] [--scope <s>]
+                                      print `<scope>  <node path>  <rule ID>  <text>` for every
+                                      rule in force in the feature, or on <node> and below,
+                                      in tree order. With --json the API's list, withdrawn
+                                      rules included and flagged
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -329,6 +342,8 @@ Options (before or after the command):
   --open                `omni thread list`: only the threads without a conclusion; `omni behaviour questions`: only the open ones
   --default             `omni behaviour questions`: only the answers an agent gave on its own
   --needs-pass          `omni behaviour list`: only the nodes marked for another grill pass
+  --scope <s>           `omni behaviour rule add|edit|rules`: node, story or feature
+  --withdraw            `omni behaviour rule edit`: take the rule out of force
   --grilled             `omni behaviour edit`: clear the node's mark for another pass
   --change              `omni behaviour answer`: change the answer of an answered question
   --answer <text>       `omni behaviour ask`: create the question answered

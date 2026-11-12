@@ -906,6 +906,25 @@
         },
         "type": "object"
       },
+      "CreateRuleRequest": {
+        "properties": {
+          "scope": {
+            "description": "`node` (the default), `story` or `feature`. `story` on the root is 422 `no_story`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Not blank.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
       "CreateStoryRequest": {
         "properties": {
           "blocked_by": {
@@ -1847,6 +1866,7 @@
           "behaviour.node_created",
           "behaviour.node_changed",
           "behaviour.question_changed",
+          "behaviour.rule_changed",
           "behaviour.marked",
           "comment.created",
           "comment.replied",
@@ -2600,6 +2620,40 @@
         ],
         "type": "object"
       },
+      "PatchRuleRequest": {
+        "properties": {
+          "expected_version": {
+            "description": "The rule's `version` as the caller read it.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "scope": {
+            "description": "`node`, `story` or `feature`. `story` on a rule of the root is 422 `no_story`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "withdrawn": {
+            "description": "`true` withdraws the rule, `false` puts it back in force.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "type": "object"
+      },
       "PatchStoryRequest": {
         "properties": {
           "blocked_by": {
@@ -3052,6 +3106,83 @@
         "required": [
           "expected_version",
           "run"
+        ],
+        "type": "object"
+      },
+      "RuleBody": {
+        "description": "A rule a node imposes beyond itself.",
+        "properties": {
+          "author": {
+            "description": "`{kind: \"agent\", run, role, model, harness}` or `{kind: \"human\", user_id}`.",
+            "type": "object"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "node_id": {
+            "description": "The node that imposes the rule.",
+            "type": "string"
+          },
+          "node_path": {
+            "description": "The path of that node; `\"\"` for the root.",
+            "type": "string"
+          },
+          "scope": {
+            "description": "`node` (the node and below), `story` (every node of its story) or `feature`.",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "version": {
+            "description": "1 on creation, plus 1 on every accepted write.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "withdrawn": {
+            "description": "`true` for a rule that is no longer in force; it stays readable.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "node_path",
+          "text",
+          "scope",
+          "withdrawn",
+          "author",
+          "version",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "RuleListResponse": {
+        "properties": {
+          "rules": {
+            "description": "In tree order of their nodes, then oldest first; withdrawn rules included.",
+            "items": {
+              "$ref": "#/components/schemas/RuleBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rules"
+        ],
+        "type": "object"
+      },
+      "RuleResponse": {
+        "properties": {
+          "rule": {
+            "$ref": "#/components/schemas/RuleBody"
+          }
+        },
+        "required": [
+          "rule"
         ],
         "type": "object"
       },
@@ -7674,6 +7805,116 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules": {
+      "post": {
+        "operationId": "create_rule",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The node's UUID",
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleResponse"
+                }
+              }
+            },
+            "description": "The rule, at version 1"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such node in this feature, project and workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A blank text (`invalid_text`), a scope other than `node`, `story` and `feature` (`invalid_scope`), or `story` on the root (`no_story`)"
+          }
+        },
+        "summary": "Adds a rule on a node.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions": {
       "get": {
         "operationId": "list_questions",
@@ -7976,6 +8217,225 @@
           }
         },
         "summary": "Answers an open question, or with `change` an answered one.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules": {
+      "get": {
+        "operationId": "list_rules",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`node`, `story` or `feature`; every scope when left out",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the rules imposed on this node and the nodes below it",
+            "in": "query",
+            "name": "under",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleListResponse"
+                }
+              }
+            },
+            "description": "The rules in tree order of their nodes, then oldest first, withdrawn ones included and flagged"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace, or `under` is not a node of it"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A `scope` other than `node`, `story` and `feature` (`invalid_scope`)"
+          }
+        },
+        "summary": "The rules of a feature's behaviour tree.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}": {
+      "patch": {
+        "operationId": "patch_rule",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The rule's UUID",
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleResponse"
+                }
+              }
+            },
+            "description": "The rule with its new `version`"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such rule in this feature, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing to change (`no_changes`), a blank text (`invalid_text`), an unknown scope (`invalid_scope`), or `story` on a rule of the root (`no_story`)"
+          }
+        },
+        "summary": "Rewrites a rule, changes its scope, or withdraws it. A rule is never deleted.",
         "tags": [
           "crate::behaviour"
         ],

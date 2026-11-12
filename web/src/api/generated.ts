@@ -276,6 +276,12 @@ export const CreateProjectRequestSchema = z.object({
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
 
+export const CreateRuleRequestSchema = z.object({
+  scope: z.string().nullable().optional(),
+  text: z.string(),
+});
+export type CreateRuleRequest = z.infer<typeof CreateRuleRequestSchema>;
+
 export const NewCriterionSchema = z.object({
   human_check: z.boolean().nullable().optional(),
   text: z.string(),
@@ -597,7 +603,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.marked", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -797,6 +803,14 @@ export const PatchNodeRequestSchema = z.object({
 });
 export type PatchNodeRequest = z.infer<typeof PatchNodeRequestSchema>;
 
+export const PatchRuleRequestSchema = z.object({
+  expected_version: z.number().int(),
+  scope: z.string().nullable().optional(),
+  text: z.string().nullable().optional(),
+  withdrawn: z.boolean().nullable().optional(),
+});
+export type PatchRuleRequest = z.infer<typeof PatchRuleRequestSchema>;
+
 export const PatchStoryRequestSchema = z.object({
   blocked_by: z.array(z.string()).nullable().optional(),
   criteria: z.array(NewCriterionSchema).nullable().optional(),
@@ -873,6 +887,29 @@ export const ResolveFindingRequestSchema = z.object({
   run: z.string(),
 });
 export type ResolveFindingRequest = z.infer<typeof ResolveFindingRequestSchema>;
+
+export const RuleBodySchema = z.object({
+  author: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  id: z.string(),
+  node_id: z.string(),
+  node_path: z.string(),
+  scope: z.string(),
+  text: z.string(),
+  version: z.number().int(),
+  withdrawn: z.boolean(),
+});
+export type RuleBody = z.infer<typeof RuleBodySchema>;
+
+export const RuleListResponseSchema = z.object({
+  rules: z.array(RuleBodySchema),
+});
+export type RuleListResponse = z.infer<typeof RuleListResponseSchema>;
+
+export const RuleResponseSchema = z.object({
+  rule: RuleBodySchema,
+});
+export type RuleResponse = z.infer<typeof RuleResponseSchema>;
 
 export const SingleCommentResponseSchema = z.object({
   comment: CommentBodySchema,
@@ -1044,6 +1081,7 @@ export const schemas = {
   CreateNodeRequest: CreateNodeRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
+  CreateRuleRequest: CreateRuleRequestSchema,
   CreateStoryRequest: CreateStoryRequestSchema,
   CreatedKeyResponse: CreatedKeyResponseSchema,
   CriterionBody: CriterionBodySchema,
@@ -1097,6 +1135,7 @@ export const schemas = {
   NodeSummaryBody: NodeSummaryBodySchema,
   OpResultBody: OpResultBodySchema,
   PatchNodeRequest: PatchNodeRequestSchema,
+  PatchRuleRequest: PatchRuleRequestSchema,
   PatchStoryRequest: PatchStoryRequestSchema,
   PointerBody: PointerBodySchema,
   PointerDetailBody: PointerDetailBodySchema,
@@ -1115,6 +1154,9 @@ export const schemas = {
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
   ResolveFindingRequest: ResolveFindingRequestSchema,
+  RuleBody: RuleBodySchema,
+  RuleListResponse: RuleListResponseSchema,
+  RuleResponse: RuleResponseSchema,
   SingleCommentResponse: SingleCommentResponseSchema,
   SinglePostResponse: SinglePostResponseSchema,
   StartThreadRequest: StartThreadRequestSchema,
@@ -1507,6 +1549,16 @@ export const operations = {
       "422": ErrorBodySchema,
     },
   },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules": {
+    request: CreateRuleRequestSchema,
+    responses: {
+      "201": RuleResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions": {
     responses: {
       "200": QuestionListResponseSchema,
@@ -1526,6 +1578,25 @@ export const operations = {
     request: AnswerRequestSchema,
     responses: {
       "201": QuestionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules": {
+    responses: {
+      "200": RuleListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}": {
+    request: PatchRuleRequestSchema,
+    responses: {
+      "200": RuleResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,

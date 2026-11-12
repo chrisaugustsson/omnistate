@@ -539,3 +539,130 @@ pub fn question(args: &Args, question: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
+
+const RULE_ADD_USAGE: &str = "omni behaviour rule add <node> <text> [--scope node|story|feature]";
+const RULE_EDIT_USAGE: &str =
+    "omni behaviour rule edit <rule id> [--text <t>] [--scope <s>] [--withdraw]";
+
+/// `omni behaviour rule add <node> <text> [--scope node|story|feature]`
+pub fn rule_add(args: &Args, node: Option<&str>, text: Option<&str>) -> Result<()> {
+    let (Some(given), Some(text)) = (node, text) else {
+        bail!("this command needs a node and a text: {RULE_ADD_USAGE}");
+    };
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let (id, _) = node_ref(&agent, &base, given)?;
+    let mut body = format!("{{\"text\":{}", quote(text));
+    if let Some(scope) = &args.scope {
+        body.push_str(&format!(",\"scope\":{}", quote(scope)));
+    }
+    body.push('}');
+    let response = agent.request(
+        "POST",
+        &format!("{base}/nodes/{id}/rules"),
+        Some(body.as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let answer = Value::parse(&text).map_err(|_| unreadable())?;
+    match answer.get("rule").unwrap_or(&answer).str_at("id") {
+        Some(id) => say(id),
+        None => bail!("the server's answer has no rule id; try again"),
+    }
+    Ok(())
+}
+
+/// The rules of the feature as the API lists them, withdrawn ones included.
+fn listed_rules(agent: &Agent, url: &str) -> Result<Vec<Value>> {
+    let response = agent.request("GET", url, None)?;
+    let body = Value::parse(&response.text()).map_err(|_| unreadable())?;
+    Ok(body
+        .get("rules")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?
+        .to_vec())
+}
+
+/// `omni behaviour rule edit <rule id> [--text <t>] [--scope <s>] [--withdraw]`
+pub fn rule_edit(args: &Args, rule: Option<&str>) -> Result<()> {
+    let Some(given) = rule else {
+        bail!("this command needs a rule ID: {RULE_EDIT_USAGE}");
+    };
+    if args.text.is_none() && args.scope.is_none() && !args.withdraw {
+        bail!("nothing to change: {RULE_EDIT_USAGE}");
+    }
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let rules = listed_rules(&agent, &format!("{base}/rules"))?;
+    let Some(found) = rules.iter().find(|rule| rule.str_at("id") == Some(given)) else {
+        bail!("not_found: no rule {given} in this feature");
+    };
+    let mut body = format!("{{\"expected_version\":{}", version_of(found)?);
+    if let Some(text) = &args.text {
+        body.push_str(&format!(",\"text\":{}", quote(text)));
+    }
+    if let Some(scope) = &args.scope {
+        body.push_str(&format!(",\"scope\":{}", quote(scope)));
+    }
+    if args.withdraw {
+        body.push_str(",\"withdrawn\":true");
+    }
+    body.push('}');
+    let response =
+        agent.request_conflicting("PATCH", &format!("{base}/rules/{given}"), body.as_bytes())?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    say(given);
+    Ok(())
+}
+
+/// `omni behaviour rules [<node>] [--scope <s>]`
+pub fn rules(args: &Args, node: Option<&str>) -> Result<()> {
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let mut query = Vec::new();
+    if let Some(scope) = &args.scope {
+        query.push(format!("scope={scope}"));
+    }
+    if let Some(given) = node {
+        query.push(format!("under={}", node_ref(&agent, &base, given)?.0));
+    }
+    let mut url = format!("{base}/rules");
+    if !query.is_empty() {
+        url = format!("{url}?{}", query.join("&"));
+    }
+    let response = agent.request("GET", &url, None)?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let rules = body
+        .get("rules")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?;
+    for rule in rules {
+        if matches!(rule.get("withdrawn"), Some(Value::Bool(true))) {
+            continue;
+        }
+        let path = match rule.str_at("node_path") {
+            Some("") => ".",
+            Some(path) => path,
+            None => "?",
+        };
+        say(&format!(
+            "{}  {path}  {}  {}",
+            rule.str_at("scope").unwrap_or("?"),
+            rule.str_at("id").unwrap_or("?"),
+            rule.str_at("text").unwrap_or_default()
+        ));
+    }
+    Ok(())
+}

@@ -143,11 +143,22 @@ pub fn run(args: &Args) -> Result<()> {
         ["behaviour" | "behavior", "answer"] => behaviour::answer(args, None, None),
         ["behaviour" | "behavior", "question", id] => behaviour::question(args, Some(id)),
         ["behaviour" | "behavior", "question"] => behaviour::question(args, None),
+        ["behaviour" | "behavior", "rule", "add", node, text] => {
+            behaviour::rule_add(args, Some(node), Some(text))
+        }
+        ["behaviour" | "behavior", "rule", "add", node] => {
+            behaviour::rule_add(args, Some(node), None)
+        }
+        ["behaviour" | "behavior", "rule", "add"] => behaviour::rule_add(args, None, None),
+        ["behaviour" | "behavior", "rule", "edit", id] => behaviour::rule_edit(args, Some(id)),
+        ["behaviour" | "behavior", "rule", "edit"] => behaviour::rule_edit(args, None),
+        ["behaviour" | "behavior", "rules"] => behaviour::rules(args, None),
+        ["behaviour" | "behavior", "rules", node] => behaviour::rules(args, Some(node)),
         ["behaviour" | "behavior", "questions"] => behaviour::questions(args, None),
         ["behaviour" | "behavior", "questions", node] => behaviour::questions(args, Some(node)),
         ["behaviour" | "behavior", ..] => {
             bail!(
-                "usage: omni behaviour add|read|list|edit|move|ask|answer|question|questions; see `omni --help`"
+                "usage: omni behaviour add|read|list|edit|move|ask|answer|question|questions|rule|rules; see `omni --help`"
             )
         }
         ["story", "add"] => stories::add(args, None),

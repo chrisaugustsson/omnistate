@@ -210,6 +210,21 @@ pub fn registry() -> Vec<RouteEntry> {
             Access::Both,
         ),
         (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+            Access::Both,
+        ),
+        (
+            "PATCH",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+            Access::Both,
+        ),
+        (
             "GET",
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
             Access::Both,

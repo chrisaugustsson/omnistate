@@ -367,6 +367,18 @@ pub fn router(state: AppState) -> Router {
             post(behaviour::ask_question),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+            post(behaviour::create_rule),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+            get(behaviour::list_rules),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+            patch(behaviour::patch_rule),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
             get(behaviour::list_questions),
         )

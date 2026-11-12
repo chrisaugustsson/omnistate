@@ -109,6 +109,10 @@ pub struct Args {
     /// `omni behaviour list --needs-pass`, `omni behaviour edit --grilled`.
     pub needs_pass: bool,
     pub grilled: bool,
+    /// `omni behaviour rule add|edit --scope <s>`, `rule edit --withdraw`,
+    /// `omni behaviour rules --scope <s>`.
+    pub scope: Option<String>,
+    pub withdraw: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -167,6 +171,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--needs-pass" => {
                 parsed.needs_pass = true;
+                continue;
+            }
+            "--withdraw" => {
+                parsed.withdraw = true;
                 continue;
             }
             "--grilled" => {
@@ -242,6 +250,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--same-as" => &mut parsed.same_as,
             "--handoff" => &mut parsed.handoff,
             "--answer" => &mut parsed.answer,
+            "--scope" => &mut parsed.scope,
             "--priority" => &mut parsed.priority,
             "--number-from" => &mut parsed.number_from,
             "--status" => &mut parsed.status,
