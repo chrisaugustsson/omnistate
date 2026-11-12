@@ -377,6 +377,7 @@ fn every_problem_in_the_folder_is_one_line_naming_its_node_and_nothing_is_sent()
         "handoff:\n",
         "handoff: ../starts-from-dashboard\n",
     );
+    rewrite(&root.join("node.md"), "status: done", "status: blocked");
     let problem_nodes = [
         "player-edits-history/empty-folder",
         "player-picks-program/Bad_Folder",
@@ -395,6 +396,12 @@ fn every_problem_in_the_folder_is_one_line_naming_its_node_and_nothing_is_sent()
         let named = lines_naming(&out.stderr, path);
         assert_eq!(named.len(), 1, "{path} in stderr: {}", out.stderr);
     }
+    let root_lines = out
+        .stderr
+        .lines()
+        .filter(|line| line.starts_with(".:") || line.starts_with(". "))
+        .count();
+    assert_eq!(root_lines, 1, "the root as . in stderr: {}", out.stderr);
     let check = run(&home, &["behaviour", "import", folder, "--check"]);
     assert_eq!(check.code, 1, "stdout: {}", check.stdout);
     assert_eq!(check.stdout, "");
