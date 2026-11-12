@@ -31,6 +31,7 @@ export function Graph({
   reveal = null,
   shown = null,
   matching = null,
+  found = null,
   fitN = 0,
   fitMs = 0,
   folded = NO_FOLDS,
@@ -48,6 +49,8 @@ export function Graph({
   shown?: ReadonlySet<string> | null;
   /** Under a filter: the nodes it picks out; the others are muted. */
   matching?: ReadonlySet<string> | null;
+  /** While a search is typed: the nodes found; the others are dimmed. */
+  found?: ReadonlySet<string> | null;
   /** Changes each time the whole drawing is to be fitted again. */
   fitN?: number;
   /** How long that fit takes, in ms. */
@@ -136,20 +139,22 @@ export function Graph({
   // Under a filter only the shown nodes count as children.
   const below = useMemo(() => {
     const kids = childrenOf(nodes);
-    const count = (id: string): { n: number; waits: boolean } => {
+    const count = (id: string): { n: number; waits: boolean; hits: number } => {
       let n = 0;
       let waits = false;
+      let hits = 0;
       for (const child of kids.get(id) ?? []) {
         if (shown && !shown.has(child.id)) continue;
         const inner = count(child.id);
         n += 1 + inner.n;
         waits ||= inner.waits || waiting.has(child.id);
+        hits += (found?.has(child.id) ? 1 : 0) + inner.hits;
       }
-      return { n, waits };
+      return { n, waits, hits };
     };
     const kidsShown = (id: string) => (kids.get(id) ?? []).some((child) => !shown || shown.has(child.id));
     return { count, kidsShown };
-  }, [nodes, shown, waiting]);
+  }, [nodes, shown, waiting, found]);
   // Folding keeps the pressed box where it is on screen: the view moves as far as the box does, in the same time.
   const pressFold = (id: string) => {
     const current = viewRef.current;
@@ -354,7 +359,7 @@ export function Graph({
                 data-status={node.status}
                 data-chosen={node.id === chosenId || undefined}
                 className={cn(
-                  matching && !matching.has(node.id) && "opacity-50",
+                  (found ? !found.has(node.id) : matching && !matching.has(node.id)) && "opacity-50",
                   node.id === chosenId && "ring-2 ring-foreground ring-offset-1 ring-offset-background",
                   "absolute left-0 top-0 flex items-center gap-1.5 rounded-lg border bg-background px-[9px] text-[12.5px] leading-[1.28] group-data-[far]:rounded-[3px] group-data-[far]:border-transparent group-data-[far]:bg-muted-foreground/35",
                   node.status === "out_of_scope" && "border-dashed bg-transparent text-muted-foreground group-data-[far]:border group-data-[far]:border-dashed group-data-[far]:border-muted-foreground group-data-[far]:bg-transparent",
@@ -374,7 +379,7 @@ export function Graph({
                   <Marks node={node} waiting={waiting} titleOf={titles} />
                 </span>
                 {below.kidsShown(node.id) && (
-                  <FoldPill folded={folded.has(node.id)} hidden={below.count(node.id)} onPress={() => pressFold(node.id)} />
+                  <FoldPill folded={folded.has(node.id)} hidden={below.count(node.id)} showHits={!!found} onPress={() => pressFold(node.id)} />
                 )}
               </div>
             );
@@ -435,7 +440,7 @@ export function Graph({
 }
 
 /** The pill at a box's right edge: "−" folds what lies under it, "+N" shows the N hidden nodes again. */
-function FoldPill({ folded, hidden, onPress }: { folded: boolean; hidden: { n: number; waits: boolean }; onPress: () => void }) {
+function FoldPill({ folded, hidden, showHits, onPress }: { folded: boolean; hidden: { n: number; waits: boolean; hits: number }; showHits: boolean; onPress: () => void }) {
   return (
     <button
       type="button"
@@ -446,7 +451,7 @@ function FoldPill({ folded, hidden, onPress }: { folded: boolean; hidden: { n: n
       onClick={onPress}
       className="absolute left-full top-1/2 ml-1.5 -mt-[9px] flex h-[18px] min-w-[18px] cursor-pointer items-center justify-center gap-[3px] whitespace-nowrap rounded-full border border-input bg-background px-[5px] text-[10.5px] font-medium leading-4 tabular-nums text-muted-foreground hover:border-muted-foreground hover:text-foreground active:scale-95"
     >
-      {folded ? `+${hidden.n}` : "−"}
+      {folded ? `+${hidden.n}${showHits && hidden.hits > 0 ? ` · ${hidden.hits} found` : ""}` : "−"}
       {folded && hidden.waits && <span aria-hidden data-fold-dot className="size-1.5 rounded-full bg-signal" />}
     </button>
   );

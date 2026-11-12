@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { ChevronRight } from "lucide-react";
 import type { TreeNode } from "@/api/behaviour";
 import { Marks } from "./marks";
-import { childrenOf, shortTitle } from "./tree";
+import { ancestorsOf, childrenOf, shortTitle, words } from "./tree";
 import { cn } from "@/lib/utils";
 
 /**
@@ -18,6 +18,7 @@ export function Folders({
   onChoose,
   shown = null,
   matching = null,
+  results = null,
 }: {
   nodes: TreeNode[];
   open: ReadonlySet<string>;
@@ -29,6 +30,8 @@ export function Folders({
   shown?: ReadonlySet<string> | null;
   /** Under a filter: the nodes it picks out; the others are muted. */
   matching?: ReadonlySet<string> | null;
+  /** While a search is typed: the ids found, in tree order, shown in place of the rows. */
+  results?: { ids: string[]; query: string } | null;
 }) {
   const list = useRef<HTMLDivElement>(null);
   // The chosen row scrolls into view, to the nearest edge and only when it is out of sight.
@@ -37,7 +40,7 @@ export function Folders({
     for (const row of list.current?.querySelectorAll<HTMLElement>("[data-row]") ?? []) {
       if (row.dataset.row === chosenId) row.scrollIntoView?.({ block: "nearest" });
     }
-  }, [chosenId, open]);
+  }, [chosenId, open, results === null]);
   const children = childrenOf(shown ? nodes.filter((node) => shown.has(node.id)) : nodes);
   const root = (children.get(null) ?? [])[0];
   if (!root) return null;
@@ -45,6 +48,52 @@ export function Folders({
   // What waits on a node and everything under it.
   const within = (node: TreeNode): number =>
     (waiting.get(node.id) ?? 0) + (children.get(node.id) ?? []).reduce((sum, kid) => sum + within(kid), 0);
+  if (results) {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const re = new RegExp(`(${words(results.query).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "ig");
+    return (
+      <div ref={list} className="min-h-0 flex-1 overflow-y-auto px-2 pb-20">
+        {results.ids.length === 0 && (
+          <p className="px-2 py-3 text-[12.5px] text-muted-foreground">Nothing in the tree matches "{results.query}".</p>
+        )}
+        {results.ids.map((id) => {
+          const node = byId.get(id);
+          if (!node) return null;
+          const path = ancestorsOf(nodes, id)
+            .reverse()
+            .slice(1)
+            .map((above) => titles.get(above))
+            .join(" › ");
+          return (
+            <div
+              key={id}
+              data-row={id}
+              data-result={id}
+              aria-current={id === chosenId || undefined}
+              onClick={() => onChoose?.(id)}
+              className={cn("block cursor-pointer rounded-md px-2 py-1.5 hover:bg-sidebar-accent", id === chosenId && "bg-sidebar-accent")}
+            >
+              <div className="line-clamp-2 text-[12.5px] text-foreground">
+                {titles
+                  .get(id)!
+                  .split(re)
+                  .map((part, at) =>
+                    at % 2 === 1 ? (
+                      <mark key={at} className="rounded-[2px] bg-foreground/10 text-inherit">
+                        {part}
+                      </mark>
+                    ) : (
+                      part
+                    ),
+                  )}
+              </div>
+              <div className="mt-px truncate text-[11.5px] text-muted-foreground">{path || "Feature"}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
   const rows: React.ReactNode[] = [];
   const walk = (node: TreeNode, depth: number) => {
     const kids = children.get(node.id) ?? [];

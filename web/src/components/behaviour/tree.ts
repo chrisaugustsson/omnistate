@@ -70,3 +70,21 @@ export function shownUnder(nodes: TreeNode[], filter: Filter, chosen: string | n
   if (root) shown.add(root.id);
   return { matching, shown };
 }
+
+/** The words of a search query: split on whitespace, none for a blank query. */
+export function words(query: string): string[] {
+  return query.trim().split(/\s+/).filter(Boolean);
+}
+
+/** The ids, in tree order, of the nodes whose title, summary and slug together hold every word of `query`, case ignored; only among `among` when given. The root is never found. */
+export function find(nodes: TreeNode[], query: string, among?: ReadonlySet<string> | null): string[] {
+  const wanted = words(query).map((word) => word.toLowerCase());
+  if (wanted.length === 0) return [];
+  return nodes
+    .filter((node) => {
+      if (!node.parent_id || (among && !among.has(node.id))) return false;
+      const text = `${node.title} ${node.summary} ${node.slug ?? ""}`.toLowerCase();
+      return wanted.every((word) => text.includes(word));
+    })
+    .map((node) => node.id);
+}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { loadOpenQuestions, loadTree } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { featureNames } from "@/components/project/items";
@@ -10,7 +11,7 @@ import { useReloading } from "@/lib/reloading";
 import { Details } from "./details";
 import { Folders } from "./folders";
 import { Graph } from "./graph";
-import { ancestorsOf, childrenOf, matches, shownUnder, type Filter } from "./tree";
+import { ancestorsOf, childrenOf, find, matches, shownUnder, type Filter } from "./tree";
 
 // A feature's Behaviour screen: folders on the left, the graph in the middle and
 // the details of the chosen node on the right. This owns the screen's state.
@@ -87,6 +88,25 @@ export function BehaviourScreen({
   };
   const chooseRef = useRef(choose);
   chooseRef.current = choose;
+  // The search replaces the folders while its query is not blank.
+  const [query, setQuery] = useState("");
+  const searchField = useRef<HTMLInputElement>(null);
+  const searching = query.trim() !== "";
+  // "/" puts the cursor in the search field, unless a field has focus or ⌘, Ctrl or Alt is held; Esc elsewhere clears it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return;
+      if (event.key === "/" && searchField.current) {
+        event.preventDefault();
+        searchField.current.focus();
+        searchField.current.select();
+      } else if (event.key === "Escape" && searching) setQuery("");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [searching]);
   // The arrow keys choose, unless a field has focus or ⌘, Ctrl or Alt is held.
   useEffect(() => {
     if (!nodes) return;
@@ -117,6 +137,24 @@ export function BehaviourScreen({
   }, [nodes, chosen]);
   const chosenNode = useMemo(() => nodes?.find((node) => node.id === chosen) ?? null, [nodes, chosen]);
   const under = useMemo(() => (nodes && filter !== "all" ? shownUnder(nodes, filter, chosen) : null), [nodes, filter, chosen]);
+  const found = useMemo(() => (nodes && searching ? find(nodes, query, under?.matching) : []), [nodes, searching, query, under]);
+  const foundSet = useMemo(() => (searching ? new Set(found) : null), [searching, found]);
+  const foundIn = { all: "", open: " in open nodes", default: " in nodes answered by default", needs_pass: " in nodes needing a grill pass" }[filter];
+  const clearSearch = (blur: boolean) => {
+    setQuery("");
+    if (blur) searchField.current?.blur();
+  };
+  const onSearchKey = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      clearSearch(true);
+    } else if ((event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter") && found.length > 0) {
+      event.preventDefault();
+      const at = chosen ? found.indexOf(chosen) : -1;
+      const next = event.key === "ArrowUp" ? (at <= 0 ? found.length - 1 : at - 1) : (at + 1) % found.length;
+      choose(found[next], "keys");
+    }
+  };
   const counts = useMemo(() => {
     const all = nodes ?? [];
     const count = (one: Filter) => all.filter((node) => matches(node, one)).length;
@@ -211,10 +249,41 @@ export function BehaviourScreen({
         {nodes && nodes.length > 0 && (
           <>
             <aside aria-label="Tree as folders" className="flex min-h-0 flex-col border-r">
-              <p className="px-4 pb-1.5 pt-3 text-[11.5px] text-muted-foreground">
-                {plural(stories, "story", "stories")} · {plural(nodes.length, "node", "nodes")}
+              <div className="relative mx-3 mt-3">
+                <input
+                  ref={searchField}
+                  type="text"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={onSearchKey}
+                  placeholder="Search the tree"
+                  aria-label="Search the tree"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="h-8 w-full rounded-lg border bg-background pl-2.5 pr-7 text-[12.5px] outline-none focus:border-ring"
+                />
+                {query !== "" ? (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => {
+                      clearSearch(false);
+                      searchField.current?.focus();
+                    }}
+                    className="absolute right-1.5 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded text-muted-foreground hover:text-foreground"
+                  >
+                    <X aria-hidden className="size-3" />
+                  </button>
+                ) : (
+                  <kbd aria-hidden className="absolute right-2 top-1/2 -translate-y-1/2 rounded border px-1 text-[10.5px] text-muted-foreground">/</kbd>
+                )}
+              </div>
+              <p data-list-head className="px-4 pb-1.5 pt-3 text-[11.5px] text-muted-foreground">
+                {searching
+                  ? `${found.length} found${foundIn}`
+                  : `${plural(stories, "story", "stories")} · ${plural(nodes.length, "node", "nodes")}`}
               </p>
-              <Folders nodes={nodes} shown={under?.shown ?? null} matching={under?.matching ?? null} open={open} waiting={waiting} onToggle={toggle} chosenId={chosen} onChoose={(id) => choose(id, "folders")} />
+              <Folders results={searching ? { ids: found, query: query.trim() } : null} nodes={nodes} shown={under?.shown ?? null} matching={under?.matching ?? null} open={open} waiting={waiting} onToggle={toggle} chosenId={chosen} onChoose={(id) => choose(id, "folders")} />
             </aside>
             <main aria-label="Tree as a graph" className="relative min-w-0">
               <Graph
@@ -225,6 +294,7 @@ export function BehaviourScreen({
                 reveal={reveal}
                 shown={under?.shown ?? null}
                 matching={under?.matching ?? null}
+                found={foundSet}
                 fitN={fitN}
                 fitMs={fitMs}
                 folded={folded}
