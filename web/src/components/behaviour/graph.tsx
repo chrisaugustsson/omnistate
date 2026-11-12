@@ -25,6 +25,9 @@ export function Graph({
   chosenId = null,
   onChoose,
   reveal = null,
+  shown = null,
+  matching = null,
+  fitN = 0,
 }: {
   nodes: TreeNode[];
   /** How many questions wait on each node. */
@@ -34,6 +37,12 @@ export function Graph({
   onChoose?: (id: string) => void;
   /** A request, new each time, to bring a chosen node into sight over `ms`. */
   reveal?: { id: string; ms: number; n: number } | null;
+  /** Under a filter: the nodes drawn. */
+  shown?: ReadonlySet<string> | null;
+  /** Under a filter: the nodes it picks out; the others are muted. */
+  matching?: ReadonlySet<string> | null;
+  /** Changes each time the whole drawing is to be fitted again. */
+  fitN?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [area, setArea] = useState<{ w: number; h: number } | null>(null);
@@ -62,8 +71,8 @@ export function Graph({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  const columns = useMemo(() => (area ? planColumns(nodes, null, area) : []), [nodes, area]);
-  const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown: null, folded: NO_FOLDS, columns }), [nodes, columns]);
+  const columns = useMemo(() => (area ? planColumns(nodes, shown, area) : []), [nodes, shown, area]);
+  const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown, folded: NO_FOLDS, columns }), [nodes, shown, columns]);
   useEffect(() => {
     if (area && area.w > 0 && area.h > 0 && boxes.size && !view) setView(fit(bounds, area));
   }, [area, boxes, bounds, view]);
@@ -71,6 +80,13 @@ export function Graph({
   areaRef.current = area;
   const boundsRef = useRef(bounds);
   boundsRef.current = bounds;
+  // A new filter fits the whole drawing again.
+  const fitted = useRef(fitN);
+  useEffect(() => {
+    if (fitted.current === fitN) return;
+    fitted.current = fitN;
+    if (areaRef.current && areaRef.current.w > 0 && boundsRef.current.w > 0) moveTo(fit(boundsRef.current, areaRef.current), 0);
+  }, [fitN, moveTo]);
   const middle = () => ({ x: (areaRef.current?.w ?? 0) / 2, y: (areaRef.current?.h ?? 0) / 2 });
   const zoomBy = (factor: number) => {
     const current = viewRef.current;
@@ -261,6 +277,7 @@ export function Graph({
                 data-status={node.status}
                 data-chosen={node.id === chosenId || undefined}
                 className={cn(
+                  matching && !matching.has(node.id) && "opacity-50",
                   node.id === chosenId && "ring-2 ring-foreground ring-offset-1 ring-offset-background",
                   "absolute left-0 top-0 flex items-center gap-1.5 rounded-lg border bg-background px-[9px] text-[12.5px] leading-[1.28] group-data-[far]:rounded-[3px] group-data-[far]:border-transparent group-data-[far]:bg-muted-foreground/35",
                   node.status === "out_of_scope" && "border-dashed bg-transparent text-muted-foreground group-data-[far]:border group-data-[far]:border-dashed group-data-[far]:border-muted-foreground group-data-[far]:bg-transparent",
@@ -307,7 +324,7 @@ export function Graph({
           })}
         </div>
       )}
-      <Legend />
+      {!shown && <Legend />}
       {view && area && (
         <>
           <div data-no-pan className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-lg border bg-background text-sm text-muted-foreground">

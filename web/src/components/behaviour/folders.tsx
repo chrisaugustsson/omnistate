@@ -16,6 +16,8 @@ export function Folders({
   onToggle,
   chosenId = null,
   onChoose,
+  shown = null,
+  matching = null,
 }: {
   nodes: TreeNode[];
   open: ReadonlySet<string>;
@@ -23,6 +25,10 @@ export function Folders({
   onToggle: (id: string) => void;
   chosenId?: string | null;
   onChoose?: (id: string) => void;
+  /** Under a filter: the nodes shown, all of them open. */
+  shown?: ReadonlySet<string> | null;
+  /** Under a filter: the nodes it picks out; the others are muted. */
+  matching?: ReadonlySet<string> | null;
 }) {
   const list = useRef<HTMLDivElement>(null);
   // The chosen row scrolls into view, to the nearest edge and only when it is out of sight.
@@ -32,7 +38,7 @@ export function Folders({
       if (row.dataset.row === chosenId) row.scrollIntoView?.({ block: "nearest" });
     }
   }, [chosenId, open]);
-  const children = childrenOf(nodes);
+  const children = childrenOf(shown ? nodes.filter((node) => shown.has(node.id)) : nodes);
   const root = (children.get(null) ?? [])[0];
   if (!root) return null;
   const titles = new Map(nodes.map((node) => [node.id, shortTitle(node)]));
@@ -43,7 +49,7 @@ export function Folders({
   const walk = (node: TreeNode, depth: number) => {
     const kids = children.get(node.id) ?? [];
     const isRoot = depth === 0;
-    const expanded = isRoot || open.has(node.id);
+    const expanded = isRoot || !!shown || open.has(node.id);
     const struck = node.status === "out_of_scope";
     rows.push(
       <div
@@ -56,6 +62,7 @@ export function Folders({
         className={cn(
           "flex h-7 items-center gap-1 rounded-md pr-1.5 text-[12.5px] text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground",
           "cursor-pointer",
+          matching && !matching.has(node.id) && "opacity-50",
           node.id === chosenId && "bg-sidebar-accent text-foreground",
           depth === 0 && "h-[30px] text-[13px] font-semibold text-foreground",
           depth === 1 && "font-medium text-foreground",

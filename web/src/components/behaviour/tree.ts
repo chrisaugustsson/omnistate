@@ -42,3 +42,31 @@ export function descendantsOf(nodes: TreeNode[], id: string): string[] {
   walk(id);
   return below;
 }
+
+export type Filter = "all" | "open" | "default" | "needs_pass";
+
+/** Whether `node` is one a filter picks out. */
+export function matches(node: TreeNode, filter: Filter): boolean {
+  if (filter === "open") return node.status === "open";
+  if (filter === "default") return node.default_answers > 0;
+  if (filter === "needs_pass") return node.needs_pass;
+  return true;
+}
+
+/** The nodes `filter` picks out and what they show with: those, every node above one of them, the chosen node and what lies above it. */
+export function shownUnder(nodes: TreeNode[], filter: Filter, chosen: string | null): { matching: Set<string>; shown: Set<string> } {
+  const matching = new Set(nodes.filter((node) => matches(node, filter)).map((node) => node.id));
+  const shown = new Set(matching);
+  const parents = new Map(nodes.map((node) => [node.id, node.parent_id ?? null]));
+  const addAbove = (id: string) => {
+    for (let at = parents.get(id) ?? null; at !== null && !shown.has(at); at = parents.get(at) ?? null) shown.add(at);
+  };
+  for (const id of matching) addAbove(id);
+  if (chosen && parents.has(chosen)) {
+    shown.add(chosen);
+    addAbove(chosen);
+  }
+  const root = nodes.find((node) => !node.parent_id);
+  if (root) shown.add(root.id);
+  return { matching, shown };
+}

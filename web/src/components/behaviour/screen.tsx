@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { loadOpenQuestions, loadTree } from "@/api/behaviour";
+import { cn } from "@/lib/utils";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { featureNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
@@ -8,7 +9,7 @@ import { useReloading } from "@/lib/reloading";
 import { Details } from "./details";
 import { Folders } from "./folders";
 import { Graph } from "./graph";
-import { ancestorsOf, childrenOf } from "./tree";
+import { ancestorsOf, childrenOf, matches, shownUnder, type Filter } from "./tree";
 
 // A feature's Behaviour screen: folders on the left, the graph in the middle and
 // the details of the chosen node on the right. This owns the screen's state.
@@ -56,12 +57,18 @@ export function BehaviourScreen({
   const [chosen, setChosen] = useState<string | null>(null);
   const [reveal, setReveal] = useState<{ id: string; ms: number; n: number } | null>(null);
   const revealCount = useRef(0);
+  const [filter, setFilterState] = useState<Filter>("all");
+  const [fitN, setFitN] = useState(0);
+  const setFilter = (next: Filter) => {
+    setFilterState(next);
+    setFitN((n) => n + 1);
+  };
   const choose = (id: string, from: "folders" | "graph" | "search" | "details" | "keys") => {
     if (!nodes) return;
     setChosen(id);
     const above = ancestorsOf(nodes, id);
     // Pressing a closed row with children also opens it.
-    if (from === "folders" && nodes.some((node) => node.parent_id === id)) above.push(id);
+    if (from === "folders" && filter === "all" && nodes.some((node) => node.parent_id === id)) above.push(id);
     setOpen((before) => (above.every((one) => before.has(one)) ? before : new Set([...before, ...above])));
     if (from !== "graph") setReveal({ id, ms: from === "keys" ? 0 : 240, n: ++revealCount.current });
   };
@@ -96,6 +103,16 @@ export function BehaviourScreen({
     return () => window.removeEventListener("keydown", onKey);
   }, [nodes, chosen]);
   const chosenNode = useMemo(() => nodes?.find((node) => node.id === chosen) ?? null, [nodes, chosen]);
+  const under = useMemo(() => (nodes && filter !== "all" ? shownUnder(nodes, filter, chosen) : null), [nodes, filter, chosen]);
+  const counts = useMemo(() => {
+    const all = nodes ?? [];
+    const count = (one: Filter) => all.filter((node) => matches(node, one)).length;
+    return { all: count("all"), open: count("open"), default: count("default"), needs_pass: count("needs_pass"), answers: all.reduce((sum, node) => sum + node.default_answers, 0) };
+  }, [nodes]);
+  const waitingTotal = [...waiting.values()].reduce((sum, count) => sum + count, 0);
+  const choices = ([["all", "All"], ["open", "Only open"], ["default", "Only by default"], ["needs_pass", "Only needing a grill pass"]] as const).filter(
+    ([name]) => name !== "needs_pass" || counts.needs_pass > 0 || filter === "needs_pass",
+  );
   const stories = useMemo(() => {
     if (!nodes) return 0;
     const root = (childrenOf(nodes).get(null) ?? [])[0];
@@ -120,6 +137,38 @@ export function BehaviourScreen({
             ‹ {featureName}
           </Link>
           <h1 className="font-display text-2xl leading-none tracking-[-0.01em]">Behaviour</h1>
+          {nodes && nodes.length > 0 && (
+            <>
+              <div role="group" aria-label="Show" className="ml-2 flex shrink-0 rounded-lg bg-sidebar-accent p-0.5">
+                {choices.map(([name, label]) => (
+                  <button
+                    key={name}
+                    type="button"
+                    aria-pressed={filter === name}
+                    onClick={() => setFilter(filter === name && name !== "all" ? "all" : name)}
+                    className={cn(
+                      "flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12.5px] text-sidebar-foreground",
+                      filter === name && "bg-background font-medium text-foreground shadow-[0_0_0_1px_var(--border)]",
+                    )}
+                  >
+                    {label}
+                    <span className="text-[11.5px] font-normal tabular-nums text-muted-foreground">{counts[name]}</span>
+                  </button>
+                ))}
+              </div>
+              <p data-facts className="min-w-0 truncate text-[12.5px] text-muted-foreground">
+                {waitingTotal > 0 ? (
+                  <button type="button" onClick={() => setFilter("open")} className="text-foreground underline-offset-2 hover:underline">
+                    {plural(waitingTotal, "question waits", "questions wait")} for an answer
+                  </button>
+                ) : (
+                  "No question is open"
+                )}
+                {counts.answers > 0 && ` · ${counts.answers} answers were given by default`}
+                {counts.needs_pass > 0 && ` · ${plural(counts.needs_pass, "node waits", "nodes wait")} for the next grill pass`}
+              </p>
+            </>
+          )}
         </header>
         {failed && (
           <Alert variant="destructive" className="col-span-3 m-4 w-auto">
@@ -135,10 +184,29 @@ export function BehaviourScreen({
               <p className="px-4 pb-1.5 pt-3 text-[11.5px] text-muted-foreground">
                 {plural(stories, "story", "stories")} · {plural(nodes.length, "node", "nodes")}
               </p>
-              <Folders nodes={nodes} open={open} waiting={waiting} onToggle={toggle} chosenId={chosen} onChoose={(id) => choose(id, "folders")} />
+              <Folders nodes={nodes} shown={under?.shown ?? null} matching={under?.matching ?? null} open={open} waiting={waiting} onToggle={toggle} chosenId={chosen} onChoose={(id) => choose(id, "folders")} />
             </aside>
-            <main aria-label="Tree as a graph" className="min-w-0">
-              <Graph nodes={nodes} waiting={waiting} chosenId={chosen} onChoose={(id) => choose(id, "graph")} reveal={reveal} />
+            <main aria-label="Tree as a graph" className="relative min-w-0">
+              <Graph
+                nodes={nodes}
+                waiting={waiting}
+                chosenId={chosen}
+                onChoose={(id) => choose(id, "graph")}
+                reveal={reveal}
+                shown={under?.shown ?? null}
+                matching={under?.matching ?? null}
+                fitN={fitN}
+              />
+              {under && (
+                <p data-no-pan className="absolute right-3 top-3 flex items-center gap-2 rounded-lg border bg-background px-2.5 py-1.5 text-[11.5px] text-muted-foreground">
+                  <span>
+                    {under.matching.size} of {nodes.length} nodes{under.matching.size > 0 && ", with what lies above them"}
+                  </span>
+                  <button type="button" onClick={() => setFilter("all")} className="font-medium text-foreground hover:underline">
+                    Show all
+                  </button>
+                </p>
+              )}
             </main>
             <Details
               node={chosenNode}
@@ -152,7 +220,7 @@ export function BehaviourScreen({
                 reloadTree();
                 reloadQuestions();
               }}
-              waitingCount={[...waiting.values()].reduce((sum, count) => sum + count, 0)}
+              waitingCount={waitingTotal}
             />
           </>
         )}
