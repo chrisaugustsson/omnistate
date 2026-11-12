@@ -1,4 +1,4 @@
-//! US-201 to US-207: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-208: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -83,6 +83,13 @@
 //!   question answered at `version` 1 and leaves a `done` node `done`; `by`
 //!   without `answer` is 422. The list gives each node's `default_answers`,
 //!   and `GET /questions?by=` filters on who gave the current answer.
+//! - With `change: true` the answer route gives an answered question a new
+//!   answer and keeps the earlier ones: `answers` lists every answer oldest
+//!   first, `answer` is the newest, `version` + 1. `change` on an open
+//!   question is 409 `not_answered`. After the version check, an agent's own
+//!   answer on a question a person answered is 409 `answered_by_human`; an
+//!   agent may change an agent's answer, and with `by: "human"` any answer.
+//!   `GET /questions/{id}` gives the question with its `answers`.
 
 mod common;
 
@@ -245,11 +252,13 @@ fn ready() -> (&'static Fixture, &'static Client) {
     (fixture, &fixture.server.client)
 }
 
-/// Who sends a request: the grill agent `t1/grill` with the API key, the key
-/// without a run, or alice with her session.
+/// Who sends a request: the grill agent `t1/grill` with the API key, a second
+/// agent `t2/review` with the same key, the key without a run, or alice with
+/// her session.
 #[derive(Clone, Copy)]
 enum Auth {
     Agent,
+    OtherAgent,
     AgentWithoutRun,
     Session,
 }
@@ -261,6 +270,11 @@ fn call(f: &Fixture, method: &str, path: &str, auth: Auth, body: Option<&Value>)
             ("Authorization", bearer),
             ("X-Omni-Run", "t1".to_string()),
             ("X-Omni-Role", "grill".to_string()),
+        ],
+        Auth::OtherAgent => vec![
+            ("Authorization", bearer),
+            ("X-Omni-Run", "t2".to_string()),
+            ("X-Omni-Role", "review".to_string()),
         ],
         Auth::AgentWithoutRun => vec![
             ("Authorization", bearer),
@@ -2962,4 +2976,222 @@ fn a_question_of_another_feature_is_404_to_answer_and_answers_nothing() {
         questions_whole(f, &project, &other_feature, ""),
         vec![asked]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Changing an answer (US-208)
+// ---------------------------------------------------------------------------
+
+const GUEST_CART: &str = "Guest cart";
+const LOGIN: &str = "Login required before buying.";
+
+/// `GET /questions/{id}`, as the agent: the `question`.
+fn question_read(f: &Fixture, project: &str, feature: &str, question: &Value) -> Value {
+    must(
+        call(
+            f,
+            "GET",
+            &format!(
+                "{}/questions/{}",
+                tree_path(f, project, feature),
+                question["id"].as_str().expect("the question has an id")
+            ),
+            Auth::Agent,
+            None,
+        ),
+        200,
+        "read the question",
+    )["question"]
+        .clone()
+}
+
+/// A question on the situation of `buy_tree` that the agent answered on its
+/// own with "Guest cart", then a person changed to "Login required before
+/// buying.": `(press, question)`, the question at version 3.
+fn answered_by_a_person(f: &Fixture, project: &str, feature: &str) -> (Value, Value) {
+    let (_, press) = buy_tree(f, project, feature);
+    let asked = ask(
+        f,
+        project,
+        feature,
+        &id_of(&press),
+        "Guest or account cart?",
+    );
+    answer(
+        f,
+        project,
+        feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": GUEST_CART }),
+    );
+    let changed = answer(
+        f,
+        project,
+        feature,
+        Auth::Session,
+        &asked,
+        &json!({ "expected_version": 2, "answer": LOGIN, "change": true }),
+    );
+    (press, changed)
+}
+
+#[test]
+fn a_person_changes_a_default_answer_and_the_old_one_stays_first_in_the_answers() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = ask(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        "Guest or account cart?",
+    );
+    let by_default = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": GUEST_CART }),
+    );
+
+    let changed = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &asked,
+        &json!({ "expected_version": 2, "answer": LOGIN, "change": true }),
+    );
+
+    assert_eq!(changed["state"], "answered");
+    assert_eq!(changed["answered_by"], "human");
+    assert_eq!(changed["version"], 3);
+    assert_eq!(changed["answer"]["answer"], LOGIN);
+    assert_eq!(changed["answer"]["given_by"], "human");
+    assert_eq!(
+        changed["answer"]["author"],
+        json!({ "kind": "human", "user_id": f.alice })
+    );
+    assert_eq!(
+        changed["answers"],
+        json!([by_default["answer"], changed["answer"]])
+    );
+    assert_ne!(changed["answers"][0]["at"], changed["answers"][1]["at"]);
+    assert_eq!(question_read(f, &project, &feature, &asked), changed);
+    let node = must(
+        read(f, &project, &feature, &id_of(&press)),
+        200,
+        "read the node",
+    );
+    assert_eq!(node["questions"], json!([changed]));
+    assert_eq!(
+        question_states(&project),
+        vec![json!("open"), json!("answered"), json!("answered")]
+    );
+}
+
+#[test]
+fn an_agents_own_change_on_a_persons_answer_is_409_answered_by_human_after_the_version_check() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, changed) = answered_by_a_person(f, &project, &feature);
+
+    let current = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &changed,
+        &json!({ "expected_version": 3, "answer": "Guest cart after all.", "change": true }),
+    );
+    let stale = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &changed,
+        &json!({ "expected_version": 2, "answer": "Guest cart after all.", "change": true }),
+    );
+
+    assert_error(&current, 409, "answered_by_human");
+    assert_eq!(stale.status, 409, "body: {}", stale.text());
+    assert_eq!(
+        stale.json(),
+        json!({ "error": "conflict", "current_version": 3 })
+    );
+    assert_eq!(question_read(f, &project, &feature, &changed), changed);
+    assert_eq!(question_states(&project).len(), 3);
+}
+
+#[test]
+fn an_agent_changes_another_agents_answer_and_a_relayed_change_replaces_a_persons() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (press, by_person) = answered_by_a_person(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+    answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+
+    let by_reviewer = answer(
+        f,
+        &project,
+        &feature,
+        Auth::OtherAgent,
+        &asked,
+        &json!({ "expected_version": 2, "answer": GUEST, "change": true }),
+    );
+    let relayed = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &by_person,
+        &json!({ "expected_version": 3, "answer": GUEST_CART, "change": true, "by": "human" }),
+    );
+
+    assert_eq!(by_reviewer["answered_by"], "agent");
+    assert_eq!(by_reviewer["answer"]["answer"], GUEST);
+    assert_eq!(by_reviewer["answer"]["author"]["run"], "t2");
+    assert_eq!(by_reviewer["answer"]["author"]["role"], "review");
+    assert_eq!(relayed["answered_by"], "human");
+    assert_eq!(relayed["answer"]["answer"], GUEST_CART);
+    assert_eq!(relayed["answer"]["given_by"], "human");
+    assert_eq!(relayed["answer"]["author"]["kind"], "agent");
+}
+
+#[test]
+fn change_on_an_open_question_is_409_not_answered_and_answers_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let response = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &asked,
+        &json!({ "expected_version": 1, "answer": LOGIN, "change": true }),
+    );
+
+    assert_error(&response, 409, "not_answered");
+    assert_eq!(
+        question_read(f, &project, &feature, &asked)["state"],
+        "open"
+    );
+    assert_eq!(
+        question_read(f, &project, &feature, &asked)["answers"],
+        json!([])
+    );
+    assert_eq!(question_states(&project), vec![json!("open")]);
 }

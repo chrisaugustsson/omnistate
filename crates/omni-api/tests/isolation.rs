@@ -313,6 +313,12 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
         Some(r#"{"expected_version":1,"answer":"intruder"}"#),

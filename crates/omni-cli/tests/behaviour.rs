@@ -1,4 +1,4 @@
-//! US-201 to US-207: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer` and `questions`, tested as the built binary against
+//! US-201 to US-208: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer` and `questions`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -44,6 +44,13 @@
 //!   id. `ask --answer <text> [--by human]` sends `answer` and `by` with the
 //!   question. `questions --default` asks for `state=answered&by=agent` and
 //!   ends each line in ` → <answer>`.
+//! - `answer --change` sends `change: true`. A 409 other than `conflict`
+//!   (`not_answered`, `already_answered`, `answered_by_human`) is exit 1 with
+//!   the API's code; only a stale version (`conflict`) is exit 3.
+//! - `omni behaviour question <id>` prints the question, then the current
+//!   answer, then the earlier ones oldest first, each with who gave it
+//!   (`person` or `agent <run>/<role>`, an agent's own marked `(default)`)
+//!   and when.
 
 mod common;
 
@@ -829,4 +836,146 @@ fn questions_default_asks_for_the_agents_own_answers_and_ends_each_line_in_the_a
         out.stdout,
         format!("customer-buys-product  {QUESTION}  {SOLD_OUT} → {STOCK}\n")
     );
+}
+
+/// An API that lists the questions and refuses every answer with 409 `code`.
+fn refusing(code: &'static str) -> MockServer {
+    MockServer::start(move |request| {
+        let base = tree_path();
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", path) if path == format!("{base}/questions") => {
+                Reply::json(200, &json!({ "questions": [listed_question()] }))
+            }
+            ("POST", path) if path == format!("{base}/questions/{QUESTION}/answers") => {
+                if code == "conflict" {
+                    Reply::json(409, &json!({ "error": code, "current_version": 4 }))
+                } else {
+                    Reply::json(409, &json!({ "error": code }))
+                }
+            }
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    })
+}
+
+#[test]
+fn a_refused_change_exits_1_with_the_apis_code_and_only_a_stale_version_exits_3() {
+    // Settled decision: exit 3 stays for 409 `conflict` alone.
+    let not_answered = refusing("not_answered");
+    let answered_by_human = refusing("answered_by_human");
+    let already_answered = refusing("already_answered");
+    let stale = refusing("conflict");
+    let change = [
+        "behaviour",
+        "answer",
+        QUESTION,
+        "Guest cart after all.",
+        "--change",
+    ];
+
+    let not_answered_out = run(&logged_in(&not_answered), &change);
+    let answered_by_human_out = run(&logged_in(&answered_by_human), &change);
+    let already_answered_out = run(
+        &logged_in(&already_answered),
+        &["behaviour", "answer", QUESTION, "Guest cart after all."],
+    );
+    let stale_out = run(&logged_in(&stale), &change);
+
+    assert_eq!(
+        not_answered_out.code, 1,
+        "stderr: {}",
+        not_answered_out.stderr
+    );
+    assert!(
+        not_answered_out.stderr.contains("not_answered"),
+        "{:?}",
+        not_answered_out.stderr
+    );
+    assert_eq!(
+        answered_by_human_out.code, 1,
+        "stderr: {}",
+        answered_by_human_out.stderr
+    );
+    assert!(
+        answered_by_human_out.stderr.contains("answered_by_human"),
+        "{:?}",
+        answered_by_human_out.stderr
+    );
+    assert_eq!(
+        already_answered_out.code, 1,
+        "stderr: {}",
+        already_answered_out.stderr
+    );
+    assert!(
+        already_answered_out.stderr.contains("already_answered"),
+        "{:?}",
+        already_answered_out.stderr
+    );
+    assert_eq!(stale_out.code, 3, "stderr: {}", stale_out.stderr);
+    assert_eq!(
+        posts(&answered_by_human),
+        vec![json!({ "expected_version": 3, "answer": "Guest cart after all.", "change": true })]
+    );
+}
+
+#[test]
+fn question_prints_the_current_answer_first_then_the_earlier_ones_oldest_first_with_who_gave_each()
+{
+    let mut answered = listed_question();
+    answered["state"] = json!("answered");
+    answered["answered_by"] = json!("human");
+    answered["answers"] = json!([
+        {
+            "answer": "Guest cart",
+            "given_by": "agent",
+            "author": { "kind": "agent", "run": "t1", "role": "grill" },
+            "at": "2026-11-12T10:00:00.000000Z"
+        },
+        {
+            "answer": "Account cart.",
+            "given_by": "agent",
+            "author": { "kind": "agent", "run": "t2", "role": "review" },
+            "at": "2026-11-12T11:00:00.000000Z"
+        },
+        {
+            "answer": "Login required before buying.",
+            "given_by": "human",
+            "author": { "kind": "human", "user_id": "01900000-0000-7000-8000-0000000000a1" },
+            "at": "2026-11-12T12:00:00.000000Z"
+        }
+    ]);
+    answered["answer"] = answered["answers"][2].clone();
+    let server =
+        MockServer::start(
+            move |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", path) if path == format!("{}/questions/{QUESTION}", tree_path()) => {
+                    Reply::json(200, &json!({ "question": answered }))
+                }
+                _ => Reply::json(404, &json!({ "error": "not_found" })),
+            },
+        );
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "question", QUESTION]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "{}", out.stdout);
+    assert!(lines[0].contains(SOLD_OUT), "{}", lines[0]);
+    assert!(
+        lines[1].contains("Login required before buying."),
+        "{}",
+        lines[1]
+    );
+    assert!(lines[1].contains("person"), "{}", lines[1]);
+    assert!(!lines[1].contains("(default)"), "{}", lines[1]);
+    assert!(lines[1].contains("2026-11-12T12:00:00"), "{}", lines[1]);
+    assert!(lines[2].contains("Guest cart"), "{}", lines[2]);
+    assert!(lines[2].contains("(default)"), "{}", lines[2]);
+    assert!(lines[2].contains("agent t1/grill"), "{}", lines[2]);
+    assert!(lines[2].contains("2026-11-12T10:00:00"), "{}", lines[2]);
+    assert!(lines[3].contains("Account cart."), "{}", lines[3]);
+    assert!(lines[3].contains("(default)"), "{}", lines[3]);
+    assert!(lines[3].contains("agent t2/review"), "{}", lines[3]);
+    assert!(lines[3].contains("2026-11-12T11:00:00"), "{}", lines[3]);
 }
