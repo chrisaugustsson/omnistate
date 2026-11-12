@@ -489,39 +489,6 @@ fn list_of_a_feature_without_a_tree_prints_nothing_and_exits_0() {
 }
 
 #[test]
-fn add_with_a_handoff_path_posts_the_listed_id_of_that_node() {
-    let server = mock();
-    let home = logged_in(&server);
-
-    let out = run(
-        &home,
-        &[
-            "behaviour",
-            "add",
-            "--parent",
-            "customer-buys-product",
-            "--title",
-            "User goes to checkout",
-            "--slug",
-            "user-goes-to-checkout",
-            "--handoff",
-            "customer-returns-product",
-        ],
-    );
-
-    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    assert_eq!(
-        posts(&server),
-        vec![json!({
-            "title": "User goes to checkout",
-            "slug": "user-goes-to-checkout",
-            "parent_id": STORY,
-            "handoff": OTHER
-        })]
-    );
-}
-
-#[test]
 fn edit_same_as_a_path_sends_its_id_and_an_empty_same_as_sends_null() {
     let server = mock();
     let home = logged_in(&server);

@@ -1985,6 +1985,10 @@ fn the_database_refuses_a_pointer_out_of_the_feature_and_two_pointers_on_one_nod
         &id_of(&out_of_stock),
         &format!("handoff_id = '{}'::uuid", id_of(&theirs)),
     );
+    let same_as_out_of_feature = sqlstate_of_update(
+        &id_of(&out_of_stock),
+        &format!("same_as_id = '{}'::uuid", id_of(&theirs)),
+    );
     let two = sqlstate_of_update(
         &id_of(&out_of_stock),
         &format!(
@@ -1995,5 +1999,6 @@ fn the_database_refuses_a_pointer_out_of_the_feature_and_two_pointers_on_one_nod
     );
 
     assert_eq!(out_of_feature, "23503", "a foreign key violation");
+    assert_eq!(same_as_out_of_feature, "23503", "a foreign key violation");
     assert_eq!(two, "23514", "a check violation");
 }
