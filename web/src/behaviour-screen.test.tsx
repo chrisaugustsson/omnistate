@@ -28,7 +28,12 @@ const SKIPS = "0192d7a0-8888-7000-8000-000000000005";
 const PROGRAM_STORY = "0192d7a0-8888-7000-8000-000000000006";
 
 /** A node of the list GET .../behaviour sends. */
-function node(id: string, parentId: string | null, title: string, fields: { status?: string; position?: number } = {}) {
+function node(
+  id: string,
+  parentId: string | null,
+  title: string,
+  fields: { status?: string; position?: number; default_answers?: number; needs_pass?: boolean } = {},
+) {
   return {
     id,
     parent_id: parentId,
@@ -41,8 +46,8 @@ function node(id: string, parentId: string | null, title: string, fields: { stat
     status: fields.status ?? "answered",
     version: 1,
     open_questions: 0,
-    default_answers: 0,
-    needs_pass: false,
+    default_answers: fields.default_answers ?? 0,
+    needs_pass: fields.needs_pass ?? false,
     same_as: null,
     handoff: null,
   };
@@ -764,5 +769,179 @@ describe("adding a remark in the Behaviour screen", () => {
     expect(within(remark).queryByRole("textbox", { name: "Your answer" })).toBeNull();
     expect(field.value).toBe("");
     await waitFor(() => expect(within(details).queryByText("↻ Needs another grill pass")).not.toBeNull());
+  });
+});
+
+// US-231: one filter at a time cuts the tree down to the nodes it picks out
+// and every node above them, the others muted; the chosen node always stays.
+// A filter change fits the graph again at once. The top bar's sentence counts
+// the questions agents asked (never remarks), the answers given by default and
+// the nodes waiting for the next grill pass, leaving out a part at 0.
+describe("filtering the Behaviour screen", () => {
+  const AREA = { w: 748, h: 844 };
+  type View = { x: number; y: number; k: number };
+
+  /** A situation that is open, with one below it holding 3 answers given by default. */
+  const FILTERED = [
+    node(ROOT, null, "Disc golf putting trainer"),
+    node(SIGN_UP_STORY, ROOT, "As a player, I want to create an account and get set up, so that my practice is saved"),
+    node(SIGNS_UP, SIGN_UP_STORY, "Player signs up with an email", { status: "open" }),
+    node(CONFIRMS, SIGNS_UP, "Player confirms the email", { default_answers: 3 }),
+    node(SKIPS, SIGN_UP_STORY, "Player skips the setup", { status: "out_of_scope", position: 1 }),
+    node(PROGRAM_STORY, ROOT, "As a player, I want to pick a training program, so that I know what to practise", { position: 1 }),
+  ];
+  const STORY = "Player: create an account and get set up";
+  const PROGRAM = "Player: pick a training program";
+
+  const choice = (name: RegExp) => within(screen.getByRole("group", { name: "Show" })).getByRole("button", { name });
+  const pressed = (name: RegExp) => choice(name).getAttribute("aria-pressed");
+  const facts = () => document.querySelector("[data-facts]")?.textContent;
+  const boxOf = (id: string) => document.querySelector<HTMLElement>(`main [data-node="${id}"]`);
+  const boxIds = () => new Set([...document.querySelectorAll<HTMLElement>("main [data-node]")].map((box) => box.dataset.node));
+  const muted = (element: HTMLElement) => element.className.split(/\s+/).includes("opacity-50");
+
+  function currentView(): View {
+    const drawing = document.querySelector<HTMLElement>('main [style*="scale("]')!;
+    const [, x, y, k] = /translate\((-?[\d.e-]+)px, (-?[\d.e-]+)px\) scale\(([\d.e-]+)\)/.exec(drawing.style.transform)!;
+    return { x: Number(x), y: Number(y), k: Number(k) };
+  }
+
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(AREA.w);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(AREA.h);
+    const captured = new Set<number>();
+    Element.prototype.setPointerCapture = (id: number) => void captured.add(id);
+    Element.prototype.hasPointerCapture = (id: number) => captured.has(id);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("Only by default opens the folders fully on the matching node and those above it, muted, and Show all brings the folders back as they were", async () => {
+    fakeApi({ status: 200, body: { nodes: FILTERED } });
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    fireEvent.click(chevron(aside, STORY) as HTMLElement);
+    const before = rowTexts(aside);
+    expect(choice(/^All\s*6$/)).toBeTruthy();
+    expect(choice(/^Only open\s*1$/)).toBeTruthy();
+
+    fireEvent.click(choice(/^Only by default\s*1$/));
+
+    expect(pressed(/^Only by default/)).toBe("true");
+    expect(pressed(/^All/)).toBe("false");
+    expect(rowTexts(aside)).toEqual(["Disc golf putting trainer", STORY, "Player signs up with an email", "Player confirms the email"]);
+    expect([ROOT, SIGN_UP_STORY, SIGNS_UP, CONFIRMS].map((id) => muted(aside.querySelector<HTMLElement>(`[data-row="${id}"]`)!))).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
+    expect(boxIds()).toEqual(new Set([SIGN_UP_STORY, SIGNS_UP, CONFIRMS]));
+    expect([SIGN_UP_STORY, SIGNS_UP, CONFIRMS].map((id) => muted(boxOf(id)!))).toEqual([true, true, false]);
+    expect(screen.getByText("1 of 6 nodes, with what lies above them")).toBeTruthy();
+    expect(screen.queryByLabelText("Legend")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+
+    expect(pressed(/^All/)).toBe("true");
+    expect(rowTexts(aside)).toEqual(before);
+    expect(screen.queryByText("1 of 6 nodes, with what lies above them")).toBeNull();
+    expect(screen.getByLabelText("Legend")).toBeTruthy();
+  });
+
+  test("turning a filter on fits the drawing it shows at once, and pressing the choice that is on goes back to All and fits the whole drawing at once", async () => {
+    const SEARCHES = "player-adds-friend/player-searches-for-player";
+    fakeApi({ status: 200, body: { nodes: testTree().map((one) => (one.id === SEARCHES ? { ...one, default_answers: 2 } : one)) } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    await waitFor(() => expect(document.querySelector('main [style*="scale("]')).not.toBeNull());
+    const opening = currentView();
+    // An arrow key chooses the first story and moves the view to it at once.
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    const story = currentView();
+
+    fireEvent.click(choice(/^Only by default/));
+    const filtered = currentView();
+    expect(filtered).not.toEqual(story);
+    fireEvent.keyDown(document.body, { key: "f" });
+    expect(currentView()).toEqual(filtered);
+
+    fireEvent.click(choice(/^Only by default/));
+    expect(pressed(/^All/)).toBe("true");
+    const all = currentView();
+    expect(all.k).toBeCloseTo(opening.k, 6);
+    expect(all.x).toBeCloseTo(opening.x, 6);
+    expect(all.y).toBeCloseTo(opening.y, 6);
+  });
+
+  test("a chosen node that does not match stays in the folders and the graph, muted under its chosen look", async () => {
+    fakeApi({ status: 200, body: { nodes: FILTERED } });
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    fireEvent.click(row(aside, PROGRAM));
+
+    fireEvent.click(choice(/^Only by default/));
+
+    const programRow = aside.querySelector<HTMLElement>(`[data-row="${PROGRAM_STORY}"]`)!;
+    expect(rowTexts(aside)).toEqual(["Disc golf putting trainer", STORY, "Player signs up with an email", "Player confirms the email", PROGRAM]);
+    expect(programRow.getAttribute("aria-current")).toBe("true");
+    expect(muted(programRow)).toBe(true);
+    expect(boxOf(PROGRAM_STORY)!.hasAttribute("data-chosen")).toBe(true);
+    expect(muted(boxOf(PROGRAM_STORY)!)).toBe(true);
+  });
+
+  test("a choice that picks out no node shows only the chosen node and those above it, and the line drops what lies above", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } });
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    fireEvent.click(row(aside, STORY));
+    fireEvent.click(row(aside, "Player signs up with an email"));
+
+    fireEvent.click(choice(/^Only open\s*0$/));
+
+    expect(pressed(/^Only open/)).toBe("true");
+    expect(rowTexts(aside)).toEqual(["Disc golf putting trainer", STORY, "Player signs up with an email"]);
+    expect(screen.getByText("0 of 6 nodes")).toBeTruthy();
+  });
+
+  test("the top bar counts the questions agents asked, the answers given by default and the nodes waiting for a pass, and offers the grill-pass choice", async () => {
+    const marked = FILTERED.map((one) => (one.id === PROGRAM_STORY ? { ...one, needs_pass: true } : one));
+    fakeApi({ status: 200, body: { nodes: marked } }, [], [
+      openQuestion("q1", SIGNS_UP, BY_AGENT),
+      openQuestion("q2", CONFIRMS, BY_AGENT),
+      openQuestion("q3", SIGNS_UP, BY_PERSON),
+    ]);
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+
+    await waitFor(() =>
+      expect(facts()).toBe("2 questions wait for an answer · 3 answers were given by default · 1 node waits for the next grill pass"),
+    );
+    expect(choice(/^Only needing a grill pass\s*1$/)).toBeTruthy();
+  });
+
+  test("with nothing waiting, nothing by default and nothing marked the top bar says only that no question is open, and offers no grill-pass choice", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } }, [], []);
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+
+    expect(facts()).toBe("No question is open");
+    expect(within(screen.getByRole("group", { name: "Show" })).queryByRole("button", { name: /^Only needing a grill pass/ })).toBeNull();
+  });
+
+  test("pressing 1 question waits for an answer turns Only open on, and pressing it again keeps it on", async () => {
+    fakeApi({ status: 200, body: { nodes: FILTERED } }, [], [openQuestion("q1", SIGNS_UP, BY_AGENT)]);
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    const waits = await screen.findByRole("button", { name: "1 question waits for an answer" });
+    expect(facts()).toBe("1 question waits for an answer · 3 answers were given by default");
+
+    fireEvent.click(waits);
+    expect(pressed(/^Only open/)).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "1 question waits for an answer" }));
+    expect(pressed(/^Only open/)).toBe("true");
+    expect(screen.getByText("1 of 6 nodes, with what lies above them")).toBeTruthy();
   });
 });
