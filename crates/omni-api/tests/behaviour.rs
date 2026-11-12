@@ -1,4 +1,4 @@
-//! US-201 to US-211: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-212: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -116,6 +116,9 @@
 //!   `node` rule its node and those below; a withdrawn rule reaches nothing,
 //!   and reach follows the tree as it is now. `feature` rules come first, then
 //!   `story`, then `node` rules from the root down, oldest first within each.
+//! - Each `chain` entry of the read carries its own `questions`, and the read
+//!   gives `siblings`: the other children of the parent by position, as
+//!   `children` entries; none for the root.
 
 mod common;
 
@@ -4371,5 +4374,137 @@ fn reaching_rules_come_feature_then_story_then_node_from_the_root_down_and_oldes
             json!(["a/x", "node", "Second node rule on x."]),
             json!(["a/x/z", "node", "Node rule on z."])
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The read of one branch (US-212)
+// ---------------------------------------------------------------------------
+
+/// The `[path, questions' text]` of each `chain` entry of a node's read.
+fn chain_questions(f: &Fixture, project: &str, feature: &str, node: &Value) -> Vec<Value> {
+    must(
+        read(f, project, feature, &id_of(node)),
+        200,
+        "read the node",
+    )["chain"]
+        .as_array()
+        .expect("`chain` is a list")
+        .iter()
+        .map(|entry| {
+            let texts: Vec<Value> = entry["questions"]
+                .as_array()
+                .expect("a chain entry has `questions`")
+                .iter()
+                .map(|question| question["question"].clone())
+                .collect();
+            json!([entry["path"], texts])
+        })
+        .collect()
+}
+
+#[test]
+fn each_node_above_the_one_read_carries_its_own_questions() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let [a, x, z, _, _, _] = two_stories(f, &project, &feature);
+    let root = root_of(f, &project, &feature);
+    ask(f, &project, &feature, &id_of(&root), "Who may buy?");
+    let on_story = ask(f, &project, &feature, &id_of(&a), "Guests too?");
+    answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &on_story,
+        &json!({ "expected_version": 1, "answer": GUEST }),
+    );
+    ask(f, &project, &feature, &id_of(&x), "Which button?");
+    ask(f, &project, &feature, &id_of(&x), "Which colour?");
+    ask(
+        f,
+        &project,
+        &feature,
+        &id_of(&z),
+        "What if quantity is zero?",
+    );
+
+    assert_eq!(
+        chain_questions(f, &project, &feature, &z),
+        vec![
+            json!(["", ["Who may buy?"]]),
+            json!(["a", ["Guests too?"]]),
+            json!(["a/x", ["Which button?", "Which colour?"]])
+        ]
+    );
+}
+
+/// The paths of the `siblings` of a node's read, in its order.
+fn siblings_of(f: &Fixture, project: &str, feature: &str, node: &Value) -> Vec<Value> {
+    must(
+        read(f, project, feature, &id_of(node)),
+        200,
+        "read the node",
+    )["siblings"]
+        .as_array()
+        .expect("`siblings` is a list")
+        .iter()
+        .map(|sibling| sibling["path"].clone())
+        .collect()
+}
+
+#[test]
+fn the_siblings_are_the_other_children_of_the_parent_by_position_and_none_for_the_root() {
+    // Settled decision: siblings come by position, as children do, without
+    // the node itself.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let [a, x, _, y, _, _] = two_stories(f, &project, &feature);
+    let w = add(
+        f,
+        &project,
+        &feature,
+        &json!({ "title": "W", "slug": "w", "summary": "Last one.", "parent_id": a["id"] }),
+    );
+    // x moves to its own parent, so it is last there though added first.
+    must(
+        move_node(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &id_of(&x),
+            &json!({ "expected_version": 1, "parent_id": a["id"] }),
+        ),
+        200,
+        "move x last",
+    );
+    let root = root_of(f, &project, &feature);
+
+    assert_eq!(
+        siblings_of(f, &project, &feature, &y),
+        vec![json!("a/w"), json!("a/x")]
+    );
+    assert_eq!(
+        siblings_of(f, &project, &feature, &x),
+        vec![json!("a/y"), json!("a/w")]
+    );
+    assert_eq!(siblings_of(f, &project, &feature, &a), vec![json!("b")]);
+    assert_eq!(
+        siblings_of(f, &project, &feature, &root),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        must(read(f, &project, &feature, &id_of(&y)), 200, "read y")["siblings"][0],
+        json!({
+            "id": id_of(&w),
+            "path": "a/w",
+            "slug": "w",
+            "title": "W",
+            "summary": "Last one.",
+            "status": "open",
+            "same_as": null,
+            "handoff": null
+        })
     );
 }

@@ -1,4 +1,4 @@
-//! US-201 to US-210: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer`, `questions`, `rule` and `rules`, tested as the built binary against
+//! US-201 to US-212: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer`, `questions`, `rule` and `rules`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -12,6 +12,14 @@
 //!   list does not have is exit 1 with a message naming it, and nothing is
 //!   posted.
 //! - `omni behaviour read .` reads the root and prints its empty path as `.`.
+//!   The read prints one block per node, the chain root first, blocks
+//!   separated by a blank line and the node's own after `=== this node ===`:
+//!   `# <title>`, `path: <path>  level: <feature|story|situation>  status:
+//!   <status>` (plus `  needs another pass`, `  same-as: <path>` or `  handoff:
+//!   <path>`), `Summary:`, `Situation:`, `Behaviour:` (verbatim), `Decisions:`
+//!   (`- <question> → <answer>`, ` (default)` for an agent's own) and `Open
+//!   questions:` (`- <question>  [<id>]`), then `Rules that apply here:`,
+//!   `Children:` and `Siblings:`; a line or section with nothing is left out.
 //! - `behavior` is a second spelling of the command word.
 //! - `omni behaviour edit <node>` sends a `PATCH` to the node the list gives
 //!   (by uuid or path) with the `version` the list gives as
@@ -334,14 +342,10 @@ fn read_dot_reads_the_root_and_prints_its_path_as_a_dot() {
     let out = run(&home, &["behaviour", "read", "."]);
 
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
-    // The layout of the line is US-212's; this story fixes the path's form.
     assert_eq!(
-        out.stdout.split_whitespace().next(),
-        Some("."),
-        "{:?}",
-        out.stdout
+        out.stdout,
+        "=== this node ===\n# Checkout\npath: .  level: feature  status: open\n"
     );
-    assert!(out.stdout.contains("Checkout"), "{:?}", out.stdout);
 }
 
 #[test]
@@ -1234,5 +1238,193 @@ fn rule_edit_sends_the_listed_version_with_the_scope_or_withdrawn_true() {
             json!({ "expected_version": 3, "scope": "feature" }),
             json!({ "expected_version": 3, "withdrawn": true })
         ]
+    );
+}
+
+const PRESS_PATH: &str = "customer-buys-product/user-presses-buy";
+const OUT_PATH: &str = "customer-buys-product/user-presses-buy/out-of-stock";
+const ZERO: &str = "01900000-0000-7000-8000-000000000303";
+
+fn answered(id: &str, node: &str, path: &str, text: &str, answer: &str, by: &str) -> Value {
+    let mut question = question(id, node, path, text);
+    question["state"] = json!("answered");
+    question["answered_by"] = json!(by);
+    question["answer"] = json!({
+        "answer": answer,
+        "given_by": by,
+        "author": { "kind": "agent", "run": "t1", "role": "grill" },
+        "at": "2026-11-12T10:00:00.000000Z"
+    });
+    question
+}
+
+fn child(id: &str, path: &str, title: &str, summary: &str, status: &str) -> Value {
+    json!({
+        "id": id,
+        "path": path,
+        "slug": path.rsplit('/').next(),
+        "title": title,
+        "summary": summary,
+        "status": status,
+        "same_as": null,
+        "handoff": null
+    })
+}
+
+/// An API whose tree has the root, the story and `user-presses-buy` above
+/// `out-of-stock` (level 3), and whose read of `out-of-stock` is `read`.
+fn read_mock(read: Value) -> MockServer {
+    MockServer::start(move |request| {
+        let base = tree_path();
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", path) if path == base => Reply::json(
+                200,
+                &json!({ "nodes": [
+                    summary(ROOT, None, "", 0, "Checkout"),
+                    summary(STORY, Some(ROOT), "customer-buys-product", 1, "Buys"),
+                    summary(PRESS, Some(STORY), PRESS_PATH, 2, "User presses buy"),
+                    summary(OUT, Some(PRESS), OUT_PATH, 3, "Out of stock")
+                ] }),
+            ),
+            ("GET", path) if path == format!("{base}/nodes/{OUT}") => Reply::json(200, &read),
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    })
+}
+
+#[test]
+fn read_prints_the_branch_root_first_with_each_nodes_decisions_then_rules_children_and_siblings() {
+    // The verifier's defect: the node's own questions sit at the top level of
+    // the read, not inside `node`, and its block printed none of them.
+    let mut root = node(ROOT, None, "", 0, "Checkout");
+    root["behaviour"] = json!("Hub screens:\n- Cart\n\n- Orders");
+    root["questions"] = json!([]);
+    let mut story = node(STORY, Some(ROOT), "customer-buys-product", 1, "Buys");
+    story["summary"] = json!("Customer buys a product.");
+    story["questions"] = json!([answered(
+        QUESTION,
+        STORY,
+        "customer-buys-product",
+        "Who may buy?",
+        "Anyone with an account.",
+        "agent"
+    )]);
+    let mut press = node(PRESS, Some(STORY), PRESS_PATH, 2, "User presses buy");
+    press["situation"] = json!("The product page is open.");
+    press["status"] = json!("done");
+    press["questions"] = json!([]);
+    let mut oos = node(OUT, Some(PRESS), OUT_PATH, 3, "Out of stock");
+    oos["summary"] = json!("Item is gone.");
+    oos["behaviour"] = json!("Show a notice.");
+    let server = read_mock(json!({
+        "node": oos,
+        "chain": [root, story, press],
+        "questions": [
+            question(ZERO, OUT, OUT_PATH, "What if quantity is zero?"),
+            answered(ROOT_QUESTION, OUT, OUT_PATH, "Logged out user?", "Guest cart, identical behaviour.", "agent"),
+            answered(NEW, OUT, OUT_PATH, "Region delivery check here?", "No, handled at checkout.", "human")
+        ],
+        "rules": [
+            rule(ROOT_RULE, ROOT, "", "feature", "Prices include VAT."),
+            rule(RULE, STORY, "customer-buys-product", "story", BUY_DISABLED)
+        ],
+        "children": [
+            child(RULE, &format!("{OUT_PATH}/restocked"), "Restocked", "It comes back.", "open"),
+            child(WITHDRAWN_RULE, &format!("{OUT_PATH}/gone-for-good"), "Gone for good", "", "out_of_scope")
+        ],
+        "siblings": [
+            child(OTHER, &format!("{PRESS_PATH}/in-stock"), "In stock", "Goes to the cart.", "done")
+        ]
+    }));
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "read", OUT_PATH]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "# Checkout
+path: .  level: feature  status: open
+Behaviour: Hub screens:
+- Cart
+
+- Orders
+
+# Buys
+path: customer-buys-product  level: story  status: open
+Summary: Customer buys a product.
+Decisions:
+- Who may buy? → Anyone with an account. (default)
+
+# User presses buy
+path: {PRESS_PATH}  level: situation  status: done
+Situation: The product page is open.
+
+=== this node ===
+# Out of stock
+path: {OUT_PATH}  level: situation  status: open
+Summary: Item is gone.
+Behaviour: Show a notice.
+Decisions:
+- Logged out user? → Guest cart, identical behaviour. (default)
+- Region delivery check here? → No, handled at checkout.
+Open questions:
+- What if quantity is zero?  [{ZERO}]
+
+Rules that apply here:
+- Prices include VAT. (feature, from .)
+- {BUY_DISABLED} (story, from customer-buys-product)
+
+Children:
+- restocked — It comes back. (open)
+- gone-for-good — Gone for good (out_of_scope)
+
+Siblings:
+- in-stock — Goes to the cart. (done)
+"
+        )
+    );
+}
+
+#[test]
+fn read_of_a_marked_node_with_a_handoff_ends_its_path_line_in_both_and_leaves_out_empty_sections() {
+    let mut press = node(PRESS, Some(STORY), PRESS_PATH, 2, "User presses buy");
+    press["questions"] = json!([]);
+    let mut oos = node(OUT, Some(PRESS), OUT_PATH, 3, "Out of stock");
+    oos["needs_pass"] = json!(true);
+    oos["needs_pass_since"] = json!("2026-11-12T11:00:00.000000Z");
+    oos["handoff"] = json!({
+        "id": OTHER,
+        "path": "customer-returns-product",
+        "title": "Returns",
+        "summary": ""
+    });
+    let mut root = node(ROOT, None, "", 0, "Checkout");
+    root["questions"] = json!([]);
+    let mut story = node(STORY, Some(ROOT), "customer-buys-product", 1, "Buys");
+    story["questions"] = json!([]);
+    let server = read_mock(json!({
+        "node": oos,
+        "chain": [root, story, press],
+        "questions": [],
+        "rules": [],
+        "children": [],
+        "siblings": []
+    }));
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "read", OUT_PATH]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert!(
+        out.stdout.ends_with(&format!(
+            "=== this node ===
+# Out of stock
+path: {OUT_PATH}  level: situation  status: open  needs another pass  handoff: customer-returns-product
+"
+        )),
+        "{:?}",
+        out.stdout
     );
 }
