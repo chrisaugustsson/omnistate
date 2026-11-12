@@ -943,5 +943,50 @@ describe("filtering the Behaviour screen", () => {
     fireEvent.click(screen.getByRole("button", { name: "1 question waits for an answer" }));
     expect(pressed(/^Only open/)).toBe("true");
     expect(screen.getByText("1 of 6 nodes, with what lies above them")).toBeTruthy();
+
+    // The details' link turns Only open on as well.
+    fireEvent.click(choice(/^Only open/));
+    expect(pressed(/^All/)).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Show only the open nodes" }));
+    expect(pressed(/^Only open/)).toBe("true");
+  });
+
+  test("the grill-pass choice stays while it is on after the tree is read again with no node marked", async () => {
+    const ASK_PATH = `${API}/features/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
+    const list = { status: 200, body: { nodes: FILTERED.map((one) => (one.id === SIGNS_UP ? { ...one, needs_pass: true, needs_pass_since: AT } : one)) } };
+    const read = {
+      node: { ...FILTERED[2], level: 2, situation: "", behaviour: "", created_at: AT, created_by: BY_AGENT, updated_at: AT },
+      chain: [],
+      children: [],
+      siblings: [],
+      questions: [],
+      rules: [],
+    };
+    fakeApi(list, [], [], { [SIGNS_UP]: read });
+    const api = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (new URL(url, "http://localhost:3000").pathname !== ASK_PATH || init?.method !== "POST") return api(input, init);
+        // The server has moved on: the grill ran and no node is marked any more.
+        list.body = { nodes: FILTERED };
+        const asked = { ...openQuestion("q-remark", SIGNS_UP, BY_PERSON), question: "Easy to miss." };
+        return new Response(JSON.stringify({ question: asked }), { status: 201, headers: { "content-type": "application/json" } });
+      }),
+    );
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+    fireEvent.click(chevron(aside, STORY) as HTMLElement);
+    fireEvent.click(within(aside).getByText("Player signs up with an email"));
+    fireEvent.click(choice(/^Only needing a grill pass\s*1$/));
+    expect(pressed(/^Only needing a grill pass/)).toBe("true");
+
+    const details = screen.getByRole("region", { name: "Details" });
+    fireEvent.change(await within(details).findByRole("textbox", { name: "Add a question or remark" }), { target: { value: "Easy to miss." } });
+    fireEvent.click(within(details).getByRole("button", { name: "Add to this node" }));
+
+    await waitFor(() => expect(facts()).not.toContain("grill pass"));
+    expect(pressed(/^Only needing a grill pass\s*0$/)).toBe("true");
   });
 });
