@@ -262,7 +262,7 @@ function Rules({ rules, nodeId, byId }: { rules: { id: string; node_id: string; 
       ))}
       {above.length > 0 && (
         <details className="mt-1.5 text-xs text-muted-foreground">
-          <summary className="cursor-pointer py-1">{above.length} rules from above also hold here</summary>
+          <summary className="cursor-pointer py-1">{above.length === 1 ? "1 rule from above also holds here" : `${above.length} rules from above also hold here`}</summary>
           {above.map((rule) => (
             <div key={rule.id} className="flex gap-2.5 border-t py-1.5 text-[13px] leading-normal text-foreground">
               <span className="w-[78px] flex-none pt-0.5 text-[11.5px] text-muted-foreground">{written(rule.node_id)}</span>
