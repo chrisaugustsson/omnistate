@@ -307,6 +307,24 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+        Some(r#"{"text":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+        Some(r#"{"expected_version":1,"text":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
         None,
@@ -890,6 +908,10 @@ struct Side {
     /// The question that the workspace's agent asked and answered on
     /// `node_id`.
     question_id: String,
+    /// The rule that the workspace's agent recorded on `node_id`, and its
+    /// text, which nothing else holds.
+    rule_id: String,
+    rule_text: String,
 }
 
 impl Side {
@@ -926,6 +948,8 @@ impl Side {
             node_id: same(),
             node_title: String::new(),
             question_id: same(),
+            rule_id: same(),
+            rule_text: String::new(),
         }
     }
 
@@ -959,6 +983,8 @@ impl Side {
             &self.node_id,
             &self.node_title,
             &self.question_id,
+            &self.rule_id,
+            &self.rule_text,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1191,6 +1217,22 @@ fn fixture() -> &'static Fixture {
                 201,
                 "answer the question",
             );
+            // A rule on that node, so the behaviour_rules table has rows of
+            // the workspace.
+            let rule_text = unique(&format!("{name}-rule-on-node"));
+            let body = json!({ "text": rule_text }).to_string();
+            let recorded = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/features/{feature_id}/behaviour/nodes/{node_id}/rules"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "record a rule on the node",
+            );
+            let rule_id = recorded["rule"]["id"].as_str().expect("an id").to_string();
             // A file of the workspace's own.
             let attachment_name = format!("{name}-notes.txt");
             let attachment_text = unique(&format!("{name}-file-content"));
@@ -1335,6 +1377,8 @@ fn fixture() -> &'static Fixture {
                 node_id,
                 node_title,
                 question_id,
+                rule_id,
+                rule_text,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1379,6 +1423,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "story_id" => &record.story_id,
             "node_id" => &record.node_id,
             "question_id" => &record.question_id,
+            "rule_id" => &record.rule_id,
             // Every doc's log starts with its creation, seq 1.
             "seq" => "1",
             // A finding index is read after the story is found, so any

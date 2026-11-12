@@ -1,4 +1,4 @@
-//! US-201 to US-209: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-210: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -99,6 +99,17 @@
 //!   `PATCH` with `needs_pass: false` clears that node alone as an edit
 //!   (version + 1, `node_changed` with `fields: ["needs_pass"]`); with a
 //!   session it is 403 `forbidden`, and `needs_pass: true` is 422.
+//! - `POST /nodes/{id}/rules` with `{text, scope?}` answers 201 `{rule}`:
+//!   `scope` `node` when left out, `withdrawn` false, `version` 1, the author
+//!   stored; `PATCH /rules/{id}` with `{expected_version, text?, scope?,
+//!   withdrawn?}` adds 1 to `version`, and `withdrawn: false` puts a rule back
+//!   in force. Each emits `behaviour.rule_changed` with `{feature_id, node_id,
+//!   rule_id}`. `GET /rules?scope=&under=` lists the rules in tree order of
+//!   their nodes, withdrawn ones flagged. Refused with nothing written: `story`
+//!   on a rule of the root, added or edited (422 `no_story`), a blank text or
+//!   an unknown scope (422 `{"error": <code>}`), a stale version (409
+//!   `conflict`), an API key without a run (400), a node or rule of another
+//!   feature (404). There is no DELETE (405).
 
 mod common;
 
@@ -3481,5 +3492,606 @@ fn clearing_a_mark_with_a_session_is_403_and_setting_one_is_422_and_both_leave_i
     assert_eq!(
         events_of(&project, "behaviour.node_changed"),
         Vec::<Value>::new()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rules on a node (US-210)
+// ---------------------------------------------------------------------------
+
+const BUY_DISABLED: &str = "Buy button is disabled whenever the product is out of stock.";
+
+fn post_rule(
+    f: &Fixture,
+    project: &str,
+    feature: &str,
+    auth: Auth,
+    node: &str,
+    body: &Value,
+) -> Response {
+    call(
+        f,
+        "POST",
+        &format!("{}/nodes/{node}/rules", tree_path(f, project, feature)),
+        auth,
+        Some(body),
+    )
+}
+
+/// Records a rule as the agent; returns the `rule` of the answer.
+fn add_rule(f: &Fixture, project: &str, feature: &str, node: &str, body: &Value) -> Value {
+    must(
+        post_rule(f, project, feature, Auth::Agent, node, body),
+        201,
+        "record a rule",
+    )["rule"]
+        .clone()
+}
+
+fn patch_rule(
+    f: &Fixture,
+    project: &str,
+    feature: &str,
+    auth: Auth,
+    rule: &Value,
+    body: &Value,
+) -> Response {
+    call(
+        f,
+        "PATCH",
+        &format!(
+            "{}/rules/{}",
+            tree_path(f, project, feature),
+            rule["id"].as_str().expect("the rule has an id")
+        ),
+        auth,
+        Some(body),
+    )
+}
+
+/// The rules `GET /rules` gives with `query`, in its order.
+fn rules_listed(f: &Fixture, project: &str, feature: &str, query: &str) -> Vec<Value> {
+    must(
+        call(
+            f,
+            "GET",
+            &format!("{}/rules{query}", tree_path(f, project, feature)),
+            Auth::Agent,
+            None,
+        ),
+        200,
+        "list the rules",
+    )["rules"]
+        .as_array()
+        .expect("`rules` is a list")
+        .clone()
+}
+
+/// The rules of the feature as `[node_path, scope, text, withdrawn, version]`,
+/// in the list's order.
+fn rule_rows(f: &Fixture, project: &str, feature: &str, query: &str) -> Vec<Value> {
+    rules_listed(f, project, feature, query)
+        .iter()
+        .map(|rule| {
+            json!([
+                rule["node_path"],
+                rule["scope"],
+                rule["text"],
+                rule["withdrawn"],
+                rule["version"]
+            ])
+        })
+        .collect()
+}
+
+/// The root of the feature's tree, as the list gives it.
+fn root_of(f: &Fixture, project: &str, feature: &str) -> Value {
+    listed(f, project, feature)[0].clone()
+}
+
+#[test]
+fn a_story_scope_on_the_root_is_422_no_story_when_added_or_edited_and_nothing_is_written() {
+    // Settled decision: both routes refuse `story` on a rule of the root.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    buy_tree(f, &project, &feature);
+    let root = root_of(f, &project, &feature);
+    let on_root = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&root),
+        &json!({ "text": "Prices include VAT.", "scope": "feature" }),
+    );
+
+    let added = post_rule(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&root),
+        &json!({ "text": BUY_DISABLED, "scope": "story" }),
+    );
+    let edited = patch_rule(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &on_root,
+        &json!({ "expected_version": 1, "scope": "story" }),
+    );
+
+    assert_error(&added, 422, "no_story");
+    assert_error(&edited, 422, "no_story");
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!(["", "feature", "Prices include VAT.", false, 1])]
+    );
+    assert_eq!(events_of(&project, "behaviour.rule_changed").len(), 1);
+}
+
+#[test]
+fn a_rule_is_recorded_on_its_node_with_the_scope_given_or_node_and_its_author_and_is_announced() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let story_rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED, "scope": "story" }),
+    );
+    let node_rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED }),
+    );
+
+    assert_eq!(story_rule["node_id"], press["id"]);
+    assert_eq!(story_rule["node_path"], C);
+    assert_eq!(story_rule["text"], BUY_DISABLED);
+    assert_eq!(story_rule["scope"], "story");
+    assert_eq!(story_rule["withdrawn"], false);
+    assert_eq!(story_rule["version"], 1);
+    assert_eq!(story_rule["author"]["kind"], "agent");
+    assert_eq!(story_rule["author"]["run"], "t1");
+    assert_eq!(story_rule["author"]["role"], "grill");
+    assert_eq!(node_rule["scope"], "node");
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![
+            json!([C, "story", BUY_DISABLED, false, 1]),
+            json!([C, "node", BUY_DISABLED, false, 1])
+        ]
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.rule_changed"),
+        vec![
+            json!({ "feature_id": feature, "node_id": press["id"], "rule_id": story_rule["id"] }),
+            json!({ "feature_id": feature, "node_id": press["id"], "rule_id": node_rule["id"] })
+        ]
+    );
+}
+
+#[test]
+fn an_edit_changes_the_scope_adds_1_to_the_version_keeps_the_text_and_is_announced() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED, "scope": "story" }),
+    );
+
+    let edited = must(
+        patch_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &rule,
+            &json!({ "expected_version": 1, "scope": "feature" }),
+        ),
+        200,
+        "edit the rule",
+    )["rule"]
+        .clone();
+
+    assert_eq!(edited["id"], rule["id"]);
+    assert_eq!(edited["scope"], "feature");
+    assert_eq!(edited["text"], BUY_DISABLED);
+    assert_eq!(edited["version"], 2);
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!([C, "feature", BUY_DISABLED, false, 2])]
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.rule_changed"),
+        vec![
+            json!({ "feature_id": feature, "node_id": press["id"], "rule_id": rule["id"] }),
+            json!({ "feature_id": feature, "node_id": press["id"], "rule_id": rule["id"] })
+        ]
+    );
+}
+
+#[test]
+fn a_withdrawn_rule_stays_listed_flagged_and_false_puts_it_back_in_force() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED }),
+    );
+
+    must(
+        patch_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &rule,
+            &json!({ "expected_version": 1, "withdrawn": true }),
+        ),
+        200,
+        "withdraw the rule",
+    );
+    let withdrawn = rule_rows(f, &project, &feature, "");
+    must(
+        patch_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &rule,
+            &json!({ "expected_version": 2, "withdrawn": false }),
+        ),
+        200,
+        "put the rule back in force",
+    );
+
+    assert_eq!(withdrawn, vec![json!([C, "node", BUY_DISABLED, true, 2])]);
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!([C, "node", BUY_DISABLED, false, 3])]
+    );
+}
+
+/// A 422 in the validation error shape of the story handlers, `{"error":
+/// <code>}` (settled decision; the PRD names no code).
+fn assert_validation_error(response: &Response) {
+    assert_eq!(response.status, 422, "body: {}", response.text());
+    let body = response.json();
+    assert_eq!(body.as_object().map(|o| o.len()), Some(1), "{body}");
+    assert!(body["error"].is_string(), "{body}");
+}
+
+#[test]
+fn a_blank_text_or_an_unknown_scope_is_422_and_nothing_is_written() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED }),
+    );
+
+    let refused = [
+        post_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &id_of(&press),
+            &json!({ "text": "  " }),
+        ),
+        post_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &id_of(&press),
+            &json!({ "text": BUY_DISABLED, "scope": "app" }),
+        ),
+        patch_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &rule,
+            &json!({ "expected_version": 1, "text": "  " }),
+        ),
+        patch_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &rule,
+            &json!({ "expected_version": 1, "scope": "app" }),
+        ),
+    ];
+
+    assert_validation_error(&refused[0]);
+    assert_validation_error(&refused[1]);
+    assert_validation_error(&refused[2]);
+    assert_validation_error(&refused[3]);
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!([C, "node", BUY_DISABLED, false, 1])]
+    );
+    assert_eq!(events_of(&project, "behaviour.rule_changed").len(), 1);
+}
+
+#[test]
+fn a_rule_edit_with_a_stale_version_is_409_with_the_current_version_and_changes_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED }),
+    );
+    must(
+        patch_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &rule,
+            &json!({ "expected_version": 1, "scope": "story" }),
+        ),
+        200,
+        "edit the rule",
+    );
+
+    let response = patch_rule(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &rule,
+        &json!({ "expected_version": 1, "scope": "feature" }),
+    );
+
+    assert_eq!(response.status, 409, "body: {}", response.text());
+    assert_eq!(
+        response.json(),
+        json!({ "error": "conflict", "current_version": 2 })
+    );
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!([C, "story", BUY_DISABLED, false, 2])]
+    );
+    assert_eq!(events_of(&project, "behaviour.rule_changed").len(), 2);
+}
+
+#[test]
+fn delete_on_a_rule_is_405_and_the_rule_stays() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED }),
+    );
+
+    let response = call(
+        f,
+        "DELETE",
+        &format!(
+            "{}/rules/{}",
+            tree_path(f, &project, &feature),
+            rule["id"].as_str().expect("an id")
+        ),
+        Auth::Agent,
+        None,
+    );
+
+    assert_eq!(response.status, 405, "body: {}", response.text());
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!([C, "node", BUY_DISABLED, false, 1])]
+    );
+}
+
+/// Rules on G, the root and N, recorded in that order, with the scopes
+/// node, feature and story.
+fn rules_on_g_root_n(f: &Fixture, project: &str, feature: &str) {
+    let (n, _, g) = n_c_g(f, project, feature);
+    let root = root_of(f, project, feature);
+    add_rule(
+        f,
+        project,
+        feature,
+        &id_of(&g),
+        &json!({ "text": "Show the restock date." }),
+    );
+    add_rule(
+        f,
+        project,
+        feature,
+        &id_of(&root),
+        &json!({ "text": "Prices include VAT.", "scope": "feature" }),
+    );
+    add_rule(
+        f,
+        project,
+        feature,
+        &id_of(&n),
+        &json!({ "text": "A guest can buy.", "scope": "story" }),
+    );
+}
+
+#[test]
+fn the_rules_come_in_tree_order_of_their_nodes_and_under_a_node_only_those_on_it_and_below() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    rules_on_g_root_n(f, &project, &feature);
+    let (n, c) = {
+        let nodes = listed(f, &project, &feature);
+        (nodes[1].clone(), nodes[2].clone())
+    };
+
+    let whole = rule_rows(f, &project, &feature, "");
+    let under_n = rule_rows(f, &project, &feature, &format!("?under={}", id_of(&n)));
+    let under_c = rule_rows(f, &project, &feature, &format!("?under={}", id_of(&c)));
+
+    assert_eq!(
+        whole,
+        vec![
+            json!(["", "feature", "Prices include VAT.", false, 1]),
+            json!([N, "story", "A guest can buy.", false, 1]),
+            json!([G, "node", "Show the restock date.", false, 1])
+        ]
+    );
+    assert_eq!(
+        under_n,
+        vec![
+            json!([N, "story", "A guest can buy.", false, 1]),
+            json!([G, "node", "Show the restock date.", false, 1])
+        ]
+    );
+    assert_eq!(
+        under_c,
+        vec![json!([G, "node", "Show the restock date.", false, 1])]
+    );
+}
+
+#[test]
+fn the_scope_filter_lists_only_the_rules_of_that_scope() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    rules_on_g_root_n(f, &project, &feature);
+
+    let feature_rules = rule_rows(f, &project, &feature, "?scope=feature");
+    let node_rules = rule_rows(f, &project, &feature, "?scope=node");
+
+    assert_eq!(
+        feature_rules,
+        vec![json!(["", "feature", "Prices include VAT.", false, 1])]
+    );
+    assert_eq!(
+        node_rules,
+        vec![json!([G, "node", "Show the restock date.", false, 1])]
+    );
+}
+
+#[test]
+fn a_rule_with_an_api_key_without_a_run_is_400_identity_required_and_nothing_is_written() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let rule = add_rule(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "text": BUY_DISABLED }),
+    );
+
+    let added = post_rule(
+        f,
+        &project,
+        &feature,
+        Auth::AgentWithoutRun,
+        &id_of(&press),
+        &json!({ "text": "Show the restock date." }),
+    );
+    let edited = patch_rule(
+        f,
+        &project,
+        &feature,
+        Auth::AgentWithoutRun,
+        &rule,
+        &json!({ "expected_version": 1, "scope": "feature" }),
+    );
+
+    assert_error(&added, 400, "identity_required");
+    assert_error(&edited, 400, "identity_required");
+    assert_eq!(
+        rule_rows(f, &project, &feature, ""),
+        vec![json!([C, "node", BUY_DISABLED, false, 1])]
+    );
+}
+
+#[test]
+fn a_node_or_rule_of_another_feature_is_404_and_nothing_is_written() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    buy_tree(f, &project, &feature);
+    // A second feature of the same project, so only the feature tells the
+    // records apart.
+    let created = must(
+        call(
+            f,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/features", f.workspace),
+            Auth::Agent,
+            Some(&json!({ "name": unique("Returns") })),
+        ),
+        201,
+        "create a second feature",
+    );
+    let other_feature = created["feature"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let theirs = add(f, &project, &other_feature, &json!({ "title": "Returns" }));
+    let their_rule = add_rule(
+        f,
+        &project,
+        &other_feature,
+        &id_of(&theirs),
+        &json!({ "text": "A return needs a receipt." }),
+    );
+
+    let added = post_rule(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&theirs),
+        &json!({ "text": BUY_DISABLED }),
+    );
+    let edited = patch_rule(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &their_rule,
+        &json!({ "expected_version": 1, "text": BUY_DISABLED }),
+    );
+
+    assert_error(&added, 404, "not_found");
+    assert_error(&edited, 404, "not_found");
+    assert_eq!(rule_rows(f, &project, &feature, ""), Vec::<Value>::new());
+    assert_eq!(
+        rule_rows(f, &project, &other_feature, ""),
+        vec![json!([
+            "returns",
+            "node",
+            "A return needs a receipt.",
+            false,
+            1
+        ])]
     );
 }

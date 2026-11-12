@@ -1,4 +1,4 @@
-//! US-201 to US-209: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer` and `questions`, tested as the built binary against
+//! US-201 to US-210: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer`, `questions`, `rule` and `rules`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -56,6 +56,13 @@
 //!   list ends a marked node's line in ` [needs another pass]`. `omni
 //!   behaviour edit <node> --grilled` sends `needs_pass: false` with the
 //!   listed version.
+//! - `omni behaviour rule add <node> <text> [--scope <s>]` posts `{text,
+//!   scope}` to the rules route of the node the list gives and prints the
+//!   rule's id. `omni behaviour rules [<node>] [--scope <s>]` asks for
+//!   `scope=` and `under=<id>`, and prints `<scope>  <node path>  <rule id>
+//!   <text>` per rule in force, the root's path as `.`. `omni behaviour rule
+//!   edit <id>` sends the `version` the rule list gives with `scope`, or
+//!   `withdrawn: true` for `--withdraw`.
 
 mod common;
 
@@ -1051,5 +1058,168 @@ fn edit_grilled_sends_needs_pass_false_with_the_listed_version() {
     assert_eq!(
         sent(&server, "PATCH"),
         vec![json!({ "expected_version": 3, "needs_pass": false })]
+    );
+}
+
+const RULE: &str = "01900000-0000-7000-8000-000000000401";
+const ROOT_RULE: &str = "01900000-0000-7000-8000-000000000402";
+const WITHDRAWN_RULE: &str = "01900000-0000-7000-8000-000000000403";
+const BUY_DISABLED: &str = "Buy button is disabled whenever the product is out of stock.";
+
+fn rule(id: &str, node: &str, path: &str, scope: &str, text: &str) -> Value {
+    json!({
+        "id": id,
+        "node_id": node,
+        "node_path": path,
+        "text": text,
+        "scope": scope,
+        "withdrawn": false,
+        "author": { "kind": "agent", "run": "t1", "role": "grill" },
+        "version": 1,
+        "created_at": "2026-11-12T10:00:00.000000Z"
+    })
+}
+
+/// The story's rule, written twice, so its version is 3.
+fn story_rule() -> Value {
+    let mut rule = rule(RULE, STORY, "customer-buys-product", "story", BUY_DISABLED);
+    rule["version"] = json!(3);
+    rule
+}
+
+/// A withdrawn rule on the story.
+fn withdrawn_rule() -> Value {
+    let mut rule = rule(
+        WITHDRAWN_RULE,
+        STORY,
+        "customer-buys-product",
+        "node",
+        "Only members can buy.",
+    );
+    rule["withdrawn"] = json!(true);
+    rule
+}
+
+/// An API that lists `listed()`, gives a feature rule on the root, the
+/// story's rule and a withdrawn rule on the story, answers `?scope=feature`
+/// with the root's rule and `?under=` the story with the story's two, and
+/// answers a new rule on the story and an edit of its rule.
+fn rules_mock() -> MockServer {
+    MockServer::start(|request| {
+        let base = tree_path();
+        let root_rule = rule(ROOT_RULE, ROOT, "", "feature", "Prices include VAT.");
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", path) if path == base => Reply::json(200, &listed()),
+            ("GET", path) if path == format!("{base}/rules") => Reply::json(
+                200,
+                &json!({ "rules": [root_rule, story_rule(), withdrawn_rule()] }),
+            ),
+            ("GET", path) if path == format!("{base}/rules?scope=feature") => {
+                Reply::json(200, &json!({ "rules": [root_rule] }))
+            }
+            ("GET", path) if path == format!("{base}/rules?under={STORY}") => {
+                Reply::json(200, &json!({ "rules": [story_rule(), withdrawn_rule()] }))
+            }
+            ("POST", path) if path == format!("{base}/nodes/{STORY}/rules") => {
+                Reply::json(201, &json!({ "rule": story_rule() }))
+            }
+            ("PATCH", path) if path == format!("{base}/rules/{RULE}") => {
+                Reply::json(200, &json!({ "rule": story_rule() }))
+            }
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    })
+}
+
+#[test]
+fn rule_add_on_a_path_posts_the_text_and_scope_to_that_nodes_rules_and_prints_the_rule_id() {
+    let server = rules_mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "rule",
+            "add",
+            "customer-buys-product",
+            BUY_DISABLED,
+            "--scope",
+            "story",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, format!("{RULE}\n"));
+    assert_eq!(
+        posts(&server),
+        vec![json!({ "text": BUY_DISABLED, "scope": "story" })]
+    );
+}
+
+#[test]
+fn rules_prints_scope_path_id_and_text_per_line_without_the_withdrawn_and_the_root_as_a_dot() {
+    let server = rules_mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "rules"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "feature  .  {ROOT_RULE}  Prices include VAT.\n\
+             story  customer-buys-product  {RULE}  {BUY_DISABLED}\n"
+        )
+    );
+}
+
+#[test]
+fn rules_scope_feature_asks_for_the_feature_rules() {
+    let server = rules_mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "rules", "--scope", "feature"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!("feature  .  {ROOT_RULE}  Prices include VAT.\n")
+    );
+}
+
+#[test]
+fn rules_of_a_path_asks_for_those_under_that_nodes_id() {
+    let server = rules_mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "rules", "customer-buys-product"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!("story  customer-buys-product  {RULE}  {BUY_DISABLED}\n")
+    );
+}
+
+#[test]
+fn rule_edit_sends_the_listed_version_with_the_scope_or_withdrawn_true() {
+    let server = rules_mock();
+    let home = logged_in(&server);
+
+    let scoped = run(
+        &home,
+        &["behaviour", "rule", "edit", RULE, "--scope", "feature"],
+    );
+    let withdrawn = run(&home, &["behaviour", "rule", "edit", RULE, "--withdraw"]);
+
+    assert_eq!(scoped.code, 0, "stderr: {}", scoped.stderr);
+    assert_eq!(withdrawn.code, 0, "stderr: {}", withdrawn.stderr);
+    assert_eq!(
+        sent(&server, "PATCH"),
+        vec![
+            json!({ "expected_version": 3, "scope": "feature" }),
+            json!({ "expected_version": 3, "withdrawn": true })
+        ]
     );
 }
