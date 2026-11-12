@@ -8,6 +8,7 @@
 mod args;
 mod attach;
 mod behaviour;
+mod behaviour_import;
 mod commands;
 mod comments;
 mod components;
@@ -283,6 +284,19 @@ Usage:
                                       rule in force in the feature, or on <node> and below,
                                       in tree order. With --json the API's list, withdrawn
                                       rules included and flagged
+  omni behaviour import <folder> [--check]
+                                      read a grill-tree folder (a node.md in every node folder)
+                                      into the feature's empty tree with one request; prints
+                                      `imported <n> nodes (<n> stories), <n> same-as, <n> handoffs`.
+                                      Sibling order follows the Children lines; status
+                                      out-of-scope is stored as out_of_scope and stale as open.
+                                      A folder problem (no node.md, a bad slug, no title, an
+                                      unknown status, a pointer to a missing folder, two
+                                      pointers, a pointer on a node with child folders) stops
+                                      it with one line each and nothing sent; a feature that
+                                      has a tree refuses (tree_not_empty). --check reads and
+                                      checks the folder only, prints `would import ...` and
+                                      contacts no server
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -345,6 +359,7 @@ Options (before or after the command):
   --needs-pass          `omni behaviour list`: only the nodes marked for another grill pass
   --scope <s>           `omni behaviour rule add|edit|rules`: node, story or feature
   --withdraw            `omni behaviour rule edit`: take the rule out of force
+  --check               `omni behaviour import`: read and check the folder, send nothing
   --grilled             `omni behaviour edit`: clear the node's mark for another pass
   --change              `omni behaviour answer`: change the answer of an answered question
   --answer <text>       `omni behaviour ask`: create the question answered

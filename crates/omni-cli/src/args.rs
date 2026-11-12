@@ -109,6 +109,8 @@ pub struct Args {
     /// `omni behaviour list --needs-pass`, `omni behaviour edit --grilled`.
     pub needs_pass: bool,
     pub grilled: bool,
+    /// `omni behaviour import --check`.
+    pub check: bool,
     /// `omni behaviour rule add|edit --scope <s>`, `rule edit --withdraw`,
     /// `omni behaviour rules --scope <s>`.
     pub scope: Option<String>,
@@ -175,6 +177,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--withdraw" => {
                 parsed.withdraw = true;
+                continue;
+            }
+            "--check" => {
+                parsed.check = true;
                 continue;
             }
             "--grilled" => {

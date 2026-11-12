@@ -9,6 +9,7 @@
 use crate::args::Args;
 use crate::attach;
 use crate::behaviour;
+use crate::behaviour_import;
 use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
@@ -154,11 +155,15 @@ pub fn run(args: &Args) -> Result<()> {
         ["behaviour" | "behavior", "rule", "edit"] => behaviour::rule_edit(args, None),
         ["behaviour" | "behavior", "rules"] => behaviour::rules(args, None),
         ["behaviour" | "behavior", "rules", node] => behaviour::rules(args, Some(node)),
+        ["behaviour" | "behavior", "import", folder] => {
+            behaviour_import::import(args, Some(folder))
+        }
+        ["behaviour" | "behavior", "import"] => behaviour_import::import(args, None),
         ["behaviour" | "behavior", "questions"] => behaviour::questions(args, None),
         ["behaviour" | "behavior", "questions", node] => behaviour::questions(args, Some(node)),
         ["behaviour" | "behavior", ..] => {
             bail!(
-                "usage: omni behaviour add|read|list|edit|move|ask|answer|question|questions|rule|rules; see `omni --help`"
+                "usage: omni behaviour add|read|list|edit|move|ask|answer|question|questions|rule|rules|import; see `omni --help`"
             )
         }
         ["story", "add"] => stories::add(args, None),
@@ -291,6 +296,13 @@ impl Agent {
     /// command that goes on without the answer.
     pub(crate) fn request_unchecked(&self, method: &str, path: &str) -> Result<Response> {
         http::send(&self.server, method, path, &self.headers, None)
+    }
+
+    /// Posts `body` as JSON and returns the response whatever its status.
+    pub(crate) fn send_unchecked(&self, method: &str, path: &str, body: &[u8]) -> Result<Response> {
+        let mut headers = self.headers.clone();
+        headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        http::send(&self.server, method, path, &headers, Some(body))
     }
 
     pub(crate) fn request(

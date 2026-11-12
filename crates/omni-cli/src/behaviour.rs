@@ -28,7 +28,7 @@ fn unreadable() -> CliError {
 }
 
 /// The behaviour path of the feature the command works in.
-fn behaviour_path(args: &Args, agent: &Agent) -> Result<String> {
+pub(crate) fn behaviour_path(args: &Args, agent: &Agent) -> Result<String> {
     let project = project_id(args, agent)?;
     let Some(feature) = creation_feature(args, agent, &project)? else {
         bail!("no feature: pass --feature <name or id>, or put feature = \"name\" in .omni.toml");
