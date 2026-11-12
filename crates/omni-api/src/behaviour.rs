@@ -17,6 +17,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
@@ -2243,4 +2244,466 @@ pub async fn list_rules(
         }
     }
     Ok(Json(RuleListResponse { rules }))
+}
+
+/// An answer in an imported question.
+#[derive(Deserialize, ToSchema)]
+pub struct ImportAnswer {
+    pub answer: String,
+    /// `human` or `agent`.
+    pub by: String,
+}
+
+/// A question in an imported node; open when it has no answers.
+#[derive(Deserialize, ToSchema)]
+pub struct ImportQuestion {
+    pub question: String,
+    /// Oldest first; the last is the current answer.
+    #[serde(default)]
+    pub answers: Vec<ImportAnswer>,
+}
+
+/// A rule in an imported node.
+#[derive(Deserialize, ToSchema)]
+pub struct ImportRule {
+    pub text: String,
+    /// `node`, `story` or `feature`.
+    pub scope: String,
+}
+
+/// A node of an imported tree.
+#[derive(Deserialize, ToSchema)]
+pub struct ImportNode {
+    /// Any string, unique in the body.
+    pub key: String,
+    /// The `key` of the parent; `null` for the root, which is the only such node.
+    pub parent: Option<String>,
+    /// Ignored on the root.
+    #[serde(default)]
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub situation: Option<String>,
+    pub behaviour: Option<String>,
+    /// `open` (the default), `done` or `out_of_scope`.
+    pub status: Option<String>,
+    /// The `key` of a node that describes the same situation.
+    pub same_as: Option<String>,
+    /// The `key` of the story, or the node in one, that the user carries on in.
+    pub handoff: Option<String>,
+    #[serde(default)]
+    pub questions: Vec<ImportQuestion>,
+    #[serde(default)]
+    pub rules: Vec<ImportRule>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ImportRequest {
+    /// Siblings are ordered as they are in this list.
+    pub nodes: Vec<ImportNode>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ImportResponse {
+    pub nodes: usize,
+    pub questions: usize,
+    pub answers: usize,
+    pub rules: usize,
+}
+
+/// One thing wrong in an imported tree.
+#[derive(Serialize, ToSchema)]
+pub struct ImportProblem {
+    /// The `key` of the node; empty when the problem is in the tree as a whole.
+    pub key: String,
+    /// A sentence that names the field and the value.
+    pub problem: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ImportInvalidBody {
+    /// `invalid_import`.
+    pub error: String,
+    pub problems: Vec<ImportProblem>,
+}
+
+pub enum ImportError {
+    Api(ApiError),
+    Invalid(Vec<ImportProblem>),
+}
+
+impl From<ApiError> for ImportError {
+    fn from(error: ApiError) -> Self {
+        Self::Api(error)
+    }
+}
+
+impl IntoResponse for ImportError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Api(error) => error.into_response(),
+            Self::Invalid(problems) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({ "error": "invalid_import", "problems": problems })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// Every problem of an imported tree, by the rules of the single writes, in body order.
+fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
+    let mut problems = Vec::new();
+    let mut say = |key: &str, problem: String| {
+        problems.push(ImportProblem {
+            key: key.to_string(),
+            problem,
+        });
+    };
+    let mut at: HashMap<&str, usize> = HashMap::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if at.insert(node.key.as_str(), i).is_some() {
+            say(
+                &node.key,
+                format!("key \"{}\" is used by more than one node", node.key),
+            );
+        }
+    }
+    let roots: Vec<&ImportNode> = nodes.iter().filter(|n| n.parent.is_none()).collect();
+    if roots.is_empty() {
+        say("", "no node has parent null, so there is no root".into());
+    }
+    for extra in roots.iter().skip(1) {
+        say(
+            &extra.key,
+            "parent is null but the tree already has a root".into(),
+        );
+    }
+    let has_children: std::collections::HashSet<&str> =
+        nodes.iter().filter_map(|n| n.parent.as_deref()).collect();
+    let mut slugs: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+    for node in nodes {
+        let key = node.key.as_str();
+        let is_root = node.parent.is_none();
+        if node.title.trim().is_empty() {
+            say(key, "title is blank".into());
+        }
+        match node.parent.as_deref() {
+            Some(parent) if !at.contains_key(parent) => {
+                say(key, format!("parent \"{parent}\" is not a key in the body"));
+            }
+            Some(parent) => {
+                if !slug_fits(&node.slug) {
+                    say(
+                        key,
+                        format!(
+                            "slug \"{}\" does not fit lowercase words joined by - and 80 characters",
+                            node.slug
+                        ),
+                    );
+                } else if !slugs.insert((parent, node.slug.as_str())) {
+                    say(
+                        key,
+                        format!(
+                            "slug \"{}\" is taken by a sibling under \"{parent}\"",
+                            node.slug
+                        ),
+                    );
+                }
+            }
+            None => {}
+        }
+        if let Some(status) = node.status.as_deref()
+            && !matches!(status, "open" | "done" | "out_of_scope")
+        {
+            say(
+                key,
+                format!("status \"{status}\" is not open, done or out_of_scope"),
+            );
+        }
+        if node.same_as.is_some() && node.handoff.is_some() {
+            say(
+                key,
+                "same_as and handoff are both set; a node has one pointer".into(),
+            );
+        }
+        for (field, target) in [("same_as", &node.same_as), ("handoff", &node.handoff)] {
+            if let Some(target) = target {
+                if target == key {
+                    say(key, format!("{field} points at the node itself"));
+                } else if !at.contains_key(target.as_str()) {
+                    say(
+                        key,
+                        format!("{field} \"{target}\" is not a key in the body"),
+                    );
+                }
+            }
+        }
+        if (node.same_as.is_some() || node.handoff.is_some()) && has_children.contains(key) {
+            say(
+                key,
+                "has a pointer and children; a node with a pointer has no children".into(),
+            );
+        }
+        if let Some(parent) = node.parent.as_deref()
+            && let Some(&p) = at.get(parent)
+            && (nodes[p].same_as.is_some() || nodes[p].handoff.is_some())
+        {
+            say(
+                key,
+                format!("parent \"{parent}\" has a pointer and so cannot have children"),
+            );
+        }
+        for question in &node.questions {
+            if question.question.trim().is_empty() {
+                say(key, "a question is blank".into());
+            }
+            for answer in &question.answers {
+                if answer.answer.trim().is_empty() {
+                    say(
+                        key,
+                        format!("an answer to \"{}\" is blank", question.question),
+                    );
+                }
+                if !matches!(answer.by.as_str(), "human" | "agent") {
+                    say(
+                        key,
+                        format!("answer by \"{}\" is not human or agent", answer.by),
+                    );
+                }
+            }
+        }
+        for rule in &node.rules {
+            if rule.text.trim().is_empty() {
+                say(key, "a rule text is blank".into());
+            }
+            if !scope_known(&rule.scope) {
+                say(
+                    key,
+                    format!(
+                        "rule scope \"{}\" is not node, story or feature",
+                        rule.scope
+                    ),
+                );
+            } else if is_root && rule.scope == "story" {
+                say(key, "a rule of the root cannot have scope story".into());
+            }
+        }
+    }
+    if roots.len() == 1 {
+        let mut reached: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        reached.insert(roots[0].key.as_str());
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for node in nodes {
+                if let Some(parent) = node.parent.as_deref()
+                    && reached.contains(parent)
+                    && reached.insert(node.key.as_str())
+                {
+                    grew = true;
+                }
+            }
+        }
+        for node in nodes {
+            if node.parent.as_deref().is_some_and(|p| at.contains_key(p))
+                && !reached.contains(node.key.as_str())
+            {
+                say(
+                    &node.key,
+                    "parent chain never reaches the root; the tree has a cycle".into(),
+                );
+            }
+        }
+    }
+    problems
+}
+
+/// Reads a whole tree into a feature that has none, all or nothing.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+    ),
+    request_body = ImportRequest,
+    responses(
+        (status = 201, description = "The tree is stored; one `behaviour.imported` event is emitted", body = ImportResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
+        (status = 409, description = "The feature already has a node (`tree_not_empty`)", body = ErrorBody),
+        (status = 422, description = "`invalid_import` with every problem found, by node key; nothing is written", body = ImportInvalidBody),
+    )
+)]
+pub async fn import_tree(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<ImportResponse>), ImportError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let import = parse_body::<ImportRequest>(&body);
+    let author = author_of(&request.actor, &identity);
+    let workspace_id = &request.workspace_id;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    lock_feature(&mut tx, &project_id, &feature_id).await?;
+    let import = import?;
+    let started: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM behaviour_nodes WHERE feature_id = $1::uuid)",
+    )
+    .bind(&feature_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    if started {
+        return Err(ApiError::conflict("tree_not_empty").into());
+    }
+    let problems = import_problems(&import.nodes);
+    if !problems.is_empty() {
+        return Err(ImportError::Invalid(problems));
+    }
+    let nodes = &import.nodes;
+    let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut root = 0;
+    for (i, node) in nodes.iter().enumerate() {
+        match node.parent.as_deref() {
+            Some(parent) => children.entry(parent).or_default().push(i),
+            None => root = i,
+        }
+    }
+    let mut ids: HashMap<&str, String> = HashMap::new();
+    let mut order = vec![(root, None::<usize>, 0i32)];
+    let mut next = 0;
+    let (mut questions, mut answers, mut rules) = (0, 0, 0);
+    while next < order.len() {
+        let (i, parent, position) = order[next];
+        next += 1;
+        let node = &nodes[i];
+        let parent_id = parent.map(|p| ids[nodes[p].key.as_str()].clone());
+        let id: String = sqlx::query_scalar(
+            "INSERT INTO behaviour_nodes (workspace_id, project_id, feature_id, parent_id, slug, \
+             position, title, summary, situation, behaviour, status, created_by) \
+             VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10, $11, \
+             $12::text::jsonb) RETURNING id::text",
+        )
+        .bind(workspace_id)
+        .bind(&project_id)
+        .bind(&feature_id)
+        .bind(&parent_id)
+        .bind(parent.map(|_| node.slug.as_str()))
+        .bind(position)
+        .bind(node.title.trim())
+        .bind(node.summary.as_deref().unwrap_or_default())
+        .bind(node.situation.as_deref().unwrap_or_default())
+        .bind(node.behaviour.as_deref().unwrap_or_default())
+        .bind(node.status.as_deref().unwrap_or("open"))
+        .bind(author.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        for question in &node.questions {
+            let given_by = question.answers.last().map(|a| a.by.as_str());
+            let question_id: String = sqlx::query_scalar(
+                "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, \
+                 question, asked_by, state, answered_by) VALUES ($1::uuid, $2::uuid, $3::uuid, \
+                 $4::uuid, $5, $6::text::jsonb, \
+                 CASE WHEN $7::text IS NULL THEN 'open' ELSE 'answered' END, $7) \
+                 RETURNING id::text",
+            )
+            .bind(workspace_id)
+            .bind(&project_id)
+            .bind(&feature_id)
+            .bind(&id)
+            .bind(question.question.trim())
+            .bind(author.to_string())
+            .bind(given_by)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+            questions += 1;
+            for answer in &question.answers {
+                insert_answer(
+                    &mut tx,
+                    workspace_id,
+                    &feature_id,
+                    &question_id,
+                    answer.answer.trim(),
+                    &answer.by,
+                    &author,
+                )
+                .await?;
+                answers += 1;
+            }
+        }
+        for rule in &node.rules {
+            sqlx::query(
+                "INSERT INTO behaviour_rules (workspace_id, project_id, feature_id, node_id, \
+                 text, scope, author) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, \
+                 $7::text::jsonb)",
+            )
+            .bind(workspace_id)
+            .bind(&project_id)
+            .bind(&feature_id)
+            .bind(&id)
+            .bind(rule.text.trim())
+            .bind(&rule.scope)
+            .bind(author.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+            rules += 1;
+        }
+        ids.insert(node.key.as_str(), id);
+        for (position, &child) in children
+            .get(node.key.as_str())
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            order.push((child, Some(i), position as i32));
+        }
+    }
+    for node in nodes {
+        if node.same_as.is_some() || node.handoff.is_some() {
+            let pointer = |key: &Option<String>| key.as_deref().map(|k| ids[k].clone());
+            sqlx::query(
+                "UPDATE behaviour_nodes SET same_as_id = $2::uuid, handoff_id = $3::uuid \
+                 WHERE id = $1::uuid",
+            )
+            .bind(&ids[node.key.as_str()])
+            .bind(pointer(&node.same_as))
+            .bind(pointer(&node.handoff))
+            .execute(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+        }
+    }
+    live::emit(
+        &mut tx,
+        workspace_id,
+        &project_id,
+        "behaviour.imported",
+        &json!({
+            "feature_id": feature_id, "nodes": nodes.len(), "questions": questions,
+            "rules": rules,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
+    Ok((
+        StatusCode::CREATED,
+        Json(ImportResponse {
+            nodes: nodes.len(),
+            questions,
+            answers,
+            rules,
+        }),
+    ))
 }

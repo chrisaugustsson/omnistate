@@ -597,6 +597,65 @@ export const HomeResponseSchema = z.object({
 });
 export type HomeResponse = z.infer<typeof HomeResponseSchema>;
 
+export const ImportAnswerSchema = z.object({
+  answer: z.string(),
+  by: z.string(),
+});
+export type ImportAnswer = z.infer<typeof ImportAnswerSchema>;
+
+export const ImportProblemSchema = z.object({
+  key: z.string(),
+  problem: z.string(),
+});
+export type ImportProblem = z.infer<typeof ImportProblemSchema>;
+
+export const ImportInvalidBodySchema = z.object({
+  error: z.string(),
+  problems: z.array(ImportProblemSchema),
+});
+export type ImportInvalidBody = z.infer<typeof ImportInvalidBodySchema>;
+
+export const ImportQuestionSchema = z.object({
+  answers: z.array(ImportAnswerSchema).optional(),
+  question: z.string(),
+});
+export type ImportQuestion = z.infer<typeof ImportQuestionSchema>;
+
+export const ImportRuleSchema = z.object({
+  scope: z.string(),
+  text: z.string(),
+});
+export type ImportRule = z.infer<typeof ImportRuleSchema>;
+
+export const ImportNodeSchema = z.object({
+  behaviour: z.string().nullable().optional(),
+  handoff: z.string().nullable().optional(),
+  key: z.string(),
+  parent: z.string().nullable().optional(),
+  questions: z.array(ImportQuestionSchema).optional(),
+  rules: z.array(ImportRuleSchema).optional(),
+  same_as: z.string().nullable().optional(),
+  situation: z.string().nullable().optional(),
+  slug: z.string().optional(),
+  status: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  title: z.string(),
+});
+export type ImportNode = z.infer<typeof ImportNodeSchema>;
+
+export const ImportRequestSchema = z.object({
+  nodes: z.array(ImportNodeSchema),
+});
+export type ImportRequest = z.infer<typeof ImportRequestSchema>;
+
+export const ImportResponseSchema = z.object({
+  answers: z.number().int(),
+  nodes: z.number().int(),
+  questions: z.number().int(),
+  rules: z.number().int(),
+});
+export type ImportResponse = z.infer<typeof ImportResponseSchema>;
+
 export const ImportTagsRequestSchema = z.object({
   tags: z.string().nullable().optional(),
 });
@@ -663,7 +722,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -1123,6 +1182,14 @@ export const schemas = {
   HomeDoc: HomeDocSchema,
   HomeResponse: HomeResponseSchema,
   HomeThread: HomeThreadSchema,
+  ImportAnswer: ImportAnswerSchema,
+  ImportInvalidBody: ImportInvalidBodySchema,
+  ImportNode: ImportNodeSchema,
+  ImportProblem: ImportProblemSchema,
+  ImportQuestion: ImportQuestionSchema,
+  ImportRequest: ImportRequestSchema,
+  ImportResponse: ImportResponseSchema,
+  ImportRule: ImportRuleSchema,
   ImportTagsRequest: ImportTagsRequestSchema,
   ImportTokensRequest: ImportTokensRequestSchema,
   ImportedHeadComponents: ImportedHeadComponentsSchema,
@@ -1514,6 +1581,17 @@ export const operations = {
       "200": NodeListResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import": {
+    request: ImportRequestSchema,
+    responses: {
+      "201": ImportResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ImportInvalidBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes": {

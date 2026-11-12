@@ -118,6 +118,8 @@ pub enum LiveEventName {
     BehaviourRuleChanged,
     #[serde(rename = "behaviour.marked")]
     BehaviourMarked,
+    #[serde(rename = "behaviour.imported")]
+    BehaviourImported,
     #[serde(rename = "comment.created")]
     CommentCreated,
     #[serde(rename = "comment.replied")]

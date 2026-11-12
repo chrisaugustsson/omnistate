@@ -11,10 +11,11 @@ use crate::api_keys::{ApiKeyBody, CreatedKeyResponse, KeyListResponse, KeyRespon
 use crate::attachments::{AttachmentBody, AttachmentResponse};
 use crate::behaviour::{
     AnswerBody, AnswerRequest, AskRequest, ChainNodeBody, CreateNodeRequest, CreateRuleRequest,
-    MoveNodeRequest, NodeBody, NodeChildBody, NodeListResponse, NodeReadResponse, NodeResponse,
-    NodeSummaryBody, PatchNodeRequest, PatchRuleRequest, PointerBody, PointerDetailBody,
-    QuestionBody, QuestionListResponse, QuestionResponse, ReachRuleBody, RuleBody,
-    RuleListResponse, RuleResponse,
+    ImportAnswer, ImportInvalidBody, ImportNode, ImportProblem, ImportQuestion, ImportRequest,
+    ImportResponse, ImportRule, MoveNodeRequest, NodeBody, NodeChildBody, NodeListResponse,
+    NodeReadResponse, NodeResponse, NodeSummaryBody, PatchNodeRequest, PatchRuleRequest,
+    PointerBody, PointerDetailBody, QuestionBody, QuestionListResponse, QuestionResponse,
+    ReachRuleBody, RuleBody, RuleListResponse, RuleResponse,
 };
 use crate::boards::{BoardBody, Manifest, ManifestBoard, ManifestPage};
 use crate::comments::{
@@ -118,6 +119,7 @@ use utoipa::OpenApi;
         crate::behaviour::create_rule,
         crate::behaviour::patch_rule,
         crate::behaviour::list_rules,
+        crate::behaviour::import_tree,
         crate::stories::create_story,
         crate::stories::list_stories,
         crate::stories::show_story,
@@ -232,6 +234,14 @@ use utoipa::OpenApi;
         ReachRuleBody,
         RuleListResponse,
         RuleResponse,
+        ImportRequest,
+        ImportNode,
+        ImportQuestion,
+        ImportAnswer,
+        ImportRule,
+        ImportResponse,
+        ImportProblem,
+        ImportInvalidBody,
         PointerBody,
         PointerDetailBody,
         NodeResponse,

@@ -1671,6 +1671,217 @@
         ],
         "description": "A thread of the project with what the scope pages show of its posts."
       },
+      "ImportAnswer": {
+        "description": "An answer in an imported question.",
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "by": {
+            "description": "`human` or `agent`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer",
+          "by"
+        ],
+        "type": "object"
+      },
+      "ImportInvalidBody": {
+        "properties": {
+          "error": {
+            "description": "`invalid_import`.",
+            "type": "string"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/ImportProblem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "error",
+          "problems"
+        ],
+        "type": "object"
+      },
+      "ImportNode": {
+        "description": "A node of an imported tree.",
+        "properties": {
+          "behaviour": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handoff": {
+            "description": "The `key` of the story, or the node in one, that the user carries on in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "description": "Any string, unique in the body.",
+            "type": "string"
+          },
+          "parent": {
+            "description": "The `key` of the parent; `null` for the root, which is the only such node.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/ImportQuestion"
+            },
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRule"
+            },
+            "type": "array"
+          },
+          "same_as": {
+            "description": "The `key` of a node that describes the same situation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "situation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "description": "Ignored on the root.",
+            "type": "string"
+          },
+          "status": {
+            "description": "`open` (the default), `done` or `out_of_scope`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title"
+        ],
+        "type": "object"
+      },
+      "ImportProblem": {
+        "description": "One thing wrong in an imported tree.",
+        "properties": {
+          "key": {
+            "description": "The `key` of the node; empty when the problem is in the tree as a whole.",
+            "type": "string"
+          },
+          "problem": {
+            "description": "A sentence that names the field and the value.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "problem"
+        ],
+        "type": "object"
+      },
+      "ImportQuestion": {
+        "description": "A question in an imported node; open when it has no answers.",
+        "properties": {
+          "answers": {
+            "description": "Oldest first; the last is the current answer.",
+            "items": {
+              "$ref": "#/components/schemas/ImportAnswer"
+            },
+            "type": "array"
+          },
+          "question": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      },
+      "ImportRequest": {
+        "properties": {
+          "nodes": {
+            "description": "Siblings are ordered as they are in this list.",
+            "items": {
+              "$ref": "#/components/schemas/ImportNode"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "ImportResponse": {
+        "properties": {
+          "answers": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "questions": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rules": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "nodes",
+          "questions",
+          "answers",
+          "rules"
+        ],
+        "type": "object"
+      },
+      "ImportRule": {
+        "description": "A rule in an imported node.",
+        "properties": {
+          "scope": {
+            "description": "`node`, `story` or `feature`.",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "scope"
+        ],
+        "type": "object"
+      },
       "ImportTagsRequest": {
         "properties": {
           "tags": {
@@ -1891,6 +2102,7 @@
           "behaviour.question_changed",
           "behaviour.rule_changed",
           "behaviour.marked",
+          "behaviour.imported",
           "comment.created",
           "comment.replied",
           "comment.deleted",
@@ -7319,6 +7531,117 @@
           }
         },
         "summary": "The nodes of a feature's behaviour tree, without their text.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import": {
+      "post": {
+        "operationId": "import_tree",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResponse"
+                }
+              }
+            },
+            "description": "The tree is stored; one `behaviour.imported` event is emitted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The feature already has a node (`tree_not_empty`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportInvalidBody"
+                }
+              }
+            },
+            "description": "`invalid_import` with every problem found, by node key; nothing is written"
+          }
+        },
+        "summary": "Reads a whole tree into a feature that has none, all or nothing.",
         "tags": [
           "crate::behaviour"
         ],
