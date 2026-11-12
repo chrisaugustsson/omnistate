@@ -7,6 +7,7 @@
 
 mod args;
 mod attach;
+mod behaviour;
 mod commands;
 mod comments;
 mod components;
@@ -206,6 +207,16 @@ Usage:
                                       set the files the story changed
                                       Each write reads the story first and sends its version; a
                                       stale one is a conflict (exit 3).
+  omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>]
+                                      add a node to the feature's behaviour tree, the last child
+                                      of --parent (the root when left out; the first add also
+                                      creates the root, titled with the feature's name); prints
+                                      the node's path. The slug is derived from the title when
+                                      left out. `behavior` is the same word
+  omni behaviour read <node>          print a node's path, level, status, title and summary, or
+                                      with --json the node and the nodes above it. <node> is an
+                                      ID, a path (slugs from the story down, joined by /) or . for
+                                      the root
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -254,6 +265,8 @@ Options (before or after the command):
   --posts <n>           `omni wait --thread`: wait for this many posts that you may read
   --concluded           `omni wait --thread`: wait for the thread's conclusion
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
+  --slug <slug>         `omni behaviour add`: the node's slug, lowercase words joined by -
+  --parent <node>       `omni behaviour add`: the node to add under (an ID, a path or .)
   --priority <n>        `omni story add`: the story's priority, 0 to 3 (3 by default)
   --number-from <n>     `omni story add`: the number the project's first story starts after
   --status <status>     `omni story list`: only the stories in this status

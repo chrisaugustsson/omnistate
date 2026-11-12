@@ -228,6 +228,14 @@ export const CreateFeatureRequestSchema = z.object({
 });
 export type CreateFeatureRequest = z.infer<typeof CreateFeatureRequestSchema>;
 
+export const CreateNodeRequestSchema = z.object({
+  parent_id: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  title: z.string(),
+});
+export type CreateNodeRequest = z.infer<typeof CreateNodeRequestSchema>;
+
 export const CreatePostRequestSchema = z.object({
   attachments: z.array(z.string()).nullable().optional(),
   body: z.string().nullable().optional(),
@@ -564,7 +572,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -620,6 +628,55 @@ export const MoveStoryRequestSchema = z.object({
   to: z.string(),
 });
 export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
+
+export const NodeBodySchema = z.object({
+  behaviour: z.string(),
+  created_at: z.string(),
+  created_by: z.record(z.string(), z.unknown()),
+  id: z.string(),
+  level: z.number().int(),
+  parent_id: z.string().nullable().optional(),
+  path: z.string(),
+  position: z.number().int(),
+  situation: z.string(),
+  slug: z.string().nullable().optional(),
+  status: z.string(),
+  summary: z.string(),
+  title: z.string(),
+  updated_at: z.string(),
+  version: z.number().int(),
+});
+export type NodeBody = z.infer<typeof NodeBodySchema>;
+
+export const NodeSummaryBodySchema = z.object({
+  id: z.string(),
+  level: z.number().int(),
+  parent_id: z.string().nullable().optional(),
+  path: z.string(),
+  position: z.number().int(),
+  slug: z.string().nullable().optional(),
+  status: z.string(),
+  summary: z.string(),
+  title: z.string(),
+  version: z.number().int(),
+});
+export type NodeSummaryBody = z.infer<typeof NodeSummaryBodySchema>;
+
+export const NodeListResponseSchema = z.object({
+  nodes: z.array(NodeSummaryBodySchema),
+});
+export type NodeListResponse = z.infer<typeof NodeListResponseSchema>;
+
+export const NodeReadResponseSchema = z.object({
+  chain: z.array(NodeBodySchema),
+  node: NodeBodySchema,
+});
+export type NodeReadResponse = z.infer<typeof NodeReadResponseSchema>;
+
+export const NodeResponseSchema = z.object({
+  node: NodeBodySchema,
+});
+export type NodeResponse = z.infer<typeof NodeResponseSchema>;
 
 export const PatchStoryRequestSchema = z.object({
   blocked_by: z.array(z.string()).nullable().optional(),
@@ -852,6 +909,7 @@ export const schemas = {
   CreateCommentRequest: CreateCommentRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
   CreateFeatureRequest: CreateFeatureRequestSchema,
+  CreateNodeRequest: CreateNodeRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
   CreateStoryRequest: CreateStoryRequestSchema,
@@ -897,7 +955,12 @@ export const schemas = {
   ManifestPage: ManifestPageSchema,
   MoveStoryRequest: MoveStoryRequestSchema,
   NewCriterion: NewCriterionSchema,
+  NodeBody: NodeBodySchema,
   NodeBox: NodeBoxSchema,
+  NodeListResponse: NodeListResponseSchema,
+  NodeReadResponse: NodeReadResponseSchema,
+  NodeResponse: NodeResponseSchema,
+  NodeSummaryBody: NodeSummaryBodySchema,
   OpResultBody: OpResultBodySchema,
   PatchStoryRequest: PatchStoryRequestSchema,
   PostBody: PostBodySchema,
@@ -1244,6 +1307,31 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour": {
+    responses: {
+      "200": NodeListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes": {
+    request: CreateNodeRequestSchema,
+    responses: {
+      "201": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
+    responses: {
+      "200": NodeReadResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {

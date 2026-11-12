@@ -108,6 +108,8 @@ pub enum LiveErrorCode {
 /// Every event the API emits, as `<entity>.<action>`.
 #[derive(Serialize, ToSchema)]
 pub enum LiveEventName {
+    #[serde(rename = "behaviour.node_created")]
+    BehaviourNodeCreated,
     #[serde(rename = "comment.created")]
     CommentCreated,
     #[serde(rename = "comment.replied")]

@@ -10,6 +10,7 @@ mod activity;
 mod api_keys;
 mod attachments;
 pub mod auth;
+mod behaviour;
 mod boards;
 mod chunks;
 mod comments;
@@ -344,6 +345,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
             get(attachments::download),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour",
+            get(behaviour::list_nodes),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes",
+            post(behaviour::create_node),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+            get(behaviour::show_node),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",

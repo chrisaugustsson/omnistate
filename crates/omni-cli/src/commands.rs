@@ -8,6 +8,7 @@
 
 use crate::args::Args;
 use crate::attach;
+use crate::behaviour;
 use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
@@ -118,6 +119,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["import", "penpot", file] => import::penpot(args, Some(file)),
         ["import", ..] => {
             bail!("usage: omni import penpot <file.penpot> --project <id> [--feature <name>]")
+        }
+        ["behaviour" | "behavior", "add"] => behaviour::add(args),
+        ["behaviour" | "behavior", "read"] => behaviour::read(args, None),
+        ["behaviour" | "behavior", "read", node] => behaviour::read(args, Some(node)),
+        ["behaviour" | "behavior", ..] => {
+            bail!("usage: omni behaviour add|read; see `omni --help`")
         }
         ["story", "add"] => stories::add(args, None),
         ["story", "add", file] => stories::add(args, Some(file)),

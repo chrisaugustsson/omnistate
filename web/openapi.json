@@ -712,6 +712,39 @@
         },
         "type": "object"
       },
+      "CreateNodeRequest": {
+        "properties": {
+          "parent_id": {
+            "description": "The node's parent. A child of the root when left out.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "description": "Lowercase words joined by `-`, at most 80 characters, unique among the\nsiblings. Derived from the title when left out.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "description": "One sentence. Defaults to empty.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "Not blank.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
       "CreatePostRequest": {
         "properties": {
           "attachments": {
@@ -1715,6 +1748,7 @@
       "LiveEventName": {
         "description": "Every event the API emits, as `<entity>.<action>`.",
         "enum": [
+          "behaviour.node_created",
           "comment.created",
           "comment.replied",
           "comment.deleted",
@@ -1963,6 +1997,82 @@
         ],
         "type": "object"
       },
+      "NodeBody": {
+        "properties": {
+          "behaviour": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "description": "`{kind: \"agent\", run, role, model, harness}` or `{kind: \"human\", user_id}`.",
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "level": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "situation": {
+            "type": "string"
+          },
+          "slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`open`, `done` or `out_of_scope`.",
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "position",
+          "level",
+          "title",
+          "summary",
+          "status",
+          "version",
+          "situation",
+          "behaviour",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "NodeBox": {
         "description": "Where a node sits on its board.",
         "properties": {
@@ -2006,6 +2116,113 @@
           "width",
           "height",
           "name"
+        ],
+        "type": "object"
+      },
+      "NodeListResponse": {
+        "properties": {
+          "nodes": {
+            "description": "Every node of the feature in tree order: depth first, siblings by position.",
+            "items": {
+              "$ref": "#/components/schemas/NodeSummaryBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "NodeReadResponse": {
+        "properties": {
+          "chain": {
+            "description": "The nodes above it, the root first.",
+            "items": {
+              "$ref": "#/components/schemas/NodeBody"
+            },
+            "type": "array"
+          },
+          "node": {
+            "$ref": "#/components/schemas/NodeBody"
+          }
+        },
+        "required": [
+          "node",
+          "chain"
+        ],
+        "type": "object"
+      },
+      "NodeResponse": {
+        "properties": {
+          "node": {
+            "$ref": "#/components/schemas/NodeBody"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "type": "object"
+      },
+      "NodeSummaryBody": {
+        "description": "A node as the list of a feature's nodes gives it: no text.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "level": {
+            "description": "0 for the root, 1 for a user story, 2 and more for a situation.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "parent_id": {
+            "description": "`null` for the root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "The slugs from the story down, joined by `/`; `\"\"` for the root.",
+            "type": "string"
+          },
+          "position": {
+            "description": "The order among siblings.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "slug": {
+            "description": "`null` for the root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`open`, `done` or `out_of_scope`.",
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "description": "1 on creation, plus 1 on every accepted write.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "position",
+          "level",
+          "title",
+          "summary",
+          "status",
+          "version"
         ],
         "type": "object"
       },
@@ -6341,6 +6558,268 @@
           "crate::features"
         ],
         "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour": {
+      "get": {
+        "operationId": "list_nodes",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeListResponse"
+                }
+              }
+            },
+            "description": "Every node of the feature in tree order; empty when the feature has no tree"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace"
+          }
+        },
+        "summary": "The nodes of a feature's behaviour tree, without their text.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes": {
+      "post": {
+        "operationId": "create_node",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeResponse"
+                }
+              }
+            },
+            "description": "The new node, the last child of its parent. The first node of a feature also creates the root, titled with the feature's name"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace, or no such parent in the feature"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A sibling has the slug (`slug_taken`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A blank title (`invalid_title`) or a slug that does not fit `^[a-z0-9]+(-[a-z0-9]+)*$` and 80 characters (`invalid_slug`)"
+          }
+        },
+        "summary": "Adds a node to a feature's behaviour tree.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
+      "get": {
+        "operationId": "show_node",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The node's UUID",
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeReadResponse"
+                }
+              }
+            },
+            "description": "The node and the nodes above it, the root first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such node in this feature, project and workspace"
+          }
+        },
+        "summary": "One node with the nodes above it.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {

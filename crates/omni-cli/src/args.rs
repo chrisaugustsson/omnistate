@@ -91,6 +91,9 @@ pub struct Args {
     pub file: Vec<String>,
     pub pending: bool,
     pub unticked: bool,
+    /// `omni behaviour add --slug <s> --parent <node>`.
+    pub slug: Option<String>,
+    pub parent: Option<String>,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -201,6 +204,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 }
                 continue;
             }
+            "--slug" => &mut parsed.slug,
+            "--parent" => &mut parsed.parent,
             "--priority" => &mut parsed.priority,
             "--number-from" => &mut parsed.number_from,
             "--status" => &mut parsed.status,
