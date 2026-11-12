@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { loadTree, loadWaitingNodes } from "@/api/behaviour";
+import { loadOpenQuestions, loadTree } from "@/api/behaviour";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { featureNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
@@ -26,13 +26,19 @@ export function BehaviourScreen({
 }) {
   const load = useCallback(() => loadTree(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
   const { value: nodes, failed } = useReloading(load);
-  // Which nodes have a question waiting; without the list nothing is marked as waiting.
+  // How many questions wait on each node; a question a person asked is a remark and does not wait.
   const loadWaiting = useCallback(
-    () => loadWaitingNodes(workspaceId, projectId, featureId).catch(() => [] as string[]),
+    () => loadOpenQuestions(workspaceId, projectId, featureId).catch(() => []),
     [workspaceId, projectId, featureId],
   );
-  const { value: waitingIds } = useReloading(loadWaiting);
-  const waiting = useMemo(() => new Set(waitingIds ?? []), [waitingIds]);
+  const { value: openQuestions } = useReloading(loadWaiting);
+  const waiting = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const question of openQuestions ?? []) {
+      if (question.asked_by.kind !== "human") counts.set(question.node_id, (counts.get(question.node_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [openQuestions]);
   const { home } = useHome(workspaceId, projectId);
   const featureName = home ? (featureNames(home).get(featureId) ?? "") : "";
   // Every node starts closed.
@@ -82,7 +88,7 @@ export function BehaviourScreen({
               <p className="px-4 pb-1.5 pt-3 text-[11.5px] text-muted-foreground">
                 {plural(stories, "story", "stories")} · {plural(nodes.length, "node", "nodes")}
               </p>
-              <Folders nodes={nodes} open={open} onToggle={toggle} />
+              <Folders nodes={nodes} open={open} waiting={waiting} onToggle={toggle} />
             </aside>
             <main aria-label="Tree as a graph" className="min-w-0">
               <Graph nodes={nodes} waiting={waiting} />

@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TreeNode } from "@/api/behaviour";
+import { cn } from "@/lib/utils";
 import { animateTo, centreOn, fit, fitBlock, zoomAt, type View } from "./camera";
 import { elbow, layoutBlocks, planColumns } from "./layout";
 import { Minimap } from "./minimap";
+import { Legend, Marks } from "./marks";
 import { shortTitle } from "./tree";
 
 // The graph: every node but the root as a box, one block per story, drawn with absolutely
 // placed divs and one svg inside a single container that carries the view.
 
 const NO_FOLDS: ReadonlySet<string> = new Set();
-const NONE: ReadonlySet<string> = new Set();
+const NONE: ReadonlyMap<string, number> = new Map();
 const BARS_BELOW = 0.3;
 const LABELS_BELOW = 0.46;
 const BUTTON_ZOOM = 1.4;
@@ -23,8 +25,8 @@ export function Graph({
   chosenId = null,
 }: {
   nodes: TreeNode[];
-  /** The nodes with a question waiting for an answer. */
-  waiting?: ReadonlySet<string>;
+  /** How many questions wait on each node. */
+  waiting?: ReadonlyMap<string, number>;
   chosenId?: string | null;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -156,6 +158,7 @@ export function Graph({
   };
   const far = !!view && view.k < BARS_BELOW;
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const titles = useMemo(() => new Map(nodes.map((node) => [node.id, shortTitle(node)])), [nodes]);
   const lines: { id: string; d: string }[] = [];
   for (const [id, box] of boxes) {
     const parent = byId.get(id)?.parent_id;
@@ -195,10 +198,25 @@ export function Graph({
                 key={node.id}
                 data-node={node.id}
                 data-waiting={waiting.has(node.id) || undefined}
-                className="absolute left-0 top-0 flex items-center rounded-lg border bg-background px-[9px] text-[12.5px] leading-[1.28] group-data-[far]:rounded-[3px] group-data-[far]:border-transparent group-data-[far]:bg-muted-foreground/35 group-data-[far]:data-[waiting]:bg-signal"
+                data-pass={node.needs_pass || undefined}
+                data-status={node.status}
+                className={cn(
+                  "absolute left-0 top-0 flex items-center gap-1.5 rounded-lg border bg-background px-[9px] text-[12.5px] leading-[1.28] group-data-[far]:rounded-[3px] group-data-[far]:border-transparent group-data-[far]:bg-muted-foreground/35",
+                  node.status === "out_of_scope" && "border-dashed bg-transparent text-muted-foreground group-data-[far]:border group-data-[far]:border-dashed group-data-[far]:border-muted-foreground group-data-[far]:bg-transparent",
+                  node.needs_pass && "border-dashed border-foreground group-data-[far]:border-transparent group-data-[far]:bg-foreground",
+                  waiting.has(node.id) && "group-data-[far]:bg-signal",
+                )}
                 style={{ width: box.w, height: box.h, transform: `translate(${box.x}px, ${box.y}px)` }}
               >
-                <span className="line-clamp-2 min-w-0 group-data-[far]:invisible">{shortTitle(node)}</span>
+                {node.status === "open" && (waiting.has(node.id) || !node.needs_pass) && (
+                  <span aria-hidden data-open-ring className="size-2 shrink-0 rounded-full border-2 border-signal group-data-[far]:invisible" />
+                )}
+                <span className={cn("line-clamp-2 min-w-0 flex-1 group-data-[far]:invisible", node.status === "out_of_scope" && "line-through")}>
+                  {shortTitle(node)}
+                </span>
+                <span className="flex shrink-0 items-center gap-1 group-data-[far]:invisible">
+                  <Marks node={node} waiting={waiting} titleOf={titles} />
+                </span>
               </div>
             );
           })}
@@ -228,6 +246,7 @@ export function Graph({
           })}
         </div>
       )}
+      <Legend />
       {view && area && (
         <>
           <div data-no-pan className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-lg border bg-background text-sm text-muted-foreground">

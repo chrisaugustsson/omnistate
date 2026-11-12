@@ -11,7 +11,7 @@ const MAX_H = 170;
 type Props = {
   boxes: ReadonlyMap<string, Rect>;
   bounds: Rect;
-  waiting: ReadonlySet<string>;
+  waiting: ReadonlyMap<string, number>;
   view: View;
   area: { w: number; h: number };
   /** Called with the point of the drawing that was pressed. */

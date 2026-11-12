@@ -1,5 +1,6 @@
 import { ChevronRight } from "lucide-react";
 import type { TreeNode } from "@/api/behaviour";
+import { Marks } from "./marks";
 import { childrenOf, shortTitle } from "./tree";
 import { cn } from "@/lib/utils";
 
@@ -10,15 +11,21 @@ import { cn } from "@/lib/utils";
 export function Folders({
   nodes,
   open,
+  waiting,
   onToggle,
 }: {
   nodes: TreeNode[];
   open: ReadonlySet<string>;
+  waiting: ReadonlyMap<string, number>;
   onToggle: (id: string) => void;
 }) {
   const children = childrenOf(nodes);
   const root = (children.get(null) ?? [])[0];
   if (!root) return null;
+  const titles = new Map(nodes.map((node) => [node.id, shortTitle(node)]));
+  // What waits on a node and everything under it.
+  const within = (node: TreeNode): number =>
+    (waiting.get(node.id) ?? 0) + (children.get(node.id) ?? []).reduce((sum, kid) => sum + within(kid), 0);
   const rows: React.ReactNode[] = [];
   const walk = (node: TreeNode, depth: number) => {
     const kids = children.get(node.id) ?? [];
@@ -52,6 +59,15 @@ export function Folders({
         <span className={cn("min-w-0 flex-1 truncate", struck && "text-muted-foreground line-through")}>
           {isRoot ? node.title : shortTitle(node)}
         </span>
+        {!isRoot && (
+          <Marks
+            node={node}
+            waiting={waiting}
+            count={kids.length > 0 && !expanded ? within(node) : undefined}
+            countTitle="Open questions here and inside"
+            titleOf={titles}
+          />
+        )}
       </div>,
     );
     if (expanded) for (const kid of kids) walk(kid, depth + 1);
