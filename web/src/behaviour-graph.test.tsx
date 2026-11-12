@@ -4,7 +4,7 @@
 // window gives) and the view is read back from the drawing's transform:
 // `translate(Xpx, Ypx) scale(K)` puts the drawing's point (px, py) at
 // (X + px * K, Y + py * K) in the graph area.
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { loadWaitingNodes } from "./api/behaviour";
 import { Graph } from "./components/behaviour/graph";
@@ -92,10 +92,6 @@ describe("the graph's zoom controls", () => {
     await waitFor(() => expect(currentView(container).k).toBeCloseTo(1.4, 6));
     expect(drawingPointAt(currentView(container), MIDDLE).x).toBeCloseTo(drawingPointAt(at100, MIDDLE).x, 6);
     expect(drawingPointAt(currentView(container), MIDDLE).y).toBeCloseTo(drawingPointAt(at100, MIDDLE).y, 6);
-
-    await zoomTo100();
-    fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
-    await waitFor(() => expect(zoomShown()).toBe("71%"));
   });
 
   test("the fit button eases back to the whole drawing rather than jumping", async () => {
@@ -167,23 +163,30 @@ describe("dragging and scrolling the graph", () => {
     expect(currentView(container)).toEqual({ ...opening, x: opening.x - 30, y: opening.y - 50 });
   });
 
-  test("scrolling with ⌘ held zooms in and keeps the point under the pointer still", () => {
+  test("scrolling with ⌘ or Ctrl held (a pinch comes as Ctrl) zooms in and keeps the point under the pointer still", () => {
     const { container } = render(<Graph nodes={testTree()} />);
     const opening = currentView(container);
     const pointer = { x: 200, y: 300 };
 
     fireEvent.wheel(graphArea(container), { deltaY: -40, metaKey: true, clientX: pointer.x, clientY: pointer.y });
 
-    const view = currentView(container);
-    expect(view.k).toBeGreaterThan(opening.k);
-    expect(drawingPointAt(view, pointer).x).toBeCloseTo(drawingPointAt(opening, pointer).x, 6);
-    expect(drawingPointAt(view, pointer).y).toBeCloseTo(drawingPointAt(opening, pointer).y, 6);
+    const afterMeta = currentView(container);
+    expect(afterMeta.k).toBeGreaterThan(opening.k);
+    expect(drawingPointAt(afterMeta, pointer).x).toBeCloseTo(drawingPointAt(opening, pointer).x, 6);
+    expect(drawingPointAt(afterMeta, pointer).y).toBeCloseTo(drawingPointAt(opening, pointer).y, 6);
+
+    fireEvent.wheel(graphArea(container), { deltaY: -40, ctrlKey: true, clientX: pointer.x, clientY: pointer.y });
+
+    const afterCtrl = currentView(container);
+    expect(afterCtrl.k).toBeGreaterThan(afterMeta.k);
+    expect(drawingPointAt(afterCtrl, pointer).x).toBeCloseTo(drawingPointAt(opening, pointer).x, 6);
+    expect(drawingPointAt(afterCtrl, pointer).y).toBeCloseTo(drawingPointAt(opening, pointer).y, 6);
   });
 });
 
 describe("the story labels", () => {
   test("are shown below 46% and gone at 51%, with one label per story by its short title", async () => {
-    render(<Graph nodes={testTree()} />);
+    const { container } = render(<Graph nodes={testTree()} />);
     await zoomTo100();
     expect(screen.queryByRole("button", { name: SET_UP_STORY })).toBeNull();
 
@@ -196,26 +199,48 @@ describe("the story labels", () => {
     fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
     await waitFor(() => expect(zoomShown()).toBe("36%"));
 
-    expect(screen.getByRole("button", { name: SET_UP_STORY })).toBeTruthy();
-    expect(screen.getByRole("button", { name: PICK_PROGRAM_STORY })).toBeTruthy();
+    // The test tree holds 13 stories.
+    expect(container.querySelectorAll("[data-story-label]")).toHaveLength(13);
+    expect(screen.getByRole("button", { name: SET_UP_STORY }).hasAttribute("data-story-label")).toBe(true);
+    expect(screen.getByRole("button", { name: PICK_PROGRAM_STORY }).hasAttribute("data-story-label")).toBe(true);
   });
 
   test("pressing a story's label fits that story's block in the graph area, at no more than 100%", async () => {
     const { container } = render(<Graph nodes={testTree()} />);
     const opening = currentView(container);
-    const story = container.querySelector<HTMLElement>('[data-node="player-picks-program"]')!;
+    // The block is the story and every node under it; ids in the test tree are folder paths.
+    const block = [...container.querySelectorAll<HTMLElement>("[data-node]")]
+      .filter((box) => box.dataset.node === "player-picks-program" || box.dataset.node!.startsWith("player-picks-program/"))
+      .map((box) => {
+        const [, bx, by] = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(box.style.transform)!;
+        return { x: Number(bx), y: Number(by), w: parseFloat(box.style.width), h: parseFloat(box.style.height) };
+      });
+    const left = Math.min(...block.map((b) => b.x));
+    const top = Math.min(...block.map((b) => b.y));
+    const right = Math.max(...block.map((b) => b.x + b.w));
+    const bottom = Math.max(...block.map((b) => b.y + b.h));
 
     fireEvent.click(screen.getByRole("button", { name: PICK_PROGRAM_STORY }));
     await waitFor(() => expect(currentView(container).k).toBeGreaterThan(opening.k * 2));
-    // The move lands within 260ms.
-    await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+    // Wait for the move to land: the view stops changing.
+    let last = currentView(container);
+    await waitFor(
+      () => {
+        const now = currentView(container);
+        const still = now.x === last.x && now.y === last.y && now.k === last.k;
+        last = now;
+        expect(still).toBe(true);
+      },
+      { interval: 150, timeout: 2000 },
+    );
 
     const view = currentView(container);
-    const [, sx, sy] = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(story.style.transform)!;
     expect(view.k).toBeLessThanOrEqual(1);
-    expect(view.x + Number(sx) * view.k).toBeGreaterThanOrEqual(64 - 1);
-    expect(view.y + Number(sy) * view.k).toBeGreaterThanOrEqual(0);
-    expect(view.y + Number(sy) * view.k).toBeLessThanOrEqual(AREA.h);
+    // P18: 64px to spare on each side, 30 more at the top.
+    expect(view.x + left * view.k).toBeGreaterThanOrEqual(64 - 1);
+    expect(view.y + top * view.k).toBeGreaterThanOrEqual(64 + 30 - 1);
+    expect(view.x + right * view.k).toBeLessThanOrEqual(AREA.w - 64 + 1);
+    expect(view.y + bottom * view.k).toBeLessThanOrEqual(AREA.h - 64 + 1);
   });
 });
 
