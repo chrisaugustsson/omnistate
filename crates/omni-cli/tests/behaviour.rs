@@ -1,4 +1,4 @@
-//! US-201 to US-206: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask` and `questions`, tested as the built binary against
+//! US-201 to US-207: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer` and `questions`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -38,6 +38,12 @@
 //!   id. `omni behaviour questions [<node>] [--open]` asks for `state=open`
 //!   with `--open` and `under=<id>` with a node, and prints `<node path>
 //!   <question id>  <question>` per question, the root's path as `.`.
+//! - `omni behaviour answer <question id> <answer> [--by human]` posts
+//!   `{expected_version, answer, by}` to the answers route of that question,
+//!   with the `version` the question list gives, and prints the question's
+//!   id. `ask --answer <text> [--by human]` sends `answer` and `by` with the
+//!   question. `questions --default` asks for `state=answered&by=agent` and
+//!   ends each line in ` → <answer>`.
 
 mod common;
 
@@ -162,9 +168,51 @@ fn mock() -> MockServer {
                     question(QUESTION, STORY, "customer-buys-product", SOLD_OUT)
                 ] }),
             ),
+            ("GET", path) if path == format!("{base}/questions") => Reply::json(
+                200,
+                &json!({ "questions": [
+                    question(ROOT_QUESTION, ROOT, "", "Who may buy?"),
+                    listed_question()
+                ] }),
+            ),
+            ("POST", path) if path == format!("{base}/questions/{QUESTION}/answers") => {
+                Reply::json(201, &json!({ "question": answered_question() }))
+            }
+            ("GET", path) if path == format!("{base}/questions?state=answered&by=agent") => {
+                Reply::json(
+                    200,
+                    &json!({ "questions": [
+                        answered_question()
+                    ] }),
+                )
+            }
             _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
     })
+}
+
+const STOCK: &str = "Same message, and the stock indicator updates.";
+
+/// The question on the story, written twice, so its version is 3.
+fn listed_question() -> Value {
+    let mut question = question(QUESTION, STORY, "customer-buys-product", SOLD_OUT);
+    question["version"] = json!(3);
+    question
+}
+
+/// The question on the story, answered by the agent on its own.
+fn answered_question() -> Value {
+    let mut question = listed_question();
+    question["state"] = json!("answered");
+    question["answered_by"] = json!("agent");
+    question["version"] = json!(4);
+    question["answer"] = json!({
+        "answer": STOCK,
+        "given_by": "agent",
+        "author": { "kind": "agent", "run": "t1", "role": "grill" },
+        "at": "2026-11-12T10:00:00.000000Z"
+    });
+    question
 }
 
 fn question(id: &str, node: &str, path: &str, text: &str) -> Value {
@@ -712,5 +760,73 @@ fn questions_of_a_path_asks_for_those_under_that_nodes_id() {
     assert_eq!(
         out.stdout,
         format!("customer-buys-product  {QUESTION}  {SOLD_OUT}\n")
+    );
+}
+
+#[test]
+fn answer_sends_the_listed_version_and_by_to_that_questions_answers_and_prints_its_id() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &["behaviour", "answer", QUESTION, STOCK, "--by", "human"],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, format!("{QUESTION}\n"));
+    let posted: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "POST")
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(
+        posted,
+        vec![format!("{}/questions/{QUESTION}/answers", tree_path())]
+    );
+    assert_eq!(
+        posts(&server),
+        vec![json!({ "expected_version": 3, "answer": STOCK, "by": "human" })]
+    );
+}
+
+#[test]
+fn ask_with_an_answer_sends_the_answer_and_by_with_the_question() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "ask",
+            "customer-buys-product",
+            SOLD_OUT,
+            "--answer",
+            STOCK,
+            "--by",
+            "human",
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        posts(&server),
+        vec![json!({ "question": SOLD_OUT, "answer": STOCK, "by": "human" })]
+    );
+}
+
+#[test]
+fn questions_default_asks_for_the_agents_own_answers_and_ends_each_line_in_the_answer() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "questions", "--default"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!("customer-buys-product  {QUESTION}  {SOLD_OUT} → {STOCK}\n")
     );
 }

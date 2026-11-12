@@ -463,7 +463,7 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .await
     .expect("insert a story");
 
-    // The root of the feature's behaviour tree and a question on it.
+    // The root of the feature's behaviour tree, a question on it and its answer.
     let node_id: String = sqlx::query_scalar(
         "INSERT INTO behaviour_nodes (workspace_id, project_id, feature_id, title, created_by) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', '{\"kind\":\"agent\"}'::jsonb) \
@@ -475,17 +475,28 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .fetch_one(&mut *conn)
     .await
     .expect("insert a behaviour node");
-    sqlx::query(
+    let question_id: String = sqlx::query_scalar(
         "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, question, asked_by) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'deletion test', '{\"kind\":\"agent\"}'::jsonb)",
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'deletion test', '{\"kind\":\"agent\"}'::jsonb) \
+         RETURNING id::text",
     )
     .bind(workspace)
     .bind(&project_id)
     .bind(&feature_id)
     .bind(&node_id)
-    .execute(&mut *conn)
+    .fetch_one(&mut *conn)
     .await
     .expect("insert a behaviour question");
+    sqlx::query(
+        "INSERT INTO behaviour_answers (workspace_id, feature_id, question_id, answer, given_by, author) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', 'agent', '{\"kind\":\"agent\"}'::jsonb)",
+    )
+    .bind(workspace)
+    .bind(&feature_id)
+    .bind(&question_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a behaviour answer");
 }
 
 async fn put_objects(keys: Vec<String>) {

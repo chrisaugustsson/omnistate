@@ -314,6 +314,12 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+        Some(r#"{"expected_version":1,"answer":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
         Some(r#"{"title":"intruder","text":"","topic":"","criteria":[]}"#),
         Kind::Workspace,
@@ -875,6 +881,9 @@ struct Side {
     /// and its title, which nothing else holds.
     node_id: String,
     node_title: String,
+    /// The question that the workspace's agent asked and answered on
+    /// `node_id`.
+    question_id: String,
 }
 
 impl Side {
@@ -910,6 +919,7 @@ impl Side {
             story_title: String::new(),
             node_id: same(),
             node_title: String::new(),
+            question_id: same(),
         }
     }
 
@@ -942,6 +952,7 @@ impl Side {
             &self.story_title,
             &self.node_id,
             &self.node_title,
+            &self.question_id,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1139,11 +1150,12 @@ fn fixture() -> &'static Fixture {
                 "add a node to the feature's behaviour tree",
             );
             let node_id = created["node"]["id"].as_str().expect("an id").to_string();
-            // A question on that node, so the behaviour_questions table has
-            // rows of the workspace.
+            // A question on that node and its answer, so the
+            // behaviour_questions and behaviour_answers tables have rows of
+            // the workspace.
             let body =
                 json!({ "question": unique(&format!("{name}-question-on-node")) }).to_string();
-            must(
+            let asked = must(
                 call(
                     client,
                     "POST",
@@ -1153,6 +1165,25 @@ fn fixture() -> &'static Fixture {
                 ),
                 201,
                 "ask a question on the node",
+            );
+            let question_id = asked["question"]["id"].as_str().expect("an id").to_string();
+            let body = json!({
+                "expected_version": 1,
+                "answer": unique(&format!("{name}-answer-to-question")),
+            })
+            .to_string();
+            must(
+                call(
+                    client,
+                    "POST",
+                    &format!(
+                        "{base}/features/{feature_id}/behaviour/questions/{question_id}/answers"
+                    ),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "answer the question",
             );
             // A file of the workspace's own.
             let attachment_name = format!("{name}-notes.txt");
@@ -1297,6 +1328,7 @@ fn fixture() -> &'static Fixture {
                 story_title,
                 node_id,
                 node_title,
+                question_id,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1340,6 +1372,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "component_id" => UNKNOWN_NODE,
             "story_id" => &record.story_id,
             "node_id" => &record.node_id,
+            "question_id" => &record.question_id,
             // Every doc's log starts with its creation, seq 1.
             "seq" => "1",
             // A finding index is read after the story is found, so any

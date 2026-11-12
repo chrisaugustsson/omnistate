@@ -1,4 +1,4 @@
-//! US-201 to US-206: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-207: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -71,6 +71,18 @@
 //!   then oldest first. Refused with nothing asked: a blank question (422
 //!   `invalid_question`), a node of another feature (404), an API key without
 //!   a run (400 `identity_required`); an unknown `state` is 422.
+//! - `POST /questions/{id}/answers` with `{expected_version, answer, by?}`
+//!   answers 201 `{question}`: `answered`, `answered_by` and `answer:
+//!   {answer, given_by, author, at}`, `version` + 1, and emits
+//!   `behaviour.question_changed` with `state: "answered"`. A session gives
+//!   `human`; an API key gives `agent` (an answer by default) unless `by` is
+//!   `human`, kept with the agent as `author`. The body is checked first (422
+//!   for a blank answer, a `by` other than `human` and `agent`, `agent` from a
+//!   session), then `already_answered` (409), then the version (409
+//!   `conflict`). `POST /nodes/{id}/questions` with `answer` creates the
+//!   question answered at `version` 1 and leaves a `done` node `done`; `by`
+//!   without `answer` is 422. The list gives each node's `default_answers`,
+//!   and `GET /questions?by=` filters on who gave the current answer.
 
 mod common;
 
@@ -2435,5 +2447,519 @@ fn a_question_with_an_api_key_without_a_run_is_400_identity_required_and_nothing
     assert_eq!(
         questions_listed(f, &project, &feature, ""),
         Vec::<Value>::new()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Answering a question (US-207)
+// ---------------------------------------------------------------------------
+
+const STOCK: &str = "Same message, and the stock indicator updates.";
+const GUEST: &str = "Guest cart, identical behaviour.";
+
+fn post_answer(
+    f: &Fixture,
+    project: &str,
+    feature: &str,
+    auth: Auth,
+    question: &Value,
+    body: &Value,
+) -> Response {
+    call(
+        f,
+        "POST",
+        &format!(
+            "{}/questions/{}/answers",
+            tree_path(f, project, feature),
+            question["id"].as_str().expect("the question has an id")
+        ),
+        auth,
+        Some(body),
+    )
+}
+
+/// Answers a question with `auth`; returns the `question` of the answer.
+fn answer(
+    f: &Fixture,
+    project: &str,
+    feature: &str,
+    auth: Auth,
+    question: &Value,
+    body: &Value,
+) -> Value {
+    must(
+        post_answer(f, project, feature, auth, question, body),
+        201,
+        "answer a question",
+    )["question"]
+        .clone()
+}
+
+/// The questions that `GET /questions` gives with `query`, whole.
+fn questions_whole(f: &Fixture, project: &str, feature: &str, query: &str) -> Vec<Value> {
+    must(
+        call(
+            f,
+            "GET",
+            &format!("{}/questions{query}", tree_path(f, project, feature)),
+            Auth::Agent,
+            None,
+        ),
+        200,
+        "list the questions",
+    )["questions"]
+        .as_array()
+        .expect("`questions` is a list")
+        .clone()
+}
+
+/// The `state` of the live `behaviour.question_changed` events, oldest first.
+fn question_states(project: &str) -> Vec<Value> {
+    events_of(project, "behaviour.question_changed")
+        .iter()
+        .map(|event| event["state"].clone())
+        .collect()
+}
+
+#[test]
+fn an_agents_own_answer_is_given_by_the_agent_and_answers_the_question_and_is_announced() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let answered = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+
+    assert_eq!(answered["state"], "answered");
+    assert_eq!(answered["answered_by"], "agent");
+    assert_eq!(answered["version"], 2);
+    assert_eq!(answered["answer"]["answer"], STOCK);
+    assert_eq!(answered["answer"]["given_by"], "agent");
+    assert_eq!(answered["answer"]["author"]["kind"], "agent");
+    assert_eq!(answered["answer"]["author"]["run"], "t1");
+    assert_eq!(answered["answer"]["author"]["role"], "grill");
+    assert!(
+        answered["answer"]["at"]
+            .as_str()
+            .is_some_and(|at| !at.is_empty()),
+        "{answered}"
+    );
+    assert_eq!(
+        questions_whole(f, &project, &feature, ""),
+        vec![answered.clone()]
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.question_changed")[1],
+        json!({
+            "feature_id": feature,
+            "node_id": press["id"],
+            "question_id": asked["id"],
+            "state": "answered",
+        })
+    );
+    assert_eq!(question_states(&project).len(), 2);
+}
+
+#[test]
+fn a_persons_answer_is_given_by_human_from_a_session_and_when_an_agent_writes_it_down() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let relayed = ask(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        "Guest or account cart?",
+    );
+    let direct = ask(f, &project, &feature, &id_of(&press), "And for a guest?");
+
+    let relayed = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &relayed,
+        &json!({ "expected_version": 1, "answer": GUEST, "by": "human" }),
+    );
+    let direct = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &direct,
+        &json!({ "expected_version": 1, "answer": GUEST }),
+    );
+
+    assert_eq!(relayed["answered_by"], "human");
+    assert_eq!(relayed["answer"]["given_by"], "human");
+    assert_eq!(relayed["answer"]["author"]["kind"], "agent");
+    assert_eq!(relayed["answer"]["author"]["run"], "t1");
+    assert_eq!(direct["answered_by"], "human");
+    assert_eq!(direct["answer"]["given_by"], "human");
+    assert_eq!(
+        direct["answer"]["author"],
+        json!({ "kind": "human", "user_id": f.alice })
+    );
+}
+
+#[test]
+fn a_body_the_answer_cannot_take_is_422_before_the_answered_and_version_checks() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+    let answered = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+
+    let blank = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": "" }),
+    );
+    let spaces = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": "   " }),
+    );
+    let unknown_by = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": GUEST, "by": "robot" }),
+    );
+    let agent_from_session = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &asked,
+        &json!({ "expected_version": 1, "answer": GUEST, "by": "agent" }),
+    );
+
+    assert_eq!(blank.status, 422, "body: {}", blank.text());
+    assert_eq!(spaces.status, 422, "body: {}", spaces.text());
+    assert_eq!(unknown_by.status, 422, "body: {}", unknown_by.text());
+    assert_eq!(
+        agent_from_session.status,
+        422,
+        "body: {}",
+        agent_from_session.text()
+    );
+    assert_eq!(questions_whole(f, &project, &feature, ""), vec![answered]);
+    assert_eq!(
+        question_states(&project),
+        vec![json!("open"), json!("answered")]
+    );
+}
+
+#[test]
+fn an_answered_question_is_409_already_answered_even_with_a_stale_version_and_keeps_its_answer() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+    let answered = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+
+    let current = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &asked,
+        &json!({ "expected_version": 2, "answer": GUEST }),
+    );
+    let stale = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": GUEST }),
+    );
+
+    assert_error(&current, 409, "already_answered");
+    assert_error(&stale, 409, "already_answered");
+    assert_eq!(questions_whole(f, &project, &feature, ""), vec![answered]);
+    assert_eq!(
+        question_states(&project),
+        vec![json!("open"), json!("answered")]
+    );
+}
+
+#[test]
+fn a_stale_version_on_an_open_question_is_409_with_the_current_version_and_answers_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let response = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 2, "answer": STOCK }),
+    );
+
+    assert_eq!(response.status, 409, "body: {}", response.text());
+    assert_eq!(
+        response.json(),
+        json!({ "error": "conflict", "current_version": 1 })
+    );
+    assert_eq!(questions_whole(f, &project, &feature, ""), vec![asked]);
+    assert_eq!(question_states(&project), vec![json!("open")]);
+}
+
+#[test]
+fn asking_with_an_answer_on_a_done_node_creates_it_answered_and_leaves_the_node_done() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&press),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    let asked = must(
+        call(
+            f,
+            "POST",
+            &format!(
+                "{}/nodes/{}/questions",
+                tree_path(f, &project, &feature),
+                id_of(&press)
+            ),
+            Auth::Agent,
+            Some(&json!({
+                "question": "Region delivery check here?",
+                "answer": "No, handled at checkout.",
+            })),
+        ),
+        201,
+        "ask with an answer",
+    )["question"]
+        .clone();
+
+    assert_eq!(asked["state"], "answered");
+    assert_eq!(asked["answered_by"], "agent");
+    assert_eq!(asked["version"], 1);
+    assert_eq!(asked["answer"]["answer"], "No, handled at checkout.");
+    assert_eq!(asked["answer"]["given_by"], "agent");
+    assert_eq!(asked["answer"]["author"]["run"], "t1");
+    let node = read_node(f, &project, &feature, &id_of(&press));
+    assert_eq!(node["status"], "done");
+    assert_eq!(node["version"], 2);
+    assert_eq!(events_of(&project, "behaviour.node_changed").len(), 1);
+    assert_eq!(
+        events_of(&project, "behaviour.question_changed"),
+        vec![json!({
+            "feature_id": feature,
+            "node_id": press["id"],
+            "question_id": asked["id"],
+            "state": "answered",
+        })]
+    );
+    let listed_press = listed(f, &project, &feature)
+        .into_iter()
+        .find(|node| node["id"] == press["id"])
+        .expect("the node is listed");
+    assert_eq!(listed_press["open_questions"], 0);
+    assert_eq!(listed_press["default_answers"], 1);
+}
+
+#[test]
+fn by_without_an_answer_on_ask_is_422_and_nothing_is_asked() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let response = call(
+        f,
+        "POST",
+        &format!(
+            "{}/nodes/{}/questions",
+            tree_path(f, &project, &feature),
+            id_of(&press)
+        ),
+        Auth::Agent,
+        Some(&json!({ "question": SOLD_OUT, "by": "human" })),
+    );
+
+    assert_eq!(response.status, 422, "body: {}", response.text());
+    assert_eq!(
+        questions_whole(f, &project, &feature, ""),
+        Vec::<Value>::new()
+    );
+    assert_eq!(question_states(&project), Vec::<Value>::new());
+}
+
+/// On the situation of `buy_tree`: an open question, one the agent answered
+/// on its own and one a person answered, which the agent wrote down.
+fn three_questions(f: &Fixture, project: &str, feature: &str, press: &Value) {
+    ask(f, project, feature, &id_of(press), "still open");
+    let by_default = ask(f, project, feature, &id_of(press), "answered by default");
+    let by_person = ask(f, project, feature, &id_of(press), "answered by a person");
+    answer(
+        f,
+        project,
+        feature,
+        Auth::Agent,
+        &by_default,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+    answer(
+        f,
+        project,
+        feature,
+        Auth::Agent,
+        &by_person,
+        &json!({ "expected_version": 1, "answer": GUEST, "by": "human" }),
+    );
+}
+
+#[test]
+fn the_list_counts_the_default_answers_apart_from_a_persons_and_the_open_questions() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    three_questions(f, &project, &feature, &press);
+
+    let counts: Vec<(Value, Value, Value)> = listed(f, &project, &feature)
+        .iter()
+        .map(|node| {
+            (
+                node["path"].clone(),
+                node["open_questions"].clone(),
+                node["default_answers"].clone(),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        counts,
+        vec![
+            (json!(""), json!(0), json!(0)),
+            (json!("customer-buys-product"), json!(0), json!(0)),
+            (
+                json!("customer-buys-product/user-presses-buy"),
+                json!(1),
+                json!(1)
+            ),
+        ]
+    );
+}
+
+#[test]
+fn the_questions_filter_by_state_and_by_who_gave_the_answer() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    three_questions(f, &project, &feature, &press);
+
+    let open = questions_listed(f, &project, &feature, "?state=open");
+    let answered = questions_listed(f, &project, &feature, "?state=answered");
+    let by_default = questions_listed(f, &project, &feature, "?state=answered&by=agent");
+    let by_person = questions_listed(f, &project, &feature, "?by=human");
+
+    assert_eq!(open, vec![json!("still open")]);
+    assert_eq!(
+        answered,
+        vec![json!("answered by default"), json!("answered by a person")]
+    );
+    assert_eq!(by_default, vec![json!("answered by default")]);
+    assert_eq!(by_person, vec![json!("answered by a person")]);
+}
+
+#[test]
+fn an_answer_with_an_api_key_without_a_run_is_400_identity_required_and_answers_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    let response = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::AgentWithoutRun,
+        &asked,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+
+    assert_error(&response, 400, "identity_required");
+    assert_eq!(questions_whole(f, &project, &feature, ""), vec![asked]);
+}
+
+#[test]
+fn a_question_of_another_feature_is_404_to_answer_and_answers_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    buy_tree(f, &project, &feature);
+    // A second feature of the same project, so only the feature tells the
+    // questions apart.
+    let created = must(
+        call(
+            f,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/features", f.workspace),
+            Auth::Agent,
+            Some(&json!({ "name": unique("Returns") })),
+        ),
+        201,
+        "create a second feature",
+    );
+    let other_feature = created["feature"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let theirs = add(f, &project, &other_feature, &json!({ "title": "Returns" }));
+    let asked = ask(f, &project, &other_feature, &id_of(&theirs), SOLD_OUT);
+
+    let response = post_answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+
+    assert_error(&response, 404, "not_found");
+    assert_eq!(
+        questions_whole(f, &project, &other_feature, ""),
+        vec![asked]
     );
 }
