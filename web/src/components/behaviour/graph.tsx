@@ -19,6 +19,18 @@ const FOLD_MS = 220;
 // A press that moves less than this is a click, not a drag.
 const DRAG_FROM = 4;
 
+/** The curved line of a pointer, from the right edge of `a` to the box `b`. */
+function arc(a: Rect, b: Rect) {
+  const sx = a.x + a.w;
+  const sy = a.y + a.h / 2;
+  const below = b.y + b.h / 2 > sy;
+  const tx = b.x + b.w - 20;
+  const ty = below ? b.y : b.y + b.h;
+  const bulge = Math.min(240, 56 + Math.abs(ty - sy) * 0.12);
+  const lift = (below ? -1 : 1) * Math.min(150, 36 + Math.abs(ty - sy) * 0.1);
+  return `M${sx},${sy}C${sx + bulge},${sy} ${tx + bulge * 0.35},${ty + lift} ${tx},${ty}`;
+}
+
 /** A fold's slide under way: where the boxes started and the eased progress. */
 type Slide = { from: ReadonlyMap<string, Rect>; e: number } | null;
 
@@ -261,8 +273,12 @@ export function Graph({
       gesture.current = { ...local(event), view: current, moved: false, id: pressed?.dataset.node };
     }
   };
+  // The box under the pointer shows its pointer lines, except while a drag is under way.
+  const [hoverId, setHoverId] = useState<string | null>(null);
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const g = gesture.current;
+    const over = g?.moved ? null : ((event.target as HTMLElement).closest<HTMLElement>("[data-node]")?.dataset.node ?? null);
+    setHoverId((now) => (now === over ? now : over));
     if (!g || !pointers.current.has(event.pointerId)) return;
     pointers.current.set(event.pointerId, local(event));
     if (g.pinch && pointers.current.size === 2) {
@@ -316,6 +332,19 @@ export function Graph({
     if (above) lines.push({ id, d: elbow(above, box) });
   }
   lines.sort((a, b) => Number(inkIds.has(a.id)) - Number(inkIds.has(b.id)));
+  // A pointer is drawn when both ends are drawn and its start or end is the chosen node or the one under the pointer.
+  const pointerLines: { key: string; d: string; kind: "same" | "handoff"; on: boolean }[] = [];
+  for (const node of nodes) {
+    const from = placed.get(node.id);
+    if (!from) continue;
+    for (const [kind, target] of [["same", node.same_as?.id], ["handoff", node.handoff?.id]] as const) {
+      const to = target ? placed.get(target) : undefined;
+      if (!to) continue;
+      const on = node.id === chosenId || target === chosenId;
+      if (!on && node.id !== hoverId && target !== hoverId) continue;
+      pointerLines.push({ key: `${node.id}:${kind}`, d: arc(from, to), kind, on });
+    }
+  }
   return (
     <div
       ref={ref}
@@ -325,6 +354,7 @@ export function Graph({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}
       onPointerCancel={onPointerEnd}
+      onPointerLeave={() => setHoverId(null)}
     >
       {view && (
         <div
@@ -337,6 +367,11 @@ export function Graph({
             width={Math.ceil(bounds.x + bounds.w + 400)}
             height={Math.ceil(bounds.y + bounds.h + 400)}
           >
+            <defs>
+              <marker id="behaviour-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+                <path d="M0,1 L10,5 L0,9 z" fill="var(--foreground)" />
+              </marker>
+            </defs>
             {lines.map((line) => (
               <path
                 key={line.id}
@@ -344,6 +379,20 @@ export function Graph({
                 fill="none"
                 stroke={inkIds.has(line.id) ? "var(--foreground)" : "currentColor"}
                 strokeWidth={inkIds.has(line.id) ? 2 : 1.5}
+              />
+            ))}
+            {pointerLines.map((line) => (
+              <path
+                key={line.key}
+                data-pointer={line.kind}
+                d={line.d}
+                fill="none"
+                stroke="var(--foreground)"
+                strokeWidth={line.kind === "same" ? 1.6 : 1.5}
+                strokeLinecap={line.kind === "same" ? "round" : undefined}
+                strokeDasharray={line.kind === "same" ? "1.5 4" : "5 4"}
+                opacity={line.on ? 1 : 0.85}
+                markerEnd={line.kind === "handoff" ? "url(#behaviour-arrow)" : undefined}
               />
             ))}
           </svg>
