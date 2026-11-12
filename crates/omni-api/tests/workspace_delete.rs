@@ -442,7 +442,7 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .await
     .expect("insert a post");
 
-    // A feature of the project, and a story in it.
+    // A feature of the project, a story in it and the root of its behaviour tree.
     let feature_id: String = sqlx::query_scalar(
         "INSERT INTO features (workspace_id, project_id, name) \
          VALUES ($1::uuid, $2::uuid, 'deletion test') RETURNING id::text",
@@ -462,6 +462,18 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .execute(&mut *conn)
     .await
     .expect("insert a story");
+
+    // The root of the feature's behaviour tree.
+    sqlx::query(
+        "INSERT INTO behaviour_nodes (workspace_id, project_id, feature_id, title, created_by) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', '{\"kind\":\"agent\"}'::jsonb)",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .bind(&feature_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a behaviour node");
 }
 
 async fn put_objects(keys: Vec<String>) {

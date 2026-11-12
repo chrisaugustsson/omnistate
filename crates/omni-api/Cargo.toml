@@ -109,6 +109,10 @@ name = "stories"
 required-features = ["stack-tests"]
 
 [[test]]
+name = "behaviour"
+required-features = ["stack-tests"]
+
+[[test]]
 name = "feature_docs"
 required-features = ["stack-tests"]
 

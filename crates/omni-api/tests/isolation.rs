@@ -271,6 +271,24 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes",
+        Some(r#"{"title":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
         Some(r#"{"title":"intruder","text":"","topic":"","criteria":[]}"#),
@@ -829,6 +847,10 @@ struct Side {
     /// title, which nothing else holds.
     story_id: String,
     story_title: String,
+    /// The behaviour node that the workspace's agent added to `feature_id`,
+    /// and its title, which nothing else holds.
+    node_id: String,
+    node_title: String,
 }
 
 impl Side {
@@ -862,6 +884,8 @@ impl Side {
             feature_name: String::new(),
             story_id: same(),
             story_title: String::new(),
+            node_id: same(),
+            node_title: String::new(),
         }
     }
 
@@ -892,6 +916,8 @@ impl Side {
             &self.feature_name,
             &self.story_id,
             &self.story_title,
+            &self.node_id,
+            &self.node_title,
         ]
         .into_iter()
         .map(String::as_str)
@@ -1073,6 +1099,22 @@ fn fixture() -> &'static Fixture {
                 "create a story in the feature",
             );
             let story_id = created["story"]["id"].as_str().expect("an id").to_string();
+            // A node of the feature's behaviour tree, so the behaviour_nodes
+            // table has rows of the workspace.
+            let node_title = unique(&format!("{name}-node"));
+            let body = json!({ "title": node_title }).to_string();
+            let created = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/features/{feature_id}/behaviour/nodes"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "add a node to the feature's behaviour tree",
+            );
+            let node_id = created["node"]["id"].as_str().expect("an id").to_string();
             // A file of the workspace's own.
             let attachment_name = format!("{name}-notes.txt");
             let attachment_text = unique(&format!("{name}-file-content"));
@@ -1214,6 +1256,8 @@ fn fixture() -> &'static Fixture {
                 feature_name,
                 story_id,
                 story_title,
+                node_id,
+                node_title,
             }
         });
         let a = sides.next().expect("workspace A");
@@ -1256,6 +1300,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             // design system is looked up.
             "component_id" => UNKNOWN_NODE,
             "story_id" => &record.story_id,
+            "node_id" => &record.node_id,
             // Every doc's log starts with its creation, seq 1.
             "seq" => "1",
             // A finding index is read after the story is found, so any
@@ -1589,7 +1634,8 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                     assert!(
                         text.contains(&own.project_id)
                             || text.contains(&own.key_id)
-                            || text.contains(&own.doc_id),
+                            || text.contains(&own.doc_id)
+                            || text.contains(&own.node_id),
                         "{what}: the control call shows none of its own records: {text}"
                     );
                 }
