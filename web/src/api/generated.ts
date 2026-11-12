@@ -776,11 +776,21 @@ export const QuestionBodySchema = z.object({
 });
 export type QuestionBody = z.infer<typeof QuestionBodySchema>;
 
+export const ReachRuleBodySchema = z.object({
+  id: z.string(),
+  node_id: z.string(),
+  node_path: z.string(),
+  scope: z.string(),
+  text: z.string(),
+});
+export type ReachRuleBody = z.infer<typeof ReachRuleBodySchema>;
+
 export const NodeReadResponseSchema = z.object({
   chain: z.array(NodeBodySchema),
   children: z.array(NodeChildBodySchema),
   node: NodeBodySchema,
   questions: z.array(QuestionBodySchema),
+  rules: z.array(ReachRuleBodySchema),
 });
 export type NodeReadResponse = z.infer<typeof NodeReadResponseSchema>;
 
@@ -1147,6 +1157,7 @@ export const schemas = {
   QuestionBody: QuestionBodySchema,
   QuestionListResponse: QuestionListResponseSchema,
   QuestionResponse: QuestionResponseSchema,
+  ReachRuleBody: ReachRuleBodySchema,
   ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
   RenameFeatureRequest: RenameFeatureRequestSchema,

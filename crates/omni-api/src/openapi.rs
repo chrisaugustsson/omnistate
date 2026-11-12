@@ -13,7 +13,8 @@ use crate::behaviour::{
     AnswerBody, AnswerRequest, AskRequest, CreateNodeRequest, CreateRuleRequest, MoveNodeRequest,
     NodeBody, NodeChildBody, NodeListResponse, NodeReadResponse, NodeResponse, NodeSummaryBody,
     PatchNodeRequest, PatchRuleRequest, PointerBody, PointerDetailBody, QuestionBody,
-    QuestionListResponse, QuestionResponse, RuleBody, RuleListResponse, RuleResponse,
+    QuestionListResponse, QuestionResponse, ReachRuleBody, RuleBody, RuleListResponse,
+    RuleResponse,
 };
 use crate::boards::{BoardBody, Manifest, ManifestBoard, ManifestPage};
 use crate::comments::{
@@ -228,6 +229,7 @@ use utoipa::OpenApi;
         CreateRuleRequest,
         PatchRuleRequest,
         RuleBody,
+        ReachRuleBody,
         RuleListResponse,
         RuleResponse,
         PointerBody,

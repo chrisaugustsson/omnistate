@@ -2383,13 +2383,21 @@
               "$ref": "#/components/schemas/QuestionBody"
             },
             "type": "array"
+          },
+          "rules": {
+            "description": "Every rule in force that reaches the node: `feature` rules first, then `story`, then `node` rules from the root down.",
+            "items": {
+              "$ref": "#/components/schemas/ReachRuleBody"
+            },
+            "type": "array"
           }
         },
         "required": [
           "node",
           "chain",
           "children",
-          "questions"
+          "questions",
+          "rules"
         ],
         "type": "object"
       },
@@ -2998,6 +3006,36 @@
         },
         "required": [
           "question"
+        ],
+        "type": "object"
+      },
+      "ReachRuleBody": {
+        "description": "A rule that reaches a node, with the node that imposes it.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "node_path": {
+            "description": "The path of the imposing node; `\"\"` for the root.",
+            "type": "string"
+          },
+          "scope": {
+            "description": "`node`, `story` or `feature`.",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "scope",
+          "node_id",
+          "node_path"
         ],
         "type": "object"
       },

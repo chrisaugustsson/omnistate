@@ -139,6 +139,20 @@ pub struct NodeReadResponse {
     pub children: Vec<NodeChildBody>,
     /// The node's own questions, oldest first.
     pub questions: Vec<QuestionBody>,
+    /// Every rule in force that reaches the node: `feature` rules first, then `story`, then `node` rules from the root down.
+    pub rules: Vec<ReachRuleBody>,
+}
+
+/// A rule that reaches a node, with the node that imposes it.
+#[derive(Serialize, ToSchema)]
+pub struct ReachRuleBody {
+    pub id: String,
+    pub text: String,
+    /// `node`, `story` or `feature`.
+    pub scope: String,
+    pub node_id: String,
+    /// The path of the imposing node; `""` for the root.
+    pub node_path: String,
 }
 
 /// A question asked on a node, open or answered.
@@ -439,6 +453,17 @@ impl Tree {
         }
         slugs.reverse();
         (slugs.join("/"), level)
+    }
+
+    /// The id of the story a node is in (the node at level 1 above or at it); none for the root.
+    fn story_of(&self, at: usize) -> Option<String> {
+        let mut row = &self.rows[at];
+        let mut story = None;
+        while let Some(parent) = row.parent_id.as_deref().and_then(|id| self.find(id)) {
+            story = Some(row.id.clone());
+            row = &self.rows[parent];
+        }
+        story
     }
 
     fn pointer(&self, id: &Option<String>) -> Option<PointerBody> {
@@ -978,6 +1003,14 @@ pub async fn show_node(
     require_feature(&mut tx, &project_id, &feature_id).await?;
     let tree = Tree::load(&mut tx, &feature_id).await?;
     let all = load_questions(&mut tx, &feature_id).await?;
+    let rule_rows = sqlx::query_as::<_, RuleRow>(&format!(
+        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE feature_id = $1::uuid \
+         AND withdrawn_at IS NULL ORDER BY created_at, id"
+    ))
+    .bind(&feature_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     let at = tree.find(&node_id).ok_or(ApiError::NotFound)?;
     let questions = all
@@ -1006,11 +1039,58 @@ pub async fn show_node(
         .filter(|(_, row)| row.parent_id.as_deref() == Some(id))
         .map(|(child, _)| tree.child(child))
         .collect();
+    let mut above_or_self: Vec<usize> = chain
+        .iter()
+        .filter_map(|node| tree.find(&node.id))
+        .collect();
+    above_or_self.push(at);
+    // The story is the node at level 1 on the way down, the story node included.
+    let story = above_or_self.get(1).map(|at| tree.rows[*at].id.as_str());
+    let mut rules: Vec<(usize, usize, RuleBody)> = Vec::new();
+    for (seq, row) in rule_rows.into_iter().enumerate() {
+        let Some(holder) = tree.find(&row.node_id) else {
+            continue;
+        };
+        let rank = match row.scope.as_str() {
+            "feature" => 0,
+            "story" => {
+                let holder_story = tree.story_of(holder);
+                if story.is_none() || holder_story.as_deref() != story {
+                    continue;
+                }
+                1
+            }
+            _ => {
+                if !above_or_self.contains(&holder) {
+                    continue;
+                }
+                2
+            }
+        };
+        let depth = if rank == 2 {
+            tree.place(holder).1 as usize
+        } else {
+            0
+        };
+        rules.push((rank * 1000 + depth, seq, row.body(&tree)));
+    }
+    rules.sort_by_key(|(key, seq, _)| (*key, *seq));
+    let rules = rules
+        .into_iter()
+        .map(|(_, _, rule)| ReachRuleBody {
+            id: rule.id,
+            text: rule.text,
+            scope: rule.scope,
+            node_id: rule.node_id,
+            node_path: rule.node_path,
+        })
+        .collect();
     Ok(Json(NodeReadResponse {
         node: tree.body(at),
         chain,
         children,
         questions,
+        rules,
     }))
 }
 
