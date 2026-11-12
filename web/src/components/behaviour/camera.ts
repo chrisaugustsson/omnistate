@@ -39,6 +39,28 @@ export function centreOn(view: View, box: Rect, area: { w: number; h: number }):
   return { k: view.k, x: area.w / 2 - (box.x + box.w / 2) * view.k, y: area.h / 2 - (box.y + box.h / 2) * view.k };
 }
 
+/**
+ * Where the view goes to bring `box` into sight, or null when it stays. Below 55% zoom a story is
+ * fitted with its whole block and any other box is centred at 90%; from 55% a box lying inside
+ * `area` with 64 to spare stays, and any other box is centred at the same zoom.
+ */
+export function bringIntoView(
+  view: View,
+  box: Rect,
+  area: { w: number; h: number },
+  { isStory, blockBounds }: { isStory: boolean; blockBounds?: Rect },
+): View | null {
+  if (view.k < 0.55) {
+    if (isStory && blockBounds) return fitBlock(blockBounds, area);
+    return centreOn({ ...view, k: 0.9 }, box, area);
+  }
+  const m = 64;
+  const sx = view.x + box.x * view.k;
+  const sy = view.y + box.y * view.k;
+  if (sx >= m && sy >= m + 30 && sx + box.w * view.k <= area.w - m && sy + box.h * view.k <= area.h - m) return null;
+  return centreOn(view, box, area);
+}
+
 // cubic-bezier(0.23, 1, 0.32, 1), solved for y at x by Newton steps.
 const P1X = 0.23;
 const P1Y = 1;
