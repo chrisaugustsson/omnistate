@@ -363,6 +363,14 @@ pub fn router(state: AppState) -> Router {
             post(behaviour::move_node),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+            post(behaviour::ask_question),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+            get(behaviour::list_questions),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
             get(stories::list_stories).post(stories::create_story),
         )

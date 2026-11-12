@@ -112,6 +112,8 @@ pub enum LiveEventName {
     BehaviourNodeCreated,
     #[serde(rename = "behaviour.node_changed")]
     BehaviourNodeChanged,
+    #[serde(rename = "behaviour.question_changed")]
+    BehaviourQuestionChanged,
     #[serde(rename = "comment.created")]
     CommentCreated,
     #[serde(rename = "comment.replied")]

@@ -1,4 +1,4 @@
-//! `omni behaviour add`, `read`, `list`, `edit` and `move`: the behaviour tree of a feature. A node is
+//! `omni behaviour add`, `read`, `list`, `edit`, `move`, `ask` and `questions`: the behaviour tree of a feature. A node is
 //! named by its uuid, by its path (the slugs from the story down, joined by
 //! `/`) or by `.` for the root. The project and the feature are found as for
 //! `omni story add`.
@@ -17,6 +17,7 @@ const EDIT_USAGE: &str = "omni behaviour edit <node> [--title <t>] [--slug <s>] 
      [--same-as <node>] [--handoff <node>]";
 
 const MOVE_USAGE: &str = "omni behaviour move <node> --to <parent>";
+const ASK_USAGE: &str = "omni behaviour ask <node> <question>";
 
 fn unreadable() -> CliError {
     CliError::new(
@@ -289,6 +290,74 @@ pub fn move_node(args: &Args, node: Option<&str>) -> Result<()> {
     match node.str_at("path") {
         Some(path) => say(path),
         None => bail!("the server's answer has no node path; try again"),
+    }
+    Ok(())
+}
+
+/// `omni behaviour ask <node> <question>`
+pub fn ask(args: &Args, node: Option<&str>, question: Option<&str>) -> Result<()> {
+    let (Some(given), Some(question)) = (node, question) else {
+        bail!("this command needs a node and a question: {ASK_USAGE}");
+    };
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let (id, _) = node_ref(&agent, &base, given)?;
+    let body = format!("{{\"question\":{}}}", quote(question));
+    let response = agent.request(
+        "POST",
+        &format!("{base}/nodes/{id}/questions"),
+        Some(body.as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let answer = Value::parse(&text).map_err(|_| unreadable())?;
+    match answer.get("question").unwrap_or(&answer).str_at("id") {
+        Some(id) => say(id),
+        None => bail!("the server's answer has no question id; try again"),
+    }
+    Ok(())
+}
+
+/// `omni behaviour questions [<node>] [--open]`
+pub fn questions(args: &Args, node: Option<&str>) -> Result<()> {
+    let agent = agent(args)?;
+    let base = behaviour_path(args, &agent)?;
+    let mut query = Vec::new();
+    if args.open {
+        query.push("state=open".to_string());
+    }
+    if let Some(given) = node {
+        query.push(format!("under={}", node_ref(&agent, &base, given)?.0));
+    }
+    let mut url = format!("{base}/questions");
+    if !query.is_empty() {
+        url = format!("{url}?{}", query.join("&"));
+    }
+    let response = agent.request("GET", &url, None)?;
+    let text = response.text();
+    if args.json {
+        say(text.trim_end());
+        return Ok(());
+    }
+    let body = Value::parse(&text).map_err(|_| unreadable())?;
+    let questions = body
+        .get("questions")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?;
+    for question in questions {
+        let path = match question.str_at("node_path") {
+            Some("") => ".",
+            Some(path) => path,
+            None => "?",
+        };
+        say(&format!(
+            "{path}  {}  {}",
+            question.str_at("id").unwrap_or("?"),
+            question.str_at("question").unwrap_or_default()
+        ));
     }
     Ok(())
 }

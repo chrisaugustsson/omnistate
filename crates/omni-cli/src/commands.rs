@@ -129,8 +129,15 @@ pub fn run(args: &Args) -> Result<()> {
         ["behaviour" | "behavior", "edit"] => behaviour::edit(args, None),
         ["behaviour" | "behavior", "move", node] => behaviour::move_node(args, Some(node)),
         ["behaviour" | "behavior", "move"] => behaviour::move_node(args, None),
+        ["behaviour" | "behavior", "ask", node, question] => {
+            behaviour::ask(args, Some(node), Some(question))
+        }
+        ["behaviour" | "behavior", "ask", node] => behaviour::ask(args, Some(node), None),
+        ["behaviour" | "behavior", "ask"] => behaviour::ask(args, None, None),
+        ["behaviour" | "behavior", "questions"] => behaviour::questions(args, None),
+        ["behaviour" | "behavior", "questions", node] => behaviour::questions(args, Some(node)),
         ["behaviour" | "behavior", ..] => {
-            bail!("usage: omni behaviour add|read|list|edit; see `omni --help`")
+            bail!("usage: omni behaviour add|read|list|edit|move|ask|questions; see `omni --help`")
         }
         ["story", "add"] => stories::add(args, None),
         ["story", "add", file] => stories::add(args, Some(file)),

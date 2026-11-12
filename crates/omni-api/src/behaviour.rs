@@ -73,6 +73,8 @@ pub struct NodeSummaryBody {
     pub same_as: Option<PointerBody>,
     /// The story, or the node in one, that the user carries on in, or `null`.
     pub handoff: Option<PointerBody>,
+    /// How many questions on the node are open.
+    pub open_questions: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -125,6 +127,103 @@ pub struct NodeReadResponse {
     pub chain: Vec<NodeBody>,
     /// The direct children, by position.
     pub children: Vec<NodeChildBody>,
+    /// The node's own questions, oldest first.
+    pub questions: Vec<QuestionBody>,
+}
+
+/// A question asked on a node, open or answered.
+#[derive(Serialize, ToSchema)]
+pub struct QuestionBody {
+    pub id: String,
+    pub node_id: String,
+    /// The path of the node; `""` for the root.
+    pub node_path: String,
+    pub question: String,
+    /// `open` or `answered`.
+    pub state: String,
+    /// Who gave the current answer: `human`, `agent`, or `null` while open.
+    pub answered_by: Option<String>,
+    /// `{kind: "agent", run, role, model, harness}` or `{kind: "human", user_id}`.
+    #[schema(value_type = Object)]
+    pub asked_by: Value,
+    /// 1 on creation, plus 1 on every accepted write.
+    pub version: i32,
+    pub created_at: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct QuestionResponse {
+    pub question: QuestionBody,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct QuestionListResponse {
+    /// In tree order of their nodes, then oldest first.
+    pub questions: Vec<QuestionBody>,
+}
+
+#[derive(Deserialize)]
+pub struct QuestionQuery {
+    state: Option<String>,
+    under: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct AskRequest {
+    /// Not blank.
+    pub question: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct QuestionRow {
+    id: String,
+    node_id: String,
+    question: String,
+    state: String,
+    answered_by: Option<String>,
+    asked_by: String,
+    version: i32,
+    created_at: String,
+}
+
+const QUESTION_COLUMNS: &str = concat!(
+    "id::text, node_id::text, question, state, answered_by, asked_by::text, version, ",
+    "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
+);
+
+impl QuestionRow {
+    fn body(self, tree: &Tree) -> QuestionBody {
+        let node_path = tree
+            .find(&self.node_id)
+            .map(|at| tree.place(at).0)
+            .unwrap_or_default();
+        QuestionBody {
+            id: self.id,
+            node_id: self.node_id,
+            node_path,
+            question: self.question,
+            state: self.state,
+            answered_by: self.answered_by,
+            asked_by: serde_json::from_str(&self.asked_by).unwrap_or(Value::Null),
+            version: self.version,
+            created_at: self.created_at,
+        }
+    }
+}
+
+/// The questions of a feature, oldest first.
+async fn load_questions(
+    tx: &mut Transaction<'static, Postgres>,
+    feature_id: &str,
+) -> Result<Vec<QuestionRow>, ApiError> {
+    sqlx::query_as::<_, QuestionRow>(&format!(
+        "SELECT {QUESTION_COLUMNS} FROM behaviour_questions WHERE feature_id = $1::uuid \
+         ORDER BY created_at, id"
+    ))
+    .bind(feature_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(ApiError::database)
 }
 
 #[derive(Deserialize)]
@@ -316,6 +415,7 @@ impl Tree {
             version: row.version,
             same_as: self.pointer(&row.same_as_id),
             handoff: self.pointer(&row.handoff_id),
+            open_questions: 0,
         }
     }
 
@@ -685,7 +785,12 @@ pub async fn list_nodes(
     require_project(&mut tx, &project_id).await?;
     require_feature(&mut tx, &project_id, &feature_id).await?;
     let tree = Tree::load(&mut tx, &feature_id).await?;
+    let open = load_questions(&mut tx, &feature_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
+    let mut open_counts: HashMap<&str, i64> = HashMap::new();
+    for question in open.iter().filter(|q| q.state == "open") {
+        *open_counts.entry(question.node_id.as_str()).or_default() += 1;
+    }
     let mut order = tree.in_order();
     if let Some(under) = under {
         let top = tree.find(&under).ok_or(ApiError::NotFound)?;
@@ -697,7 +802,14 @@ pub async fn list_nodes(
             .count();
         order = order[start..=start + below].to_vec();
     }
-    let nodes = order.into_iter().map(|at| tree.summary(at)).collect();
+    let nodes = order
+        .into_iter()
+        .map(|at| {
+            let mut summary = tree.summary(at);
+            summary.open_questions = open_counts.get(summary.id.as_str()).copied().unwrap_or(0);
+            summary
+        })
+        .collect();
     Ok(Json(NodeListResponse { nodes }))
 }
 
@@ -729,8 +841,14 @@ pub async fn show_node(
     require_project(&mut tx, &project_id).await?;
     require_feature(&mut tx, &project_id, &feature_id).await?;
     let tree = Tree::load(&mut tx, &feature_id).await?;
+    let all = load_questions(&mut tx, &feature_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     let at = tree.find(&node_id).ok_or(ApiError::NotFound)?;
+    let questions = all
+        .into_iter()
+        .filter(|question| question.node_id == node_id)
+        .map(|question| question.body(&tree))
+        .collect();
     let mut chain = Vec::new();
     let mut above = tree.rows[at]
         .parent_id
@@ -756,6 +874,7 @@ pub async fn show_node(
         node: tree.body(at),
         chain,
         children,
+        questions,
     }))
 }
 
@@ -775,7 +894,7 @@ pub async fn show_node(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
-        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, or `has_children` (a pointer set on a node that has children)", body = StoryConflictBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, `has_children` (a pointer set on a node that has children), or `open_questions` (status `done` while a question on the node is open)", body = StoryConflictBody),
         (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)", body = ErrorBody),
     )
 )]
@@ -846,6 +965,19 @@ pub async fn patch_node(
     }
     if is_root && patch.slug.is_some() {
         return Err(invalid_field("invalid_slug").into());
+    }
+    if patch.status.as_deref() == Some("done") {
+        let (open,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM behaviour_questions \
+             WHERE node_id = $1::uuid AND state = 'open')",
+        )
+        .bind(&node_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        if open {
+            return Err(ApiError::conflict("open_questions").into());
+        }
     }
     if let Some(slug) = &patch.slug {
         let (taken,): (bool,) = sqlx::query_as(
@@ -1032,4 +1164,193 @@ pub async fn move_node(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
     Ok(Json(NodeResponse { node }))
+}
+
+/// Asks a question, or leaves a remark, on a node.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("node_id" = String, Path, description = "The node's UUID"),
+    ),
+    request_body = AskRequest,
+    responses(
+        (status = 201, description = "The new open question. A node that was `done` is `open` again", body = QuestionResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
+        (status = 422, description = "A blank question (`invalid_question`)", body = ErrorBody),
+    )
+)]
+pub async fn ask_question(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    identity: AgentIdentity,
+    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<QuestionResponse>), ApiError> {
+    require_identity(&request.actor, &identity)?;
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
+    let ask = parse_body::<AskRequest>(&body);
+    let author = author_of(&request.actor, &identity);
+    let workspace_id = &request.workspace_id;
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let node: Option<(String,)> = sqlx::query_as(
+        "SELECT status FROM behaviour_nodes \
+         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+    )
+    .bind(&node_id)
+    .bind(&feature_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let (status,) = node.ok_or(ApiError::NotFound)?;
+    let ask = ask?;
+    let text = ask.question.trim();
+    if text.is_empty() {
+        return Err(invalid_field("invalid_question"));
+    }
+    let question_id: String = sqlx::query_scalar(
+        "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, \
+         question, asked_by) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::text::jsonb) \
+         RETURNING id::text",
+    )
+    .bind(workspace_id)
+    .bind(&project_id)
+    .bind(&feature_id)
+    .bind(&node_id)
+    .bind(text)
+    .bind(author.to_string())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    if status == "done" {
+        sqlx::query(
+            "UPDATE behaviour_nodes SET status = 'open', version = version + 1, \
+             updated_at = clock_timestamp() WHERE id = $1::uuid",
+        )
+        .bind(&node_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        let path = tree.find(&node_id).map(|at| tree.place(at).0);
+        live::emit(
+            &mut tx,
+            workspace_id,
+            &project_id,
+            "behaviour.node_changed",
+            &json!({
+                "feature_id": feature_id, "node_id": node_id, "path": path,
+                "fields": ["status"],
+            }),
+        )
+        .await?;
+    }
+    let row = sqlx::query_as::<_, QuestionRow>(&format!(
+        "SELECT {QUESTION_COLUMNS} FROM behaviour_questions WHERE id = $1::uuid"
+    ))
+    .bind(&question_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        workspace_id,
+        &project_id,
+        "behaviour.question_changed",
+        &json!({
+            "feature_id": feature_id, "node_id": node_id, "question_id": question_id,
+            "state": "open",
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(workspace_id, &project_id);
+    Ok((
+        StatusCode::CREATED,
+        Json(QuestionResponse {
+            question: row.body(&tree),
+        }),
+    ))
+}
+
+/// The questions of a feature's behaviour tree.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("state" = Option<String>, Query, description = "`open` or `answered`; both when left out"),
+        ("under" = Option<String>, Query, description = "Only the questions on this node and the nodes below it"),
+    ),
+    responses(
+        (status = 200, description = "The questions in tree order of their nodes, then oldest first", body = QuestionListResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such feature in this project and workspace, or `under` is not a node of it", body = ErrorBody),
+        (status = 422, description = "A `state` other than `open` and `answered` (`invalid_state`)", body = ErrorBody),
+    )
+)]
+pub async fn list_questions(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Query(query): Query<QuestionQuery>,
+) -> Result<Json<QuestionListResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    if query
+        .state
+        .as_deref()
+        .is_some_and(|state| !["open", "answered"].contains(&state))
+    {
+        return Err(invalid_field("invalid_state"));
+    }
+    let under = match &query.under {
+        Some(id) => Some(parse_uuid(id).ok_or(ApiError::NotFound)?),
+        None => None,
+    };
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    require_project(&mut tx, &project_id).await?;
+    require_feature(&mut tx, &project_id, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let rows = load_questions(&mut tx, &feature_id).await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let mut order = tree.in_order();
+    if let Some(under) = under {
+        let top = tree.find(&under).ok_or(ApiError::NotFound)?;
+        let start = order.iter().position(|at| *at == top).unwrap_or(0);
+        let level = tree.place(top).1;
+        let below = order[start + 1..]
+            .iter()
+            .take_while(|at| tree.place(**at).1 > level)
+            .count();
+        order = order[start..=start + below].to_vec();
+    }
+    let mut by_node: HashMap<String, Vec<QuestionRow>> = HashMap::new();
+    for row in rows {
+        if query
+            .state
+            .as_deref()
+            .is_none_or(|state| state == row.state)
+        {
+            by_node.entry(row.node_id.clone()).or_default().push(row);
+        }
+    }
+    let mut questions = Vec::new();
+    for at in order {
+        for row in by_node.remove(&tree.rows[at].id).unwrap_or_default() {
+            questions.push(row.body(&tree));
+        }
+    }
+    Ok(Json(QuestionListResponse { questions }))
 }

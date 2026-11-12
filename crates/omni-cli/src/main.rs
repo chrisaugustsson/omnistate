@@ -238,6 +238,15 @@ Usage:
                                       of <parent> (an ID, a path or .); prints the new path. Not
                                       to the node itself or below it (409), not the root, not
                                       where a sibling has the slug (409)
+  omni behaviour ask <node> <question>
+                                      put a question or a remark on a node; prints the question's
+                                      ID. A done node becomes open again, and a node with an open
+                                      question cannot be set to done (409 open_questions)
+  omni behaviour questions [<node>] [--open]
+                                      print `<node path>  <question ID>  <question>` for every
+                                      question of the feature, or of <node> and the nodes below
+                                      it, in tree order; --open only the open ones. With --json
+                                      the API's list
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -295,7 +304,7 @@ Options (before or after the command):
   --priority <n>        `omni story add`: the story's priority, 0 to 3 (3 by default)
   --number-from <n>     `omni story add`: the number the project's first story starts after
   --status <status>     `omni story list`: only the stories in this status
-  --open                `omni thread list`: only the threads without a conclusion
+  --open                `omni thread list`: only the threads without a conclusion; `omni behaviour questions`: only the open ones
   --pickable            `omni story list`: only the stories that can be picked
   --summary             `omni story list`: count the stories per status; `omni post` takes
                         --summary <text> instead

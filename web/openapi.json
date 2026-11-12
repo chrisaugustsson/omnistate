@@ -287,6 +287,18 @@
         },
         "type": "object"
       },
+      "AskRequest": {
+        "properties": {
+          "question": {
+            "description": "Not blank.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      },
       "AttachmentBody": {
         "properties": {
           "content_type": {
@@ -1764,6 +1776,7 @@
         "enum": [
           "behaviour.node_created",
           "behaviour.node_changed",
+          "behaviour.question_changed",
           "comment.created",
           "comment.replied",
           "comment.deleted",
@@ -2260,12 +2273,20 @@
           },
           "node": {
             "$ref": "#/components/schemas/NodeBody"
+          },
+          "questions": {
+            "description": "The node's own questions, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/QuestionBody"
+            },
+            "type": "array"
           }
         },
         "required": [
           "node",
           "chain",
-          "children"
+          "children",
+          "questions"
         ],
         "type": "object"
       },
@@ -2300,6 +2321,11 @@
           "level": {
             "description": "0 for the root, 1 for a user story, 2 and more for a situation.",
             "format": "int32",
+            "type": "integer"
+          },
+          "open_questions": {
+            "description": "How many questions on the node are open.",
+            "format": "int64",
             "type": "integer"
           },
           "parent_id": {
@@ -2360,7 +2386,8 @@
           "title",
           "summary",
           "status",
-          "version"
+          "version",
+          "open_questions"
         ],
         "type": "object"
       },
@@ -2712,6 +2739,84 @@
         },
         "required": [
           "project"
+        ],
+        "type": "object"
+      },
+      "QuestionBody": {
+        "description": "A question asked on a node, open or answered.",
+        "properties": {
+          "answered_by": {
+            "description": "Who gave the current answer: `human`, `agent`, or `null` while open.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "asked_by": {
+            "description": "`{kind: \"agent\", run, role, model, harness}` or `{kind: \"human\", user_id}`.",
+            "type": "object"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "node_path": {
+            "description": "The path of the node; `\"\"` for the root.",
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "state": {
+            "description": "`open` or `answered`.",
+            "type": "string"
+          },
+          "version": {
+            "description": "1 on creation, plus 1 on every accepted write.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "node_path",
+          "question",
+          "state",
+          "asked_by",
+          "version",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "QuestionListResponse": {
+        "properties": {
+          "questions": {
+            "description": "In tree order of their nodes, then oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/QuestionBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "type": "object"
+      },
+      "QuestionResponse": {
+        "properties": {
+          "question": {
+            "$ref": "#/components/schemas/QuestionBody"
+          }
+        },
+        "required": [
+          "question"
         ],
         "type": "object"
       },
@@ -7173,7 +7278,7 @@
                 }
               }
             },
-            "description": "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, or `has_children` (a pointer set on a node that has children)"
+            "description": "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, `has_children` (a pointer set on a node that has children), or `open_questions` (status `done` while a question on the node is open)"
           },
           "422": {
             "content": {
@@ -7307,6 +7412,215 @@
           }
         },
         "summary": "Moves a node, with everything below it, to be the last child of another node.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions": {
+      "post": {
+        "operationId": "ask_question",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The node's UUID",
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionResponse"
+                }
+              }
+            },
+            "description": "The new open question. A node that was `done` is `open` again"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such node in this feature, project and workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A blank question (`invalid_question`)"
+          }
+        },
+        "summary": "Asks a question, or leaves a remark, on a node.",
+        "tags": [
+          "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions": {
+      "get": {
+        "operationId": "list_questions",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`open` or `answered`; both when left out",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the questions on this node and the nodes below it",
+            "in": "query",
+            "name": "under",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionListResponse"
+                }
+              }
+            },
+            "description": "The questions in tree order of their nodes, then oldest first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature in this project and workspace, or `under` is not a node of it"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A `state` other than `open` and `answered` (`invalid_state`)"
+          }
+        },
+        "summary": "The questions of a feature's behaviour tree.",
         "tags": [
           "crate::behaviour"
         ],

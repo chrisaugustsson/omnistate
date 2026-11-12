@@ -90,6 +90,11 @@ export const AppSummarySchema = z.object({
 });
 export type AppSummary = z.infer<typeof AppSummarySchema>;
 
+export const AskRequestSchema = z.object({
+  question: z.string(),
+});
+export type AskRequest = z.infer<typeof AskRequestSchema>;
+
 export const AttachmentBodySchema = z.object({
   content_type: z.string(),
   created_at: z.string(),
@@ -574,7 +579,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -703,6 +708,7 @@ export const NodeSummaryBodySchema = z.object({
   ]).optional(),
   id: z.string(),
   level: z.number().int(),
+  open_questions: z.number().int(),
   parent_id: z.string().nullable().optional(),
   path: z.string(),
   position: z.number().int(),
@@ -723,10 +729,24 @@ export const NodeListResponseSchema = z.object({
 });
 export type NodeListResponse = z.infer<typeof NodeListResponseSchema>;
 
+export const QuestionBodySchema = z.object({
+  answered_by: z.string().nullable().optional(),
+  asked_by: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  id: z.string(),
+  node_id: z.string(),
+  node_path: z.string(),
+  question: z.string(),
+  state: z.string(),
+  version: z.number().int(),
+});
+export type QuestionBody = z.infer<typeof QuestionBodySchema>;
+
 export const NodeReadResponseSchema = z.object({
   chain: z.array(NodeBodySchema),
   children: z.array(NodeChildBodySchema),
   node: NodeBodySchema,
+  questions: z.array(QuestionBodySchema),
 });
 export type NodeReadResponse = z.infer<typeof NodeReadResponseSchema>;
 
@@ -782,6 +802,16 @@ export const ProjectResponseSchema = z.object({
   project: ProjectBodySchema,
 });
 export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
+
+export const QuestionListResponseSchema = z.object({
+  questions: z.array(QuestionBodySchema),
+});
+export type QuestionListResponse = z.infer<typeof QuestionListResponseSchema>;
+
+export const QuestionResponseSchema = z.object({
+  question: QuestionBodySchema,
+});
+export type QuestionResponse = z.infer<typeof QuestionResponseSchema>;
 
 export const ReleaseStoryRequestSchema = z.object({
   expected_version: z.number().int(),
@@ -961,6 +991,7 @@ export const schemas = {
   ActorBody: ActorBodySchema,
   ApiKeyBody: ApiKeyBodySchema,
   AppSummary: AppSummarySchema,
+  AskRequest: AskRequestSchema,
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
   BlockStoryRequest: BlockStoryRequestSchema,
@@ -1043,6 +1074,9 @@ export const schemas = {
   ProjectBody: ProjectBodySchema,
   ProjectListResponse: ProjectListResponseSchema,
   ProjectResponse: ProjectResponseSchema,
+  QuestionBody: QuestionBodySchema,
+  QuestionListResponse: QuestionListResponseSchema,
+  QuestionResponse: QuestionResponseSchema,
   ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
   RenameFeatureRequest: RenameFeatureRequestSchema,
@@ -1428,6 +1462,24 @@ export const operations = {
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions": {
+    request: AskRequestSchema,
+    responses: {
+      "201": QuestionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions": {
+    responses: {
+      "200": QuestionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
       "422": ErrorBodySchema,
     },
   },
