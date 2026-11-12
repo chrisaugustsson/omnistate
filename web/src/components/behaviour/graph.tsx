@@ -108,7 +108,11 @@ export function Graph({
     if (!reveal || !current || !areaRef.current || handled.current === reveal.n) return;
     handled.current = reveal.n;
     const box = boxes.get(reveal.id);
-    if (!box) return;
+    // The feature's root has no box: choosing it fits the whole drawing.
+    if (!box) {
+      moveTo(fit(boundsRef.current, areaRef.current), reveal.ms);
+      return;
+    }
     const target = bringIntoView(current, box, areaRef.current, { isStory: blocks.has(reveal.id), blockBounds: blocks.get(reveal.id) });
     if (target) moveTo(target, reveal.ms);
   }, [reveal, view, boxes, blocks, moveTo]);

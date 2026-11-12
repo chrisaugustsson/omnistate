@@ -58,6 +58,8 @@ export function BehaviourScreen({
     if (!nodes) return;
     setChosen(id);
     const above = ancestorsOf(nodes, id);
+    // Pressing a closed row with children also opens it.
+    if (from === "folders" && nodes.some((node) => node.parent_id === id)) above.push(id);
     setOpen((before) => (above.every((one) => before.has(one)) ? before : new Set([...before, ...above])));
     if (from !== "graph") setReveal({ id, ms: from === "keys" ? 0 : 240, n: ++revealCount.current });
   };
