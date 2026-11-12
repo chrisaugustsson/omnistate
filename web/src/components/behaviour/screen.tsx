@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { loadTree } from "@/api/behaviour";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { featureNames } from "@/components/project/items";
+import { useHome } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
 import { Folders } from "./folders";
 import { childrenOf } from "./tree";
@@ -22,6 +25,8 @@ export function BehaviourScreen({
 }) {
   const load = useCallback(() => loadTree(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
   const { value: nodes, failed } = useReloading(load);
+  const { home } = useHome(workspaceId, projectId);
+  const featureName = home ? (featureNames(home).get(featureId) ?? "") : "";
   // Every node starts closed.
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const toggle = (id: string) =>
@@ -37,9 +42,22 @@ export function BehaviourScreen({
   }, [nodes]);
 
   return (
-    <div className="h-screen overflow-x-auto">
+    <div className="h-full overflow-x-auto">
       <div className="grid h-full min-w-[1092px] grid-cols-[288px_minmax(400px,1fr)_404px] grid-rows-[56px_minmax(0,1fr)]">
         <header className="col-span-3 flex items-center gap-4 border-b px-4">
+          <span
+            aria-hidden
+            className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary font-display text-lg leading-none text-primary-foreground"
+          >
+            O
+          </span>
+          <Link
+            to="/w/$workspaceId/projects/$projectId/features/$featureId"
+            params={{ workspaceId, projectId, featureId }}
+            className="max-w-64 truncate text-[13px] font-medium text-muted-foreground hover:text-foreground"
+          >
+            ‹ {featureName}
+          </Link>
           <h1 className="font-display text-2xl leading-none tracking-[-0.01em]">Behaviour</h1>
         </header>
         {failed && (

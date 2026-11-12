@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Outlet, createFileRoute, notFound, redirect } from "@tanstack/react-router";
+import { Outlet, createFileRoute, notFound, redirect, useMatches } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { loadSession } from "@/api/auth";
 import { AppSidebar } from "@/components/app-sidebar";
@@ -26,6 +26,19 @@ export const Route = createFileRoute("/w/$workspaceId")({
 function WorkspaceLayout() {
   const { user, workspace, workspaces } = Route.useRouteContext();
   const [menuOpen, setMenuOpen] = useState(false);
+  // The Behaviour screen takes the whole window: no sidebar, no panel.
+  const wholeWindow = useMatches({
+    select: (matches) => matches.some((match) => match.routeId === "/w/$workspaceId/projects/$projectId_/features/$featureId/behaviour"),
+  });
+
+  if (wholeWindow)
+    return (
+      <LiveProvider workspaceId={workspace.id}>
+        <div className="h-dvh bg-background">
+          <Outlet />
+        </div>
+      </LiveProvider>
+    );
 
   return (
     <LiveProvider workspaceId={workspace.id}>
