@@ -137,9 +137,13 @@ pub fn read(args: &Args, node: Option<&str>) -> Result<()> {
     let node = answer.get("node").ok_or_else(unreadable)?;
     let mut blocks: Vec<String> = Vec::new();
     for above in answer.get("chain").and_then(Value::as_array).unwrap_or(&[]) {
-        blocks.push(read_block(above));
+        blocks.push(read_block(above, above.get("questions")));
     }
-    blocks.push(format!("=== this node ===\n{}", read_block(node)));
+    // The node's own questions sit beside it in the answer, not inside it.
+    blocks.push(format!(
+        "=== this node ===\n{}",
+        read_block(node, answer.get("questions"))
+    ));
     let mut out = blocks.join("\n\n");
     let mut sections: Vec<String> = Vec::new();
     let rules: Vec<String> = answer
@@ -193,7 +197,7 @@ pub fn read(args: &Args, node: Option<&str>) -> Result<()> {
 
 /// One node as a block of the text read: title, path line, texts, decisions
 /// and open questions, a line left out when its value is empty.
-fn read_block(node: &Value) -> String {
+fn read_block(node: &Value, questions: Option<&Value>) -> String {
     let mut lines = vec![format!("# {}", node.str_at("title").unwrap_or_default())];
     let path = match node.str_at("path") {
         Some("") => ".",
@@ -228,10 +232,7 @@ fn read_block(node: &Value) -> String {
             lines.push(format!("{label}: {text}"));
         }
     }
-    let questions = node
-        .get("questions")
-        .and_then(Value::as_array)
-        .unwrap_or(&[]);
+    let questions = questions.and_then(Value::as_array).unwrap_or(&[]);
     let mut decisions = Vec::new();
     let mut open = Vec::new();
     for question in questions {
