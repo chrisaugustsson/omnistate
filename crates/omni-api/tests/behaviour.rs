@@ -1,4 +1,4 @@
-//! US-201 to US-210: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-211: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -110,6 +110,12 @@
 //!   an unknown scope (422 `{"error": <code>}`), a stale version (409
 //!   `conflict`), an API key without a run (400), a node or rule of another
 //!   feature (404). There is no DELETE (405).
+//! - `GET /nodes/{id}` gives `rules`: every rule in force that reaches the
+//!   node, each `{id, text, scope, node_id, node_path}`. A `feature` rule
+//!   reaches every node, a `story` rule every node of its node's story, a
+//!   `node` rule its node and those below; a withdrawn rule reaches nothing,
+//!   and reach follows the tree as it is now. `feature` rules come first, then
+//!   `story`, then `node` rules from the root down, oldest first within each.
 
 mod common;
 
@@ -4093,5 +4099,277 @@ fn a_node_or_rule_of_another_feature_is_404_and_nothing_is_written() {
             false,
             1
         ])]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The rules that reach a node (US-211)
+// ---------------------------------------------------------------------------
+
+const F_TEXT: &str = "Prices include VAT.";
+const S_TEXT: &str = "A sold-out product cannot be bought.";
+const N_TEXT: &str = "The button names the price.";
+const N2_TEXT: &str = "The list shows at most ten products.";
+
+/// The criteria's tree: story `a` with `a/x`, `a/x/z` and `a/y`, story `b`
+/// with `b/q`. Returns `[a, x, z, y, b, q]`.
+fn two_stories(f: &Fixture, project: &str, feature: &str) -> [Value; 6] {
+    let a = add(f, project, feature, &json!({ "title": "A", "slug": "a" }));
+    let x = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "X", "slug": "x", "parent_id": a["id"] }),
+    );
+    let z = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "Z", "slug": "z", "parent_id": x["id"] }),
+    );
+    let y = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "Y", "slug": "y", "parent_id": a["id"] }),
+    );
+    let b = add(f, project, feature, &json!({ "title": "B", "slug": "b" }));
+    let q = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "Q", "slug": "q", "parent_id": b["id"] }),
+    );
+    [a, x, z, y, b, q]
+}
+
+/// The criteria's rules: F (`feature`) on `b/q`, S (`story`) on `a/x/z`, N
+/// (`node`) on `a/x`, N2 (`node`) on `a/y`. Returns `[f, s, n, n2]`.
+fn four_rules(f: &Fixture, project: &str, feature: &str, tree: &[Value; 6]) -> [Value; 4] {
+    let [_, x, z, y, _, q] = tree;
+    [
+        add_rule(
+            f,
+            project,
+            feature,
+            &id_of(q),
+            &json!({ "text": F_TEXT, "scope": "feature" }),
+        ),
+        add_rule(
+            f,
+            project,
+            feature,
+            &id_of(z),
+            &json!({ "text": S_TEXT, "scope": "story" }),
+        ),
+        add_rule(
+            f,
+            project,
+            feature,
+            &id_of(x),
+            &json!({ "text": N_TEXT, "scope": "node" }),
+        ),
+        add_rule(
+            f,
+            project,
+            feature,
+            &id_of(y),
+            &json!({ "text": N2_TEXT, "scope": "node" }),
+        ),
+    ]
+}
+
+/// The `rules` of a node's read as `[node_path, scope, text]`, in its order.
+fn reaching(f: &Fixture, project: &str, feature: &str, node: &Value) -> Vec<Value> {
+    must(
+        read(f, project, feature, &id_of(node)),
+        200,
+        "read the node",
+    )["rules"]
+        .as_array()
+        .expect("`rules` is a list")
+        .iter()
+        .map(|rule| json!([rule["node_path"], rule["scope"], rule["text"]]))
+        .collect()
+}
+
+#[test]
+fn a_read_carries_feature_rules_everywhere_story_rules_across_their_story_and_node_rules_down_from_their_node()
+ {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let tree = two_stories(f, &project, &feature);
+    let [rule_f, ..] = four_rules(f, &project, &feature, &tree);
+    let [a, _, z, y, _, q] = &tree;
+    let root = root_of(f, &project, &feature);
+
+    let on_z = must(read(f, &project, &feature, &id_of(z)), 200, "read z")["rules"].clone();
+
+    assert_eq!(
+        on_z[0],
+        json!({
+            "id": rule_f["id"],
+            "text": F_TEXT,
+            "scope": "feature",
+            "node_id": q["id"],
+            "node_path": "b/q"
+        })
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, z),
+        vec![
+            json!(["b/q", "feature", F_TEXT]),
+            json!(["a/x/z", "story", S_TEXT]),
+            json!(["a/x", "node", N_TEXT])
+        ]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, y),
+        vec![
+            json!(["b/q", "feature", F_TEXT]),
+            json!(["a/x/z", "story", S_TEXT]),
+            json!(["a/y", "node", N2_TEXT])
+        ]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, a),
+        vec![
+            json!(["b/q", "feature", F_TEXT]),
+            json!(["a/x/z", "story", S_TEXT])
+        ]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, q),
+        vec![json!(["b/q", "feature", F_TEXT])]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, &root),
+        vec![json!(["b/q", "feature", F_TEXT])]
+    );
+}
+
+#[test]
+fn a_withdrawn_rule_reaches_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let tree = two_stories(f, &project, &feature);
+    let [_, rule_s, ..] = four_rules(f, &project, &feature, &tree);
+    let [a, _, z, ..] = &tree;
+
+    must(
+        patch_rule(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &rule_s,
+            &json!({ "expected_version": 1, "withdrawn": true }),
+        ),
+        200,
+        "withdraw S",
+    );
+
+    assert_eq!(
+        reaching(f, &project, &feature, z),
+        vec![
+            json!(["b/q", "feature", F_TEXT]),
+            json!(["a/x", "node", N_TEXT])
+        ]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, a),
+        vec![json!(["b/q", "feature", F_TEXT])]
+    );
+}
+
+#[test]
+fn a_moved_node_gets_the_rules_of_its_new_place_and_its_story_rule_reaches_its_new_story() {
+    // Settled decision: reach follows the tree as it is now, so S, still in
+    // force, moves to story b with its node.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let tree = two_stories(f, &project, &feature);
+    four_rules(f, &project, &feature, &tree);
+    let [a, _, z, y, b, q] = &tree;
+
+    must(
+        move_node(
+            f,
+            &project,
+            &feature,
+            Auth::Agent,
+            &id_of(z),
+            &json!({ "expected_version": 1, "parent_id": b["id"] }),
+        ),
+        200,
+        "move a/x/z under b",
+    );
+
+    assert_eq!(
+        reaching(f, &project, &feature, z),
+        vec![
+            json!(["b/q", "feature", F_TEXT]),
+            json!(["b/z", "story", S_TEXT])
+        ]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, q),
+        vec![
+            json!(["b/q", "feature", F_TEXT]),
+            json!(["b/z", "story", S_TEXT])
+        ]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, a),
+        vec![json!(["b/q", "feature", F_TEXT])]
+    );
+    assert_eq!(
+        reaching(f, &project, &feature, y),
+        vec![
+            json!(["b/q", "feature", F_TEXT]),
+            json!(["a/y", "node", N2_TEXT])
+        ]
+    );
+}
+
+#[test]
+fn reaching_rules_come_feature_then_story_then_node_from_the_root_down_and_oldest_first_within_each()
+ {
+    // Settled decision: oldest first among rules of one scope, and among node
+    // rules on one node. The rules are recorded in an order unlike the read's.
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let [a, x, z, _, _, q] = two_stories(f, &project, &feature);
+    let root = root_of(f, &project, &feature);
+    let rule = |node: &Value, text: &str, scope: &str| {
+        add_rule(
+            f,
+            &project,
+            &feature,
+            &id_of(node),
+            &json!({ "text": text, "scope": scope }),
+        );
+    };
+    rule(&z, "Node rule on z.", "node");
+    rule(&x, "First node rule on x.", "node");
+    rule(&root, "Node rule on the root.", "node");
+    rule(&x, "Second node rule on x.", "node");
+    rule(&z, "Story rule on z.", "story");
+    rule(&a, "Story rule on a.", "story");
+    rule(&q, "Feature rule on q.", "feature");
+    rule(&root, "Feature rule on the root.", "feature");
+
+    assert_eq!(
+        reaching(f, &project, &feature, &z),
+        vec![
+            json!(["b/q", "feature", "Feature rule on q."]),
+            json!(["", "feature", "Feature rule on the root."]),
+            json!(["a/x/z", "story", "Story rule on z."]),
+            json!(["a", "story", "Story rule on a."]),
+            json!(["", "node", "Node rule on the root."]),
+            json!(["a/x", "node", "First node rule on x."]),
+            json!(["a/x", "node", "Second node rule on x."]),
+            json!(["a/x/z", "node", "Node rule on z."])
+        ]
     );
 }
