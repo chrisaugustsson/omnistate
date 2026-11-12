@@ -1,4 +1,4 @@
-//! US-201 to US-208: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer` and `questions`, tested as the built binary against
+//! US-201 to US-209: `omni behaviour add`, `read`, `edit`, `list`, `move`, `ask`, `answer` and `questions`, tested as the built binary against
 //! a mock HTTP server. The API's own rules (the root, slugs, levels, the
 //! chain) are in crates/omni-api/tests/behaviour.rs; these tests pin what the
 //! CLI adds on top: naming a node by its path or by `.` for the root, which
@@ -51,6 +51,11 @@
 //!   answer, then the earlier ones oldest first, each with who gave it
 //!   (`person` or `agent <run>/<role>`, an agent's own marked `(default)`)
 //!   and when.
+//! - `omni behaviour list --needs-pass` asks for `needs_pass=true` and prints
+//!   `<path> — <summary> (<status>)` per marked node, not indented; the plain
+//!   list ends a marked node's line in ` [needs another pass]`. `omni
+//!   behaviour edit <node> --grilled` sends `needs_pass: false` with the
+//!   listed version.
 
 mod common;
 
@@ -978,4 +983,73 @@ fn question_prints_the_current_answer_first_then_the_earlier_ones_oldest_first_w
     assert!(lines[3].contains("(default)"), "{}", lines[3]);
     assert!(lines[3].contains("agent t2/review"), "{}", lines[3]);
     assert!(lines[3].contains("2026-11-12T11:00:00"), "{}", lines[3]);
+}
+
+/// The whole tree with `user-presses-buy` marked for another pass, and only
+/// it and `product-out-of-stock` (given a summary) for `?needs_pass=true`.
+fn marked_mock() -> MockServer {
+    let mut tree = whole_tree();
+    tree["nodes"][2]["needs_pass"] = json!(true);
+    let mut marked = story_nodes()[1..].to_vec();
+    marked[1]["summary"] = json!("The user sees that it is sold out.");
+    MockServer::start(move |request| {
+        let base = tree_path();
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", path) if path == base => Reply::json(200, &tree),
+            ("GET", path) if path == format!("{base}?needs_pass=true") => {
+                Reply::json(200, &json!({ "nodes": marked }))
+            }
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    })
+}
+
+#[test]
+fn list_needs_pass_prints_the_marked_nodes_by_path_one_per_line_not_indented() {
+    let server = marked_mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "list", "--needs-pass"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "customer-buys-product/user-presses-buy — Product goes to the cart, or the user sees why it can't. (done)\n\
+         customer-buys-product/user-presses-buy/product-out-of-stock — The user sees that it is sold out. (open)\n"
+    );
+}
+
+#[test]
+fn list_ends_the_line_of_a_marked_node_in_needs_another_pass() {
+    let server = marked_mock();
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "list"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "Checkout — Checkout (open)\n\
+         \x20 customer-buys-product — Customer buys a product. (open)\n\
+         \x20   user-presses-buy — Product goes to the cart, or the user sees why it can't. (done) [needs another pass]\n\
+         \x20     product-out-of-stock — Product is out of stock (open)\n\
+         \x20 customer-returns-product — Customer sends a product back. (open)\n"
+    );
+}
+
+#[test]
+fn edit_grilled_sends_needs_pass_false_with_the_listed_version() {
+    let server = mock();
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &["behaviour", "edit", "customer-buys-product", "--grilled"],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        sent(&server, "PATCH"),
+        vec![json!({ "expected_version": 3, "needs_pass": false })]
+    );
 }

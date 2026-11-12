@@ -1,4 +1,4 @@
-//! US-201 to US-208: the behaviour tree of a feature, through the API. Run with
+//! US-201 to US-209: the behaviour tree of a feature, through the API. Run with
 //! `--features stack-tests` in the Compose test container, which reaches
 //! Postgres at `postgres:5432`.
 //!
@@ -90,6 +90,15 @@
 //!   answer on a question a person answered is 409 `answered_by_human`; an
 //!   agent may change an agent's answer, and with `by: "human"` any answer.
 //!   `GET /questions/{id}` gives the question with its `answers`.
+//! - A write made with a session (an answer, a changed answer, a question or
+//!   remark) marks its node; a changed answer, by anyone, marks every node
+//!   below, whatever its status. A mark sets `needs_pass_since` where it is
+//!   null, keeps `version`, and emits one `behaviour.marked` with
+//!   `{feature_id, node_id, below}` per write. An agent's question and first
+//!   answer mark nothing. `GET /?needs_pass=true` lists the marked nodes.
+//!   `PATCH` with `needs_pass: false` clears that node alone as an edit
+//!   (version + 1, `node_changed` with `fields: ["needs_pass"]`); with a
+//!   session it is 403 `forbidden`, and `needs_pass: true` is 422.
 
 mod common;
 
@@ -3194,4 +3203,295 @@ fn change_on_an_open_question_is_409_not_answered_and_answers_nothing() {
         json!([])
     );
     assert_eq!(question_states(&project), vec![json!("open")]);
+}
+
+// ---------------------------------------------------------------------------
+// Marking what needs another grill pass
+// ---------------------------------------------------------------------------
+
+const N: &str = "customer-buys-product";
+const C: &str = "customer-buys-product/user-presses-buy";
+const G: &str = "customer-buys-product/user-presses-buy/product-out-of-stock";
+
+/// The story N of `buy_tree`, its child C and a grandchild G below C:
+/// `(n, c, g)`.
+fn n_c_g(f: &Fixture, project: &str, feature: &str) -> (Value, Value, Value) {
+    let (n, c) = buy_tree(f, project, feature);
+    let g = add(
+        f,
+        project,
+        feature,
+        &json!({ "title": "Product is out of stock", "slug": "product-out-of-stock", "parent_id": id_of(&c) }),
+    );
+    (n, c, g)
+}
+
+/// Every node of the feature as `[path, needs_pass]`, in tree order.
+fn marks(f: &Fixture, project: &str, feature: &str) -> Vec<Value> {
+    listed(f, project, feature)
+        .iter()
+        .map(|node| json!([node["path"], node["needs_pass"]]))
+        .collect()
+}
+
+/// The paths of the nodes `GET /?needs_pass=true` gives.
+fn marked_paths(f: &Fixture, project: &str, feature: &str) -> Vec<Value> {
+    let listed = must(
+        call(
+            f,
+            "GET",
+            &format!("{}?needs_pass=true", tree_path(f, project, feature)),
+            Auth::Agent,
+            None,
+        ),
+        200,
+        "list the marked nodes",
+    );
+    paths_of(listed["nodes"].as_array().expect("`nodes` is a list"))
+}
+
+/// A question on N that the agent answered on its own: the question at
+/// version 2.
+fn answered_by_default_on(f: &Fixture, project: &str, feature: &str, n: &Value) -> Value {
+    let asked = ask(f, project, feature, &id_of(n), "Guest or account cart?");
+    answer(
+        f,
+        project,
+        feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": GUEST_CART }),
+    )
+}
+
+#[test]
+fn a_persons_first_answer_marks_its_node_only_and_keeps_the_nodes_version() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (n, _, _) = n_c_g(f, &project, &feature);
+    let asked = ask(f, &project, &feature, &id_of(&n), "Guest or account cart?");
+
+    answer(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &asked,
+        &json!({ "expected_version": 1, "answer": LOGIN }),
+    );
+
+    assert_eq!(
+        marks(f, &project, &feature),
+        vec![
+            json!(["", false]),
+            json!([N, true]),
+            json!([C, false]),
+            json!([G, false]),
+        ]
+    );
+    assert_eq!(marked_paths(f, &project, &feature), vec![json!(N)]);
+    let node = read_node(f, &project, &feature, &id_of(&n));
+    assert_eq!(node["needs_pass"], true);
+    assert!(node["needs_pass_since"].is_string(), "{node}");
+    assert_eq!(node["version"], 1);
+    assert_eq!(
+        events_of(&project, "behaviour.marked"),
+        vec![json!({ "feature_id": feature, "node_id": n["id"], "below": false })]
+    );
+}
+
+#[test]
+fn a_changed_answer_marks_every_node_below_and_a_persons_change_marks_its_node_too() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (n, c, g) = n_c_g(f, &project, &feature);
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&g),
+        &json!({ "expected_version": 1, "status": "out_of_scope" }),
+    );
+    let by_default = answered_by_default_on(f, &project, &feature, &n);
+
+    answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &by_default,
+        &json!({ "expected_version": 2, "answer": GUEST, "change": true }),
+    );
+    let after_agent = marks(f, &project, &feature);
+    let c_since = read_node(f, &project, &feature, &id_of(&c))["needs_pass_since"].clone();
+    answer(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &by_default,
+        &json!({ "expected_version": 3, "answer": LOGIN, "change": true }),
+    );
+
+    assert_eq!(
+        after_agent,
+        vec![
+            json!(["", false]),
+            json!([N, false]),
+            json!([C, true]),
+            json!([G, true]),
+        ]
+    );
+    assert_eq!(
+        marks(f, &project, &feature),
+        vec![
+            json!(["", false]),
+            json!([N, true]),
+            json!([C, true]),
+            json!([G, true]),
+        ]
+    );
+    let c_now = read_node(f, &project, &feature, &id_of(&c));
+    assert_eq!(c_now["needs_pass_since"], c_since);
+    assert_eq!(c_now["version"], 1);
+    let g_now = read_node(f, &project, &feature, &id_of(&g));
+    assert_eq!(g_now["status"], "out_of_scope");
+    assert_eq!(g_now["version"], 2);
+    assert_eq!(
+        events_of(&project, "behaviour.marked"),
+        vec![
+            json!({ "feature_id": feature, "node_id": n["id"], "below": true }),
+            json!({ "feature_id": feature, "node_id": n["id"], "below": true }),
+        ]
+    );
+}
+
+#[test]
+fn a_persons_remark_on_a_done_node_sets_it_open_and_marks_it() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (n, _, _) = n_c_g(f, &project, &feature);
+    edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&n),
+        &json!({ "expected_version": 1, "status": "done" }),
+    );
+
+    must(
+        post_question(
+            f,
+            &project,
+            &feature,
+            Auth::Session,
+            &id_of(&n),
+            "The cart should keep its items after login.",
+        ),
+        201,
+        "post a remark",
+    );
+
+    let node = read_node(f, &project, &feature, &id_of(&n));
+    assert_eq!(node["status"], "open");
+    assert_eq!(node["needs_pass"], true);
+    assert_eq!(marked_paths(f, &project, &feature), vec![json!(N)]);
+    assert_eq!(
+        events_of(&project, "behaviour.marked"),
+        vec![json!({ "feature_id": feature, "node_id": n["id"], "below": false })]
+    );
+}
+
+#[test]
+fn an_agents_question_and_its_first_answer_mark_nothing() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (n, _, _) = n_c_g(f, &project, &feature);
+
+    answered_by_default_on(f, &project, &feature, &n);
+
+    assert_eq!(marked_paths(f, &project, &feature), Vec::<Value>::new());
+    assert_eq!(events_of(&project, "behaviour.marked"), Vec::<Value>::new());
+}
+
+/// N, C and G of `n_c_g`, all marked by a person changing a default answer
+/// on N: `(n, c)`.
+fn all_marked(f: &Fixture, project: &str, feature: &str) -> (Value, Value) {
+    let (n, c, _) = n_c_g(f, project, feature);
+    let by_default = answered_by_default_on(f, project, feature, &n);
+    answer(
+        f,
+        project,
+        feature,
+        Auth::Session,
+        &by_default,
+        &json!({ "expected_version": 2, "answer": LOGIN, "change": true }),
+    );
+    (n, c)
+}
+
+#[test]
+fn an_agent_clears_one_nodes_mark_as_an_edit_that_adds_1_to_its_version() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (n, _) = all_marked(f, &project, &feature);
+
+    let cleared = edit(
+        f,
+        &project,
+        &feature,
+        &id_of(&n),
+        &json!({ "expected_version": 1, "needs_pass": false }),
+    );
+
+    assert_eq!(cleared["needs_pass"], false);
+    assert_eq!(cleared["needs_pass_since"], Value::Null);
+    assert_eq!(cleared["version"], 2);
+    assert_eq!(
+        marked_paths(f, &project, &feature),
+        vec![json!(C), json!(G)]
+    );
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        vec![json!({
+            "feature_id": feature,
+            "node_id": n["id"],
+            "path": N,
+            "fields": ["needs_pass"],
+        })]
+    );
+}
+
+#[test]
+fn clearing_a_mark_with_a_session_is_403_and_setting_one_is_422_and_both_leave_it() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (n, _) = all_marked(f, &project, &feature);
+
+    let by_person = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Session,
+        &id_of(&n),
+        &json!({ "expected_version": 1, "needs_pass": false }),
+    );
+    let set = patch_node(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &id_of(&n),
+        &json!({ "expected_version": 1, "needs_pass": true }),
+    );
+
+    assert_error(&by_person, 403, "forbidden");
+    assert_eq!(set.status, 422, "body: {}", set.text());
+    let node = read_node(f, &project, &feature, &id_of(&n));
+    assert_eq!(node["needs_pass"], true);
+    assert_eq!(node["version"], 1);
+    assert_eq!(
+        events_of(&project, "behaviour.node_changed"),
+        Vec::<Value>::new()
+    );
 }
