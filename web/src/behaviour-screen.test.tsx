@@ -9,6 +9,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import { testTree } from "./testing/behaviour-test-tree";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
@@ -337,5 +338,232 @@ describe("the Behaviour screen's frame and top bar", () => {
     const back = screen.getByRole("link", { name: "‹" });
     expect(back.textContent).toBe("‹ ");
     expect(back.getAttribute("href")).toBe(`${PROJECT_PATH}/features/${FEATURE_ID}`);
+  });
+});
+
+// US-226: one chosen node for the folders, the graph and the details. Here the
+// graph is drawn in a graph area of 748 x 844 and the view is read back from
+// the drawing's `translate(Xpx, Ypx) scale(K)`. Ids in the PRD's test tree are
+// folder paths; its root is "feature".
+describe("choosing a node in the Behaviour screen", () => {
+  const AREA = { w: 748, h: 844 };
+  const SIGNS_IN = "player-sets-up-account/player-signs-in-to-existing-account";
+  const CANNOT_REMEMBER = `${SIGNS_IN}/player-cannot-remember-sign-in`;
+  const SEARCHES = "player-adds-friend/player-searches-for-player";
+  type View = { x: number; y: number; k: number };
+
+  function currentView(): View {
+    const drawing = document.querySelector<HTMLElement>('main [style*="scale("]')!;
+    const [, x, y, k] = /translate\((-?[\d.e-]+)px, (-?[\d.e-]+)px\) scale\(([\d.e-]+)\)/.exec(drawing.style.transform)!;
+    return { x: Number(x), y: Number(y), k: Number(k) };
+  }
+
+  /** Waits until the graph shows a view and returns it. */
+  async function openingView() {
+    await waitFor(() => expect(document.querySelector('main [style*="scale("]')).not.toBeNull());
+    return currentView();
+  }
+
+  /** Waits for a move to land: two samples 150ms apart show the same view. */
+  async function landed() {
+    let last: View | undefined;
+    await waitFor(
+      () => {
+        const now = currentView();
+        const still = last !== undefined && now.x === last.x && now.y === last.y && now.k === last.k;
+        last = now;
+        expect(still).toBe(true);
+      },
+      { interval: 150, timeout: 2000 },
+    );
+    return currentView();
+  }
+
+  const boxOf = (id: string) => document.querySelector<HTMLElement>(`main [data-node="${id}"]`)!;
+  const rowOf = (id: string) => document.querySelector<HTMLElement>(`aside [data-row="${id}"]`);
+  const detailsTitle = () => screen.getByRole("region", { name: "Details" }).querySelector("h2")?.textContent ?? null;
+  const graphArea = () => screen.getByRole("main", { name: "Tree as a graph" }).firstElementChild as HTMLElement;
+
+  /** Presses `element` without dragging. */
+  function press(element: HTMLElement) {
+    fireEvent.pointerDown(element, { pointerId: 1, button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(element, { pointerId: 1, button: 0, clientX: 100, clientY: 100 });
+  }
+
+  /** Where a box lies in the drawing, from its translate, width and height. */
+  function rectOf(element: HTMLElement) {
+    const [, x, y] = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(element.style.transform)!;
+    return { x: Number(x), y: Number(y), w: parseFloat(element.style.width), h: parseFloat(element.style.height) };
+  }
+
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(AREA.w);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(AREA.h);
+    const captured = new Set<number>();
+    Element.prototype.setPointerCapture = (id: number) => void captured.add(id);
+    Element.prototype.hasPointerCapture = (id: number) => captured.has(id);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (Element.prototype as Partial<Element>).scrollIntoView;
+  });
+
+  test("pressing the feature's row after a story was chosen fits the whole drawing again", async () => {
+    fakeApi({ status: 200, body: { nodes: testTree() } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    const opening = await openingView();
+
+    // An arrow key with nothing chosen chooses the first story; keys move the view at once.
+    fireEvent.keyDown(document.body, { key: "ArrowDown" });
+    const story = currentView();
+    expect(story.k).toBeGreaterThan(opening.k * 2);
+
+    fireEvent.click(rowOf("feature")!);
+    await waitFor(() => expect(currentView().k).toBeLessThan(story.k));
+    const view = await landed();
+    expect(rowOf("feature")!.getAttribute("aria-current")).toBe("true");
+    expect(view.k).toBeCloseTo(opening.k, 6);
+    expect(view.x).toBeCloseTo(opening.x, 6);
+    expect(view.y).toBeCloseTo(opening.y, 6);
+  });
+
+  test("pressing the text of a closed story's row opens it as well as choosing it", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } });
+    renderAt(BEHAVIOUR_PATH);
+    const aside = await folders();
+
+    fireEvent.click(row(aside, "Player: create an account and get set up"));
+
+    expect(chevron(aside, "Player: create an account and get set up")!.getAttribute("aria-expanded")).toBe("true");
+    expect(rowTexts(aside)).toEqual([
+      "Disc golf putting trainer",
+      "Player: create an account and get set up",
+      "Player signs up with an email",
+      "Player skips the setup",
+      "Player: pick a training program",
+    ]);
+    expect(row(aside, "Player: create an account and get set up").getAttribute("aria-current")).toBe("true");
+  });
+
+  test("pressing a box chooses it in the folders and the details, inks the lines up to its story and leaves the graph still", async () => {
+    // jsdom has no scrollIntoView; the spy is removed again after the test.
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    fakeApi({ status: 200, body: { nodes: testTree() } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    const opening = await openingView();
+
+    press(boxOf(CANNOT_REMEMBER));
+
+    expect(boxOf(CANNOT_REMEMBER).hasAttribute("data-chosen")).toBe(true);
+    expect(document.querySelectorAll("main [data-chosen]")).toHaveLength(1);
+    expect(rowOf(CANNOT_REMEMBER)!.getAttribute("aria-current")).toBe("true");
+    expect(scrolled.mock.contexts.at(-1)).toBe(rowOf(CANNOT_REMEMBER));
+    expect(scrolled.mock.calls.at(-1)).toEqual([{ block: "nearest" }]);
+    expect(detailsTitle()).toBe("Player can't remember how to sign in");
+    // Two lines lead up to the story: into this node and into the node above it.
+    expect(document.querySelectorAll('main svg path[stroke="var(--foreground)"]')).toHaveLength(2);
+    // Any eased move would have landed by now: 240ms and the 120ms fallback after it.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(currentView()).toEqual(opening);
+  });
+
+  test("pressing the graph's background or the chosen box again keeps the choice", async () => {
+    fakeApi({ status: 200, body: { nodes: testTree() } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    await openingView();
+    press(boxOf(CANNOT_REMEMBER));
+
+    press(graphArea());
+    expect(boxOf(CANNOT_REMEMBER).hasAttribute("data-chosen")).toBe(true);
+    expect(detailsTitle()).toBe("Player can't remember how to sign in");
+
+    press(boxOf(CANNOT_REMEMBER));
+    expect(boxOf(CANNOT_REMEMBER).hasAttribute("data-chosen")).toBe(true);
+    expect(detailsTitle()).toBe("Player can't remember how to sign in");
+  });
+
+  test("double-pressing a box fits that box and everything under it in the graph area", async () => {
+    fakeApi({ status: 200, body: { nodes: testTree() } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    const opening = await openingView();
+    const below = [...document.querySelectorAll<HTMLElement>("main [data-node]")]
+      .filter((box) => box.dataset.node === SEARCHES || box.dataset.node!.startsWith(`${SEARCHES}/`))
+      .map(rectOf);
+    const left = Math.min(...below.map((b) => b.x));
+    const top = Math.min(...below.map((b) => b.y));
+    const right = Math.max(...below.map((b) => b.x + b.w));
+    const bottom = Math.max(...below.map((b) => b.y + b.h));
+
+    press(boxOf(SEARCHES));
+    press(boxOf(SEARCHES));
+
+    await waitFor(() => expect(currentView().k).toBeGreaterThan(opening.k * 2));
+    const view = await landed();
+    expect(view.k).toBeLessThanOrEqual(1);
+    expect(view.x + left * view.k).toBeGreaterThanOrEqual(0);
+    expect(view.y + top * view.k).toBeGreaterThanOrEqual(0);
+    expect(view.x + right * view.k).toBeLessThanOrEqual(AREA.w);
+    expect(view.y + bottom * view.k).toBeLessThanOrEqual(AREA.h);
+  });
+
+  test("the arrow keys choose the parent, the first child and the brothers and sisters, and do nothing at an edge", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    const key = (name: string) => fireEvent.keyDown(document.body, { key: name });
+    const story = "As a player, I want to create an account and get set up, so that my practice is saved";
+
+    key("ArrowDown");
+    expect(detailsTitle()).toBe(story);
+    key("ArrowRight");
+    expect(detailsTitle()).toBe("Player signs up with an email");
+    key("ArrowRight");
+    expect(detailsTitle()).toBe("Player confirms the email");
+    key("ArrowRight");
+    expect(detailsTitle()).toBe("Player confirms the email");
+    key("ArrowLeft");
+    expect(detailsTitle()).toBe("Player signs up with an email");
+    key("ArrowDown");
+    expect(detailsTitle()).toBe("Player skips the setup");
+    key("ArrowDown");
+    expect(detailsTitle()).toBe("Player skips the setup");
+    key("ArrowUp");
+    expect(detailsTitle()).toBe("Player signs up with an email");
+    key("ArrowUp");
+    expect(detailsTitle()).toBe("Player signs up with an email");
+    key("ArrowLeft");
+    expect(detailsTitle()).toBe(story);
+    // Left on a story does not choose the feature.
+    key("ArrowLeft");
+    expect(detailsTitle()).toBe(story);
+    key("ArrowDown");
+    expect(detailsTitle()).toBe("As a player, I want to pick a training program, so that I know what to practise");
+  });
+
+  test("the arrow keys do nothing in a field or with ⌘, Ctrl or Alt held, and only a key that chooses stops the page scrolling", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    const field = document.createElement("input");
+    document.body.append(field);
+    field.focus();
+
+    expect(fireEvent.keyDown(field, { key: "ArrowDown" })).toBe(true);
+    expect(fireEvent.keyDown(document.body, { key: "ArrowDown", metaKey: true })).toBe(true);
+    expect(fireEvent.keyDown(document.body, { key: "ArrowDown", ctrlKey: true })).toBe(true);
+    expect(fireEvent.keyDown(document.body, { key: "ArrowDown", altKey: true })).toBe(true);
+    expect(detailsTitle()).toBeNull();
+
+    // fireEvent returns false when the screen called preventDefault.
+    expect(fireEvent.keyDown(document.body, { key: "ArrowDown" })).toBe(false);
+    expect(detailsTitle()).toBe("As a player, I want to create an account and get set up, so that my practice is saved");
+    expect(fireEvent.keyDown(document.body, { key: "ArrowLeft" })).toBe(true);
+    field.remove();
   });
 });

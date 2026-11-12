@@ -4,7 +4,7 @@
 // and a move of the view is skipped when the system asks for reduced motion and
 // stops on any new input.
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { animateTo, zoomAt } from "./components/behaviour/camera";
+import { animateTo, bringIntoView, zoomAt } from "./components/behaviour/camera";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -47,5 +47,41 @@ describe("animateTo", () => {
     vi.advanceTimersByTime(1000);
 
     expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+// US-226: where the view goes when a node is chosen outside the graph, in a
+// graph area of 748 x 844. Below 55% zoom a story is fitted with its block (64
+// clear on each side, 30 more above, at most 100%) and any other box is centred
+// at 90%; from 55% a box lying inside the area with 64 to spare stays, and any
+// other box is centred at the same zoom.
+describe("bringIntoView", () => {
+  const AREA = { w: 748, h: 844 };
+  const BOX = { w: 252, h: 30 };
+
+  test("below 55% fits a story with its whole block and centres any other box at 90%", () => {
+    const far = { x: 0, y: 0, k: 0.5 };
+    const block = { x: 0, y: 0, w: 582, h: 500 };
+
+    expect(bringIntoView(far, { x: 0, y: 235, w: 252, h: 46 }, AREA, { isStory: true, blockBounds: block })).toEqual({ k: 1, x: 83, y: 187 });
+    const centred = bringIntoView(far, { x: 1000, y: 2000, ...BOX }, AREA, { isStory: false });
+    expect(centred!.k).toBe(0.9);
+    expect(centred!.x).toBeCloseTo(-639.4, 6);
+    expect(centred!.y).toBeCloseTo(-1391.5, 6);
+  });
+
+  test("at 55% leaves a box inside the graph area where it is", () => {
+    expect(bringIntoView({ x: 0, y: 0, k: 0.55 }, { x: 200, y: 400, ...BOX }, AREA, { isStory: false })).toBeNull();
+  });
+
+  test("from 55% leaves a box with 64 to spare at the side and below, and centres one with 63 at the same zoom", () => {
+    const near = { x: 0, y: 0, k: 1 };
+
+    expect(bringIntoView(near, { x: 64, y: 200, ...BOX }, AREA, { isStory: false })).toBeNull();
+    expect(bringIntoView(near, { x: 63, y: 200, ...BOX }, AREA, { isStory: false })).toEqual({ k: 1, x: 185, y: 207 });
+    expect(bringIntoView(near, { x: 432, y: 200, ...BOX }, AREA, { isStory: false })).toBeNull();
+    expect(bringIntoView(near, { x: 433, y: 200, ...BOX }, AREA, { isStory: false })).toEqual({ k: 1, x: -185, y: 207 });
+    expect(bringIntoView(near, { x: 200, y: 750, ...BOX }, AREA, { isStory: false })).toBeNull();
+    expect(bringIntoView(near, { x: 200, y: 751, ...BOX }, AREA, { isStory: false })).toEqual({ k: 1, x: 48, y: -344 });
   });
 });
