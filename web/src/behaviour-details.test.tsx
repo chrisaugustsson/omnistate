@@ -706,3 +706,115 @@ describe("adding a question or remark", () => {
     expect(questionEl(details, "q-theirs").textContent).not.toContain("You");
   });
 });
+
+// US-235: while a grill runs the screen reads the chosen node again each time
+// `refresh` changes. Text a person is typing stays; when an agent answers the
+// question being typed to, the typed text stands in an open Change field.
+describe("a live update of the chosen node", () => {
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
+  const WAITING = { ...question("q-wait", "What does a search result show?", { state: "open" }), version: 3 };
+  const ANSWERED_BY_DEFAULT = { ...question("q-wait", "What does a search result show?", { answers: [answer("Guest cart.", AGENT, "agent", TODAY)] }), version: 4 };
+  const CHANGED_BY_OTHER = {
+    ...question("q-wait", "What does a search result show?", { answers: [answer("Guest cart.", AGENT, "agent", TODAY), answer("Name and club", PERSON_OTHER, "human", TODAY)] }),
+    version: 5,
+  };
+  const props = { tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, featureId: FEATURE_ID };
+
+  /**
+   * GET .../behaviour/nodes/search answers with the questions in `server` as
+   * they are at that moment; the body of each POST to q-wait's answers is kept
+   * in `sent`.
+   */
+  function fakeSearch(server: { questions: unknown[] }) {
+    const sent: unknown[] = [];
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url === `${NODE_PATH}search` && (init?.method ?? "GET") === "GET")
+          return json(200, {
+            node: { id: "search", parent_id: "story", path: "search", position: 0, level: 2, title: "Player searches for a player", summary: "", status: "open", situation: "", behaviour: "", needs_pass: false, created_at: LONG_AGO, created_by: AGENT, updated_at: LONG_AGO, version: 1 },
+            chain: [],
+            children: [],
+            siblings: [],
+            questions: server.questions,
+            rules: [],
+          });
+        if (url === ANSWERS_PATH && init?.method === "POST") {
+          sent.push(JSON.parse(String(init.body)));
+          return json(201, { question: server.questions[0] });
+        }
+        return json(404, { error: "not_found" });
+      }),
+    );
+    return sent;
+  }
+
+  const q = (details: HTMLElement) => questionEl(details, "q-wait");
+  const textbox = (details: HTMLElement, name: string) => within(q(details)).queryByRole("textbox", { name }) as HTMLTextAreaElement | null;
+
+  test("an agent answering the question being typed to shows its answer By default with the typed text in an open Change field, and the remark text stays", async () => {
+    const server = { questions: [WAITING] as unknown[] };
+    const sent = fakeSearch(server);
+    const { rerender } = render(<Details node={TREE[2]} {...props} refresh={0} />);
+    const details = screen.getByRole("region", { name: "Details" });
+    await waitFor(() => expect(textbox(details, "Your answer")).not.toBeNull());
+    fireEvent.change(textbox(details, "Your answer")!, { target: { value: "Name and handicap" } });
+    const remark = within(details).getByRole("textbox", { name: "Add a question or remark" }) as HTMLTextAreaElement;
+    fireEvent.change(remark, { target: { value: "The results load slowly." } });
+
+    server.questions = [ANSWERED_BY_DEFAULT];
+    rerender(<Details node={TREE[2]} {...props} refresh={1} />);
+
+    await waitFor(() => expect(q(details).textContent).toContain("Someone answered this first; it has been reloaded."));
+    expect(textbox(details, "Your answer")).toBeNull();
+    expect(within(q(details)).getByText("By default")).toBeTruthy();
+    expect(q(details).textContent).toContain("Guest cart.");
+    expect(textbox(details, "New answer")!.value).toBe("Name and handicap");
+    expect(remark.value).toBe("The results load slowly.");
+
+    fireEvent.click(within(q(details)).getByRole("button", { name: "Save new answer" }));
+    await waitFor(() => expect(sent).toEqual([{ expected_version: 4, answer: "Name and handicap", change: true }]));
+  });
+
+  test("an agent answering a question whose field holds only spaces shows it answered, with no Change field open and no line", async () => {
+    const server = { questions: [WAITING] as unknown[] };
+    fakeSearch(server);
+    const { rerender } = render(<Details node={TREE[2]} {...props} refresh={0} />);
+    const details = screen.getByRole("region", { name: "Details" });
+    await waitFor(() => expect(textbox(details, "Your answer")).not.toBeNull());
+    fireEvent.change(textbox(details, "Your answer")!, { target: { value: "   " } });
+
+    server.questions = [ANSWERED_BY_DEFAULT];
+    rerender(<Details node={TREE[2]} {...props} refresh={1} />);
+
+    await waitFor(() => expect(textbox(details, "Your answer")).toBeNull());
+    // The line would come from an effect after the answered form is drawn.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(q(details).textContent).toContain("Guest cart.");
+    expect(textbox(details, "New answer")).toBeNull();
+    expect(details.textContent).not.toContain("Someone answered this first");
+  });
+
+  test("someone changing the answer being changed keeps the field open with the typed text, shows the new answer over the earlier one, and saves against the new version", async () => {
+    const server = { questions: [ANSWERED_BY_DEFAULT] as unknown[] };
+    const sent = fakeSearch(server);
+    const { rerender } = render(<Details node={TREE[2]} {...props} refresh={0} />);
+    const details = screen.getByRole("region", { name: "Details" });
+    await waitFor(() => expect(q(details)).not.toBeNull());
+    fireEvent.click(within(q(details)).getByRole("button", { name: "Change" }));
+    fireEvent.change(textbox(details, "New answer")!, { target: { value: "Name and handicap" } });
+
+    server.questions = [CHANGED_BY_OTHER];
+    rerender(<Details node={TREE[2]} {...props} refresh={1} />);
+
+    await waitFor(() => expect(q(details).textContent).toContain("Someone changed this first; it has been reloaded."));
+    expect(q(details).textContent).toContain("Name and club");
+    expect(q(details).querySelector("s")!.textContent).toBe("Guest cart.");
+    expect(textbox(details, "New answer")!.value).toBe("Name and handicap");
+
+    fireEvent.click(within(q(details)).getByRole("button", { name: "Save new answer" }));
+    await waitFor(() => expect(sent).toEqual([{ expected_version: 5, answer: "Name and handicap", change: true }]));
+  });
+});

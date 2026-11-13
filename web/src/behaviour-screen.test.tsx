@@ -136,18 +136,20 @@ function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], que
   );
 }
 
-/** A WebSocket that never opens: this story reads the tree once. */
+/** A WebSocket that stays connecting until a test opens it, as the live updates do. */
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static readonly CLOSING = 2;
   static readonly CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
 
   readonly CONNECTING = 0;
   readonly OPEN = 1;
   readonly CLOSING = 2;
   readonly CLOSED = 3;
   readyState = FakeWebSocket.CONNECTING;
+  sent: unknown[] = [];
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: Event) => void) | null = null;
   onclose: ((event: Event) => void) | null = null;
@@ -155,14 +157,27 @@ class FakeWebSocket extends EventTarget {
 
   constructor(readonly url: string) {
     super();
+    FakeWebSocket.instances.push(this);
   }
 
-  send() {
-    throw new Error("InvalidStateError: the socket is not open");
+  send(data: string) {
+    if (this.readyState !== FakeWebSocket.OPEN) throw new Error("InvalidStateError: the socket is not open");
+    this.sent.push(JSON.parse(data));
   }
 
   close() {
     this.readyState = FakeWebSocket.CLOSED;
+  }
+
+  /** The server accepted the connection. */
+  open() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.dispatchEvent(new Event("open"));
+  }
+
+  /** The server sent a JSON text frame. */
+  receive(message: unknown) {
+    this.dispatchEvent(Object.assign(new Event("message"), { data: JSON.stringify(message) }));
   }
 }
 
@@ -196,6 +211,7 @@ function row(aside: HTMLElement, text: string) {
 const chevron = (aside: HTMLElement, text: string) => within(row(aside, text)).queryByRole("button");
 
 beforeEach(() => {
+  FakeWebSocket.instances = [];
   vi.stubGlobal("scrollTo", () => {});
   vi.stubGlobal("WebSocket", FakeWebSocket);
 });
@@ -901,6 +917,192 @@ describe("choosing a node in the Behaviour screen", () => {
       fireEvent.keyDown(document.body, { key: "Escape" });
       expect(field().value).toBe("");
     });
+  });
+
+  // US-235: a behaviour event of this feature on the project's live socket reads
+  // the tree and the open questions again, at most once per 300 ms: on the first
+  // event, and once more at the end of the window when more came in it. The
+  // chosen node is read again when the event names it, or is behaviour.imported
+  // or behaviour.marked.
+  describe("following a running grill", () => {
+    const OTHER_FEATURE = "0192d7a0-4444-7000-8000-000000000002";
+    const pillOf = (id: string) => document.querySelector<HTMLElement>(`main [data-node="${id}"] [data-fold]`)!;
+    const still = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** How many times `path` was requested. */
+    function requests(path: string) {
+      return vi.mocked(globalThis.fetch).mock.calls.filter(([input]) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        return new URL(url, "http://localhost:3000").pathname === path;
+      }).length;
+    }
+    const treeReads = () => requests(`${API}/features/${FEATURE_ID}/behaviour`);
+    const questionReads = () => requests(`${API}/features/${FEATURE_ID}/behaviour/questions`);
+    const nodeReads = (id: string) => requests(`${API}/features/${FEATURE_ID}/behaviour/nodes/${id}`);
+
+    /** Opens the live socket and returns a way to send a project event on it. */
+    async function liveSocket() {
+      await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
+      const socket = FakeWebSocket.instances.at(-1)!;
+      act(() => socket.open());
+      await waitFor(() => expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })));
+      act(() => socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 0 }));
+      let seq = 0;
+      return (event: string, data: Record<string, unknown>) =>
+        act(() => {
+          seq += 1;
+          socket.receive({ type: "event", seq, event, project_id: PROJECT_ID, at: AT, data });
+        });
+    }
+
+    function readOf(id: string, parentId: string, title: string) {
+      return {
+        node: { ...node(id, parentId, title), level: 2, situation: "", behaviour: "", created_at: AT, created_by: BY_AGENT, updated_at: AT },
+        chain: [],
+        children: [],
+        siblings: [],
+        questions: [],
+        rules: [],
+      };
+    }
+
+    test("a burst of this feature's behaviour events reads the tree and the open questions at once and once more at its end, and a lone event once", async () => {
+      const list = { status: 200, body: { nodes: TREE } };
+      fakeApi(list, [], []);
+      renderAt(BEHAVIOUR_PATH);
+      const aside = await folders();
+      const send = await liveSocket();
+      await waitFor(() => expect(questionReads()).toBe(1));
+      expect(treeReads()).toBe(1);
+
+      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: PROGRAM_STORY });
+      await waitFor(() => expect(treeReads()).toBe(2));
+      expect(questionReads()).toBe(2);
+      await still(450);
+      expect(treeReads()).toBe(2);
+      expect(questionReads()).toBe(2);
+
+      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: PROGRAM_STORY });
+      await waitFor(() => expect(treeReads()).toBe(3));
+      const STATS_STORY = "0192d7a0-8888-7000-8000-000000000007";
+      list.body = { nodes: [...TREE, node(STATS_STORY, ROOT, "As a player, I want to see my putting stats, so that I know where I improve", { position: 2 })] };
+      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: STATS_STORY });
+      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: STATS_STORY, question_id: "q9", state: "open" });
+
+      await waitFor(() => expect(within(aside).queryByText("Player: see my putting stats")).not.toBeNull());
+      expect(treeReads()).toBe(4);
+      expect(questionReads()).toBe(4);
+      await still(450);
+      expect(treeReads()).toBe(4);
+      expect(questionReads()).toBe(4);
+    }, 10_000);
+
+    test("an event of another feature of the project, or one that is not about behaviour, reads nothing of this feature", async () => {
+      fakeApi({ status: 200, body: { nodes: TREE } }, [], []);
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      const send = await liveSocket();
+      await waitFor(() => expect(questionReads()).toBe(1));
+
+      send("behaviour.node_created", { feature_id: OTHER_FEATURE, node_id: "0192d7a0-8888-7000-8000-000000000099" });
+      send("feature.renamed", { feature_id: FEATURE_ID, name: "Putting" });
+      await still(450);
+      expect(treeReads()).toBe(1);
+      expect(questionReads()).toBe(1);
+
+      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: SIGNS_UP });
+      await waitFor(() => expect(treeReads()).toBe(2));
+    }, 10_000);
+
+    test("the chosen node is read again for an event that names it, for behaviour.marked and behaviour.imported, and at the end of a burst one of them came in, keeping the typed remark", async () => {
+      fakeApi({ status: 200, body: { nodes: TREE } }, [], [], { [SIGNS_UP]: readOf(SIGNS_UP, SIGN_UP_STORY, TREE[2].title) });
+      renderAt(BEHAVIOUR_PATH);
+      const aside = await folders();
+      const send = await liveSocket();
+      fireEvent.click(chevron(aside, "Player: create an account and get set up") as HTMLElement);
+      fireEvent.click(within(aside).getByText("Player signs up with an email"));
+      await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(1));
+      const remark = (await screen.findByRole("textbox", { name: "Add a question or remark" })) as HTMLTextAreaElement;
+      fireEvent.change(remark, { target: { value: "The confirmation is easy to miss." } });
+
+      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: CONFIRMS });
+      await waitFor(() => expect(treeReads()).toBe(2));
+      await still(450);
+      expect(nodeReads(SIGNS_UP)).toBe(1);
+
+      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
+      await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(2));
+      await still(450);
+
+      send("behaviour.marked", { feature_id: FEATURE_ID, node_id: CONFIRMS, below: false });
+      await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(3));
+      await still(450);
+
+      send("behaviour.imported", { feature_id: FEATURE_ID });
+      await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(4));
+      await still(450);
+
+      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: CONFIRMS });
+      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
+      await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(5));
+      await still(450);
+      expect(nodeReads(SIGNS_UP)).toBe(5);
+      expect(remark.value).toBe("The confirmation is easy to miss.");
+      expect(screen.getByRole("textbox", { name: "Add a question or remark" })).toBe(remark);
+    }, 10_000);
+
+    test("a node added live shows as a box and under its open row while the choice, the view and the folds stay, and a row given its first child starts closed", async () => {
+      const STORY = "player-sets-up-account";
+      const FIRST_TIME = `${STORY}/player-opens-app-first-time`;
+      const NO_CONNECTION = `${FIRST_TIME}/no-connection`;
+      const PROGRAM = "player-picks-program";
+      const OFFLINE = `${STORY}/player-is-offline`;
+      const NO_SIGNAL = `${NO_CONNECTION}/player-has-no-signal`;
+      const PROGRAM_OFFLINE = `${PROGRAM}/player-opens-program-offline`;
+      const tree = testTree();
+      const list = { status: 200, body: { nodes: tree } };
+      fakeApi(list);
+      renderAt(BEHAVIOUR_PATH);
+      await folders();
+      await openingView();
+      const send = await liveSocket();
+      press(boxOf(STORY));
+      fireEvent.click(within(rowOf(STORY)!).getByRole("button"));
+      fireEvent.click(within(rowOf(FIRST_TIME)!).getByRole("button"));
+      expect(within(rowOf(NO_CONNECTION)!).queryByRole("button")).toBeNull();
+      const unfolded = currentView();
+      press(pillOf(PROGRAM));
+      fireEvent.click(pillOf(PROGRAM));
+      expect(pillOf(PROGRAM).textContent).toBe("+27");
+      // The fold moves the view to keep the pressed box still; wait for that move to land.
+      await waitFor(() => expect(currentView()).not.toEqual(unfolded));
+      const before = await landed();
+
+      const added = (id: string, parentId: string, title: string, position: number) => ({ ...tree[0], id, parent_id: parentId, path: id, position, level: id.split("/").length, title });
+      const at = (id: string) => tree.findIndex((one) => one.id === id);
+      list.body = {
+        nodes: [
+          ...tree.slice(0, at(NO_CONNECTION) + 1),
+          added(NO_SIGNAL, NO_CONNECTION, "Player has no signal", 0),
+          ...tree.slice(at(NO_CONNECTION) + 1, at(PROGRAM)),
+          added(OFFLINE, STORY, "Player is offline", 3),
+          ...tree.slice(at(PROGRAM)),
+          added(PROGRAM_OFFLINE, PROGRAM, "Player opens a program offline", 9),
+        ],
+      };
+      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: OFFLINE });
+
+      await waitFor(() => expect(boxOf(OFFLINE)).not.toBeNull(), { timeout: 2000 });
+      expect(rowOf(OFFLINE)!.textContent).toBe("Player is offline");
+      expect(within(rowOf(NO_CONNECTION)!).getByRole("button").getAttribute("aria-expanded")).toBe("false");
+      expect(rowOf(NO_SIGNAL)).toBeNull();
+      expect(boxOf(STORY).hasAttribute("data-chosen")).toBe(true);
+      expect(rowOf(STORY)!.getAttribute("aria-current")).toBe("true");
+      expect(pillOf(PROGRAM).textContent).toBe("+28");
+      expect(boxOf(PROGRAM_OFFLINE)).toBeNull();
+      await still(500);
+      expect(currentView()).toEqual(before);
+    }, 10_000);
   });
 });
 
