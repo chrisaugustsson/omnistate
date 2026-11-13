@@ -362,6 +362,13 @@
           "question": {
             "description": "Not blank.",
             "type": "string"
+          },
+          "recommendation": {
+            "description": "The answer the asker recommends for a question it leaves open. Not blank,\nand not together with `answer`.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3202,6 +3209,13 @@
           },
           "question": {
             "type": "string"
+          },
+          "recommendation": {
+            "description": "The answer the asker recommends, or `null`. Set on creation, never changed after.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "description": "`open` or `answered`.",
@@ -8187,7 +8201,7 @@
                 }
               }
             },
-            "description": "A blank question (`invalid_question`), a blank answer (`invalid_answer`), `by` without `answer`, a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)"
+            "description": "A blank question (`invalid_question`), a blank recommendation (`invalid_recommendation`), a recommendation together with `answer` (`recommendation_with_answer`), a blank answer (`invalid_answer`), `by` without `answer`, a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)"
           }
         },
         "summary": "Asks a question, or leaves a remark, on a node.",

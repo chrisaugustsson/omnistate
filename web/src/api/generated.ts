@@ -110,6 +110,7 @@ export const AskRequestSchema = z.object({
   answer: z.string().nullable().optional(),
   by: z.string().nullable().optional(),
   question: z.string(),
+  recommendation: z.string().nullable().optional(),
 });
 export type AskRequest = z.infer<typeof AskRequestSchema>;
 
@@ -199,6 +200,7 @@ export const QuestionBodySchema = z.object({
   node_id: z.string(),
   node_path: z.string(),
   question: z.string(),
+  recommendation: z.string().nullable().optional(),
   state: z.string(),
   version: z.number().int(),
 });

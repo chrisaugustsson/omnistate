@@ -254,7 +254,7 @@ function Chosen({
 
 type Ids = { workspaceId: string; projectId: string; featureId: string };
 
-/** The field and button under a waiting question. */
+/** Under a waiting question: the asker's proposed answer when it has one, then the field and button. */
 function AnswerField({
   question,
   ids,
@@ -270,8 +270,8 @@ function AnswerField({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const send = async () => {
-    const answer = text.trim();
+  const send = async (given: string) => {
+    const answer = given.trim();
     if (!answer || busy) return;
     setBusy(true);
     setError("");
@@ -287,8 +287,18 @@ function AnswerField({
       } else setError("The answer could not be saved. Try again in a moment.");
     }
   };
+  const proposed = question.recommendation;
   return (
     <>
+      {proposed && (
+        <div className="mt-2 border-l-2 pl-2.5">
+          <p className="text-[11.5px] text-muted-foreground">Proposed answer</p>
+          <Text source={proposed} className="mt-0.5 space-y-1 text-[13px] leading-relaxed" />
+          <Button type="button" variant="outline" size="sm" className="mt-1.5 h-7 px-2.5 text-xs" disabled={busy} onClick={() => send(proposed)}>
+            Use this answer
+          </Button>
+        </div>
+      )}
       <textarea
         aria-label="Your answer"
         placeholder="Your answer"
@@ -297,7 +307,7 @@ function AnswerField({
         className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
       />
       <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={send}>
+        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={() => send(text)}>
           Answer
         </Button>
         <span className="text-xs text-muted-foreground">Nobody has answered this yet.</span>

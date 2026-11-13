@@ -249,10 +249,15 @@ fn read_block(node: &Value, questions: Option<&Value>) -> String {
                     current.str_at("answer").unwrap_or_default()
                 ));
             }
-            _ => open.push(format!(
-                "- {text}  [{}]",
-                question.str_at("id").unwrap_or_default()
-            )),
+            _ => {
+                open.push(format!(
+                    "- {text}  [{}]",
+                    question.str_at("id").unwrap_or_default()
+                ));
+                if let Some(recommended) = question.str_at("recommendation") {
+                    open.push(format!("  Recommended: {recommended}"));
+                }
+            }
         }
     }
     if !decisions.is_empty() {
@@ -450,6 +455,9 @@ pub fn ask(args: &Args, node: Option<&str>, question: Option<&str>) -> Result<()
     let base = behaviour_path(args, &agent)?;
     let (id, _) = node_ref(&agent, &base, given)?;
     let mut body = format!("{{\"question\":{}", quote(question));
+    if let Some(recommend) = &args.recommend {
+        body.push_str(&format!(",\"recommendation\":{}", quote(recommend)));
+    }
     if let Some(answer) = &args.answer {
         body.push_str(&format!(",\"answer\":{}", quote(answer)));
     }
@@ -519,6 +527,11 @@ pub fn questions(args: &Args, node: Option<&str>) -> Result<()> {
             && let Some(answer) = question.get("answer").and_then(|a| a.str_at("answer"))
         {
             line.push_str(&format!(" → {answer}"));
+        }
+        if question.str_at("state") == Some("open")
+            && let Some(recommended) = question.str_at("recommendation")
+        {
+            line.push_str(&format!(" (recommended: {recommended})"));
         }
         say(&line);
     }
@@ -625,6 +638,11 @@ pub fn question(args: &Args, question: Option<&str>) -> Result<()> {
         question.str_at("id").unwrap_or("?"),
         question.str_at("question").unwrap_or_default()
     ));
+    if question.str_at("state") == Some("open")
+        && let Some(recommended) = question.str_at("recommendation")
+    {
+        say(&format!("recommended: {recommended}"));
+    }
     let answers = question
         .get("answers")
         .and_then(Value::as_array)

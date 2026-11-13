@@ -104,6 +104,8 @@ pub struct Args {
     /// questions --default`.
     pub answer: Option<String>,
     pub default_answers: bool,
+    /// `omni behaviour ask --recommend <text>`.
+    pub recommend: Option<String>,
     /// `omni behaviour answer --change`.
     pub change: bool,
     /// `omni behaviour list --needs-pass`, `omni behaviour edit --grilled`.
@@ -256,6 +258,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--same-as" => &mut parsed.same_as,
             "--handoff" => &mut parsed.handoff,
             "--answer" => &mut parsed.answer,
+            "--recommend" => &mut parsed.recommend,
             "--scope" => &mut parsed.scope,
             "--priority" => &mut parsed.priority,
             "--number-from" => &mut parsed.number_from,

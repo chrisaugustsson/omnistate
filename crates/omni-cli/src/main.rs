@@ -244,10 +244,13 @@ Usage:
                                       of <parent> (an ID, a path or .); prints the new path. Not
                                       to the node itself or below it (409), not the root, not
                                       where a sibling has the slug (409)
-  omni behaviour ask <node> <question>
+  omni behaviour ask <node> <question> [--recommend <text>]
                                       put a question or a remark on a node; prints the question's
                                       ID. A done node becomes open again, and a node with an open
-                                      question cannot be set to done (409 open_questions)
+                                      question cannot be set to done (409 open_questions).
+                                      --recommend stores the answer you recommend apart from the
+                                      question, for a person to accept; it is never changed
+                                      afterwards, and not given together with --answer (422)
   omni behaviour ask <node> <question> --answer <text> [--by human]
                                       create the question already answered; a done node stays
                                       done. The answer is an agent's own (a default) unless
@@ -363,6 +366,7 @@ Options (before or after the command):
   --grilled             `omni behaviour edit`: clear the node's mark for another pass
   --change              `omni behaviour answer`: change the answer of an answered question
   --answer <text>       `omni behaviour ask`: create the question answered
+  --recommend <text>    `omni behaviour ask`: the answer you recommend for an open question
   --pickable            `omni story list`: only the stories that can be picked
   --summary             `omni story list`: count the stories per status; `omni post` takes
                         --summary <text> instead

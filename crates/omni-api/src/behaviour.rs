@@ -175,6 +175,8 @@ pub struct QuestionBody {
     /// The path of the node; `""` for the root.
     pub node_path: String,
     pub question: String,
+    /// The answer the asker recommends, or `null`. Set on creation, never changed after.
+    pub recommendation: Option<String>,
     /// `open` or `answered`.
     pub state: String,
     /// Who gave the current answer: `human`, `agent`, or `null` while open.
@@ -226,6 +228,9 @@ pub struct QuestionQuery {
 pub struct AskRequest {
     /// Not blank.
     pub question: String,
+    /// The answer the asker recommends for a question it leaves open. Not blank,
+    /// and not together with `answer`.
+    pub recommendation: Option<String>,
     /// Creates the question answered. Not blank.
     pub answer: Option<String>,
     /// With `answer`: `human` or `agent`; see `AnswerRequest`.
@@ -255,6 +260,7 @@ struct QuestionRow {
     id: String,
     node_id: String,
     question: String,
+    recommendation: Option<String>,
     state: String,
     answered_by: Option<String>,
     asked_by: String,
@@ -265,7 +271,7 @@ struct QuestionRow {
 }
 
 const QUESTION_COLUMNS: &str = concat!(
-    "id::text, node_id::text, question, state, answered_by, asked_by::text, version, ",
+    "id::text, node_id::text, question, recommendation, state, answered_by, asked_by::text, version, ",
     "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, ",
     "(SELECT jsonb_build_object('answer', a.answer, 'given_by', a.given_by, 'author', a.author, ",
     "'at', to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'))::text ",
@@ -297,6 +303,7 @@ impl QuestionRow {
             node_id: self.node_id,
             node_path,
             question: self.question,
+            recommendation: self.recommendation,
             state: self.state,
             answered_by: self.answered_by,
             asked_by: serde_json::from_str(&self.asked_by).unwrap_or(Value::Null),
@@ -1437,7 +1444,7 @@ pub async fn move_node(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
-        (status = 422, description = "A blank question (`invalid_question`), a blank answer (`invalid_answer`), `by` without `answer`, a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)", body = ErrorBody),
+        (status = 422, description = "A blank question (`invalid_question`), a blank recommendation (`invalid_recommendation`), a recommendation together with `answer` (`recommendation_with_answer`), a blank answer (`invalid_answer`), `by` without `answer`, a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)", body = ErrorBody),
     )
 )]
 pub async fn ask_question(
@@ -1472,6 +1479,13 @@ pub async fn ask_question(
     if text.is_empty() {
         return Err(invalid_field("invalid_question"));
     }
+    let recommendation = ask.recommendation.as_deref().map(str::trim);
+    if recommendation == Some("") {
+        return Err(invalid_field("invalid_recommendation"));
+    }
+    if recommendation.is_some() && ask.answer.is_some() {
+        return Err(invalid_field("recommendation_with_answer"));
+    }
     let answer = match &ask.answer {
         Some(answer) => Some(checked_answer(answer, ask.by.as_deref(), &request.actor)?),
         None if ask.by.is_some() => return Err(invalid_field("invalid_by")),
@@ -1480,8 +1494,8 @@ pub async fn ask_question(
     let given_by = answer.as_ref().map(|(_, by)| *by);
     let question_id: String = sqlx::query_scalar(
         "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, \
-         question, asked_by, state, answered_by) VALUES ($1::uuid, $2::uuid, $3::uuid, \
-         $4::uuid, $5, $6::text::jsonb, CASE WHEN $7::text IS NULL THEN 'open' ELSE 'answered' END, $7) \
+         question, asked_by, state, answered_by, recommendation) VALUES ($1::uuid, $2::uuid, $3::uuid, \
+         $4::uuid, $5, $6::text::jsonb, CASE WHEN $7::text IS NULL THEN 'open' ELSE 'answered' END, $7, $8) \
          RETURNING id::text",
     )
     .bind(workspace_id)
@@ -1491,6 +1505,7 @@ pub async fn ask_question(
     .bind(text)
     .bind(author.to_string())
     .bind(given_by)
+    .bind(recommendation)
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
