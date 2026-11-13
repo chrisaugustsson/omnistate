@@ -492,7 +492,7 @@ describe("the pointer lines", () => {
 
     fireEvent.pointerMove(box(container, ALREADY_SENT), { pointerId: 1, clientX: 100, clientY: 100 });
     expect(pointerLines(container).map((line) => line.getAttribute("data-pointer"))).toEqual(["same"]);
-    expect(Number(pointerLines(container)[0].getAttribute("opacity"))).toBeLessThan(1);
+    expect(pointerLines(container)[0].getAttribute("opacity")).toBe("0.85");
     expect(onChoose).not.toHaveBeenCalled();
     expect(box(container, ALREADY_SENT).hasAttribute("data-chosen")).toBe(false);
 
