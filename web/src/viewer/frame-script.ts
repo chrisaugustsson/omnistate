@@ -16,6 +16,11 @@
 //   frame scrolls into view when it is not the one it revealed last. When the
 //   doc's `html` changes, the frame draws it again and puts the scroll
 //   position back where it was.
+//
+// A frame in a browser tab that loads in the background is 0 wide and 0 tall
+// until the tab is shown, and nothing can be measured in it. The doc's HTML
+// goes in at once, but its scripts and its Mermaid figures wait until the
+// frame has a size.
 export const FRAME_SCRIPT = String.raw`(function () {
   "use strict";
   var page = window.parent;
@@ -26,6 +31,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
   var drawn = {};
   var counter = 0;
   var configured = false;
+  var waiting = false;
 
   function post(message) {
     page.postMessage(message, PARENT_ORIGIN);
@@ -101,6 +107,14 @@ export const FRAME_SCRIPT = String.raw`(function () {
     });
   }
 
+  // Runs the doc's scripts and draws its figures, once the frame has a size.
+  function start() {
+    if (!waiting || !(window.innerWidth > 0)) return;
+    waiting = false;
+    revive(doc);
+    drawDiagrams();
+  }
+
   function setHover(block) {
     var current = hovered && find(hovered);
     if (current) current.classList.remove("is-hover");
@@ -148,8 +162,8 @@ export const FRAME_SCRIPT = String.raw`(function () {
       var scrollY = window.scrollY;
       shown.html = message.html;
       doc.replaceChildren.apply(doc, Array.from(parse(message.html).childNodes));
-      revive(doc);
-      drawDiagrams();
+      waiting = true;
+      start();
       var again = hovered && find(hovered);
       if (again) again.classList.add("is-hover");
       window.scrollTo(scrollX, scrollY);
@@ -199,6 +213,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
     });
   }
   window.addEventListener("resize", relayout);
+  window.addEventListener("resize", start);
   if (window.ResizeObserver) new ResizeObserver(relayout).observe(doc);
 
   post({ type: "viewer.ready" });
