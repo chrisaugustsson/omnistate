@@ -2879,6 +2879,165 @@ fn by_without_an_answer_on_ask_is_422_and_nothing_is_asked() {
     assert_eq!(question_states(&project), Vec::<Value>::new());
 }
 
+const SOLD_OUT_PROPOSAL: &str = "The buy is refused with a message that the product is sold out.";
+
+/// `POST .../nodes/{node}/questions` with `body`, as the agent.
+fn post_ask(f: &Fixture, project: &str, feature: &str, node: &Value, body: &Value) -> Response {
+    call(
+        f,
+        "POST",
+        &format!(
+            "{}/nodes/{}/questions",
+            tree_path(f, project, feature),
+            id_of(node)
+        ),
+        Auth::Agent,
+        Some(body),
+    )
+}
+
+#[test]
+fn a_question_asked_with_a_recommendation_is_open_and_reads_back_with_it_trimmed() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let asked = must(
+        post_ask(
+            f,
+            &project,
+            &feature,
+            &press,
+            &json!({
+                "question": SOLD_OUT,
+                "recommendation": format!("  {SOLD_OUT_PROPOSAL}\n"),
+            }),
+        ),
+        201,
+        "ask with a recommendation",
+    )["question"]
+        .clone();
+
+    assert_eq!(asked["recommendation"], SOLD_OUT_PROPOSAL);
+    assert_eq!(asked["state"], "open");
+    assert_eq!(asked["answer"], Value::Null);
+    assert_eq!(question_read(f, &project, &feature, &asked), asked);
+    assert_eq!(
+        questions_whole(f, &project, &feature, ""),
+        vec![asked.clone()]
+    );
+    let read = must(read(f, &project, &feature, &id_of(&press)), 200, "read");
+    assert_eq!(read["questions"], json!([asked]));
+}
+
+#[test]
+fn a_question_asked_without_a_recommendation_has_null_for_it() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let asked = ask(f, &project, &feature, &id_of(&press), SOLD_OUT);
+
+    assert_eq!(asked["recommendation"], Value::Null);
+    assert_eq!(
+        question_read(f, &project, &feature, &asked)["recommendation"],
+        Value::Null
+    );
+}
+
+#[test]
+fn a_blank_recommendation_is_422_invalid_recommendation_and_nothing_is_asked() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let response = post_ask(
+        f,
+        &project,
+        &feature,
+        &press,
+        &json!({ "question": SOLD_OUT, "recommendation": " \n " }),
+    );
+
+    assert_error(&response, 422, "invalid_recommendation");
+    assert_eq!(
+        questions_whole(f, &project, &feature, ""),
+        Vec::<Value>::new()
+    );
+    assert_eq!(question_states(&project), Vec::<Value>::new());
+}
+
+#[test]
+fn a_recommendation_with_an_answer_is_422_recommendation_with_answer_and_nothing_is_asked() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+
+    let response = post_ask(
+        f,
+        &project,
+        &feature,
+        &press,
+        &json!({
+            "question": SOLD_OUT,
+            "recommendation": SOLD_OUT_PROPOSAL,
+            "answer": STOCK,
+        }),
+    );
+
+    assert_error(&response, 422, "recommendation_with_answer");
+    assert_eq!(
+        questions_whole(f, &project, &feature, ""),
+        Vec::<Value>::new()
+    );
+    assert_eq!(question_states(&project), Vec::<Value>::new());
+}
+
+#[test]
+fn the_recommendation_stays_on_the_question_when_it_is_answered_and_when_the_answer_changes() {
+    let (f, _) = ready();
+    let (project, feature) = new_feature(f, &unique("Checkout"));
+    let (_, press) = buy_tree(f, &project, &feature);
+    let asked = must(
+        post_ask(
+            f,
+            &project,
+            &feature,
+            &press,
+            &json!({ "question": SOLD_OUT, "recommendation": SOLD_OUT_PROPOSAL }),
+        ),
+        201,
+        "ask with a recommendation",
+    )["question"]
+        .clone();
+
+    let answered = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &asked,
+        &json!({ "expected_version": 1, "answer": STOCK }),
+    );
+    let changed = answer(
+        f,
+        &project,
+        &feature,
+        Auth::Agent,
+        &answered,
+        &json!({ "expected_version": 2, "answer": GUEST, "change": true }),
+    );
+
+    assert_eq!(answered["recommendation"], SOLD_OUT_PROPOSAL);
+    assert_eq!(answered["answer"]["answer"], STOCK);
+    assert_eq!(changed["recommendation"], SOLD_OUT_PROPOSAL);
+    assert_eq!(changed["answer"]["answer"], GUEST);
+    assert_eq!(
+        question_read(f, &project, &feature, &changed)["recommendation"],
+        SOLD_OUT_PROPOSAL
+    );
+}
+
 /// On the situation of `buy_tree`: an open question, one the agent answered
 /// on its own and one a person answered, which the agent wrote down.
 fn three_questions(f: &Fixture, project: &str, feature: &str, press: &Value) {

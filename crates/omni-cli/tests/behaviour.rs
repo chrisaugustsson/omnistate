@@ -52,6 +52,12 @@
 //!   id. `ask --answer <text> [--by human]` sends `answer` and `by` with the
 //!   question. `questions --default` asks for `state=answered&by=agent` and
 //!   ends each line in ` → <answer>`.
+//! - `ask --recommend <text>` sends `recommendation` with the question; with
+//!   `--answer` both are sent, and the API's 422 is the error. An open
+//!   question with a recommendation prints it: `read` adds the line
+//!   `  Recommended: <text>` under the question's, `questions` ends the line
+//!   in ` (recommended: <text>)`, and `question` adds the line `recommended:
+//!   <text>` after the question's. An answered question prints as without one.
 //! - `answer --change` sends `change: true`. A 409 other than `conflict`
 //!   (`not_answered`, `already_answered`, `answered_by_human`) is exit 1 with
 //!   the API's code; only a stale version (`conflict`) is exit 3.
@@ -840,6 +846,199 @@ fn ask_with_an_answer_sends_the_answer_and_by_with_the_question() {
     );
 }
 
+const REFUSED: &str = "The buy is refused with a message that the product is sold out.";
+
+/// The question on the story, open, with a recommendation.
+fn recommended_question() -> Value {
+    let mut question = listed_question();
+    question["recommendation"] = json!(REFUSED);
+    question["answer"] = json!(null);
+    question["answers"] = json!([]);
+    question
+}
+
+/// The question on the story, with a recommendation, answered by a person.
+fn recommended_and_answered() -> Value {
+    let mut question = recommended_question();
+    question["state"] = json!("answered");
+    question["answered_by"] = json!("human");
+    question["answers"] = json!([{
+        "answer": STOCK,
+        "given_by": "human",
+        "author": { "kind": "human", "user_id": "01900000-0000-7000-8000-0000000000a1" },
+        "at": "2026-11-12T12:00:00.000000Z"
+    }]);
+    question["answer"] = question["answers"][0].clone();
+    question
+}
+
+/// An API with the root and the story, whose question lists (plain and
+/// `state=open`) and question read give `asked`, and which refuses a
+/// question asked with both a recommendation and an answer.
+fn recommending(asked: Value) -> MockServer {
+    MockServer::start(move |request| {
+        let base = tree_path();
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", path) if path == base => Reply::json(
+                200,
+                &json!({ "nodes": [
+                    summary(ROOT, None, "", 0, "Checkout"),
+                    summary(STORY, Some(ROOT), "customer-buys-product", 1, "Buys")
+                ] }),
+            ),
+            ("POST", path) if path == format!("{base}/nodes/{STORY}/questions") => {
+                let sent: Value = serde_json::from_slice(&request.body).expect("a JSON body");
+                if sent.get("recommendation").is_some() && sent.get("answer").is_some() {
+                    return Reply::json(422, &json!({ "error": "recommendation_with_answer" }));
+                }
+                Reply::json(201, &json!({ "question": asked }))
+            }
+            ("GET", path)
+                if path == format!("{base}/questions")
+                    || path == format!("{base}/questions?state=open") =>
+            {
+                Reply::json(
+                    200,
+                    &json!({ "questions": [
+                        question(ROOT_QUESTION, ROOT, "", "Who may buy?"),
+                        asked.clone()
+                    ] }),
+                )
+            }
+            ("GET", path) if path == format!("{base}/questions/{QUESTION}") => {
+                Reply::json(200, &json!({ "question": asked }))
+            }
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
+        }
+    })
+}
+
+#[test]
+fn ask_with_recommend_sends_the_recommendation_with_the_question_and_prints_the_question_id() {
+    let server = recommending(recommended_question());
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "ask",
+            "customer-buys-product",
+            SOLD_OUT,
+            "--recommend",
+            REFUSED,
+        ],
+    );
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, format!("{QUESTION}\n"));
+    assert_eq!(
+        posts(&server),
+        vec![json!({ "question": SOLD_OUT, "recommendation": REFUSED })]
+    );
+}
+
+#[test]
+fn recommend_and_answer_together_are_sent_and_the_apis_422_is_the_error() {
+    // The same policy as `--same-as` with `--handoff`: no local usage error.
+    let server = recommending(recommended_question());
+    let home = logged_in(&server);
+
+    let out = run(
+        &home,
+        &[
+            "behaviour",
+            "ask",
+            "customer-buys-product",
+            SOLD_OUT,
+            "--recommend",
+            REFUSED,
+            "--answer",
+            STOCK,
+        ],
+    );
+
+    assert_eq!(out.code, 1, "stdout: {}", out.stdout);
+    assert!(
+        out.stderr.contains("recommendation_with_answer"),
+        "{:?}",
+        out.stderr
+    );
+    assert_eq!(
+        posts(&server),
+        vec![json!({ "question": SOLD_OUT, "recommendation": REFUSED, "answer": STOCK })]
+    );
+}
+
+#[test]
+fn questions_end_the_line_of_an_open_question_in_its_recommendation_plain_and_open() {
+    let server = recommending(recommended_question());
+    let home = logged_in(&server);
+
+    let plain = run(&home, &["behaviour", "questions"]);
+    let open = run(&home, &["behaviour", "questions", "--open"]);
+
+    let lines = format!(
+        ".  {ROOT_QUESTION}  Who may buy?\n\
+         customer-buys-product  {QUESTION}  {SOLD_OUT} (recommended: {REFUSED})\n"
+    );
+    assert_eq!(plain.code, 0, "stderr: {}", plain.stderr);
+    assert_eq!(plain.stdout, lines);
+    assert_eq!(open.code, 0, "stderr: {}", open.stderr);
+    assert_eq!(open.stdout, lines);
+}
+
+#[test]
+fn questions_print_an_answered_question_with_a_recommendation_without_it() {
+    let server = recommending(recommended_and_answered());
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "questions"]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            ".  {ROOT_QUESTION}  Who may buy?\n\
+             customer-buys-product  {QUESTION}  {SOLD_OUT}\n"
+        )
+    );
+}
+
+#[test]
+fn question_prints_the_recommendation_of_an_open_question_after_the_question_line() {
+    let server = recommending(recommended_question());
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "question", QUESTION]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "customer-buys-product  {QUESTION}  {SOLD_OUT}\n\
+             recommended: {REFUSED}\n"
+        )
+    );
+}
+
+#[test]
+fn question_prints_an_answered_question_with_a_recommendation_without_it() {
+    let server = recommending(recommended_and_answered());
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "question", QUESTION]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "customer-buys-product  {QUESTION}  {SOLD_OUT}\n\
+             answer: {STOCK} — person, 2026-11-12T12:00:00.000000Z\n"
+        )
+    );
+}
+
 #[test]
 fn questions_default_asks_for_the_agents_own_answers_and_ends_each_line_in_the_answer() {
     let server = mock();
@@ -1382,6 +1581,76 @@ Children:
 
 Siblings:
 - in-stock — Goes to the cart. (done)
+"
+        )
+    );
+}
+
+#[test]
+fn read_prints_the_recommendation_under_its_open_question_and_not_under_an_answered_one() {
+    let mut root = node(ROOT, None, "", 0, "Checkout");
+    root["questions"] = json!([]);
+    let mut story = node(STORY, Some(ROOT), "customer-buys-product", 1, "Buys");
+    let mut on_story = question(QUESTION, STORY, "customer-buys-product", "Who may buy?");
+    on_story["recommendation"] = json!("Anyone with an account.");
+    on_story["answer"] = json!(null);
+    story["questions"] = json!([on_story]);
+    let mut press = node(PRESS, Some(STORY), PRESS_PATH, 2, "User presses buy");
+    press["questions"] = json!([]);
+    let oos = node(OUT, Some(PRESS), OUT_PATH, 3, "Out of stock");
+    let mut open = question(ZERO, OUT, OUT_PATH, "What if quantity is zero?");
+    open["recommendation"] = json!("The buy button is disabled.");
+    open["answer"] = json!(null);
+    let mut decided = answered(
+        NEW,
+        OUT,
+        OUT_PATH,
+        "Region delivery check here?",
+        "No, handled at checkout.",
+        "human",
+    );
+    decided["recommendation"] = json!("Yes, check it here.");
+    let server = read_mock(json!({
+        "node": oos,
+        "chain": [root, story, press],
+        "questions": [
+            open,
+            question(ROOT_QUESTION, OUT, OUT_PATH, "Logged out user?"),
+            decided
+        ],
+        "rules": [],
+        "children": [],
+        "siblings": []
+    }));
+    let home = logged_in(&server);
+
+    let out = run(&home, &["behaviour", "read", OUT_PATH]);
+
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        format!(
+            "# Checkout
+path: .  level: feature  status: open
+
+# Buys
+path: customer-buys-product  level: story  status: open
+Open questions:
+- Who may buy?  [{QUESTION}]
+  Recommended: Anyone with an account.
+
+# User presses buy
+path: {PRESS_PATH}  level: situation  status: open
+
+=== this node ===
+# Out of stock
+path: {OUT_PATH}  level: situation  status: open
+Decisions:
+- Region delivery check here? → No, handled at checkout.
+Open questions:
+- What if quantity is zero?  [{ZERO}]
+  Recommended: The buy button is disabled.
+- Logged out user?  [{ROOT_QUESTION}]
 "
         )
     );

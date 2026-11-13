@@ -449,6 +449,115 @@ describe("answering a waiting question", () => {
     await waitFor(() => expect(questionEl(details, "q-wait")).not.toBeNull());
     expect(details.textContent).not.toContain("Recorded.");
   });
+
+  // The asker's recommendation is shown apart from the question, and one press makes it the person's answer.
+  const PROPOSAL = "The **name** and the handicap";
+  const PROPOSED = { ...WAITING, recommendation: PROPOSAL };
+  const useButton = (details: HTMLElement) => within(questionEl(details, "q-wait")).queryByRole("button", { name: "Use this answer" }) as HTMLButtonElement | null;
+
+  test("a waiting question with a recommendation shows it as the proposed answer between the question and the field, with Use this answer", async () => {
+    fakeSearch(
+      () => [PROPOSED],
+      () => accepted(ANSWERED),
+    );
+    const details = renderChosen(TREE[2]);
+    const { field, button } = await fieldOf(details);
+
+    const waiting = questionEl(details, "q-wait");
+    const label = within(waiting).getByText("Proposed answer");
+    expect(label.parentElement!.textContent).toBe("Proposed answerThe name and the handicapUse this answer");
+    expect(label.parentElement!.querySelector("strong")?.textContent).toBe("name");
+    expect(within(waiting).getByText("What does a search result show?").compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(label.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(useButton(details)!.disabled).toBe(false);
+    expect(field.value).toBe("");
+    expect(button.disabled).toBe(true);
+  });
+
+  test("Use this answer sends the recommendation with the question's version while the field is empty, and says the node waits for the next grill pass", async () => {
+    const sent: unknown[] = [];
+    let questions: unknown[] = [PROPOSED];
+    const answered = { ...question("q-wait", "What does a search result show?", { answers: [answer(PROPOSAL, PERSON_ME, "human", TODAY)] }), recommendation: PROPOSAL };
+    fakeSearch(
+      () => questions,
+      (body) => {
+        sent.push(body);
+        questions = [answered];
+        return accepted(answered);
+      },
+    );
+    const details = renderChosen(TREE[2]);
+    await fieldOf(details);
+
+    fireEvent.click(useButton(details)!);
+
+    await waitFor(() => expect(questionEl(details, "q-wait").textContent).toContain("Recorded. This node now waits for the next grill pass."));
+    expect(sent).toEqual([{ expected_version: 3, answer: PROPOSAL }]);
+    expect(details.textContent).not.toContain("Proposed answer");
+    expect(useButton(details)).toBeNull();
+    expect(within(questionEl(details, "q-wait")).queryByRole("textbox")).toBeNull();
+  });
+
+  test("keeps Use this answer and Answer disabled while the answer is on its way, and on a failure other than 409 says it could not be saved and keeps the typed text", async () => {
+    let fail: (response: Response) => void = () => {};
+    fakeSearch(
+      () => [PROPOSED],
+      () => new Promise<Response>((resolve) => (fail = resolve)),
+    );
+    const details = renderChosen(TREE[2]);
+    const { field, button } = await fieldOf(details);
+    fireEvent.change(field, { target: { value: "Only the name" } });
+
+    fireEvent.click(useButton(details)!);
+    expect(useButton(details)!.disabled).toBe(true);
+    expect(button.disabled).toBe(true);
+
+    fail(new Response(JSON.stringify({ error: "internal" }), { status: 500, headers: { "content-type": "application/json" } }));
+
+    await waitFor(() => expect(questionEl(details, "q-wait").textContent).toContain("The answer could not be saved. Try again in a moment."));
+    expect(useButton(details)!.disabled).toBe(false);
+    expect((within(questionEl(details, "q-wait")).getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement).value).toBe("Only the name");
+  });
+
+  test("a 409 on Use this answer says someone answered first and shows their answer without the proposal", async () => {
+    let questions: unknown[] = [PROPOSED];
+    const theirs = { ...question("q-wait", "What does a search result show?", { answers: [answer("Only the name", PERSON_OTHER, "human", TODAY)] }), recommendation: PROPOSAL };
+    fakeSearch(
+      () => questions,
+      () => {
+        questions = [theirs];
+        return new Response(JSON.stringify({ error: "already_answered" }), { status: 409, headers: { "content-type": "application/json" } });
+      },
+    );
+    const details = renderChosen(TREE[2]);
+    await fieldOf(details);
+
+    fireEvent.click(useButton(details)!);
+
+    await waitFor(() => expect(questionEl(details, "q-wait").textContent).toContain("Someone answered this first; it has been reloaded."));
+    await waitFor(() => expect(questionEl(details, "q-wait").textContent).toContain("Only the name"));
+    expect(details.textContent).not.toContain("Proposed answer");
+    expect(useButton(details)).toBeNull();
+  });
+
+  test("shows no proposed answer on a waiting question without a recommendation, on a remark, or on an answered question that had one", async () => {
+    fakeSearch(
+      () => [
+        { ...WAITING, recommendation: null },
+        { ...question("q-remark", "The empty state is missing", { state: "open", asked_by: PERSON_ME }), recommendation: PROPOSAL },
+        { ...question("q-done", "Is the search case sensitive?", { answers: [answer("No", PERSON_OTHER, "human")] }), recommendation: PROPOSAL },
+      ],
+      () => accepted(ANSWERED),
+    );
+    const details = renderChosen(TREE[2]);
+    await fieldOf(details);
+    await waitFor(() => expect(questionEl(details, "q-done")).not.toBeNull());
+
+    expect(details.textContent).not.toContain("Proposed answer");
+    expect(within(details).queryByRole("button", { name: "Use this answer" })).toBeNull();
+    expect(details.textContent).not.toContain(PROPOSAL);
+    expect(details.textContent).not.toContain("The name and the handicap");
+  });
 });
 
 // US-229: any answered question, also one given by default, can be changed with
