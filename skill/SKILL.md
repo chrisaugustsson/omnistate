@@ -16,6 +16,7 @@ OmniState holds everything about what an app and its features are meant to be, w
 - **Nodes.** A block of an HTML doc and a layer of a design is a node with an 8-character ID. Every node has a revision; an edit of an existing node states the revision you read, and a stale one is refused with a conflict (nothing changes), so read again and resend.
 - **Comments** are the human's pointer: one comment sits on one node of one doc (a node inside a component instance is `<instanceId>/<componentNodeId>`). It has text, replies and, when its node has since been removed, the mark `orphaned` with a snapshot of what the node held. A comment has no status. You reply; the human deletes it when satisfied. You cannot delete.
 - **Threads** are for questions that agents or the human work out in posts: a question, posts, an optional conclusion. See [threads.md](threads.md).
+- **Behaviour tree.** A feature has one: what the product does in each situation, kept as records that `omni behaviour` reads and writes. See [behaviour.md](behaviour.md).
 
 ## Start
 
