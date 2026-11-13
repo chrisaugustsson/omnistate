@@ -169,22 +169,23 @@ describe("the details of a chosen node", () => {
     expect(within(details).getAllByText("Works offline")).toHaveLength(1);
   });
 
-  test("lists waiting questions, then remarks, then answers by default, then the rest, and counts only waiting ones as open", async () => {
+  test("lists waiting questions, then remarks and my own answers, then answers by default, then the rest, and counts only waiting ones as open", async () => {
     fakeNode({
       questions: [
         question("q-rest", "Who sees the search?", { answers: [answer("Everyone", PERSON_OTHER, "human")] }),
         question("q-default", "How many results show?", { answers: [answer("Ten", AGENT, "agent")] }),
         question("q-remark", "Check the wording here", { state: "open", asked_by: PERSON_ME }),
         question("q-waiting", "What if the name has a typo?", { state: "open", asked_by: AGENT }),
+        question("q-mine", "Does the search need a connection?", { answers: [answer("No", AGENT, "agent"), answer("Yes", PERSON_ME, "human")] }),
       ],
     });
     const details = renderChosen();
-    await waitFor(() => expect(details.querySelectorAll("[data-question]")).toHaveLength(4));
+    await waitFor(() => expect(details.querySelectorAll("[data-question]")).toHaveLength(5));
 
     const order = [...details.querySelectorAll("[data-question]")].map((one) => one.getAttribute("data-question"));
-    expect(order).toEqual(["q-waiting", "q-remark", "q-default", "q-rest"]);
+    expect(order).toEqual(["q-waiting", "q-remark", "q-mine", "q-default", "q-rest"]);
     const heading = within(details).getByRole("heading", { name: /^Questions/ }).textContent!.replace(/\s+/g, " ");
-    expect(heading).toBe("Questions 4 · 1 open");
+    expect(heading).toBe("Questions 5 · 1 open");
     expect(within(questionEl(details, "q-default")).getByText("By default")).toBeTruthy();
     expect(within(questionEl(details, "q-rest")).queryByText("By default")).toBeNull();
     expect(within(questionEl(details, "q-remark")).queryByRole("textbox", { name: "Your answer" })).toBeNull();
