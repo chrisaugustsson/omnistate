@@ -414,3 +414,117 @@ describe("the fold pills", () => {
     expect(pill(container, "player-picks-program")?.textContent).toBe("+27");
   });
 });
+
+// US-234: a "same as" or "hands off" pointer is drawn as a line from the right
+// edge of its box to the box it points at, only when both ends are drawn and
+// one end is the chosen node or the box under the pointer. Same-as lines are
+// dotted; hands-off lines are dashed and end in an arrowhead.
+describe("the pointer lines", () => {
+  const STORY = "player-adds-friend";
+  const ALREADY_SENT = "player-adds-friend/player-searches-for-player/they-already-sent-request";
+  const GETS_REQUEST = "player-adds-friend/player-gets-friend-request";
+  const OPENS_FROM_HISTORY = "player-edits-logged-practice/player-opens-practice-from-history";
+  const EDITS_PRACTICE = `${OPENS_FROM_HISTORY}/player-edits-practice`;
+  const EDITS_ON_SUMMARY = "player-runs-session/starts-from-dashboard/session-opens-on-first-drill/last-drill-logged/edits-on-summary";
+  const pointing = (id: string) => ({ id, path: id });
+  // Three pointers arrive at the friend story; two more point elsewhere.
+  const nodes = () =>
+    treeWith({
+      [ALREADY_SENT]: { same_as: pointing(GETS_REQUEST) },
+      [EDITS_ON_SUMMARY]: { handoff: pointing(EDITS_PRACTICE) },
+      [SHARES_LINK]: { same_as: pointing(STORY) },
+      [NO_PROGRAM]: { handoff: pointing(STORY) },
+      [OPENS_LIST]: { same_as: pointing(STORY) },
+    });
+  const pointerLines = (container: HTMLElement) => [...container.querySelectorAll<SVGPathElement>("path[data-pointer]")];
+
+  function rect(container: HTMLElement, id: string) {
+    const el = box(container, id);
+    const [, x, y] = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(el.style.transform)!;
+    return { x: Number(x), y: Number(y), w: parseFloat(el.style.width), h: parseFloat(el.style.height) };
+  }
+
+  /** The first and last points of a line's path. */
+  function ends(line: SVGPathElement) {
+    const numbers = line.getAttribute("d")!.match(/-?[\d.]+/g)!.map(Number);
+    return { start: { x: numbers[0], y: numbers[1] }, end: { x: numbers[numbers.length - 2], y: numbers[numbers.length - 1] } };
+  }
+
+  test("none is drawn while nothing is chosen and no box is under the pointer; choosing a node draws the lines that start or end at it", () => {
+    const { container, rerender } = render(<Graph nodes={nodes()} />);
+    expect(pointerLines(container)).toHaveLength(0);
+
+    rerender(<Graph nodes={nodes()} chosenId={STORY} />);
+    expect(pointerLines(container).map((line) => line.getAttribute("data-pointer")).sort()).toEqual(["handoff", "same", "same"]);
+    expect(pointerLines(container).map((line) => line.getAttribute("opacity"))).toEqual(["1", "1", "1"]);
+
+    rerender(<Graph nodes={nodes()} chosenId={ALREADY_SENT} />);
+    expect(pointerLines(container).map((line) => line.getAttribute("data-pointer"))).toEqual(["same"]);
+  });
+
+  test("a same-as line runs dotted from the right edge of its box to the target's box, and a hands-off line is dashed and ends in an arrowhead", () => {
+    const { container, rerender } = render(<Graph nodes={nodes()} chosenId={ALREADY_SENT} />);
+    const [same] = pointerLines(container);
+    const from = rect(container, ALREADY_SENT);
+    const to = rect(container, GETS_REQUEST);
+    const { start, end } = ends(same);
+    expect(start.x).toBe(from.x + from.w);
+    expect(start.y).toBeGreaterThanOrEqual(from.y);
+    expect(start.y).toBeLessThanOrEqual(from.y + from.h);
+    expect(end.x).toBeGreaterThanOrEqual(to.x);
+    expect(end.x).toBeLessThanOrEqual(to.x + to.w);
+    expect(end.y).toBeGreaterThanOrEqual(to.y);
+    expect(end.y).toBeLessThanOrEqual(to.y + to.h);
+    expect(same.hasAttribute("marker-end")).toBe(false);
+
+    rerender(<Graph nodes={nodes()} chosenId={EDITS_ON_SUMMARY} />);
+    const [handoff] = pointerLines(container);
+    expect(handoff.getAttribute("data-pointer")).toBe("handoff");
+    expect(handoff.getAttribute("stroke-dasharray")).not.toBe(same.getAttribute("stroke-dasharray"));
+    const arrow = /^url\(#(.+)\)$/.exec(handoff.getAttribute("marker-end")!)![1];
+    expect(container.querySelector(`marker#${arrow}`)).not.toBeNull();
+  });
+
+  test("the box under the pointer shows its lines a little lighter without being chosen, until the pointer leaves it or a drag starts", () => {
+    const onChoose = vi.fn();
+    const { container } = render(<Graph nodes={nodes()} onChoose={onChoose} />);
+    const area = graphArea(container);
+
+    fireEvent.pointerMove(box(container, ALREADY_SENT), { pointerId: 1, clientX: 100, clientY: 100 });
+    expect(pointerLines(container).map((line) => line.getAttribute("data-pointer"))).toEqual(["same"]);
+    expect(Number(pointerLines(container)[0].getAttribute("opacity"))).toBeLessThan(1);
+    expect(onChoose).not.toHaveBeenCalled();
+    expect(box(container, ALREADY_SENT).hasAttribute("data-chosen")).toBe(false);
+
+    // Over empty space between the boxes.
+    fireEvent.pointerMove(area, { pointerId: 1, clientX: 100, clientY: 100 });
+    expect(pointerLines(container)).toHaveLength(0);
+
+    fireEvent.pointerMove(box(container, STORY), { pointerId: 1, clientX: 100, clientY: 100 });
+    expect(pointerLines(container)).toHaveLength(3);
+    fireEvent.pointerOut(area, { pointerId: 1, relatedTarget: document.body });
+    expect(pointerLines(container)).toHaveLength(0);
+
+    // A press on a box that moves on into a drag.
+    fireEvent.pointerDown(box(container, ALREADY_SENT), { pointerId: 1, button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(box(container, ALREADY_SENT), { pointerId: 1, clientX: 120, clientY: 100 });
+    fireEvent.pointerMove(box(container, ALREADY_SENT), { pointerId: 1, clientX: 140, clientY: 100 });
+    expect(pointerLines(container)).toHaveLength(0);
+  });
+
+  test("a pointer whose other end is folded away or filtered out draws no line, and its box keeps the pointer mark", () => {
+    const { container, rerender } = render(
+      <Graph nodes={nodes()} chosenId={EDITS_ON_SUMMARY} folded={new Set([OPENS_FROM_HISTORY])} />,
+    );
+    expect(box(container, EDITS_PRACTICE)).toBeNull();
+    expect(pointerLines(container)).toHaveLength(0);
+    expect(box(container, EDITS_ON_SUMMARY).querySelector('[data-mark="pointer"]')?.textContent).toBe("⇢");
+
+    // Under a filter that shows the chosen node and those above it only.
+    const shown = new Set(["feature", STORY, SEARCHES, ALREADY_SENT]);
+    rerender(<Graph nodes={nodes()} chosenId={ALREADY_SENT} shown={shown} />);
+    expect(box(container, GETS_REQUEST)).toBeNull();
+    expect(pointerLines(container)).toHaveLength(0);
+    expect(box(container, ALREADY_SENT).querySelector('[data-mark="pointer"]')?.textContent).toBe("↪");
+  });
+});
