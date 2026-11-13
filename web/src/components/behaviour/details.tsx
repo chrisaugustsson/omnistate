@@ -36,9 +36,12 @@ const CHANGE_CONFLICT = "Someone changed this first; it has been reloaded.";
 
 const pill = "h-5 whitespace-nowrap rounded-full bg-muted px-2 text-[11.5px] font-medium leading-5 text-muted-foreground";
 
-// Waiting questions, then a person's remarks, then answers by default, then the rest.
-function rank(question: QuestionBody): number {
+// Waiting questions, then a person's remarks and the signed-in person's own answers, then answers
+// by default, then the rest. An answer just given so stays in sight under the waiting questions.
+function rank(question: QuestionBody, me: string | null): number {
   if (question.state === "open") return question.asked_by.kind === "human" ? 1 : 0;
+  const author = question.answer?.author;
+  if (me !== null && author?.kind === "human" && author.user_id === me) return 1;
   return question.answer?.given_by === "agent" ? 2 : 3;
 }
 
@@ -420,7 +423,7 @@ function Questions({
   nodeId: string;
   onAsked: () => void;
 }) {
-  const sorted = questions.map((question, at) => ({ question, at })).sort((a, b) => rank(a.question) - rank(b.question) || a.at - b.at);
+  const sorted = questions.map((question, at) => ({ question, at })).sort((a, b) => rank(a.question, me) - rank(b.question, me) || a.at - b.at);
   const waiting = questions.filter((question) => question.state === "open" && question.asked_by.kind !== "human").length;
   return (
     <>
