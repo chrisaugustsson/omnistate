@@ -1,4 +1,3 @@
-import mermaidScript from "mermaid/dist/mermaid.min.js?raw";
 import docStyles from "./doc.css?raw";
 import { FRAME_SCRIPT } from "./frame-script";
 
@@ -26,7 +25,6 @@ body { position: relative; padding: 1.5rem 3.5rem 4rem; }
   outline-offset: 2px;
   background-image: linear-gradient(rgba(9, 105, 218, 0.14), rgba(9, 105, 218, 0.14));
 }
-.omni-mermaid svg { max-width: 100%; height: auto; }
 #pins { position: absolute; top: 0; left: 0; width: 0; height: 0; }
 .omni-pin {
   position: absolute;
@@ -77,7 +75,6 @@ export function viewerDocument({ workspaceId, origin }: { workspaceId: string; o
     "<body>",
     '<main id="doc" class="omni-doc"></main>',
     '<div id="pins"></div>',
-    `<script>${mermaidScript}</script>`,
     `<script>${viewerScript}</script>`,
     "</body>",
     "</html>",

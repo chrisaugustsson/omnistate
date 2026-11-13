@@ -48,8 +48,10 @@
 //   default stylesheet (a sans-serif body with roomy lines and a measure, and
 //   table cells with padding and borders), and a doc's own `<style>` overrides
 //   it, even with plain element selectors.
-// - Mermaid figures (`<figure><pre class="mermaid">`) are drawn by the viewer as
-//   an SVG in the figure, in place of the Mermaid text.
+// - A frame without a size (0 wide and 0 tall, as it is in a browser tab that
+//   loads in the background until the tab is shown) shows the doc's HTML, but
+//   the doc's scripts run only once the frame has a size, because nothing can
+//   be measured before that.
 // - Hovering a block highlights it, and moving on takes the highlight away;
 //   clicking a block selects it (the frame tells the page), a selected block
 //   looks selected, and pins show beside the blocks that have comments.
@@ -74,7 +76,7 @@ const FRAME_WIDTH = 900;
 const FRAME_HEIGHT = 1200;
 const PATIENCE = 15_000;
 
-/** The doc of docs/formats/html-docs.md: every block type, an SVG and a Mermaid figure. */
+/** The doc of docs/formats/html-docs.md: every block type and an SVG. */
 const FULL_DOC = `<section data-omni-id="a0000001">
 <h1 data-omni-id="a0000002">Order service</h1>
 <p data-omni-id="a0000003">Plain, <strong>strong</strong>, <em>emphasis</em>, <code>code()</code> and <a href="https://example.com/docs">a link</a>.<br>After the line break.</p>
@@ -92,8 +94,6 @@ const FULL_DOC = `<section data-omni-id="a0000001">
 <tr data-omni-id="a0000015"><td data-omni-id="a0000016">id</td><td data-omni-id="a0000017">uuid</td></tr>
 </table>
 <figure data-omni-id="a0000018"><svg viewBox="0 0 100 50"><rect x="1" y="1" width="50" height="20" fill="#336699"/><circle cx="70" cy="25" r="10"/></svg><figcaption>A box and a circle</figcaption></figure>
-<figure data-omni-id="a0000019"><pre class="mermaid">graph TD;
-  Alpha--&gt;Beta</pre><figcaption>The flow</figcaption></figure>
 <aside data-omni-id="a0000020" data-callout="note">A note.</aside>
 <aside data-omni-id="a0000021" data-callout="warning">Mind the gap.</aside>
 <aside data-omni-id="a0000022" data-callout="decision">Orders are never deleted.</aside>
@@ -221,22 +221,44 @@ async function openViewer(): Promise<{ page: Page; frame: Frame }> {
   return { page, frame: frame as Frame };
 }
 
-/** Posts `viewer.show` to the frame and waits until it shows the block `waitFor`. */
-async function show(
-  target: { page: Page; frame: Frame },
-  message: {
-    html: string;
-    pins?: { node: string; count: number }[];
-    selected?: string | null;
-    reveal?: string;
-  },
-  waitFor: string,
-) {
+type Shown = {
+  html: string;
+  pins?: { node: string; count: number }[];
+  selected?: string | null;
+  reveal?: string;
+};
+
+/** Posts `viewer.show` to the frame. */
+async function post(target: { page: Page }, message: Shown) {
   await target.page.evaluate((data) => {
     const frame = document.getElementById("viewer") as HTMLIFrameElement;
     frame.contentWindow!.postMessage(data, "*");
   }, { type: "viewer.show", pins: [], selected: null, claims: [], ...message });
+}
+
+/** Posts `viewer.show` to the frame and waits until it shows the block `waitFor`. */
+async function show(target: { page: Page; frame: Frame }, message: Shown, waitFor: string) {
+  await post(target, message);
   await target.frame.waitForSelector(`[data-omni-id="${waitFor}"]`, { timeout: PATIENCE });
+}
+
+/**
+ * Takes the frame's size away (0 wide and 0 tall) or gives it back, and waits until the frame
+ * knows. A frame in a browser tab that loads in the background is like this until the tab is
+ * shown.
+ */
+async function sizeless(target: { page: Page; frame: Frame }, on: boolean) {
+  await target.page.evaluate(
+    ({ none, width, height }) => {
+      const frame = document.getElementById("viewer")!;
+      frame.style.width = none ? "0" : `${width}px`;
+      frame.style.height = none ? "0" : `${height}px`;
+    },
+    { none: on, width: FRAME_WIDTH, height: FRAME_HEIGHT },
+  );
+  await expect
+    .poll(() => target.frame.evaluate(() => window.innerWidth === 0), { timeout: PATIENCE })
+    .toBe(on);
 }
 
 /** The messages the frame posted to the page. */
@@ -399,6 +421,24 @@ document.getElementById("by-script").textContent = "Ran.";
     await expect.poll(() => text("by-handler"), { timeout: PATIENCE }).toBe("Clicked.");
   });
 
+  test("a doc's scripts wait until the frame has a size", async () => {
+    const target = await openViewer();
+    await sizeless(target, true);
+    const html = `<section data-omni-id="s0000001">
+<p data-omni-id="p0000001" id="measured">Waiting.</p>
+<script>
+document.getElementById("measured").textContent = "Measured " + window.innerWidth + ".";
+</script>
+</section>`;
+    await post(target, { html });
+    await target.frame.waitForSelector('[data-omni-id="p0000001"]', { state: "attached", timeout: PATIENCE });
+    const text = () => target.frame.evaluate(() => document.getElementById("measured")?.textContent ?? "");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await text(), "the script has not run in a frame without a size").toBe("Waiting.");
+    await sizeless(target, false);
+    await expect.poll(text, { timeout: PATIENCE }).toBe(`Measured ${FRAME_WIDTH}.`);
+  });
+
   test("a doc without styles is readable with the default stylesheet, and a doc's own style overrides it", async () => {
     const target = await openViewer();
     const plain = `<section data-omni-id="s0000001">
@@ -444,26 +484,6 @@ document.getElementById("by-script").textContent = "Ran.";
     expect(own.lineHeight).toBeCloseTo(1, 1);
     expect(own.cellPadding).toBe(0);
     expect(own.cellBorder).toBe(0);
-  });
-
-  test("Mermaid figures are drawn by the viewer", async () => {
-    const target = await openViewer();
-    await show(target, { html: FULL_DOC }, "a0000019");
-    await target.frame.waitForFunction(
-      () => {
-        const figure = document.querySelector('[data-omni-id="a0000019"]');
-        const svg = figure?.querySelector("svg");
-        return Boolean(svg && /Alpha/.test(svg.textContent ?? "") && /Beta/.test(svg.textContent ?? ""));
-      },
-      undefined,
-      { timeout: PATIENCE },
-    );
-    const figure = await target.frame.evaluate(() => {
-      const element = document.querySelector('[data-omni-id="a0000019"]') as HTMLElement;
-      return { text: element.innerText, caption: element.querySelector("figcaption")?.textContent ?? "" };
-    });
-    expect(figure.text, "the Mermaid source is drawn, not shown as text").not.toMatch(/graph TD/);
-    expect(figure.caption).toBe("The flow");
   });
 
   test("hovering highlights the block under the pointer, and only while it is there", async () => {
