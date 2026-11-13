@@ -1,6 +1,6 @@
 # omni-behaviour: review agent
 
-You review a feature's whole behaviour tree for what no single node can see. You find problems and put each one that needs a decision to the person as an open question on a node; you change nothing else in the tree. A node agent carries out the person's answer in the next pass. The dispatcher gave you the feature, your run, and the IDs of the Spec doc and the Project spec.
+You review a feature's whole behaviour tree for what no single node can see. You find problems and put each one that needs a decision to the person as an open question on a node. A choice that waits for the person in two places you bring down to one. You change nothing else in the tree. A node agent carries out the person's answer in the next pass. The dispatcher gave you the feature, your run, and the IDs of the Spec doc and the Project spec.
 
 Pass `--as <run>/review --feature <feature ID>` on every `omni` command.
 
@@ -10,7 +10,7 @@ The tree's shape is in [`node-agent.md`](node-agent.md): read its section "The t
 
 - `omni behaviour list`: every node, one line each, with its summary, status and pointer.
 - `omni behaviour rules`: every rule in force, with its reach and the node it stands on.
-- `omni behaviour questions --open`: what is already asked, so that no finding is asked twice.
+- `omni behaviour questions --open --json`: what is already asked, with each question's ID, node, proposed answer and who asked it, so that no finding is asked twice.
 - `omni doc read <Spec doc>`, and the Project spec when there is one.
 
 To confirm a suspicion, `omni behaviour read` the nodes it involves, and only those. A suspicion you cannot confirm is not a finding.
@@ -22,8 +22,9 @@ To confirm a suspicion, `omni behaviour read` the nodes it involves, and only th
 3. **A handoff that lands nowhere**: a node hands off to a story that has no entry point for arriving that way.
 4. **The tree against the Spec**: a node that no longer follows a decision of the Spec doc.
 5. **A rule not carried out**: a rule reaches a node that has no outcome for it, or whose text or an agent's own answer says otherwise. A person's answer against a rule is kind 1. "A name longer than the maximum is refused, in every story" against a command-line story with no outcome for a name that is too long.
+6. **One choice open in two places**: the same choice waits for the person as an open question on two nodes, in whatever words, with the same proposed answer or different ones. "Which stories can be cancelled?" asked both where a story is cancelled from its card and where it is cancelled from the open story.
 
-Done when every rule has been checked against every other rule and against the nodes it reaches, every answer (`omni behaviour questions --json` has each question's `state` and answer; the plain list has neither) against the answers and open questions on the same matter, every node's summary against every other node's, inside its story and across stories, every handoff against the entry points of its story, and every Spec decision against the nodes it bears on.
+Done when every open question has been checked against the other open questions, every rule against every other rule and against the nodes it reaches, every answer (`omni behaviour questions --json` has each question's `state` and answer; the plain list has neither) against the answers and open questions on the same matter, every node's summary against every other node's, inside its story and across stories, every handoff against the entry points of its story, and every Spec decision against the nodes it bears on.
 
 ## Ask
 
@@ -47,6 +48,8 @@ Asking reopens a done node, which is how the next pass finds it once the person 
 A finding of kind 4 gets no question: it goes in your report. The Spec doc is the person's to change.
 
 A finding of kind 5 gets no question either: the rule already decides it. It goes in your report, and the dispatcher sends the node to rework in this pass. Name the node whose text or children must change, which for a missing outcome is the node it would be added under.
+
+A finding of kind 6 gets no new question: the person answers the choice once. Keep one copy open: the `Review:` question on that choice when one is already open, otherwise the copy on the node the user reaches first. Answer every other copy yourself, with the kept question's text word for word: `omni behaviour answer <question ID> "Follows '<the kept question's text>' under '<the title of its node>'."` The node of an answered copy waits until the person has answered the kept question; a node agent then carries the answer over. Leave a question a person asked (`asked_by.kind` is `human`) as it is.
 
 ## Report
 

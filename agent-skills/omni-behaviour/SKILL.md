@@ -41,6 +41,7 @@ Repeat:
 
 1. `omni behaviour list --json`. A node is **work** when it is marked (`needs_pass`) or is `open` with `open_questions` at 0.
    - An open node with an open question and no mark waits for the human: leave it.
+   - So does an open node with an answer that starts `Follows`, as long as the question that answer quotes is still open on another node (`omni behaviour questions --json`): leave it. Once the human has answered that question, the node is work.
    - A node that is `out_of_scope`, or lies under such a node, is never work. Clear a mark on it with `omni behaviour edit <path> --grilled`.
    - The root is yours: see below.
 2. No work left: go to Review.
