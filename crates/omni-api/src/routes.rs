@@ -180,6 +180,71 @@ pub fn registry() -> Vec<RouteEntry> {
             Access::Both,
         ),
         (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+            Access::Both,
+        ),
+        (
+            "PATCH",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+            Access::Both,
+        ),
+        (
+            "PATCH",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+            Access::Both,
+        ),
+        (
             "POST",
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
             Access::Both,

@@ -7,6 +7,8 @@
 
 mod args;
 mod attach;
+mod behaviour;
+mod behaviour_import;
 mod commands;
 mod comments;
 mod components;
@@ -60,8 +62,12 @@ Usage:
                                       feature's name), kind, pillar and title; --feature
                                       <name|id> or --global list one scope only; --pillar
                                       <pillar> lists one pillar only
-  omni doc read <doc>                 print the doc's head: HTML with data-omni-id and
-                                      data-rev (a design's tags)
+  omni doc read <doc> [--node <id>]...
+                                      print the doc's head: HTML with data-omni-id and
+                                      data-rev (a design's tags). --node prints only that
+                                      node with what is inside it (in a design, the tag
+                                      with that id); given several times, the nodes come in
+                                      the doc's order, and a node the doc lacks is an error
   omni doc show <doc>                 show the doc's metadata
   omni doc edit <doc>                 apply a batch of operations (a JSON array, from
                                       --body-file or standard input) to the doc, at once and
@@ -202,6 +208,98 @@ Usage:
                                       set the files the story changed
                                       Each write reads the story first and sends its version; a
                                       stale one is a conflict (exit 3).
+  omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>]
+                     [--same-as <node>] [--handoff <node>]
+                                      add a node to the feature's behaviour tree, the last child
+                                      of --parent (the root when left out; the first add also
+                                      creates the root, titled with the feature's name); prints
+                                      the node's path. The slug is derived from the title when
+                                      left out. `behavior` is the same word
+  omni behaviour read <node>          print the nodes above it and the node as text blocks, then
+                                      the rules that apply, its children and siblings, or with
+                                      --json the same as JSON. <node> is an
+                                      ID, a path (slugs from the story down, joined by /) or . for
+                                      the root
+  omni behaviour list [<node>]        print the summary line of every node of the feature, or of
+                                      <node> and the nodes below it, in tree order, indented two
+                                      spaces per level: `<slug> — <summary> (<status>)`; the title
+                                      stands in for an empty summary and for the root's slug.
+                                      A node marked for another pass ends in
+                                      ` [needs another pass]`. With --json the API's list
+  omni behaviour list --needs-pass [<node>]
+                                      only the marked nodes, one `<path> — <summary> (<status>)`
+                                      per line, not indented
+  omni behaviour edit <node> [--title <t>] [--slug <s>] [--summary <text>]
+                     [--situation <text>] [--behaviour <text>] [--status open|done|out-of-scope]
+                     [--same-as <node>] [--handoff <node>] [--grilled]
+                                      rewrite a node's text or set its status; reads the node
+                                      first and sends its version (a stale one is exit 3);
+                                      prints the path and the status. The root has no slug.
+                                      --same-as points to the node that describes the same
+                                      situation, --handoff to the story (or a node in one) the
+                                      user carries on in; an empty value clears it. One pointer per node,
+                                      and a node with one has no children
+  omni behaviour move <node> --to <parent>
+                                      move a node, with everything below it, to be the last child
+                                      of <parent> (an ID, a path or .); prints the new path. Not
+                                      to the node itself or below it (409), not the root, not
+                                      where a sibling has the slug (409)
+  omni behaviour ask <node> <question> [--recommend <text>]
+                                      put a question or a remark on a node; prints the question's
+                                      ID. A done node becomes open again, and a node with an open
+                                      question cannot be set to done (409 open_questions).
+                                      --recommend stores the answer you recommend apart from the
+                                      question, for a person to accept; it is never changed
+                                      afterwards, and not given together with --answer (422)
+  omni behaviour ask <node> <question> --answer <text> [--by human]
+                                      create the question already answered; a done node stays
+                                      done. The answer is an agent's own (a default) unless
+                                      --by human says a person gave it
+  omni behaviour answer <question ID> <answer> [--change] [--by human]
+                                      answer an open question; prints its ID. The answer is
+                                      yours, a default, unless --by human says a person gave it
+                                      and you only wrote it down (409 already_answered if it
+                                      has an answer). --change gives an answered question a new
+                                      answer and keeps the old ones (409 not_answered on an open
+                                      one); your own answer never replaces a person's (409
+                                      answered_by_human: ask a new question on the node). These
+                                      409s exit 1; only a stale version exits 3
+  omni behaviour question <question ID>
+                                      print the question, its current answer and the earlier
+                                      ones, each with who (`person` or `agent <run>/<role>`)
+                                      and when. With --json the API's question
+  omni behaviour questions [<node>] [--open|--default]
+                                      print `<node path>  <question ID>  <question>` for every
+                                      question of the feature, or of <node> and the nodes below
+                                      it, in tree order; --open only the open ones; --default
+                                      only those an agent answered on its own, each line ending
+                                      in ` → <answer>`. With --json the API's list
+  omni behaviour rule add <node> <text> [--scope node|story|feature]
+                                      record a rule the node imposes, reaching the node and
+                                      below (node, the default), its whole story or the whole
+                                      feature; prints the rule's ID. `--scope story` is
+                                      refused on `.`
+  omni behaviour rule edit <rule ID> [--text <t>] [--scope <s>] [--withdraw]
+                                      change a rule; --withdraw takes it out of force (it
+                                      is never deleted)
+  omni behaviour rules [<node>] [--scope <s>]
+                                      print `<scope>  <node path>  <rule ID>  <text>` for every
+                                      rule in force in the feature, or on <node> and below,
+                                      in tree order. With --json the API's list, withdrawn
+                                      rules included and flagged
+  omni behaviour import <folder> [--check]
+                                      read a grill-tree folder (a node.md in every node folder)
+                                      into the feature's empty tree with one request; prints
+                                      `imported <n> nodes (<n> stories), <n> same-as, <n> handoffs`.
+                                      Sibling order follows the Children lines; status
+                                      out-of-scope is stored as out_of_scope and stale as open.
+                                      A folder problem (no node.md, a bad slug, no title, an
+                                      unknown status, a pointer to a missing folder, two
+                                      pointers, a pointer on a node with child folders) stops
+                                      it with one line each and nothing sent; a feature that
+                                      has a tree refuses (tree_not_empty). --check reads and
+                                      checks the folder only, prints `would import ...` and
+                                      contacts no server
   omni wait --thread <id> --posts <n> [--concluded] [--timeout <s>]
                                       wait until the thread has n posts that you may read (a
                                       sealed thread counts none of the others' posts until you
@@ -250,10 +348,25 @@ Options (before or after the command):
   --posts <n>           `omni wait --thread`: wait for this many posts that you may read
   --concluded           `omni wait --thread`: wait for the thread's conclusion
   --timeout <seconds>   how long `omni wait` waits; without it, as long as it takes
+  --slug <slug>         `omni behaviour add`: the node's slug, lowercase words joined by -
+  --parent <node>       `omni behaviour add`: the node to add under (an ID, a path or .)
+  --same-as <node>      `omni behaviour add|edit`: point to the node that is the same situation
+  --handoff <node>      `omni behaviour add|edit`: point to the story the user carries on in
+  --situation <text>    `omni behaviour edit`: when the node applies
+  --behaviour <text>    `omni behaviour edit`: what the product does then (`--behavior` too)
   --priority <n>        `omni story add`: the story's priority, 0 to 3 (3 by default)
   --number-from <n>     `omni story add`: the number the project's first story starts after
   --status <status>     `omni story list`: only the stories in this status
-  --open                `omni thread list`: only the threads without a conclusion
+  --open                `omni thread list`: only the threads without a conclusion; `omni behaviour questions`: only the open ones
+  --default             `omni behaviour questions`: only the answers an agent gave on its own
+  --needs-pass          `omni behaviour list`: only the nodes marked for another grill pass
+  --scope <s>           `omni behaviour rule add|edit|rules`: node, story or feature
+  --withdraw            `omni behaviour rule edit`: take the rule out of force
+  --check               `omni behaviour import`: read and check the folder, send nothing
+  --grilled             `omni behaviour edit`: clear the node's mark for another pass
+  --change              `omni behaviour answer`: change the answer of an answered question
+  --answer <text>       `omni behaviour ask`: create the question answered
+  --recommend <text>    `omni behaviour ask`: the answer you recommend for an open question
   --pickable            `omni story list`: only the stories that can be picked
   --summary             `omni story list`: count the stories per status; `omni post` takes
                         --summary <text> instead
@@ -276,7 +389,7 @@ Exit codes:
   1  the command failed: usage, login, network or API error (the message says which)
   2  `omni wait` timed out before its condition was met; `omni tokens set` or `remove` refused
      the change before sending it
-  3  `omni story` write refused as a conflict: the story changed, read it again
+  3  a write that lost to a newer version of a record (a story, a node): read it again
 ";
 
 fn main() -> ExitCode {

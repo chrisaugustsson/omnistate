@@ -758,14 +758,15 @@ describe("the sidebar's scope tree", () => {
     ]);
   });
 
-  test("on a feature's thread or doc page it shows that feature, its Threads row filtered to it, then its Board row with the open stories", async () => {
+  test("on a feature's thread or doc page it shows that feature, its Threads row filtered to it, its Board row with the open stories, then its Behaviour row", async () => {
     fakeApi({ home: { ...appTree, features: [feature(CHECKOUT, "Checkout", { total: 3, open: 2, done: 1 })] } });
     const router = renderAt(`${PROJECT_PATH}/threads/${CHECKOUT_THREAD}`);
     await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`));
     expect((await treeHead()).text).toMatch(/^Checkout/);
-    expect((await treeRows()).slice(-2)).toEqual([
+    expect((await treeRows()).slice(-3)).toEqual([
       { text: "Threads (1)", href: `${PROJECT_PATH}/threads?scope=${CHECKOUT}` },
       { text: "Board (2)", href: `${PROJECT_PATH}/features/${CHECKOUT}/board` },
+      { text: "Behaviour", href: `${PROJECT_PATH}/features/${CHECKOUT}/behaviour` },
     ]);
 
     await router.navigate({ href: `${PROJECT_PATH}/docs/${CHECKOUT_DOC}` });

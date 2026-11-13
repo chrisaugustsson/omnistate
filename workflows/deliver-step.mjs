@@ -7,6 +7,7 @@
 //
 //   node ~/.claude/omni/deliver-step.mjs start --op <opId> --feature <name> [--force] --hash <hash>
 //   node ~/.claude/omni/deliver-step.mjs <step> --run <runId> --payload <root>/.omni/runs/<runId>/in/<opId>.json --hash <hash>
+//   node ~/.claude/omni/deliver-step.mjs batch --run <runId> --payload <root>/.omni/runs/<runId>/in/<opId>.json --hash <hash>
 //
 // The courier protocol (tasks/omni-deliver-native-design.md):
 // - The payload file holds JSON.stringify(obj) of the script's object, which
@@ -44,6 +45,18 @@
 //   that gave the lock up goes on without it.
 // - A start repeated by the same session within 5 minutes, before its run
 //   made any call, gets the first start's body back, with --force too.
+// - batch runs several steps in one call, for steps that always follow each
+//   other with nothing to decide in between: its payload is {opId, steps:
+//   [{name, fields}, ...]}, and each sub-step runs in order as a step of its
+//   own under the opId <opId>.<n>, n from 1, with its own record and timing.
+//   The first sub-step that fails stops the batch: the body is ok false with
+//   at (its index), step (its name), its error and retry, and results, the
+//   bodies of those before it; a repeat with the same opId answers the applied
+//   sub-steps from the record and carries on. When all pass the body is ok
+//   true with results, each sub-step's body without ok and received. Every
+//   result file the batch names (outs, at its top) is read and checked before
+//   the first sub-step runs, so a batch refused for a file has written
+//   nothing. finish and batch do not go in a batch, nor does start.
 // - No payload carries an agent's text: a role agent writes its result, the
 //   object it returns, to <root>/.omni/runs/<runId>/out/<label>.json, and the
 //   payload names its parts. outs, [{file, hash}], lists the files; a value
@@ -106,30 +119,41 @@
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
 // - clarity-record {key}: key, hash
-// - job-start {name, key?, cmd, cwd, limitMinutes?}: id, log. The command
-//   runs with OMNI_RUN set to the run, and OMNI_STORY to the key when given
+// - job-start {name, key?, cmd, cwd, limitMinutes?, waitSeconds?}: id, log.
+//   The command runs with OMNI_RUN set to the run, and OMNI_STORY to the key
+//   when given. With waitSeconds it then waits for the job as job-wait does,
+//   and its body has done too, and once done result
 // - job-wait {id, maxSeconds}: id, done, and once done result
 // - job-kill {id}, or {start}, the opId of a job-start whose answer never
 //   came back: id (null when that start made no job), killed, done, and once
 //   done result
-// - lane-prepare {key}: key, outcome: ready with base and candidate; conflict
-//   with files and count; dirty with files and count (uncommitted changes, a
-//   rebase in progress or an index.lock in the story's worktree);
+// - lane-prepare {key, clean?}: key, outcome: ready with base and candidate;
+//   conflict with files and count; dirty with files and count (uncommitted
+//   changes, a rebase in progress or an index.lock in the story's worktree);
 //   wrong_branch with head (the branch checked out, null when detached) and
 //   commits (those not on story/<key>); missing or infra. Every outcome but
 //   ready and conflict has a reason. dirty and wrong_branch are the story's
 //   to fix, and count as an attempt; conflict does not; infra is not the
-//   story's.
+//   story's. With clean, for the tests of a story that has landed, what is
+//   uncommitted in the worktree is thrown away first, and ready has cleaned
+//   ({discarded, count}) when there was any.
 // - lane-clean {}: discarded and count: what it threw away
 // - lane-base {} and lane-reset {}: tip
 // - lane-candidate {candidate}: head; the lane worktree back at the candidate
-//   lane-prepare gave, without what the test author committed
-// - lane-land {key, base}: key, landed, with base, final, files (how many)
-//   and removed when landed, reason when refused, and inLane true when the
-//   lane worktree's state refused it (a branch checked out, uncommitted
-//   changes, a HEAD that does not descend from the base or hold the story);
-//   refused for deliver/<slug> checked out in the lane, it puts the branch
-//   back at the base and detaches the lane
+//   lane-prepare gave, without what an agent left there
+// - lane-land {key, base, keep?, tests?}: key, landed, with base, final, files
+//   (how many) and removed when landed, reason when refused, and inLane true
+//   when the lane worktree's state refused it (a branch checked out,
+//   uncommitted changes, a HEAD that does not descend from the base or hold
+//   the story); refused for deliver/<slug> checked out in the lane, it puts
+//   the branch back at the base and detaches the lane. With keep, the story's
+//   worktree and branch stay, for its test author (removed false). With
+//   tests, what lands is that author's commits, on a story that is done:
+//   their files join the story's, and nothing else of the story is written
+// - tests-prepare {key}: key, path, branch, tip; the worktree of a story that
+//   has landed, on story/<key>, clean, at the tip of deliver/<slug>
+// - tests-drop {key}: key, removed; that worktree and its branch gone, with
+//   the tests in them
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
 //   majority, asked}, journeys?: [line], notes?: [line]}}: thread, posted, report,
 //   stopped. The blocked stories and their threads come from the board
@@ -143,12 +167,15 @@
 // most 20.
 //
 // The lane, story by story: lane-prepare; the checks as jobs in the lane
-// worktree; the verifier; the test author; lane-clean, so that the test
-// author's check runs on exactly what lands; that check; lane-clean again, for
-// what the check left behind; lane-land, which refuses a lane worktree with
-// uncommitted changes. When the author's tests cannot land, lane-candidate
-// puts the lane back at the story as its checks and verifier found it, and
-// the story lands without them.
+// worktree; the verifier; lane-clean, for what it left behind; lane-land
+// with keep, which refuses a lane worktree with uncommitted changes. When
+// lane-land refuses the lane for its state, lane-candidate puts it back at
+// the story as its checks and verifier found it, and the story lands from
+// that. The story's tests come after it has landed, outside the lane's lock:
+// tests-prepare, the test author in the story's worktree, then a turn in the
+// lane with lane-prepare with clean, the author's check as a job, lane-clean
+// and lane-land with tests; tests-drop when they do not land. start removes
+// the worktree of a done story that a stopped run left for its author.
 //
 // Left as they are:
 // - A job's command can leave members of its group running in the background
@@ -778,11 +805,13 @@ const laneToTip = (b) => {
 // to delete, past a courier's Bash call. A worktree that cannot be moved
 // stays, and says so: the story has landed all the same. So does a folder in
 // its place that is not the story's own worktree of this checkout on
-// story/<key>, and the branch with it.
-const removeWorktree = (b, key) => {
+// story/<key>, and the branch with it. whatever: the worktree of a story
+// that has landed already, kept for its test author, goes whatever it has
+// checked out, with what the author left in it.
+const removeWorktree = (b, key, whatever = false) => {
   const wt = b.worktreeOf(key)
   if (fs.existsSync(wt)) {
-    if (!isWorktree(b.root, wt) || !ownTree(wt) || headRef(wt) !== `refs/heads/story/${key}`) return false
+    if (!isWorktree(b.root, wt) || !ownTree(wt) || (!whatever && headRef(wt) !== `refs/heads/story/${key}`)) return false
     try {
       const bin = path.join(b.storiesDir, '_trash')
       fs.mkdirSync(bin, { recursive: true })
@@ -891,6 +920,19 @@ const clarityHash = (b, story) => fnv1a(JSON.stringify({
   decisions: (story.decisions || []).map((d) => [d.question, d.choice, d.by]),
 }))
 
+// Waits for a job to end, for `seconds` at most (480, and by default): done
+// with its result, or done false while it still runs.
+const waitForJob = async (b, job, seconds) => {
+  const until = Date.now() + waitSeconds(seconds) * 1000
+  for (;;) {
+    // At the end of the wait ps also says whether the pid is still the supervisor's.
+    const result = endOf(b.runId, job, Date.now() >= until)
+    if (result) return { done: true, result }
+    if (Date.now() >= until) return { done: false }
+    await pause(Math.min(100, until - Date.now()))
+  }
+}
+
 // The payload fields a step needs; its error names the missing ones.
 const missing = (payload, ...names) => {
   const absent = names.filter((n) => typeof payload[n] !== 'string' || !payload[n])
@@ -927,6 +969,7 @@ const STAGES = ['implementing', 'review', 'testing']
 // which takes in the agents between them; in its rebases, which lane-prepare
 // times apart from the lane's checkout; and in its jobs, by name in order. A
 // count after a time says how many there were.
+const WRITING = 'test writing'
 const timingTable = (records, jobs) => {
   const at = (iso) => Date.parse(iso)
   const keyed = records.filter((r) => r.key).sort((x, y) => at(x.started) - at(y.started))
@@ -934,7 +977,10 @@ const timingTable = (records, jobs) => {
   const keys = [...new Set([...keyed.map((r) => r.key), ...ended.map((j) => j.key)])]
   if (keys.length === 0) return '- none'
   const names = [...new Set(ended.map((j) => j.name))].sort()
-  const columns = [...STAGES, 'rebase', ...names.map((n) => `job ${n}`)]
+  // A story's time from tests-prepare on is its test author's, after it
+  // landed, and not its testing stage's.
+  const written = keyed.some((r) => r.step === 'tests-prepare') ? [WRITING] : []
+  const columns = [...STAGES, ...written, 'rebase', ...names.map((n) => `job ${n}`)]
   const add = (times, column, ms) => {
     const [sum, n] = times.get(column) || [0, 0]
     times.set(column, [sum + ms, n + 1])
@@ -947,9 +993,9 @@ const timingTable = (records, jobs) => {
     let open = null
     const close = () => { if (open) add(times, open.stage, open.to - open.from) }
     for (const r of mine) {
-      if (r.step === 'claim' && r.ok) {
+      if ((r.step === 'claim' && r.ok) || r.step === 'tests-prepare') {
         close()
-        open = { stage: r.stage, from: at(r.started), to: at(r.ended) }
+        open = { stage: r.step === 'claim' ? r.stage : WRITING, from: at(r.started), to: at(r.ended) }
       } else if (open) open.to = Math.max(open.to, at(r.ended))
       if (r.step === 'rebase') add(times, 'rebase', r.ms)
     }
@@ -961,7 +1007,7 @@ const timingTable = (records, jobs) => {
     })
     return `| ${key} | ${took(Math.max(...spans.map((s) => s[1])) - Math.min(...spans.map((s) => s[0])))} | ${cells.join(' | ')} |`
   })
-  const head = ['Story', 'Total', ...STAGES, 'rebase', ...names]
+  const head = ['Story', 'Total', ...STAGES, ...written, 'rebase', ...names]
   return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows, '', 'A time with (n) after it adds up n of them: claims of the stage, rebases, or runs of the job.'].join('\n')
 }
 // The report, modelled on the one omni-deliver.js posts: what the script knows
@@ -989,7 +1035,7 @@ const reportText = (b, info, report) => {
   return `${[
     `# Run ${b.runId} on ${b.feature}`,
     ...list(report.notes).map(String),
-    `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
+    `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}${l.tests ? ', its tests' : ''}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
     `## Blocked\n${unread || lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
     `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
     `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.majority)} of them by a majority of 2, ${count(council.asked)} sent to the human`,
@@ -1340,7 +1386,11 @@ const STEPS = {
         if (gone || Date.now() > until) return { ok: false, id, error: `the job ${id} did not start: its supervisor ${gone ? 'ended first' : 'did not start it within 10 s'}`, retry: true }
       }
     }
-    return { id, log: files.log }
+    // With waitSeconds, the start waits for the job as job-wait does, so that
+    // a job that ends within one wait takes one call.
+    if (typeof p.waitSeconds !== 'number' || !(p.waitSeconds > 0)) return { id, log: files.log }
+    const { done, result } = await waitForJob(b, jobAt(dir, id), p.waitSeconds)
+    return { id, log: files.log, done, ...(done ? { result } : {}) }
   })(),
 
   // The job's result once it has ended, without its output: a finding or a
@@ -1350,14 +1400,8 @@ const STEPS = {
   'job-wait': (b, p) => missing(p, 'id') || (async () => {
     const job = /^[\w.-]+$/.test(p.id) ? jobAt(jobsDirOf(b.root, b.runId), p.id) : null
     if (!job) return { ok: false, error: `no job ${p.id} in run ${b.runId}` }
-    const until = Date.now() + waitSeconds(p.maxSeconds) * 1000
-    for (;;) {
-      // At the end of the wait ps also says whether the pid is still the supervisor's.
-      const result = endOf(b.runId, job, Date.now() >= until)
-      if (result) return { id: p.id, done: true, result }
-      if (Date.now() >= until) return { id: p.id, done: false }
-      await pause(Math.min(100, until - Date.now()))
-    }
+    const { done, result } = await waitForJob(b, job, p.maxSeconds)
+    return { id: p.id, done, ...(done ? { result } : {}) }
   })(),
 
   // A job-start that threw in the script gave it no id: start, its opId,
@@ -1412,6 +1456,17 @@ const STEPS = {
     if (!hasBranch(b.root, branch)) return outcome('missing', { reason: `no branch ${branch}` })
     if (!isWorktree(b.root, wt) || !ownTree(wt)) return outcome('missing', { reason: `${wt} is not a worktree of ${b.root} of its own, so git does nothing in it` })
     if (marker && rebasingIn(wt) === ref) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    // clean: what is uncommitted in the worktree is thrown away first, and the
+    // body says what, as cleaned. For a landed story's test author, whose
+    // commits are all that lands: a mutant or a report it left costs it nothing.
+    let cleaned = null
+    if (p.clean === true && rebasingIn(wt) === null && !indexLockIn(wt)) {
+      const files = changedFiles(wt)
+      if (files.length) {
+        cleanTree(b, wt)
+        cleaned = { discarded: files.slice(0, LISTED), count: files.length }
+      }
+    }
     const dirty = changedFiles(wt)
     const left = { files: dirty.slice(0, LISTED), count: dirty.length }
     const rebasing = rebasingIn(wt)
@@ -1448,7 +1503,7 @@ const STEPS = {
     }
     const candidate = b.git(['rev-parse', ref]).trim()
     laneAt(b, candidate)
-    return outcome('ready', { base, candidate })
+    return outcome('ready', { base, candidate, ...(cleaned ? { cleaned } : {}) })
   })(),
 
   // Throws away what is uncommitted in the lane worktree, as start does
@@ -1469,19 +1524,19 @@ const STEPS = {
   'lane-reset': (b) => laneToTip(b),
   // The lane worktree back at the candidate lane-prepare checked out, clean
   // and detached: the story as its checks and its verifier found it, without
-  // the tests its author could not get to land.
+  // what an agent left in the lane.
   'lane-candidate': (b, p) => missing(p, 'candidate') || (() => {
     if (!/^[0-9a-f]{40,64}$/.test(p.candidate)) return { ok: false, error: `the candidate is a commit's full hash, not ${p.candidate}` }
     laneAt(b, p.candidate)
     return { head: b.git(['-C', b.lane, 'rev-parse', 'HEAD']).trim() }
   })(),
 
-  // Lands the lane worktree's HEAD, the tested candidate with what the test
-  // author committed on top, by a compare-and-swap of deliver/<slug> from the
-  // base. Refused (landed false) unless that HEAD is detached, with nothing
-  // uncommitted, descends from the base and holds story/<key>, and unless the
+  // Lands the lane worktree's HEAD, the tested candidate, by a
+  // compare-and-swap of deliver/<slug> from the base. Refused (landed false)
+  // unless that HEAD is detached, with nothing uncommitted, descends from the
+  // base and holds story/<key>, and unless the
   // branch is still at the base; inLane says that the lane worktree's state
-  // refused it, which a test author can leave. A branch at the lane's HEAD
+  // refused it, which an agent can leave. A branch at the lane's HEAD
   // proves nothing: a commit made in the lane with deliver/<slug> checked out
   // moves the branch there too. So a lane with deliver/<slug> checked out
   // puts the branch back at the base, by a compare-and-swap from where it is,
@@ -1491,7 +1546,11 @@ const STEPS = {
   // Only this op's record of the swap it made lets a repeat, after a try that
   // was cut off, skip it. Then the landed tree must be the tested one, and
   // the story is done: its files recorded, its criteria ticked (a human check
-  // pending), its open findings resolved, its worktree and branch gone.
+  // pending), its open findings resolved, its worktree and branch gone. With
+  // keep, the worktree and the branch stay, for the story's test author. With
+  // tests, what lands is that author's tests, on a story that is done: their
+  // files join the story's, nothing else is written, and the worktree and
+  // the branch go.
   'lane-land': (b, p, { marker, mark }) => missing(p, 'key', 'base') || (() => {
     const refused = (reason, inLane = false) => ({ key: p.key, landed: false, reason, ...(inLane ? { inLane } : {}) })
     let final = marker && marker.swapped
@@ -1523,19 +1582,46 @@ const STEPS = {
     const landedTree = b.git(['rev-parse', `refs/heads/${b.branch}^{tree}`]).trim()
     const finalTree = b.git(['rev-parse', `${final}^{tree}`]).trim()
     if (landedTree !== finalTree) return { ok: false, key: p.key, error: `${b.branch} holds the tree ${short(landedTree)} after the landing, not ${short(finalTree)}, the tree of ${short(final)} that was tested` }
-    updateRun(b.root, b.runId, (info) => ({ ...info, landed: [...(info.landed || []).filter((l) => l.final !== final), { key: p.key, base: p.base, final }] }))
+    updateRun(b.root, b.runId, (info) => ({ ...info, landed: [...(info.landed || []).filter((l) => l.final !== final), { key: p.key, base: p.base, final, ...(p.tests === true ? { tests: true } : {}) }] }))
     const files = b.git(['-c', 'core.quotePath=false', 'diff', '--name-only', '-z', p.base, final]).split('\0').filter(Boolean)
     try {
-      if (files.length) b.write('files', p.key, files)
-      const story = b.readStory(p.key)
-      ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
-      ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
-      if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+      if (p.tests === true) {
+        const had = b.readStory(p.key).files_changed || []
+        const all = [...new Set([...had, ...files])]
+        if (all.length > had.length) b.write('files', p.key, all)
+      } else {
+        if (files.length) b.write('files', p.key, files)
+        const story = b.readStory(p.key)
+        ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
+        ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
+        if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+      }
     } catch (e) {
-      return { ok: false, key: p.key, landed: true, base: p.base, final, error: `landed on ${b.branch} at ${short(final)}, but the story is not done: ${failure(e)}`, retry: retryable(e) }
+      return { ok: false, key: p.key, landed: true, base: p.base, final, error: `landed on ${b.branch} at ${short(final)}, but ${p.tests === true ? 'the files of its tests are not on the story' : 'the story is not done'}: ${failure(e)}`, retry: retryable(e) }
     }
-    return { key: p.key, landed: true, base: p.base, final, files: files.length, removed: removeWorktree(b, p.key) }
+    return { key: p.key, landed: true, base: p.base, final, files: files.length, removed: p.keep === true ? false : removeWorktree(b, p.key) }
   })(),
+
+  // The worktree of a story that has landed, for its test author: on
+  // story/<key>, clean, at the tip of deliver/<slug>, which holds the story
+  // and every test that landed since. Refused when story/<key> holds a commit
+  // that is not on deliver/<slug>, which would be lost.
+  'tests-prepare': (b, p) => missing(p, 'key') || (() => {
+    const wt = b.worktreeOf(p.key)
+    const branch = `story/${p.key}`
+    if (!fs.existsSync(wt) || !isWorktree(b.root, wt) || !ownTree(wt) || !hasBranch(b.root, branch)) return { ok: false, error: `${wt} is not the worktree of ${p.key} on ${branch}, which its landing kept for the test author`, retry: false }
+    const tip = tipOf(b)
+    if (!isAncestorIn(b.root, `refs/heads/${branch}`, tip)) return { ok: false, error: `${branch} holds commits that are not on ${b.branch}, so it is not brought to its tip`, retry: false }
+    if (rebasingIn(wt) !== null) tryRun('git', ['-C', wt, 'rebase', '--abort'])
+    if (headRef(wt) !== `refs/heads/${branch}`) b.git(['-C', wt, 'checkout', '-q', '-f', branch])
+    cleanTree(b, wt)
+    b.git(['-C', wt, 'reset', '-q', '--hard', tip])
+    return { key: p.key, path: wt, branch, tip }
+  })(),
+
+  // The worktree and the branch of a story that has landed go, with the
+  // tests its author did not get to land.
+  'tests-drop': (b, p) => missing(p, 'key') || { key: p.key, removed: removeWorktree(b, p.key, true) },
 
   // Posts the run's report on its thread, from a body file, after stopping
   // the run's jobs that still run, and gives the lock up. The report is also
@@ -1572,7 +1658,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
@@ -1720,6 +1806,15 @@ const startRun = (b, log) => {
   // The feature's stories as keys and counts: the script lists them itself
   // when it needs more.
   const stories = b.listStories()
+  // A story lands before its tests are written, and its worktree is kept for
+  // their author: a run that stopped before that author was done left the
+  // worktree of a story that is done, which goes, with the tests in it.
+  for (const story of stories) {
+    if (story.status !== 'done' || !(fs.existsSync(b.worktreeOf(story.key)) || hasBranch(root, `story/${story.key}`))) continue
+    log.push(removeWorktree(b, story.key, true)
+      ? `Removed the worktree of ${story.key}, which is done: a run that stopped left it for its test author, and its regression tests were not written`
+      : `${b.worktreeOf(story.key)}, the worktree a run that stopped left of ${story.key}, which is done, could not be removed: move it away`)
+  }
   const counts = {}
   for (const s of stories) counts[s.status] = (counts[s.status] || 0) + 1
   return {
@@ -1799,11 +1894,102 @@ const outsOf = (root, runId, payload) => {
 // The courier writes the payload at <root>/.omni/runs/<runId>/in/<opId>.json,
 // so the root comes from its path.
 const PAYLOAD_PATH = /^(.+)\/\.omni\/runs\/([^/]+)\/in\/[^/]+\.json$/
+// One step, once its payload is the script's own: the record of applied ops,
+// the lock, the step, its timing. `received` is the hash the op is recorded
+// under, and `fill` puts in the parts of the agents' results the payload
+// names; a batch has filled its sub-steps' payloads already.
+const applyStep = async (root, runId, info, name, payload, received, fill = (p) => ({ payload: p })) => {
+  const step = STEPS[name]
+  const refuse = (error) => ({ ok: false, received, error, retry: false })
+  const writes = WRITES.has(name)
+  let marker = null
+  if (writes) {
+    if (typeof payload.opId !== 'string' || !payload.opId) return refuse(`${name} writes, so its payload needs an opId`)
+    const recorded = recordedOp(root, runId, name, payload.opId)
+    if (recorded && recorded.received !== received) return refuse(`the op ${payload.opId} was applied with another payload, which hashed to ${recorded.received}; a new payload needs a new opId`)
+    if (recorded && !recorded.pending) return recorded
+    marker = recorded
+  }
+  // finish gives the lock up even when its post failed: its repeat goes on
+  // without the lock, unless another run has taken it since.
+  const released = name === 'finish' && marker && marker.released === true && !fs.existsSync(lockPathOf(root))
+  if (!released && !holdLock(root, runId)) return refuse(`run ${runId} no longer holds the lock`)
+  // The parts of the agents' results the payload names, before any write.
+  const filled = fill(payload)
+  if (filled.refused) return refuse(filled.refused)
+  if (filled.lost) return { ok: false, received, error: filled.lost, retry: false, outFile: filled.file }
+  payload = filled.payload
+  // The marker goes down before the first write, and the body replaces it
+  // once the step worked. A step that failed leaves it: the script tries a
+  // failed write again with the same opId, and the repeat carries it on.
+  let pending = marker || { pending: true, received }
+  const mark = (fields) => {
+    if (!writes) return
+    pending = { ...pending, ...fields }
+    recordOp(root, runId, name, payload.opId, pending)
+  }
+  if (writes && !marker) recordOp(root, runId, name, payload.opId, pending)
+  const began = new Date()
+  let body
+  try {
+    body = { ok: true, received, ...(await step(boardOf(root, runId, info.feature), payload, { info, marker, mark })) }
+  } catch (e) {
+    body = { ok: false, received, error: failure(e), retry: retryable(e) }
+  }
+  // A step's own refusal, of a payload or of what it found, is final.
+  if (body.ok === false && typeof body.retry !== 'boolean') body.retry = false
+  const ended = new Date()
+  recordTiming(root, runId, {
+    step: name,
+    op: payload.opId,
+    ...(typeof payload.key === 'string' ? { key: payload.key } : {}),
+    ...(typeof payload.stage === 'string' ? { stage: payload.stage } : {}),
+    started: began.toISOString(),
+    ended: ended.toISOString(),
+    ms: ended - began,
+    ok: body.ok,
+  })
+  if (writes && body.ok) recordOp(root, runId, name, payload.opId, body)
+  return body
+}
+
+// Several steps in one call, in order, for steps that always follow each
+// other: each runs as a step of its own, under the opId <opId>.<n>, n from 1,
+// with its own record, lock check and timing, so a repeat of the batch
+// answers the sub-steps that were applied from the record and carries on with
+// the rest. The first that fails stops the batch. Every agent's result file
+// the batch names is read and checked before its first sub-step runs: a batch
+// refused for a file has written nothing. A sub-step is recorded under the
+// hash of its own payload as the script sent it.
+const BATCH = 'batch'
+const UNBATCHED = ['finish', BATCH]
+const runBatch = async (root, runId, info, payload, received) => {
+  const refuse = (error) => ({ ok: false, received, error, retry: false })
+  if (typeof payload.opId !== 'string' || !payload.opId) return refuse('a batch needs an opId')
+  const subs = payload.steps
+  if (!Array.isArray(subs) || !subs.length) return refuse('a batch needs steps: [{name, fields}, ...]')
+  for (const sub of subs) {
+    if (!sub || typeof sub !== 'object' || typeof sub.name !== 'string' || (sub.fields !== undefined && (!sub.fields || typeof sub.fields !== 'object' || Array.isArray(sub.fields)))) return refuse('each step of a batch is {name, fields}, fields an object')
+    if (UNBATCHED.includes(sub.name) || !Object.hasOwn(STEPS, sub.name)) return refuse(`no step ${sub.name} in a batch; a batch takes ${Object.keys(STEPS).filter((n) => !UNBATCHED.includes(n)).join(', ')}`)
+  }
+  const filled = outsOf(root, runId, payload)
+  if (filled.refused) return refuse(filled.refused)
+  if (filled.lost) return { ok: false, received, error: filled.lost, retry: false, outFile: filled.file }
+  const results = []
+  for (const [i, sub] of subs.entries()) {
+    const opId = `${payload.opId}.${i + 1}`
+    const body = await applyStep(root, runId, info, sub.name, { ...filled.payload.steps[i].fields, opId }, fnv1a(JSON.stringify({ ...sub.fields, opId })))
+    const { ok, received: _, ...rest } = body
+    if (ok !== true) return { ok: false, received, at: i, step: sub.name, error: body.error, retry: body.retry, ...(body.outFile ? { outFile: body.outFile } : {}), results }
+    results.push(rest)
+  }
+  return { ok: true, received, results }
+}
+
 const runStep = async (flags) => {
-  const step = STEPS[flags.step]
   // What the courier ran or wrote came wrong: the same command, as the
   // script gave it, can work.
-  if (!step) return { ok: false, received: null, error: `no step ${flags.step}; the steps are start, ${Object.keys(STEPS).join(', ')}`, retry: true }
+  if (flags.step !== BATCH && !Object.hasOwn(STEPS, String(flags.step))) return { ok: false, received: null, error: `no step ${flags.step}; the steps are start, ${BATCH}, ${Object.keys(STEPS).join(', ')}`, retry: true }
   if (!flags.run || !flags.payload || !flags.hash) return { ok: false, received: null, error: `${flags.step} needs --run <runId> --payload <file> --hash <fnv1a of the payload>`, retry: true }
   const file = path.resolve(flags.payload)
   const where = file.match(PAYLOAD_PATH)
@@ -1825,56 +2011,8 @@ const runStep = async (flags) => {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return refuse('the payload is not a JSON object')
   const info = readJson(runPathOf(root, flags.run))
   if (!info) return refuse(`no run ${flags.run} in ${root}`)
-  const writes = WRITES.has(flags.step)
-  let marker = null
-  if (writes) {
-    if (typeof payload.opId !== 'string' || !payload.opId) return refuse(`${flags.step} writes, so its payload needs an opId`)
-    const recorded = recordedOp(root, flags.run, flags.step, payload.opId)
-    if (recorded && recorded.received !== received) return refuse(`the op ${payload.opId} was applied with another payload, which hashed to ${recorded.received}; a new payload needs a new opId`)
-    if (recorded && !recorded.pending) return recorded
-    marker = recorded
-  }
-  // finish gives the lock up even when its post failed: its repeat goes on
-  // without the lock, unless another run has taken it since.
-  const released = flags.step === 'finish' && marker && marker.released === true && !fs.existsSync(lockPathOf(root))
-  if (!released && !holdLock(root, flags.run)) return refuse(`run ${flags.run} no longer holds the lock`)
-  // The parts of the agents' results the payload names, before any write.
-  const filled = outsOf(root, flags.run, payload)
-  if (filled.refused) return refuse(filled.refused)
-  if (filled.lost) return { ok: false, received, error: filled.lost, retry: false, outFile: filled.file }
-  payload = filled.payload
-  // The marker goes down before the first write, and the body replaces it
-  // once the step worked. A step that failed leaves it: the script tries a
-  // failed write again with the same opId, and the repeat carries it on.
-  let pending = marker || { pending: true, received }
-  const mark = (fields) => {
-    if (!writes) return
-    pending = { ...pending, ...fields }
-    recordOp(root, flags.run, flags.step, payload.opId, pending)
-  }
-  if (writes && !marker) recordOp(root, flags.run, flags.step, payload.opId, pending)
-  const began = new Date()
-  let body
-  try {
-    body = { ok: true, received, ...(await step(boardOf(root, flags.run, info.feature), payload, { info, marker, mark })) }
-  } catch (e) {
-    body = { ok: false, received, error: failure(e), retry: retryable(e) }
-  }
-  // A step's own refusal, of a payload or of what it found, is final.
-  if (body.ok === false && typeof body.retry !== 'boolean') body.retry = false
-  const ended = new Date()
-  recordTiming(root, flags.run, {
-    step: flags.step,
-    op: payload.opId,
-    ...(typeof payload.key === 'string' ? { key: payload.key } : {}),
-    ...(typeof payload.stage === 'string' ? { stage: payload.stage } : {}),
-    started: began.toISOString(),
-    ended: ended.toISOString(),
-    ms: ended - began,
-    ok: body.ok,
-  })
-  if (writes && body.ok) recordOp(root, flags.run, flags.step, payload.opId, body)
-  return body
+  if (flags.step === BATCH) return runBatch(root, flags.run, info, payload, received)
+  return applyStep(root, flags.run, info, flags.step, payload, received, (p) => outsOf(root, flags.run, p))
 }
 
 const flagsOf = (argv) => {

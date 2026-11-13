@@ -695,6 +695,109 @@ test("the helper runs through a symlink to it, as ~/.claude/omni/deliver-step.mj
   assert.equal(JSON.parse(r.stdout).body.ok, true);
 });
 
+// ---- batch ------------------------------------------------------------------------
+
+// A batch as a courier runs it: [name, fields] pairs under one opId.
+function batch(dirs, run, list, { opId = `batch-${++ops}`, outs, env = {} } = {}) {
+  const obj = { opId, steps: list.map(([name, fields = {}]) => ({ name, fields })), ...(outs ? { outs } : {}) };
+  const body = helperRun(dirs, stepArgv(dirs, run, "batch", obj), env);
+  assert.equal(body.received, fnv1a(JSON.stringify(obj)));
+  return body;
+}
+const timedOps = (dirs, run) => readFileSync(runFile(dirs, run, "timings.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((l) => `${l.step} ${l.op}`);
+
+test("a batch runs its steps in order in one call, each as a step of its own under <opId>.<n>, recorded and timed as one, and answers with their bodies in order, without ok and received", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const { run } = start(dirs);
+
+  const body = batch(dirs, run, [["claim", { key: "US-1", stage: "implementing" }], ["context", { key: "US-1" }], ["worktree", { key: "US-1" }]], { opId: "begin-US-1-1" });
+  const alone = [step(dirs, run, "claim", { key: "US-2", stage: "implementing" }), step(dirs, run, "context", { key: "US-2" }), step(dirs, run, "worktree", { key: "US-2" })];
+
+  assert.deepEqual(Object.keys(body).sort(), ["ok", "received", "results"]);
+  assert.equal(body.ok, true);
+  assert.equal(JSON.stringify(body.results).replaceAll("US-1", "US-2"), JSON.stringify(alone.map(({ ok, received, ...rest }) => rest)));
+  assert.deepEqual(dirs.writes().slice(0, 1), ["claim US-1"]);
+  assert.equal(git(dirs.repo, "worktree", "list").includes(body.results[2].path), true);
+  assert.deepEqual([Object.keys(appliedOf(dirs, run, "claim"))[0], Object.keys(appliedOf(dirs, run, "worktree"))[0]], ["begin-US-1-1.1", "begin-US-1-1.3"]);
+  assert.deepEqual(timedOps(dirs, run).slice(0, 3), ["claim begin-US-1-1.1", "context begin-US-1-1.2", "worktree begin-US-1-1.3"]);
+});
+
+test("a batch stops at the first step that fails: its body names that step's index, name, error and retry, with the bodies of those before it, and no step after it runs", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const decision = (choice) => ["decision", { key: "US-1", question: `Which ${choice}?`, choice, by: "agent" }];
+
+  // A claim for review of a story in the backlog, which the board refuses.
+  const body = batch(dirs, run, [decision("red"), ["claim", { key: "US-1", stage: "review" }], decision("blue")]);
+
+  assert.deepEqual([body.ok, body.at, body.step, body.retry], [false, 1, "claim", false]);
+  assert.match(body.error, /not_waiting/);
+  assert.deepEqual(body.results, [{ key: "US-1", recorded: true }]);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => d.choice), ["red"]);
+  assert.equal(dirs.story("US-1").status, "backlog");
+});
+
+test("a batch repeated with its opId answers the steps that were applied from the record, without writing them again, and carries on with the rest", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const list = [
+    ["decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" }],
+    ["thread-open", { key: "US-1", title: "US-1: Which size?", body: "Options:\n1. Small\n2. Large\n" }],
+    ["decision", { key: "US-1", question: "Which blue?", choice: "#00c", by: "agent" }],
+  ];
+
+  const cut = batch(dirs, run, list, { opId: "writes-US-1-1", env: { FAKE_OMNI_FAIL: "thread" } });
+  const between = dirs.story("US-1").decisions.map((d) => d.choice);
+  const again = batch(dirs, run, list, { opId: "writes-US-1-1" });
+
+  assert.deepEqual([cut.ok, cut.at, cut.step, cut.retry], [false, 1, "thread-open", true]);
+  assert.deepEqual(between, ["#c00"]);
+  assert.equal(again.ok, true);
+  assert.deepEqual(again.results[0], cut.results[0]);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => d.choice), ["#c00", "#00c"]);
+  assert.deepEqual(dirs.writes(), ["decision US-1", "edit US-1", "block US-1", "decision US-1"]);
+  assert.equal(questions(dirs).length, 1);
+  assert.deepEqual(batch(dirs, run, list, { opId: "writes-US-1-1" }), again);
+});
+
+test("a batch that names a result file the helper cannot take is refused before its first step runs, with the file: nothing is written or recorded, and the same batch goes on once the file is right", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const file = join(dirs.repo, ".omni", "runs", run, "out", "impl-US-1-1.json");
+  const list = [
+    ["decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" }],
+    ["decision", { key: "US-1", question: { $out: 0, at: ["decisions", 0, "question"] }, choice: { $join: [{ $out: 0, at: ["decisions", 0, "choice"] }, " (the implementer)"] }, by: "agent" }],
+  ];
+  const outs = [{ file, hash: partsHash("Which blue?", " #00c ") }];
+
+  const missing = batch(dirs, run, list, { opId: "writes-US-1-1", outs });
+  const before = [dirs.story("US-1").decisions.length, appliedOf(dirs, run, "decision")];
+  result(dirs, run, "impl-US-1-1", { status: "ready", decisions: [{ question: "Which blue?", choice: " #00c " }] });
+  const right = batch(dirs, run, list, { opId: "writes-US-1-1", outs });
+
+  assert.deepEqual(pick(missing), { ok: false, error: `the agent's result file ${file} is missing: the agent did not write it`, retry: false, outFile: file });
+  assert.deepEqual(before, [0, {}]);
+  assert.equal(right.ok, true);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => [d.question, d.choice]), [["Which red?", "#c00"], ["Which blue?", "#00c (the implementer)"]]);
+});
+
+test("a batch takes neither start, finish nor a batch, nor a step the helper lacks: it is refused for good, and none of its steps runs", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+  const decision = ["decision", { key: "US-1", question: "Which red?", choice: "#c00", by: "agent" }];
+
+  const bodies = ["start", "finish", "batch", "no-such-step"].map((name) => batch(dirs, run, [decision, [name, {}]]));
+  const empty = helperRun(dirs, stepArgv(dirs, run, "batch", { opId: "batch-empty", steps: [] }));
+
+  for (const [i, name] of ["start", "finish", "batch", "no-such-step"].entries()) {
+    assert.deepEqual([bodies[i].ok, bodies[i].retry, bodies[i].results], [false, false, undefined], name);
+    assert.match(bodies[i].error, new RegExp(`^no step ${name} in a batch; a batch takes `));
+  }
+  assert.deepEqual([empty.ok, empty.retry], [false, false]);
+  assert.deepEqual(dirs.story("US-1").decisions, []);
+  assert.equal(existsSync(dirs.lock), true, "no finish ran");
+});
+
 // ---- start: the lock --------------------------------------------------------------
 
 test("start takes .omni/run.lock: the run, the feature, the session's pid, the op, and a heartbeat that starts at the run's start; received is the hash of {opId, feature, force}", (t) => {
@@ -1706,6 +1809,23 @@ test("job-start runs the command in a process group of its own, its output going
   assert.equal(readFileSync(failing.log, "utf8"), "the stack is down\n");
 });
 
+test("job-start with waitSeconds waits for its job as job-wait does: done with the result for a job that ends within the wait, done false at the end of the wait for one that still runs", (t) => {
+  const dirs = scratch(t);
+  const { run, lane } = start(dirs);
+
+  const short = step(dirs, run, "job-start", { name: "fast", cmd: "echo quick; exit 3", cwd: lane, waitSeconds: 30 });
+  const begun = Date.now();
+  const long = step(dirs, run, "job-start", { name: "stack", cmd: "sleep 30", cwd: lane, waitSeconds: 0.5 });
+  const waited = Date.now() - begun;
+  const stopped = step(dirs, run, "job-kill", { id: long.id });
+
+  assert.deepEqual(Object.keys(short).sort(), ["done", "id", "log", "ok", "received", "result"]);
+  assert.deepEqual([short.id, short.done, short.result.ok, short.result.code, short.result.timedOut], ["fast-1", true, false, 3, false]);
+  assert.deepEqual(pick(long), { ok: true, id: "stack-1", log: runFile(dirs, run, join("jobs", "stack-1.log")), done: false });
+  assert.ok(waited >= 500 && waited < 10000, `${waited} ms`);
+  assert.equal(stopped.killed, true);
+});
+
 test("a job's command runs with OMNI_RUN set to its run, and OMNI_STORY to its story's key, unset for a job without one, so that a project's check can tell runs and stories apart", (t) => {
   const dirs = scratch(t);
   const { run, lane } = start(dirs);
@@ -2469,6 +2589,124 @@ test("lane-candidate puts the lane worktree back at the candidate lane-prepare g
   assert.deepEqual([odd.ok, odd.error], [false, "the candidate is a commit's full hash, not HEAD~1"]);
 });
 
+test("lane-land with keep lands the story and keeps its worktree and branch for its test author; tests-prepare brings that worktree to the tip of deliver/<slug>, on story/<key> and clean; lane-land with tests lands the author's commits on the story that is done: their files join the story's, nothing else of it is written, the worktree and the branch go, and the report lists the tests apart, with the time their writing took", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed", criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const first = step(dirs, run, "lane-prepare", { key: "US-1" });
+
+  const kept = step(dirs, run, "lane-land", { key: "US-1", base: first.base, keep: true });
+
+  assert.deepEqual(pick(kept), { ok: true, key: "US-1", landed: true, base: first.base, final: first.candidate, files: 1, removed: false });
+  assert.deepEqual([dirs.story("US-1").status, existsSync(wt), git(dirs.repo, "rev-parse", "refs/heads/story/US-1").trim()], ["done", true, first.candidate]);
+
+  // The tip moves on, and the worktree was left on another commit, with an edit.
+  const moved = landOn(dirs, "deliver/board", "other.rs");
+  git(wt, "checkout", "-q", "--detach");
+  writeFileSync(join(wt, "left.txt"), "left behind\n");
+  const prepared = step(dirs, run, "tests-prepare", { key: "US-1" });
+
+  assert.deepEqual(pick(prepared), { ok: true, key: "US-1", path: wt, branch: "story/US-1", tip: moved });
+  assert.deepEqual([git(wt, "rev-parse", "HEAD").trim(), git(wt, "rev-parse", "--abbrev-ref", "HEAD").trim(), git(wt, "status", "--porcelain")], [moved, "story/US-1", ""]);
+
+  const test = commit(wt, "badge.test");
+  const second = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const before = dirs.writes().length;
+  const landed = step(dirs, run, "lane-land", { key: "US-1", base: second.base, tests: true });
+
+  assert.deepEqual([second.base, second.candidate], [moved, test]);
+  assert.deepEqual(pick(landed), { ok: true, key: "US-1", landed: true, base: moved, final: test, files: 1, removed: true });
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), git(lane, "rev-parse", "HEAD").trim()], [test, test]);
+  assert.deepEqual(dirs.writes().slice(before), ["files US-1"]);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").files_changed], ["done", ["badge.rs", "badge.test"]]);
+  assert.deepEqual([existsSync(wt), git(dirs.repo, "branch", "--list", "story/US-1")], [false, ""]);
+  assert.deepEqual(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).landed, [{ key: "US-1", base: first.base, final: first.candidate }, { key: "US-1", base: moved, final: test, tests: true }]);
+
+  const report = readFileSync(step(dirs, run, "finish", { report: { outcomes: [{ key: "US-1", outcome: "done" }], council: { settled: 0, majority: 0, asked: 0 } } }).report, "utf8");
+  assert.ok(report.includes("\n- US-1 Story US-1: ") && report.includes("\n- US-1 Story US-1, its tests: "), report);
+  assert.ok(report.includes("\n| Story | Total | implementing | review | testing | test writing | rebase |"), report);
+  assert.match(report, /\n\| US-1 \| [^|]+ \| - \| - \| [^|-][^|]* \| [^|-][^|]* \| [^|]+ \(2\) \|/);
+});
+
+test("tests-prepare refuses a worktree whose story/<key> holds a commit that is not on deliver/<slug>, which it would lose, and one that is not the story's worktree: nothing is reset", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2")]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  step(dirs, run, "lane-land", { key: "US-1", base, keep: true });
+  const unlanded = commit(wt, "late.rs");
+
+  const body = step(dirs, run, "tests-prepare", { key: "US-1" });
+  const none = step(dirs, run, "tests-prepare", { key: "US-2" });
+
+  assert.deepEqual(pick(body), { ok: false, error: "story/US-1 holds commits that are not on deliver/board, so it is not brought to its tip", retry: false });
+  assert.equal(git(wt, "rev-parse", "HEAD").trim(), unlanded);
+  assert.deepEqual([none.ok, none.retry], [false, false]);
+  assert.match(none.error, /app-stories\/US-2 is not the worktree of US-2 on story\/US-2, which its landing kept for the test author$/);
+});
+
+test("tests-drop removes the worktree of a landed story whatever it has checked out, with what its test author left in it, and the branch; a folder in its place that is not that worktree stays, and it says so", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2")]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, run, "lane-prepare", { key: "US-1" });
+  step(dirs, run, "lane-land", { key: "US-1", base, keep: true });
+  commit(wt, "badge.test");
+  git(wt, "checkout", "-q", "--detach");
+  writeFileSync(join(wt, "mutant.rs"), "left behind\n");
+  const tip = sha(dirs, "refs/heads/deliver/board");
+  const other = join(dirs.root, "app-stories", "US-2");
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, "notes.txt"), "not a worktree\n");
+
+  const body = step(dirs, run, "tests-drop", { key: "US-1" });
+  const kept = step(dirs, run, "tests-drop", { key: "US-2" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", removed: true });
+  assert.deepEqual([existsSync(wt), git(dirs.repo, "branch", "--list", "story/US-1"), sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [false, "", tip, "done"]);
+  assert.doesNotMatch(git(dirs.repo, "worktree", "list", "--porcelain"), /US-1/);
+  assert.deepEqual([pick(kept), existsSync(join(other, "notes.txt"))], [{ ok: true, key: "US-2", removed: false }, true]);
+});
+
+test("lane-prepare with clean throws away what is uncommitted in the story's worktree before it looks, and says what, so that a test author's leftovers cost its commits nothing; without clean they are dirty", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run, lane } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  const head = git(wt, "rev-parse", "HEAD").trim();
+  writeFileSync(join(wt, "badge.rs"), "a mutant\n");
+  writeFileSync(join(wt, "report.xml"), "left behind\n");
+
+  const dirty = step(dirs, run, "lane-prepare", { key: "US-1" });
+  const ready = step(dirs, run, "lane-prepare", { key: "US-1", clean: true });
+
+  assert.deepEqual([dirty.outcome, dirty.count], ["dirty", 2]);
+  assert.deepEqual(pick(ready), { ok: true, key: "US-1", outcome: "ready", base: sha(dirs, "refs/heads/deliver/board"), candidate: head, cleaned: { discarded: ["badge.rs", "report.xml"], count: 2 } });
+  assert.deepEqual([git(wt, "status", "--porcelain"), git(lane, "rev-parse", "HEAD").trim()], ["", head]);
+});
+
+test("start removes the worktree and the branch a stopped run left of a story that is done, kept for a test author that never finished, and logs it; a story that is not done keeps its worktree", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "reviewed" }), story("US-2")]);
+  const first = start(dirs);
+  const wt = storyWork(dirs, first.run, "US-1");
+  const other = storyWork(dirs, first.run, "US-2", "count.rs");
+  step(dirs, first.run, "claim", { key: "US-1", stage: "testing" });
+  const { base } = step(dirs, first.run, "lane-prepare", { key: "US-1" });
+  step(dirs, first.run, "lane-land", { key: "US-1", base, keep: true });
+  commit(wt, "badge.test");
+  writeFileSync(join(wt, "half.test"), "half written\n");
+  const tip = sha(dirs, "refs/heads/deliver/board");
+
+  const next = start(dirs, { op: "start-2", force: true });
+
+  assert.equal(next.ok, true);
+  assert.ok(next.log.includes("Removed the worktree of US-1, which is done: a run that stopped left it for its test author, and its regression tests were not written"), next.log.join("\n"));
+  assert.deepEqual([existsSync(wt), existsSync(other), git(dirs.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/story/").trim()], [false, true, "story/US-2"]);
+  assert.deepEqual([sha(dirs, "refs/heads/deliver/board"), dirs.story("US-1").status], [tip, "done"]);
+});
+
 // ---- finish -----------------------------------------------------------------------------
 
 test("finish stops the run's jobs that still run, posts the report on the run's thread from a body file, with the blocked stories and their threads from the board, keeps it as report.md, and gives the lock up", async (t) => {
@@ -2676,6 +2914,11 @@ test("no output the script reads passes 2,000 characters, however long a story's
   go("thread-open", { key: "US-2", title: huge("US-2: a question", 5), body: huge("the options", 200), job: id });
   go("exhaust", { key: "US-2" });
   go("unblock", { key: "US-2" });
+  // The batches the script sends carry several bodies in one answer.
+  const together = (...list) => sized(stepArgv(dirs, run, "batch", { opId: `batch-${++ops}`, steps: list.map(([name, fields = {}]) => ({ name, fields })) }));
+  together(["unblock-pass"], ["clarity-pending"]);
+  together(["claim", { key: "US-2", stage: "implementing" }], ["context", { key: "US-2" }], ["worktree", { key: "US-2" }]);
+  together(["release", { key: "US-2" }], ["context", { key: "US-1" }], ["context", { key: "US-2" }], ["context", { key: "US-3" }]);
   go("block", { key: "US-2" });
   go("sleep", { seconds: 0 });
   go("finish", { report: { outcomes: [{ key: "US-1", outcome: "done" }, { key: "US-2", outcome: "failed", detail: huge("an error", 100) }], council: { settled: 1, asked: 1 }, journeys: [huge("a journey", 100)], notes: [huge("a note", 100)] } });
@@ -2683,5 +2926,5 @@ test("no output the script reads passes 2,000 characters, however long a story's
   t.diagnostic(`the largest outputs: ${JSON.stringify([...sizes].sort((a, b) => b[1] - a[1]).slice(0, 3))}`);
   const over = sizes.filter(([, n]) => n > 2000);
   assert.deepEqual(over, [], `the largest: ${JSON.stringify([...sizes].sort((a, b) => b[1] - a[1]).slice(0, 5))}`);
-  assert.ok(sizes.length >= 36, sizes.length);
+  assert.ok(sizes.length >= 39, sizes.length);
 });

@@ -256,6 +256,14 @@ describe("feature scope", () => {
     expect(chip.getAttribute("href")).toBe(featurePath(WISHLIST, "board"));
   });
 
+  test("a feature's header has a Behaviour link beside its stories chip that opens its behaviour screen", async () => {
+    fakeApi(seeded());
+    renderAt(featurePath(WISHLIST));
+    const chips = await screen.findByRole("navigation", { name: /^pillars$/i });
+    const link = await within(chips).findByRole("link", { name: "Behaviour" });
+    expect(link.getAttribute("href")).toBe(featurePath(WISHLIST, "behaviour"));
+  });
+
   describe("where an item lives", () => {
     test("a feature's doc in the doc viewer: feature › pillar › title, linking the feature's page and the pillar on it", async () => {
       const seed = seeded();

@@ -263,6 +263,32 @@ impl EditDoc {
             .map(|node| self.tree.html(node.item, &Print::PLAIN))
     }
 
+    /// One node and its descendants as HTML with `data-omni-id` and
+    /// `data-rev`: the node as it stands in what `to_html_with_revisions`
+    /// writes.
+    pub fn node_html_with_revisions(&self, id: NodeId) -> Option<String> {
+        let revision = |id: NodeId| self.revision(id);
+        self.nodes.get(&id).map(|node| {
+            self.tree.html(
+                node.item,
+                &Print {
+                    ids: true,
+                    revisions: Some(&revision),
+                    own: None,
+                },
+            )
+        })
+    }
+
+    /// The ID of every node of the doc, in document order.
+    pub fn ids(&self) -> Vec<NodeId> {
+        self.tree
+            .subtree(0)
+            .into_iter()
+            .filter_map(|ix| self.tree.id_of(ix))
+            .collect()
+    }
+
     pub fn contains(&self, id: NodeId) -> bool {
         self.nodes.contains_key(&id)
     }

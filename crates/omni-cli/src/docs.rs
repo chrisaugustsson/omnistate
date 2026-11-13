@@ -9,6 +9,8 @@ use crate::json::{Value, quote};
 use crate::projects::{
     creation_feature, current_feature, is_uuid, project_features, project_id, resolve_feature,
 };
+use omni_core::design::{Node, tags};
+use omni_core::ops::EditDoc;
 use std::io::IsTerminal;
 
 const KINDS: &str = "html, design or design-system";
@@ -164,9 +166,12 @@ pub fn list(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// `omni doc read <doc>`
+/// `omni doc read <doc> [--node <id>]...`
 pub fn read(args: &Args, doc: Option<&str>) -> Result<()> {
-    let doc = doc_id(doc, "omni doc read <doc>")?;
+    let doc = doc_id(doc, "omni doc read <doc> [--node <id>]...")?;
+    if args.json && !args.node.is_empty() {
+        bail!("--node prints the nodes as text; leave out --json, or --node for the API's answer");
+    }
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let path = format!("{}/docs/{doc}/html", project_path(&agent, &project));
@@ -175,6 +180,9 @@ pub fn read(args: &Args, doc: Option<&str>) -> Result<()> {
     if args.json {
         print_json(&text);
         return Ok(());
+    }
+    if !args.node.is_empty() {
+        return print_nodes(&doc, &text, &args.node);
     }
     let answer = parsed(&text, "the doc")?;
     // The head of a design is its tags; every other doc is its HTML, as the API
@@ -187,6 +195,71 @@ pub fn read(args: &Args, doc: Option<&str>) -> Result<()> {
         bail!("the server's answer has no HTML for the doc; is it an OmniState API?");
     };
     say(html);
+    Ok(())
+}
+
+/// Prints the nodes of the head that `wanted` names, each with what is inside
+/// it and on a line of its own, in the order they stand in the doc. The API
+/// serves the head whole, so the nodes are picked out of it here, with the
+/// reader the server keeps the head with. Nothing is printed when the doc
+/// lacks one of them.
+fn print_nodes(doc: &str, text: &str, wanted: &[String]) -> Result<()> {
+    let unreadable = || {
+        CliError::new("the server's answer about the doc is not readable; is it an OmniState API?")
+    };
+    let answer: serde_json::Value = serde_json::from_str(text).map_err(|_| unreadable())?;
+    let is_wanted = |id: &str| wanted.iter().any(|wanted| wanted == id);
+    let mut found: Vec<(String, String)> = Vec::new();
+    if answer.get("tags").is_some() {
+        // The head of a design: a node is a tag, named by its `id`.
+        let Some(pages) = answer.get("pages") else {
+            bail!("the server's answer has no pages for the design; is it an OmniState API?");
+        };
+        let pages: Vec<Node> = serde_json::from_value(pages.clone()).map_err(|why| {
+            CliError::new(format!(
+                "the pages of the design in the server's answer are not readable ({why}); is it an OmniState API?"
+            ))
+        })?;
+        let mut pending: Vec<&Node> = pages.iter().rev().collect();
+        while let Some(node) = pending.pop() {
+            if is_wanted(node.id().as_str()) {
+                found.push((node.id().to_string(), tags::print(node)));
+            }
+            pending.extend(node.children().iter().rev());
+        }
+    } else {
+        let Some(html) = answer.get("html").and_then(serde_json::Value::as_str) else {
+            bail!("the server's answer has no HTML for the doc; is it an OmniState API?");
+        };
+        let head = EditDoc::from_html(html).map_err(|why| {
+            CliError::new(format!(
+                "the head of doc {doc} does not read as HTML with data-omni-id: {why}"
+            ))
+        })?;
+        for id in head.ids() {
+            if is_wanted(id.as_str()) {
+                found.extend(
+                    head.node_html_with_revisions(id)
+                        .map(|html| (id.to_string(), html)),
+                );
+            }
+        }
+    }
+    let mut missing: Vec<&str> = Vec::new();
+    for id in wanted {
+        if !found.iter().any(|(found, _)| found == id) && !missing.contains(&id.as_str()) {
+            missing.push(id);
+        }
+    }
+    if !missing.is_empty() {
+        bail!(
+            "doc {doc} has no node {}; `omni doc read {doc}` prints every node it has",
+            missing.join(", ")
+        );
+    }
+    for (_, node) in &found {
+        say(node);
+    }
     Ok(())
 }
 

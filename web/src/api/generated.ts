@@ -75,6 +75,22 @@ export const ActorBodySchema = z.object({
 });
 export type ActorBody = z.infer<typeof ActorBodySchema>;
 
+export const AnswerBodySchema = z.object({
+  answer: z.string(),
+  at: z.string(),
+  author: z.record(z.string(), z.unknown()),
+  given_by: z.string(),
+});
+export type AnswerBody = z.infer<typeof AnswerBodySchema>;
+
+export const AnswerRequestSchema = z.object({
+  answer: z.string(),
+  by: z.string().nullable().optional(),
+  change: z.boolean().optional(),
+  expected_version: z.number().int(),
+});
+export type AnswerRequest = z.infer<typeof AnswerRequestSchema>;
+
 export const ApiKeyBodySchema = z.object({
   created_at: z.string(),
   id: z.string(),
@@ -89,6 +105,14 @@ export const AppSummarySchema = z.object({
   last_activity: z.string().nullable().optional(),
 });
 export type AppSummary = z.infer<typeof AppSummarySchema>;
+
+export const AskRequestSchema = z.object({
+  answer: z.string().nullable().optional(),
+  by: z.string().nullable().optional(),
+  question: z.string(),
+  recommendation: z.string().nullable().optional(),
+});
+export type AskRequest = z.infer<typeof AskRequestSchema>;
 
 export const AttachmentBodySchema = z.object({
   content_type: z.string(),
@@ -125,6 +149,67 @@ export const CancelStoryRequestSchema = z.object({
   expected_version: z.number().int(),
 });
 export type CancelStoryRequest = z.infer<typeof CancelStoryRequestSchema>;
+
+export const PointerDetailBodySchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  summary: z.string(),
+  title: z.string(),
+});
+export type PointerDetailBody = z.infer<typeof PointerDetailBodySchema>;
+
+export const NodeBodySchema = z.object({
+  behaviour: z.string(),
+  created_at: z.string(),
+  created_by: z.record(z.string(), z.unknown()),
+  handoff: z.union([
+    z.null(),
+    PointerDetailBodySchema,
+  ]).optional(),
+  id: z.string(),
+  level: z.number().int(),
+  needs_pass: z.boolean(),
+  needs_pass_since: z.string().nullable().optional(),
+  parent_id: z.string().nullable().optional(),
+  path: z.string(),
+  position: z.number().int(),
+  same_as: z.union([
+    z.null(),
+    PointerDetailBodySchema,
+  ]).optional(),
+  situation: z.string(),
+  slug: z.string().nullable().optional(),
+  status: z.string(),
+  summary: z.string(),
+  title: z.string(),
+  updated_at: z.string(),
+  version: z.number().int(),
+});
+export type NodeBody = z.infer<typeof NodeBodySchema>;
+
+export const QuestionBodySchema = z.object({
+  answer: z.union([
+    z.null(),
+    AnswerBodySchema,
+  ]).optional(),
+  answered_by: z.string().nullable().optional(),
+  answers: z.array(AnswerBodySchema),
+  asked_by: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  id: z.string(),
+  node_id: z.string(),
+  node_path: z.string(),
+  question: z.string(),
+  recommendation: z.string().nullable().optional(),
+  state: z.string(),
+  version: z.number().int(),
+});
+export type QuestionBody = z.infer<typeof QuestionBodySchema>;
+
+export const ChainNodeBodySchema = z.intersection(NodeBodySchema, z.object({
+  questions: z.array(QuestionBodySchema),
+}));
+export type ChainNodeBody = z.infer<typeof ChainNodeBodySchema>;
 
 export const CheckCriterionRequestSchema = z.object({
   criterion: z.number().int(),
@@ -228,6 +313,16 @@ export const CreateFeatureRequestSchema = z.object({
 });
 export type CreateFeatureRequest = z.infer<typeof CreateFeatureRequestSchema>;
 
+export const CreateNodeRequestSchema = z.object({
+  handoff: z.string().nullable().optional(),
+  parent_id: z.string().nullable().optional(),
+  same_as: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  title: z.string(),
+});
+export type CreateNodeRequest = z.infer<typeof CreateNodeRequestSchema>;
+
 export const CreatePostRequestSchema = z.object({
   attachments: z.array(z.string()).nullable().optional(),
   body: z.string().nullable().optional(),
@@ -242,6 +337,12 @@ export const CreateProjectRequestSchema = z.object({
   name: z.string().nullable().optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
+
+export const CreateRuleRequestSchema = z.object({
+  scope: z.string().nullable().optional(),
+  text: z.string(),
+});
+export type CreateRuleRequest = z.infer<typeof CreateRuleRequestSchema>;
 
 export const NewCriterionSchema = z.object({
   human_check: z.boolean().nullable().optional(),
@@ -498,6 +599,65 @@ export const HomeResponseSchema = z.object({
 });
 export type HomeResponse = z.infer<typeof HomeResponseSchema>;
 
+export const ImportAnswerSchema = z.object({
+  answer: z.string(),
+  by: z.string(),
+});
+export type ImportAnswer = z.infer<typeof ImportAnswerSchema>;
+
+export const ImportProblemSchema = z.object({
+  key: z.string(),
+  problem: z.string(),
+});
+export type ImportProblem = z.infer<typeof ImportProblemSchema>;
+
+export const ImportInvalidBodySchema = z.object({
+  error: z.string(),
+  problems: z.array(ImportProblemSchema),
+});
+export type ImportInvalidBody = z.infer<typeof ImportInvalidBodySchema>;
+
+export const ImportQuestionSchema = z.object({
+  answers: z.array(ImportAnswerSchema).optional(),
+  question: z.string(),
+});
+export type ImportQuestion = z.infer<typeof ImportQuestionSchema>;
+
+export const ImportRuleSchema = z.object({
+  scope: z.string(),
+  text: z.string(),
+});
+export type ImportRule = z.infer<typeof ImportRuleSchema>;
+
+export const ImportNodeSchema = z.object({
+  behaviour: z.string().nullable().optional(),
+  handoff: z.string().nullable().optional(),
+  key: z.string(),
+  parent: z.string().nullable().optional(),
+  questions: z.array(ImportQuestionSchema).optional(),
+  rules: z.array(ImportRuleSchema).optional(),
+  same_as: z.string().nullable().optional(),
+  situation: z.string().nullable().optional(),
+  slug: z.string().optional(),
+  status: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  title: z.string(),
+});
+export type ImportNode = z.infer<typeof ImportNodeSchema>;
+
+export const ImportRequestSchema = z.object({
+  nodes: z.array(ImportNodeSchema),
+});
+export type ImportRequest = z.infer<typeof ImportRequestSchema>;
+
+export const ImportResponseSchema = z.object({
+  answers: z.number().int(),
+  nodes: z.number().int(),
+  questions: z.number().int(),
+  rules: z.number().int(),
+});
+export type ImportResponse = z.infer<typeof ImportResponseSchema>;
+
 export const ImportTagsRequestSchema = z.object({
   tags: z.string().nullable().optional(),
 });
@@ -564,7 +724,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -614,12 +774,119 @@ export const ManifestSchema = z.object({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 
+export const MoveNodeRequestSchema = z.object({
+  expected_version: z.number().int(),
+  parent_id: z.string(),
+});
+export type MoveNodeRequest = z.infer<typeof MoveNodeRequestSchema>;
+
 export const MoveStoryRequestSchema = z.object({
   expected_version: z.number().int(),
   run: z.string(),
   to: z.string(),
 });
 export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
+
+export const PointerBodySchema = z.object({
+  id: z.string(),
+  path: z.string(),
+});
+export type PointerBody = z.infer<typeof PointerBodySchema>;
+
+export const NodeChildBodySchema = z.object({
+  handoff: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
+  id: z.string(),
+  path: z.string(),
+  same_as: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
+  slug: z.string().nullable().optional(),
+  status: z.string(),
+  summary: z.string(),
+  title: z.string(),
+});
+export type NodeChildBody = z.infer<typeof NodeChildBodySchema>;
+
+export const NodeSummaryBodySchema = z.object({
+  default_answers: z.number().int(),
+  handoff: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
+  id: z.string(),
+  level: z.number().int(),
+  needs_pass: z.boolean(),
+  needs_pass_since: z.string().nullable().optional(),
+  open_questions: z.number().int(),
+  parent_id: z.string().nullable().optional(),
+  path: z.string(),
+  position: z.number().int(),
+  same_as: z.union([
+    z.null(),
+    PointerBodySchema,
+  ]).optional(),
+  slug: z.string().nullable().optional(),
+  status: z.string(),
+  summary: z.string(),
+  title: z.string(),
+  version: z.number().int(),
+});
+export type NodeSummaryBody = z.infer<typeof NodeSummaryBodySchema>;
+
+export const NodeListResponseSchema = z.object({
+  nodes: z.array(NodeSummaryBodySchema),
+});
+export type NodeListResponse = z.infer<typeof NodeListResponseSchema>;
+
+export const ReachRuleBodySchema = z.object({
+  id: z.string(),
+  node_id: z.string(),
+  node_path: z.string(),
+  scope: z.string(),
+  text: z.string(),
+});
+export type ReachRuleBody = z.infer<typeof ReachRuleBodySchema>;
+
+export const NodeReadResponseSchema = z.object({
+  chain: z.array(ChainNodeBodySchema),
+  children: z.array(NodeChildBodySchema),
+  node: NodeBodySchema,
+  questions: z.array(QuestionBodySchema),
+  rules: z.array(ReachRuleBodySchema),
+  siblings: z.array(NodeChildBodySchema),
+});
+export type NodeReadResponse = z.infer<typeof NodeReadResponseSchema>;
+
+export const NodeResponseSchema = z.object({
+  node: NodeBodySchema,
+});
+export type NodeResponse = z.infer<typeof NodeResponseSchema>;
+
+export const PatchNodeRequestSchema = z.object({
+  behaviour: z.string().nullable().optional(),
+  expected_version: z.number().int(),
+  handoff: z.string().nullable().optional(),
+  needs_pass: z.boolean().nullable().optional(),
+  same_as: z.string().nullable().optional(),
+  situation: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+});
+export type PatchNodeRequest = z.infer<typeof PatchNodeRequestSchema>;
+
+export const PatchRuleRequestSchema = z.object({
+  expected_version: z.number().int(),
+  scope: z.string().nullable().optional(),
+  text: z.string().nullable().optional(),
+  withdrawn: z.boolean().nullable().optional(),
+});
+export type PatchRuleRequest = z.infer<typeof PatchRuleRequestSchema>;
 
 export const PatchStoryRequestSchema = z.object({
   blocked_by: z.array(z.string()).nullable().optional(),
@@ -656,6 +923,16 @@ export const ProjectResponseSchema = z.object({
 });
 export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
 
+export const QuestionListResponseSchema = z.object({
+  questions: z.array(QuestionBodySchema),
+});
+export type QuestionListResponse = z.infer<typeof QuestionListResponseSchema>;
+
+export const QuestionResponseSchema = z.object({
+  question: QuestionBodySchema,
+});
+export type QuestionResponse = z.infer<typeof QuestionResponseSchema>;
+
 export const ReleaseStoryRequestSchema = z.object({
   expected_version: z.number().int(),
   run: z.string(),
@@ -687,6 +964,29 @@ export const ResolveFindingRequestSchema = z.object({
   run: z.string(),
 });
 export type ResolveFindingRequest = z.infer<typeof ResolveFindingRequestSchema>;
+
+export const RuleBodySchema = z.object({
+  author: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  id: z.string(),
+  node_id: z.string(),
+  node_path: z.string(),
+  scope: z.string(),
+  text: z.string(),
+  version: z.number().int(),
+  withdrawn: z.boolean(),
+});
+export type RuleBody = z.infer<typeof RuleBodySchema>;
+
+export const RuleListResponseSchema = z.object({
+  rules: z.array(RuleBodySchema),
+});
+export type RuleListResponse = z.infer<typeof RuleListResponseSchema>;
+
+export const RuleResponseSchema = z.object({
+  rule: RuleBodySchema,
+});
+export type RuleResponse = z.infer<typeof RuleResponseSchema>;
 
 export const SingleCommentResponseSchema = z.object({
   comment: CommentBodySchema,
@@ -832,13 +1132,17 @@ export const schemas = {
   ActivityItem: ActivityItemSchema,
   ActivityListResponse: ActivityListResponseSchema,
   ActorBody: ActorBodySchema,
+  AnswerBody: AnswerBodySchema,
+  AnswerRequest: AnswerRequestSchema,
   ApiKeyBody: ApiKeyBodySchema,
   AppSummary: AppSummarySchema,
+  AskRequest: AskRequestSchema,
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
   BlockStoryRequest: BlockStoryRequestSchema,
   BoardBody: BoardBodySchema,
   CancelStoryRequest: CancelStoryRequestSchema,
+  ChainNodeBody: ChainNodeBodySchema,
   CheckCriterionRequest: CheckCriterionRequestSchema,
   ClaimStoryRequest: ClaimStoryRequestSchema,
   CollectionBody: CollectionBodySchema,
@@ -852,8 +1156,10 @@ export const schemas = {
   CreateCommentRequest: CreateCommentRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
   CreateFeatureRequest: CreateFeatureRequestSchema,
+  CreateNodeRequest: CreateNodeRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
+  CreateRuleRequest: CreateRuleRequestSchema,
   CreateStoryRequest: CreateStoryRequestSchema,
   CreatedKeyResponse: CreatedKeyResponseSchema,
   CriterionBody: CriterionBodySchema,
@@ -878,6 +1184,14 @@ export const schemas = {
   HomeDoc: HomeDocSchema,
   HomeResponse: HomeResponseSchema,
   HomeThread: HomeThreadSchema,
+  ImportAnswer: ImportAnswerSchema,
+  ImportInvalidBody: ImportInvalidBodySchema,
+  ImportNode: ImportNodeSchema,
+  ImportProblem: ImportProblemSchema,
+  ImportQuestion: ImportQuestionSchema,
+  ImportRequest: ImportRequestSchema,
+  ImportResponse: ImportResponseSchema,
+  ImportRule: ImportRuleSchema,
   ImportTagsRequest: ImportTagsRequestSchema,
   ImportTokensRequest: ImportTokensRequestSchema,
   ImportedHeadComponents: ImportedHeadComponentsSchema,
@@ -895,16 +1209,31 @@ export const schemas = {
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
+  MoveNodeRequest: MoveNodeRequestSchema,
   MoveStoryRequest: MoveStoryRequestSchema,
   NewCriterion: NewCriterionSchema,
+  NodeBody: NodeBodySchema,
   NodeBox: NodeBoxSchema,
+  NodeChildBody: NodeChildBodySchema,
+  NodeListResponse: NodeListResponseSchema,
+  NodeReadResponse: NodeReadResponseSchema,
+  NodeResponse: NodeResponseSchema,
+  NodeSummaryBody: NodeSummaryBodySchema,
   OpResultBody: OpResultBodySchema,
+  PatchNodeRequest: PatchNodeRequestSchema,
+  PatchRuleRequest: PatchRuleRequestSchema,
   PatchStoryRequest: PatchStoryRequestSchema,
+  PointerBody: PointerBodySchema,
+  PointerDetailBody: PointerDetailBodySchema,
   PostBody: PostBodySchema,
   PostResponse: PostResponseSchema,
   ProjectBody: ProjectBodySchema,
   ProjectListResponse: ProjectListResponseSchema,
   ProjectResponse: ProjectResponseSchema,
+  QuestionBody: QuestionBodySchema,
+  QuestionListResponse: QuestionListResponseSchema,
+  QuestionResponse: QuestionResponseSchema,
+  ReachRuleBody: ReachRuleBodySchema,
   ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
   RenameFeatureRequest: RenameFeatureRequestSchema,
@@ -912,6 +1241,9 @@ export const schemas = {
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
   ResolveFindingRequest: ResolveFindingRequestSchema,
+  RuleBody: RuleBodySchema,
+  RuleListResponse: RuleListResponseSchema,
+  RuleResponse: RuleResponseSchema,
   SingleCommentResponse: SingleCommentResponseSchema,
   SinglePostResponse: SinglePostResponseSchema,
   StartThreadRequest: StartThreadRequestSchema,
@@ -1244,6 +1576,130 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour": {
+    responses: {
+      "200": NodeListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import": {
+    request: ImportRequestSchema,
+    responses: {
+      "201": ImportResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ImportInvalidBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes": {
+    request: CreateNodeRequestSchema,
+    responses: {
+      "201": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
+    responses: {
+      "200": NodeReadResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
+    request: PatchNodeRequestSchema,
+    responses: {
+      "200": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move": {
+    request: MoveNodeRequestSchema,
+    responses: {
+      "200": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions": {
+    request: AskRequestSchema,
+    responses: {
+      "201": QuestionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules": {
+    request: CreateRuleRequestSchema,
+    responses: {
+      "201": RuleResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions": {
+    responses: {
+      "200": QuestionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}": {
+    responses: {
+      "200": QuestionResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers": {
+    request: AnswerRequestSchema,
+    responses: {
+      "201": QuestionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules": {
+    responses: {
+      "200": RuleListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}": {
+    request: PatchRuleRequestSchema,
+    responses: {
+      "200": RuleResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {

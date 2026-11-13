@@ -31,7 +31,7 @@
 //! each lists the feature to read the story, sends its `version` as
 //! `expected_version` to `<stories>/<id>/<route>`, and with `--json` prints
 //! the story the API answers. A 409 of any kind is `conflict: <the API's
-//! error> ; read the story again` on stderr and exit code 3, which `omni
+//! error> ; read it again` on stderr and exit code 3, which `omni
 //! --help` documents. `tick` sends `pending` only with `--pending`; `finding`
 //! always sends `files`, `[]` without `--file`. There is no `omni story
 //! check`: the human clears checks on the board.
@@ -530,9 +530,7 @@ fn a_409_of_any_kind_names_the_api_error_as_a_conflict_and_exits_3() {
     assert_eq!(moved.stdout, "");
     assert_eq!(moved.stderr_lines().len(), 1, "stderr: {}", moved.stderr);
     assert!(
-        moved
-            .stderr
-            .contains("conflict: conflict ; read the story again"),
+        moved.stderr.contains("conflict: conflict ; read it again"),
         "stderr: {}",
         moved.stderr
     );
@@ -540,7 +538,7 @@ fn a_409_of_any_kind_names_the_api_error_as_a_conflict_and_exits_3() {
     assert!(
         ticked
             .stderr
-            .contains("conflict: not_holder ; read the story again"),
+            .contains("conflict: not_holder ; read it again"),
         "stderr: {}",
         ticked.stderr
     );

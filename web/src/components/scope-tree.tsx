@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Boxes, ChevronRight, Database, FileText, FlaskConical, MessagesSquare, Palette, SquareKanban, type LucideIcon } from "lucide-react";
+import { Boxes, ChevronRight, Database, FileText, FlaskConical, MessagesSquare, Network, Palette, SquareKanban, type LucideIcon } from "lucide-react";
 import type { HomeResponse } from "@/api/generated";
 import { PILLARS, featureNames } from "@/components/project/items";
 import { inOrder } from "@/components/project/scope-page";
@@ -183,6 +183,18 @@ export function ScopeTree({
         >
           <SquareKanban aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
           Board ({openStories})
+        </Link>
+      )}
+      {scope !== "app" && (
+        <Link
+          to="/w/$workspaceId/projects/$projectId/features/$featureId/behaviour"
+          params={{ ...params, featureId: scope }}
+          activeOptions={{ exact: true, includeSearch: false }}
+          activeProps={{ className: activeClass }}
+          className={cn(rowClass, "h-7 text-xs font-medium")}
+        >
+          <Network aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+          Behaviour
         </Link>
       )}
     </div>

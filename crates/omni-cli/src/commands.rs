@@ -8,6 +8,8 @@
 
 use crate::args::Args;
 use crate::attach;
+use crate::behaviour;
+use crate::behaviour_import;
 use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
@@ -118,6 +120,51 @@ pub fn run(args: &Args) -> Result<()> {
         ["import", "penpot", file] => import::penpot(args, Some(file)),
         ["import", ..] => {
             bail!("usage: omni import penpot <file.penpot> --project <id> [--feature <name>]")
+        }
+        ["behaviour" | "behavior", "add"] => behaviour::add(args),
+        ["behaviour" | "behavior", "read"] => behaviour::read(args, None),
+        ["behaviour" | "behavior", "read", node] => behaviour::read(args, Some(node)),
+        ["behaviour" | "behavior", "list"] => behaviour::list(args, None),
+        ["behaviour" | "behavior", "list", node] => behaviour::list(args, Some(node)),
+        ["behaviour" | "behavior", "edit", node] => behaviour::edit(args, Some(node)),
+        ["behaviour" | "behavior", "edit"] => behaviour::edit(args, None),
+        ["behaviour" | "behavior", "move", node] => behaviour::move_node(args, Some(node)),
+        ["behaviour" | "behavior", "move"] => behaviour::move_node(args, None),
+        ["behaviour" | "behavior", "ask", node, question] => {
+            behaviour::ask(args, Some(node), Some(question))
+        }
+        ["behaviour" | "behavior", "ask", node] => behaviour::ask(args, Some(node), None),
+        ["behaviour" | "behavior", "ask"] => behaviour::ask(args, None, None),
+        ["behaviour" | "behavior", "answer", question, answer] => {
+            behaviour::answer(args, Some(question), Some(answer))
+        }
+        ["behaviour" | "behavior", "answer", question] => {
+            behaviour::answer(args, Some(question), None)
+        }
+        ["behaviour" | "behavior", "answer"] => behaviour::answer(args, None, None),
+        ["behaviour" | "behavior", "question", id] => behaviour::question(args, Some(id)),
+        ["behaviour" | "behavior", "question"] => behaviour::question(args, None),
+        ["behaviour" | "behavior", "rule", "add", node, text] => {
+            behaviour::rule_add(args, Some(node), Some(text))
+        }
+        ["behaviour" | "behavior", "rule", "add", node] => {
+            behaviour::rule_add(args, Some(node), None)
+        }
+        ["behaviour" | "behavior", "rule", "add"] => behaviour::rule_add(args, None, None),
+        ["behaviour" | "behavior", "rule", "edit", id] => behaviour::rule_edit(args, Some(id)),
+        ["behaviour" | "behavior", "rule", "edit"] => behaviour::rule_edit(args, None),
+        ["behaviour" | "behavior", "rules"] => behaviour::rules(args, None),
+        ["behaviour" | "behavior", "rules", node] => behaviour::rules(args, Some(node)),
+        ["behaviour" | "behavior", "import", folder] => {
+            behaviour_import::import(args, Some(folder))
+        }
+        ["behaviour" | "behavior", "import"] => behaviour_import::import(args, None),
+        ["behaviour" | "behavior", "questions"] => behaviour::questions(args, None),
+        ["behaviour" | "behavior", "questions", node] => behaviour::questions(args, Some(node)),
+        ["behaviour" | "behavior", ..] => {
+            bail!(
+                "usage: omni behaviour add|read|list|edit|move|ask|answer|question|questions|rule|rules|import; see `omni --help`"
+            )
         }
         ["story", "add"] => stories::add(args, None),
         ["story", "add", file] => stories::add(args, Some(file)),
@@ -251,6 +298,13 @@ impl Agent {
         http::send(&self.server, method, path, &self.headers, None)
     }
 
+    /// Posts `body` as JSON and returns the response whatever its status.
+    pub(crate) fn send_unchecked(&self, method: &str, path: &str, body: &[u8]) -> Result<Response> {
+        let mut headers = self.headers.clone();
+        headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        http::send(&self.server, method, path, &headers, Some(body))
+    }
+
     pub(crate) fn request(
         &self,
         method: &str,
@@ -263,7 +317,7 @@ impl Agent {
     }
 
     /// Like `request`, but a 409 is the error `conflict: <the API's error> ;
-    /// read the story again`, which ends the command with exit code 3.
+    /// read it again`, which ends the command with exit code 3.
     pub(crate) fn request_conflicting(
         &self,
         method: &str,
@@ -280,7 +334,7 @@ impl Agent {
                 .unwrap_or_else(|| "conflict".to_string());
             return Err(CliError::with_code(
                 3,
-                format!("conflict: {code} ; read the story again"),
+                format!("conflict: {code} ; read it again"),
             ));
         }
         checked(response)

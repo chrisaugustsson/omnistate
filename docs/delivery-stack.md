@@ -3,11 +3,24 @@
 A delivery run is the `omni-deliver` workflow (`workflows/omni-deliver.js`),
 which Claude Code runs with its Workflow tool. It takes a feature's stories
 from the OmniState board, implements, reviews and tests them, and lands them on
-the branch `deliver/<feature slug>`. The script holds the flow, but it can run
+the branch `deliver/<feature slug>`; each story's regression tests are written
+once it has landed. The script holds the flow, but it can run
 no command itself: every git, omni and check command runs in its host helper,
 `workflows/deliver-step.mjs`, which a cheap courier agent runs for each step.
 The helper's header describes that protocol and every step; the script's
 `meta` sums up a run.
+
+A courier call takes about ten seconds, of which the helper works a fraction
+of one, so steps that always follow each other with nothing to decide in
+between go in one call: the helper's `batch` step runs them in order, each as
+a step of its own, recorded and timed as one, and stops at the first that
+fails; a repeat of the batch carries on after those that were applied. A
+story's claim comes with its context and its worktree, an implementer's
+decisions with the story's files and its move to implemented, the claim for
+the lane with the rebase and the context, and `lane-clean` with `lane-land`.
+A clean story takes 9 courier calls from its claim to its landing, and its
+tests 4 more, outside the lane's lock but for the last three; with a call for
+every step, and the tests written in the lane, a story took 23.
 
 A courier copies the helper's whole answer back, and a long answer does not
 come back exactly: in the first real run, the courier of a story's context
@@ -23,8 +36,10 @@ holds:
   its text, criteria, decisions, findings and linked doc nodes. Its prompt
   says how to tell the findings of this attempt budget, marked
   `[attempt N]` and open, from those that used no attempt and from those
-  before the human's latest answer, and it reads the linked docs with
-  `omni doc read`.
+  before the human's latest answer, and it reads the nodes the story links
+  with `omni doc read <doc> --node <id>`, not the whole docs, which can be
+  hundreds of KB. The clarity check reads the spec, architecture and db docs
+  whole.
 - An agent that needs a check's output reads the job's log by the path the
   prompt names. A finding or a thread about a check names the job, and the
   helper adds the end of its log.
@@ -148,7 +163,7 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   human decision, and is unblocked. Its attempts count from there.
 - **Clarity.** One check for each backlog story whose text, criteria, linked
   nodes or decisions changed since its last check. A criterion that names a
-  test becomes a test obligation, which the lane's test author owns and the
+  test becomes a test obligation, which the story's test author owns and the
   verifier skips. The check names it by its number, and the helper records
   the decision with the criterion's text from the board; a number the story
   has no criterion for fails the check, and the story waits for the next
@@ -163,6 +178,13 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   its recommendation.
   The 3 blocking gaps of most impact go to the council, and the rest take
   their recommendation.
+  The checks run beside the delivery: the run starts them all and goes on to
+  Deliver at once. The stories are still taken in the board's order, which is
+  the human's priority and decides which of two stories planned on the same
+  files goes first: the run waits for the check of the next story in that
+  order, and takes no later story ahead of it. So the first story is
+  implemented while the checks of those after it still run. The run waits for
+  every check before its report.
 - **The council** answers a question before the human is asked: clarity's
   blocking gaps, and the questions of the implementer, the reviewer and the
   test author. Three members each read one thing: the spec docs and decisions,
@@ -175,8 +197,11 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   without a quote from each of its two, a thread opens with each member's pick
   and evidence, and the story is blocked until the thread has a conclusion.
 - **Deliver,** in the three stages below.
-- **Report.** A check of the user journeys across the stories landed, then the
-  report. The journeys check runs none of the checks, since an agent's Bash
+- **Tests.** Each story's regression tests, written once it has landed, by
+  one author at a time, beside the delivery of the stories after it (see
+  below).
+- **Report.** Once every clarity check and every story's tests have ended, a
+  check of the user journeys across the stories landed, then the report. The journeys check runs none of the checks, since an agent's Bash
   call stops after 10 minutes: it is told the result of the lane's last one.
 
 The run does not wait for answers: the next run's Unblock takes them.
@@ -213,28 +238,60 @@ and testing.
      set, for what a run that was stopped left on the stack.
    - A verifier exercises every criterion but the test obligations, on the
      stack that `stack_up` started.
-   - A test author writes the story's regression tests and commits them on the
-     lane's detached HEAD. Its oracle comes from the story's text, criteria,
-     decisions and linked doc nodes: it ignores the story's findings. `lane-clean` throws away what it left uncommitted,
-     so that its check, which runs next as a job, runs on exactly what lands,
-     and again after the check, for what the check left, such as a report.
-   - `lane-land` lands the story, moves it to done, and removes its worktree
-     and `story/<key>`.
+   - `lane-clean` throws away what the verifier left uncommitted, and
+     `lane-land` lands the story and moves it to done. Its worktree and
+     `story/<key>` stay, for its test author. A lane that `lane-land` refuses
+     for its state, such as a branch an agent checked out there, goes back to
+     the story as it was checked (`lane-candidate`), and the story lands from
+     that.
 
-   The test author's trouble costs the verified story nothing. A check of its
-   tests that comes out red gets the author once more, with the check's
-   output. When the check is still red, or `lane-land` refuses the lane the
-   author left (a branch checked out, files a process it started wrote), the
-   tests are dropped: `lane-candidate` puts the lane back at the story as its
-   checks and verifier found it, the story lands without them, and the
-   report notes "landed without regression tests" with the reason. A defect
-   its tests find is the story's, and uses an attempt.
+A story's **regression tests** are written once it has landed, outside the
+lane's lock: in the lane, their author took 2 to 25 minutes a story, with the
+lane and the stack held, and found no defect in 8 stories of 8. The story is
+done by then, so the stories that waited on it are picked while its tests are
+written.
+
+- One author works at a time, for the whole run, and holds neither the lane
+  nor an implementer's or a reviewer's slot. `tests-prepare` brings the
+  story's worktree to the tip of `deliver/<slug>`, on `story/<key>`, so the
+  author starts from every test that landed before it. Its oracle comes from
+  the story's text, criteria, decisions and linked doc nodes: it ignores the
+  story's findings. It never starts or uses the stack, which may hold another
+  story's build by then: a risk only a stack test would catch goes in
+  `notAdmitted`.
+- Its commits take a short turn in the lane. `lane-prepare` throws away what
+  the author left uncommitted in its worktree, rebases `story/<key>` onto the
+  tip, and checks it out in the lane. The author's check runs there as a job,
+  with no `fast`, `stack_up` or `stack` check, and the stack is left alone.
+  `lane-clean` throws away what the check left, such as a report, and
+  `lane-land` lands the tests by the same compare-and-swap, adds their files
+  to the story's, and removes the worktree and `story/<key>`. The lane is at
+  the tip afterwards.
+- A turn that fails, on a rebase conflict, a red check or a refused landing,
+  puts the lane back at the tip, and the author is asked once more, in its
+  worktree, with the reason and the path of the check's log. A second failure
+  drops the tests.
+- Dropped tests cost the story nothing: its worktree and branch go, and the
+  report notes "landed without regression tests" with the reason. Besides a
+  second failure, the tests are dropped when the author finds a defect, asks
+  a question the council does not settle, is blocked, or returns nothing
+  after its retries, when the lane has stopped for the run, and at the hard
+  cap.
+- A defect the tests find comes after the landing: it uses no attempt, and
+  the story is not sent back. A thread opens with the test, what it observed
+  and what the story expects, for the human to decide, and the report notes
+  it.
+- The board lets nothing be linked from a story that is done, so a thread of
+  the test author (a defect, a question, a blocker) names the story in its
+  title, and neither is linked from it nor blocks it.
+- A run stopped from outside while tests were pending leaves the worktree of
+  a story that is done. The next start removes it and says so: those tests
+  are not written.
 
 What sends a story back:
 
-- A failed review or verification, or a defect the test author's tests find,
-  uses one of the story's 3 attempts since the human's latest answer. The
-  story stays held where it failed until an implementer's slot is free, ahead
+- A failed review or verification uses one of the story's 3 attempts since
+  the human's latest answer. The story stays held where it failed until an implementer's slot is free, ahead
   of new stories; then one helper step, `rework`, moves it to the backlog and
   claims it again, and its next implementer goes on in its worktree. After the
   third, the story is blocked on a thread with every attempt's findings, which
@@ -325,8 +382,10 @@ passes the others through. Until it is merged, `args.checks` is how a run gets
 
 Every check runs as a job: a detached supervisor runs the command in the lane
 worktree, in a process group of its own and with no standard input, and logs
-its output under `.omni/runs/<run>/jobs/`. A courier waits for it up to 8
-minutes at a time. A job has 45 minutes: past that, its group gets SIGTERM,
+its output under `.omni/runs/<run>/jobs/`. The courier that starts a job
+waits for it too, up to 8 minutes, so a check that ends within that takes one
+call; while the job still runs, a courier waits again, up to 8 minutes at a
+time. A job has 45 minutes: past that, its group gets SIGTERM,
 then SIGKILL 10 s later, and the check counts as failed. Its finding quotes the
 end of the log, which the helper reads, and which says that the job ran past
 its limit. A workflow
@@ -370,10 +429,11 @@ lock up. When the post fails, the file still holds the report.
 
 The report has:
 
-- the run's notes, such as why it stopped taking stories, and the stories
-  that landed without regression tests, with the reason;
-- the stories landed on `deliver/<slug>`, with their commits and the command
-  that brings them in;
+- the run's notes, such as why it stopped taking stories, the stories that
+  landed without regression tests, with the reason, and a defect a story's
+  tests found after it landed, with its thread;
+- the stories landed on `deliver/<slug>`, with their commits, each story's
+  tests on a line of their own, and the command that brings them in;
 - the blocked stories, with their threads, from the board, or that the board
   could not be read;
 - every story's outcome;
@@ -381,19 +441,26 @@ The report has:
   2, and how many it sent to the human;
 - the human checks still pending;
 - the journeys check;
-- the timings: for each story its total time, its time in each stage, its
+- the timings: for each story its total time, its time in each stage, the
+  time the writing of its tests took after it landed (test writing), its
   rebases, and each of its jobs by name. A time with (n) after it adds up n of
   them.
 
 ## Limits
 
 - **The agent cap.** The runtime stops a workflow at 1000 agent calls,
-  couriers included, and one story has taken 89, through three failed passes
-  of the lane. A run takes a new story only while its calls leave room under
-  900 for the stories in flight, at 90 each, and stops a story that reaches
-  960 all the same, released with no attempt used. A long feature takes more
-  than one run: the report says when a run stopped for the cap, and the next
-  run carries on.
+  couriers included. A story that fails the lane three times makes about 50;
+  one took 89 when every step had a call of its own, which is where the 90
+  set aside for a story comes from. A run takes a new story only while its
+  calls leave room under 900 for the stories in flight, at 90 each, for the
+  clarity checks in flight, at 20 each, and for the landed stories' tests
+  still to be written or landed, at 30 each (a chain of them makes 5 calls
+  when all goes well, and 23 with two questions settled and a failed turn in
+  the lane); a story that only the checks or the tests leave no room for
+  waits until one of them has ended. It stops
+  a story that reaches 960 all the same, released with no attempt used. A
+  long feature takes more than one run: the report says when a run stopped
+  for the cap, and the next run carries on.
 - **Small machines.** The runtime runs at most min(16, CPUs - 2) agents at
   once, couriers included. With 4 CPUs that is 2, and a courier waiting on a
   check holds one of them. The run still finishes, just slowly.

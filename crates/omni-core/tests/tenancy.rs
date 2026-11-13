@@ -40,12 +40,13 @@ const TENANT_TABLES: [&str; 3] = ["workspaces", "memberships", "api_keys"];
 /// them. They are the node index, the chunk index of US-030, the forum's posts
 /// (US-033), the replies to comments (US-038) and the log of the writes to docs
 /// (US-102).
-const APPEND_ONLY_TABLES: [&str; 5] = [
+const APPEND_ONLY_TABLES: [&str; 6] = [
     "node_index",
     "chunks",
     "posts",
     "comment_replies",
     "doc_changes",
+    "behaviour_answers",
 ];
 /// A UUIDv4, which the database must refuse as a record ID.
 const V4_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";

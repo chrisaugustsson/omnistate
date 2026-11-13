@@ -3,8 +3,7 @@
 // (document.ts puts it inline). It is plain browser
 // JavaScript kept in a string, because the frame's document carries it as
 // text; it must not contain a backtick or a `${`. `PARENT_ORIGIN` is declared
-// before it by document.ts, and `mermaid` is the global of the Mermaid script
-// that precedes it.
+// before it by document.ts.
 //
 // The frame and the page talk only through postMessage (the protocol is
 // described in web/src/doc-viewer-frame.test.ts):
@@ -16,6 +15,10 @@
 //   frame scrolls into view when it is not the one it revealed last. When the
 //   doc's `html` changes, the frame draws it again and puts the scroll
 //   position back where it was.
+//
+// A frame in a browser tab that loads in the background is 0 wide and 0 tall
+// until the tab is shown, and nothing can be measured in it. The doc's HTML
+// goes in at once, but its scripts wait until the frame has a size.
 export const FRAME_SCRIPT = String.raw`(function () {
   "use strict";
   var page = window.parent;
@@ -23,9 +26,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
   var pinLayer = document.getElementById("pins");
   var shown = { html: null, pins: [], selected: null, revealed: null };
   var hovered = null;
-  var drawn = {};
-  var counter = 0;
-  var configured = false;
+  var waiting = false;
 
   function post(message) {
     page.postMessage(message, PARENT_ORIGIN);
@@ -69,36 +70,11 @@ export const FRAME_SCRIPT = String.raw`(function () {
     });
   }
 
-  function place(pre, svg) {
-    if (!pre.isConnected) return;
-    var figure = document.createElement("div");
-    figure.className = "omni-mermaid";
-    figure.innerHTML = svg;
-    pre.replaceWith(figure);
-    layoutPins();
-  }
-
-  // Mermaid figures: the diagram's text is drawn as an SVG in its place.
-  function drawDiagrams() {
-    var engine = window.mermaid && (window.mermaid.default || window.mermaid);
-    if (!engine) return;
-    if (!configured) {
-      engine.initialize({ startOnLoad: false, securityLevel: "strict", theme: "neutral" });
-      configured = true;
-    }
-    Array.prototype.forEach.call(doc.querySelectorAll("pre.mermaid"), function (pre) {
-      var source = pre.textContent || "";
-      if (!Object.prototype.hasOwnProperty.call(drawn, source)) {
-        counter += 1;
-        drawn[source] = engine.render("omni-diagram-" + counter, source).then(
-          function (result) { return result.svg; },
-          function () { return null; }
-        );
-      }
-      drawn[source].then(function (svg) {
-        if (svg) place(pre, svg);
-      });
-    });
+  // Runs the doc's scripts, once the frame has a size.
+  function start() {
+    if (!waiting || !(window.innerWidth > 0)) return;
+    waiting = false;
+    revive(doc);
   }
 
   function setHover(block) {
@@ -148,8 +124,8 @@ export const FRAME_SCRIPT = String.raw`(function () {
       var scrollY = window.scrollY;
       shown.html = message.html;
       doc.replaceChildren.apply(doc, Array.from(parse(message.html).childNodes));
-      revive(doc);
-      drawDiagrams();
+      waiting = true;
+      start();
       var again = hovered && find(hovered);
       if (again) again.classList.add("is-hover");
       window.scrollTo(scrollX, scrollY);
@@ -199,6 +175,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
     });
   }
   window.addEventListener("resize", relayout);
+  window.addEventListener("resize", start);
   if (window.ResizeObserver) new ResizeObserver(relayout).observe(doc);
 
   post({ type: "viewer.ready" });

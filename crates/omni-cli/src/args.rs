@@ -45,6 +45,9 @@ pub struct Args {
     /// to list and where the page ends.
     pub limit: Option<String>,
     pub before: Option<String>,
+    /// `omni doc read <doc> --node <id>` (repeatable): the nodes to print
+    /// instead of the whole head.
+    pub node: Vec<String>,
     /// `omni tokens export --out <file or directory>`: where to write.
     pub out: Option<String>,
     /// `omni tokens export --per-mode`: one file per collection and mode.
@@ -88,6 +91,32 @@ pub struct Args {
     pub file: Vec<String>,
     pub pending: bool,
     pub unticked: bool,
+    /// `omni behaviour add --slug <s> --parent <node>`.
+    pub slug: Option<String>,
+    pub parent: Option<String>,
+    /// `omni behaviour edit --situation <text> --behaviour <text>`.
+    pub situation: Option<String>,
+    pub behaviour: Option<String>,
+    /// `omni behaviour add|edit --same-as <node> --handoff <node>`.
+    pub same_as: Option<String>,
+    pub handoff: Option<String>,
+    /// `omni behaviour ask --answer <text> [--by human]`, `omni behaviour
+    /// questions --default`.
+    pub answer: Option<String>,
+    pub default_answers: bool,
+    /// `omni behaviour ask --recommend <text>`.
+    pub recommend: Option<String>,
+    /// `omni behaviour answer --change`.
+    pub change: bool,
+    /// `omni behaviour list --needs-pass`, `omni behaviour edit --grilled`.
+    pub needs_pass: bool,
+    pub grilled: bool,
+    /// `omni behaviour import --check`.
+    pub check: bool,
+    /// `omni behaviour rule add|edit --scope <s>`, `rule edit --withdraw`,
+    /// `omni behaviour rules --scope <s>`.
+    pub scope: Option<String>,
+    pub withdraw: bool,
     pub json: bool,
     pub help: bool,
     pub version: bool,
@@ -140,6 +169,30 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.open = true;
                 continue;
             }
+            "--change" => {
+                parsed.change = true;
+                continue;
+            }
+            "--needs-pass" => {
+                parsed.needs_pass = true;
+                continue;
+            }
+            "--withdraw" => {
+                parsed.withdraw = true;
+                continue;
+            }
+            "--check" => {
+                parsed.check = true;
+                continue;
+            }
+            "--grilled" => {
+                parsed.grilled = true;
+                continue;
+            }
+            "--default" => {
+                parsed.default_answers = true;
+                continue;
+            }
             "--pickable" => {
                 parsed.pickable = true;
                 continue;
@@ -180,6 +233,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.file.push(value);
                 continue;
             }
+            "--node" => {
+                let Some(value) = inline.or_else(|| args.next()) else {
+                    bail!("{arg} needs a value; see `omni --help`");
+                };
+                parsed.node.push(value);
+                continue;
+            }
             "--attach" | "--link" => {
                 let Some(value) = inline.or_else(|| args.next()) else {
                     bail!("{arg} needs a value; see `omni --help`");
@@ -191,6 +251,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 }
                 continue;
             }
+            "--slug" => &mut parsed.slug,
+            "--parent" => &mut parsed.parent,
+            "--situation" => &mut parsed.situation,
+            "--behaviour" | "--behavior" => &mut parsed.behaviour,
+            "--same-as" => &mut parsed.same_as,
+            "--handoff" => &mut parsed.handoff,
+            "--answer" => &mut parsed.answer,
+            "--recommend" => &mut parsed.recommend,
+            "--scope" => &mut parsed.scope,
             "--priority" => &mut parsed.priority,
             "--number-from" => &mut parsed.number_from,
             "--status" => &mut parsed.status,

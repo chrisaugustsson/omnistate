@@ -1128,3 +1128,39 @@ fn revisions_are_checked_at_any_depth() {
     assert_eq!(found.index, 1);
     assert!(doc.contains(id(DP1)), "the batch changed nothing");
 }
+
+// --- One node of the head ---
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_node_prints_with_revisions_as_it_stands_in_the_head() {
+    let mut doc = doc();
+    apply_one(&mut doc, set(LI2, 1, json!({"html": "Two <em>more</em>"})));
+    assert_eq!(
+        doc.node_html_with_revisions(id(UL)).as_deref(),
+        Some(
+            "<ul data-omni-id=\"b0000007\" data-rev=\"1\"><li data-omni-id=\"b0000008\" data-rev=\"1\">One</li><li data-omni-id=\"b0000009\" data-rev=\"2\">Two <em>more</em></li></ul>"
+        ),
+        "the node, the nodes inside it and each one's revision"
+    );
+    let head = doc.to_html_with_revisions();
+    for node in doc.ids() {
+        let html = doc
+            .node_html_with_revisions(node)
+            .expect("a node of the doc prints");
+        assert!(head.contains(&html), "{node} is in the head as {html}");
+    }
+    assert_eq!(doc.node_html_with_revisions(id(UNKNOWN)), None);
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn ids_lists_every_node_in_document_order() {
+    let ids: Vec<String> = doc().ids().iter().map(ToString::to_string).collect();
+    assert_eq!(
+        ids,
+        [
+            S1, H1, P1, P2, S2, H2, UL, LI1, LI2, NOTE, TABLE, ROW, CELL, FIGURE, SVG
+        ]
+    );
+}

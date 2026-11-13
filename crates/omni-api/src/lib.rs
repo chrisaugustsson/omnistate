@@ -10,6 +10,7 @@ mod activity;
 mod api_keys;
 mod attachments;
 pub mod auth;
+mod behaviour;
 mod boards;
 mod chunks;
 mod comments;
@@ -55,6 +56,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The largest body of an import of components or of a design, in bytes: a
 /// design imported from a Penpot file (US-051) is many megabytes of tags.
+/// The most a behaviour tree import may send: 8 MB.
+const BEHAVIOUR_IMPORT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const IMPORT_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// Where the API listens and the services it talks to, read from the environment.
@@ -344,6 +347,54 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/attachments/{attachment_id}",
             get(attachments::download),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour",
+            get(behaviour::list_nodes),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes",
+            post(behaviour::create_node),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+            get(behaviour::show_node).patch(behaviour::patch_node),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+            post(behaviour::move_node),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+            post(behaviour::ask_question),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+            post(behaviour::create_rule),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+            get(behaviour::list_rules),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+            patch(behaviour::patch_rule),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+            get(behaviour::list_questions),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import",
+            post(behaviour::import_tree).layer(DefaultBodyLimit::max(BEHAVIOUR_IMPORT_MAX_BYTES)),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}",
+            get(behaviour::show_question),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+            post(behaviour::answer_question),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
