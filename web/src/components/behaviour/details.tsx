@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { answerQuestion, askQuestion, loadNode, type TreeNode } from "@/api/behaviour";
 import { ApiError } from "@/api/client";
 import type { AnswerBody, QuestionBody } from "@/api/generated";
@@ -62,6 +62,7 @@ export function Details({
   waitingCount = 0,
   onShowOpen,
   onWritten,
+  refresh = 0,
 }: {
   node: TreeNode | null;
   tree: TreeNode[];
@@ -74,6 +75,8 @@ export function Details({
   onShowOpen?: () => void;
   /** After a write, accepted or not: the tree and the open questions need reading again. */
   onWritten?: () => void;
+  /** Reads the chosen node again each time this number changes. */
+  refresh?: number;
 }) {
   return (
     <section aria-label="Details" className="min-h-0 overflow-y-auto border-l">
@@ -86,6 +89,7 @@ export function Details({
           onChoose={onChoose}
           ids={{ workspaceId, projectId, featureId }}
           onWritten={onWritten ?? (() => {})}
+          refresh={refresh}
         />
       ) : (
         <p className="px-6 py-10 text-[13px] leading-relaxed text-muted-foreground">
@@ -107,6 +111,7 @@ function Chosen({
   onChoose,
   ids,
   onWritten,
+  refresh,
 }: {
   node: TreeNode;
   tree: TreeNode[];
@@ -114,6 +119,7 @@ function Chosen({
   onChoose: (id: string) => void;
   ids: { workspaceId: string; projectId: string; featureId: string };
   onWritten: () => void;
+  refresh: number;
 }) {
   const load = useCallback(
     () => loadNode(ids.workspaceId, ids.projectId, ids.featureId, listed.id),
@@ -122,6 +128,27 @@ function Chosen({
   const { value: read, failed, reload } = useReloading(load);
   // What to say under a question after a write; it lasts until another node is chosen.
   const [said, setSaid] = useState<Record<string, string>>({});
+  // Text typed into the answer field of a waiting question, kept so that it survives the question being answered by someone else.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draft = (id: string, text: string | undefined) =>
+    setDrafts((before) => {
+      const rest = { ...before };
+      delete rest[id];
+      return text === undefined ? rest : { ...rest, [id]: text };
+    });
+  const say = useCallback((id: string, message: string) => setSaid((before) => (before[id] === message ? before : { ...before, [id]: message })), []);
+  const seenRefresh = useRef(refresh);
+  useEffect(() => {
+    if (seenRefresh.current === refresh) return;
+    seenRefresh.current = refresh;
+    reload();
+  }, [refresh, reload]);
+  useEffect(() => {
+    const answered = (read?.questions ?? []).filter((question) => question.state !== "open" && drafts[question.id] !== undefined);
+    if (answered.length === 0) return;
+    for (const question of answered) if (drafts[question.id].trim() !== "") say(question.id, CONFLICT);
+    setDrafts((before) => Object.fromEntries(Object.entries(before).filter(([id]) => !answered.some((question) => question.id === id))));
+  }, [read, drafts, say]);
   const written = (id: string, message: string) => {
     setSaid((before) => ({ ...before, [id]: message }));
     reload();
@@ -214,7 +241,7 @@ function Chosen({
               <Text source={read.node.behaviour} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
-          <Questions questions={read.questions} me={me} ids={ids} said={said} below={descendantsOf(tree, listed.id).length} onWritten={written} nodeId={listed.id} onAsked={asked} />
+          <Questions questions={read.questions} me={me} ids={ids} said={said} drafts={drafts} onDraft={draft} onSay={say} below={descendantsOf(tree, listed.id).length} onWritten={written} nodeId={listed.id} onAsked={asked} />
           <Rules rules={read.rules} nodeId={read.node.id} byId={byId} />
         </>
       )}
@@ -228,13 +255,16 @@ type Ids = { workspaceId: string; projectId: string; featureId: string };
 function AnswerField({
   question,
   ids,
+  text,
+  setText,
   onWritten,
 }: {
   question: QuestionBody;
   ids: Ids;
+  text: string;
+  setText: (text: string | undefined) => void;
   onWritten: (id: string, message: string) => void;
 }) {
-  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const send = async () => {
@@ -244,10 +274,12 @@ function AnswerField({
     setError("");
     try {
       await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer });
+      setText(undefined);
       onWritten(question.id, "Recorded. This node now waits for the next grill pass.");
     } catch (failure) {
       setBusy(false);
       if (failure instanceof ApiError && failure.status === 409) {
+        setText(undefined);
         onWritten(question.id, CONFLICT);
       } else setError("The answer could not be saved. Try again in a moment.");
     }
@@ -278,15 +310,27 @@ function ChangeField({
   ids,
   below,
   onWritten,
+  onSay,
+  restored,
 }: {
   question: QuestionBody;
   ids: Ids;
   below: number;
   onWritten: (id: string, message: string) => void;
+  onSay: (id: string, message: string) => void;
+  /** Text typed for this question before someone else answered it; the field starts open with it. */
+  restored?: string;
 }) {
   const current = question.answer?.answer ?? "";
-  const [open, setOpen] = useState(false);
-  const [text, setText] = useState("");
+  const [open, setOpen] = useState(restored !== undefined && restored.trim() !== "");
+  const [text, setText] = useState(restored ?? "");
+  // Someone changes the answer while the field is open: the field stays, and Save goes against the new version.
+  const seenVersion = useRef(question.version);
+  useEffect(() => {
+    if (seenVersion.current === question.version) return;
+    seenVersion.current = question.version;
+    if (open) onSay(question.id, CHANGE_CONFLICT);
+  }, [question.version, question.id, open, onSay]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const start = () => {
@@ -356,6 +400,9 @@ function Questions({
   me,
   ids,
   said,
+  drafts,
+  onDraft,
+  onSay,
   below,
   onWritten,
   nodeId,
@@ -365,6 +412,9 @@ function Questions({
   me: string | null;
   ids: Ids;
   said: Record<string, string>;
+  drafts: Record<string, string>;
+  onDraft: (id: string, text: string | undefined) => void;
+  onSay: (id: string, message: string) => void;
   below: number;
   onWritten: (id: string, message: string) => void;
   nodeId: string;
@@ -388,7 +438,7 @@ function Questions({
             <p className="text-[13.5px] font-medium leading-snug">{question.question}</p>
             {question.state === "open" ? (
               waits ? (
-                <AnswerField question={question} ids={ids} onWritten={onWritten} />
+                <AnswerField question={question} ids={ids} text={drafts[question.id] ?? ""} setText={(text) => onDraft(question.id, text)} onWritten={onWritten} />
               ) : (
               <p className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <span className={cn(pill, "bg-transparent shadow-[inset_0_0_0_1px_var(--input)]")}>Remark</span>
@@ -405,7 +455,7 @@ function Questions({
                       {who(answer, me)} · {fmtDate(answer.at)}
                     </span>
                   </p>
-                  <ChangeField question={question} ids={ids} below={below} onWritten={onWritten} />
+                  <ChangeField question={question} ids={ids} below={below} onWritten={onWritten} onSay={onSay} restored={drafts[question.id]} />
                 </>
               )
             )}

@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useProjectEvents } from "@/live/context";
 import { featureNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
@@ -135,6 +136,45 @@ export function BehaviourScreen({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [nodes, chosen]);
+  // Live: a behaviour event of this feature reads the tree and the open questions again, at most once in 300 ms
+  // (on the first event, and once more at the end of the window if more came); the chosen node too when it is concerned.
+  const [nodeTick, setNodeTick] = useState(0);
+  const chosenRef = useRef(chosen);
+  chosenRef.current = chosen;
+  const reloadAll = useRef({ reloadTree, reloadQuestions });
+  reloadAll.current = { reloadTree, reloadQuestions };
+  const throttle = useRef<{ timer: ReturnType<typeof setTimeout> | null; pending: boolean; pendingNode: boolean }>({ timer: null, pending: false, pendingNode: false });
+  const run = useRef((withNode: boolean) => {
+    reloadAll.current.reloadTree();
+    reloadAll.current.reloadQuestions();
+    if (withNode) setNodeTick((n) => n + 1);
+    const state = throttle.current;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      if (!state.pending) return;
+      const again = state.pendingNode;
+      state.pending = false;
+      state.pendingNode = false;
+      run.current(again);
+    }, 300);
+  });
+  useEffect(
+    () => () => {
+      if (throttle.current.timer) clearTimeout(throttle.current.timer);
+      throttle.current = { timer: null, pending: false, pendingNode: false };
+    },
+    [],
+  );
+  useProjectEvents(projectId, (event) => {
+    if (!event.event.startsWith("behaviour.") || event.data.feature_id !== featureId) return;
+    const concerned =
+      event.event === "behaviour.imported" || event.event === "behaviour.marked" || (chosenRef.current !== null && event.data.node_id === chosenRef.current);
+    const state = throttle.current;
+    if (state.timer) {
+      state.pending = true;
+      state.pendingNode ||= concerned;
+    } else run.current(concerned);
+  });
   const chosenNode = useMemo(() => nodes?.find((node) => node.id === chosen) ?? null, [nodes, chosen]);
   const under = useMemo(() => (nodes && filter !== "all" ? shownUnder(nodes, filter, chosen) : null), [nodes, filter, chosen]);
   const found = useMemo(() => (nodes && searching ? find(nodes, query, under?.matching) : []), [nodes, searching, query, under]);
@@ -324,6 +364,7 @@ export function BehaviourScreen({
                 reloadQuestions();
               }}
               waitingCount={waitingTotal}
+              refresh={nodeTick}
               onShowOpen={() => setFilter("open")}
             />
           </>
