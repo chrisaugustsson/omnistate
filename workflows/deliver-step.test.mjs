@@ -3667,6 +3667,37 @@ test("after a restart finish pushes with a lease on the merged tip: a remote bra
   }
 });
 
+test("every gh call names the repository of the remote's URL when it has the shape of a hosted one: finish's list and create, and start's look for a merged pull request; a local path names none", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  git(dirs.repo, "remote", "set-url", "origin", "https://example.com/acme/app.git");
+  git(dirs.repo, "config", "remote.origin.pushurl", remote.bare);
+  const gh = withGh(dirs);
+  const { run } = start(dirs);
+  const tip = landOn(dirs, "deliver/board", "badge.rs");
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.deepEqual([body.pushed, body.why, remote.at("refs/heads/deliver/board")], [true, null, tip]);
+  assert.deepEqual(gh.calls().map((argv) => [argv[1], argv.slice(-2)]), [["list", ["--repo", "example.com/acme/app"]], ["create", ["--repo", "example.com/acme/app"]]]);
+
+  for (const [url, repo] of [["git@example.com:acme/app.git", ["--repo", "example.com/acme/app"]], ["ssh://git@example.com/acme/app", ["--repo", "example.com/acme/app"]], [null, []]]) {
+    const restarting = scratch(t, [story("US-1")]);
+    const bare = withRemote(restarting).bare;
+    if (url) {
+      git(restarting.repo, "remote", "set-url", "origin", url);
+      git(restarting.repo, "config", "remote.origin.pushurl", bare);
+    }
+    const { old } = divergedBranch(restarting);
+    const calls = withGh(restarting, { prs: [mergedPr(old)] });
+
+    const started = start(restarting);
+
+    assert.equal(started.ok, true, started.error);
+    assert.deepEqual(calls.calls(), [["pr", "list", "--head", "deliver/board", "--state", "merged", "--json", "headRefOid", ...repo]], url);
+  }
+});
+
 test("a restart's lease outlives the run that made it: run 1 starts deliver/<slug> again and lands nothing, run 2 lands a task and its push moves the remote branch from the merged tip and removes .omni/restarted-<slug>", (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const remote = withRemote(dirs);

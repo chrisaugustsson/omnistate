@@ -1223,6 +1223,17 @@ export const prBody = (text, runId) => {
   const tail = `The full report is on the Run thread of ${runId} in OmniState.\n`
   return `${short.slice(0, PR_MAX - tail.length - 2)}\n\n${tail}`
 }
+// The repository gh works on: --repo <host>/<owner>/<repo> when the URL of
+// the remote names a hosted repository, else nothing, and gh picks one
+// itself. In a checkout with more remotes gh could pick another repository
+// than the one the branch goes to.
+const ghRepo = (url) => {
+  const m = /^https:\/\/(?:[^@/]+@)?([^/@]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url) ||
+    /^[^@/:]+@([^/:]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url) ||
+    /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url)
+  return m ? ['--repo', `${m[1]}/${m[2]}/${m[3]}`] : []
+}
+const ghRepoOf = (root, remote) => ghRepo((tryRun('git', ['-C', root, 'remote', 'get-url', remote]) || '').trim())
 // Why there is no pull request to push for, the first reason that holds, or
 // the remote and base, with the open pull request when there is one. Only gh
 // pr list reaches the network: the other reasons come from local refs.
@@ -1233,16 +1244,17 @@ const prPlan = (b, info) => {
   const remote = (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim() || 'origin'
   if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return { why: 'the checkout has no remote' }
   if (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${base}`]) === null) return { why: `${base} is not on ${remote}` }
+  const repo = ghRepoOf(b.root, remote)
   let open
   try {
-    open = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'open', '--json', 'number,url'], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+    open = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'open', '--json', 'number,url', ...repo], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
   } catch (e) {
     if (e && e.code === 'ENOENT') return { why: 'the gh command is not installed' }
     return { why: `gh cannot list pull requests on ${remote}: ${firstLine(e)}` }
   }
   const ahead = (tryRun('git', ['-C', b.root, 'rev-list', '--count', `refs/heads/${base}..refs/heads/${b.branch}`]) || '0').trim()
   if (ahead === '0') return { why: `${b.branch} holds nothing that ${base} lacks` }
-  return { base, remote, open: Array.isArray(open) && open.length ? open[0] : null }
+  return { base, remote, repo, open: Array.isArray(open) && open.length ? open[0] : null }
 }
 // Pushes the feature's branch and opens its pull request, or says why not:
 // {pr: {url, created} | null, pushed, why}. A failure is the answer's why,
@@ -1280,10 +1292,10 @@ const pullRequest = (b, info, body) => {
   const env = { ...process.env, GH_PROMPT_DISABLED: '1' }
   try {
     if (plan.open) {
-      run('gh', ['pr', 'edit', String(plan.open.number), '--body-file', file], { cwd: b.root, env })
+      run('gh', ['pr', 'edit', String(plan.open.number), '--body-file', file, ...plan.repo], { cwd: b.root, env })
       return { pr: { url: plan.open.url, created: false }, pushed: true, why: null }
     }
-    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file], { cwd: b.root, env })
+    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file, ...plan.repo], { cwd: b.root, env })
     const url = out.trim().split('\n').pop().trim()
     return { pr: { url, created: true }, pushed: true, why: null }
   } catch (e) {
@@ -2392,7 +2404,7 @@ const mergedAt = (b, tip) => {
   const remote = (base && (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim()) || 'origin'
   if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return false
   try {
-    const merged = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'merged', '--json', 'headRefOid'], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+    const merged = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'merged', '--json', 'headRefOid', ...ghRepoOf(b.root, remote)], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
     return Array.isArray(merged) && merged.some((pr) => pr && pr.headRefOid === tip)
   } catch {
     return false
