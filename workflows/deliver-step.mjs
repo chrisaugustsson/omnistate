@@ -106,8 +106,10 @@
 // - files {key}: key, files (how many)
 // - thread-open {title, body, key?, job?}: thread, and key when given. A
 //   body that names a job gets the end of its log
-// - exhaust {key}: thread, key, attempt; the thread of a story that used its
-//   last attempt, with the findings of every attempt, from the board
+// - park {key}: key, attempt, removed; the task that failed its third try
+//   goes to the backlog, not blocked, its findings open, and its worktree
+//   and branch are removed (removed: true when both are gone, also when it
+//   never had them); no thread
 // - unblock-pass {}: unblocked, log (at most 20 lines, then a count)
 // - worktree {key}: key, path, branch, created (true when the story starts on
 //   a branch of its own just cut, false when its branch has earlier work);
@@ -1213,23 +1215,16 @@ const STEPS = {
     return openThread(b, { key: p.key, title: p.title, body: tail ? `${p.body.replace(/\n+$/, '')}\n\n${tail}\n` : p.body }, marker, mark)
   })(),
 
-  // A story that used its last attempt: a thread with the findings of every
-  // attempt, whole, which the helper writes from the board, blocks it. The
-  // script names only the story: no courier carries the findings.
-  exhaust: (b, p, { marker, mark }) => missing(p, 'key') || (() => {
+  // A task that failed its third try is left in the backlog, not blocked,
+  // with its findings open, and its worktree and branch are removed: no
+  // thread, the next run retries it. A repeat does only what the first try
+  // did not.
+  park: (b, p) => missing(p, 'key') || (() => {
     const story = b.readStory(p.key)
-    const attempt = marker && Number.isInteger(marker.attempt) ? marker.attempt : attemptOf(story)
-    if (!marker || !Number.isInteger(marker.attempt)) mark({ attempt })
-    const { findings, uncounted, earlier } = findingsOf(story)
-    const line = (f) => `- [${f.stage}] ${f.text}${f.files.length ? ` (${f.files.join(', ')})` : ''}`
-    const groups = (list) => list.map((g) => `Attempt ${g.attempt}:\n${g.findings.map(line).join('\n')}`).join('\n\n')
-    const body = [
-      `The story failed ${attempt} attempts since the human's latest answer. The findings of every attempt:`,
-      groups(findings) || '(none)',
-      ...(uncounted.length ? [`Open findings that used no attempt:\n${uncounted.map(line).join('\n')}`] : []),
-      ...(earlier.length ? [`Before the latest answer:\n\n${groups(earlier)}`] : []),
-    ].join('\n\n')
-    return { ...openThread(b, { key: p.key, title: `${p.key}: still failing after ${attempt} attempts`, body: `${body}\n` }, marker, mark), attempt }
+    const attempt = attemptOf(story)
+    if (story.status !== 'backlog') b.write('move', p.key, ['--to', 'backlog'])
+    if (story.blocked) b.write('unblock', p.key, [])
+    return { key: p.key, attempt, removed: removeWorktree(b, p.key, true) }
   })(),
 
   // A blocked story whose linked threads all have a conclusion gets each
@@ -1658,7 +1653,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'park', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.

@@ -1396,24 +1396,23 @@ const failed = async (key, e) => {
   return { key, outcome: 'failed', detail: message, ...(thread ? { thread } : {}) }
 }
 
-// The helper writes the thread with every attempt's findings from the board:
-// the script never has their text.
-const exhaust = async (key) => {
-  const { thread, attempt } = await step('exhaust', { key })
-  log(`${key}: still failing after ${attempt} attempts; blocked with thread ${thread}`)
-  return { key, outcome: 'attempts_exhausted', thread }
+// A task that failed its third try is parked: the helper leaves it in the
+// backlog with its findings open and removes its worktree and branch. No
+// thread; the next run retries it.
+const park = async (key) => {
+  const { attempt } = await step('park', { key })
+  log(`${key}: parked after ${attempt} failed tries`)
+  return { key, outcome: 'parked', detail: 'failed 3 tries' }
 }
 
 // The findings of a failed attempt, or of a send-back that uses none (counts
-// false), go on the story. After its last attempt the story goes back to the
-// backlog with its thread; else it is sent back for its next attempt, and
+// false), go on the story. After its last attempt the story is parked; else it is sent back for its next attempt, and
 // stays held where it failed until that starts (deliverStory).
 const sendBack = async (key, stage, findings, counts, what) => {
   const { attempt } = await step('finding', { key, stage, findings, counts })
   log(counts ? `${key}: attempt ${attempt} failed ${what}` : `${key}: sent back with no attempt used: ${what}`)
   if (!counts || attempt < MAX_ATTEMPTS) return { rework: true }
-  await step('move', { key, to: 'backlog' })
-  return exhaust(key)
+  return park(key)
 }
 
 // The decisions this run recorded, by story, which an agent asked again
@@ -1464,7 +1463,7 @@ const implement = async (key, rework, claimed) => {
   } finally {
     claimed()
   }
-  if (ctx.attempt >= MAX_ATTEMPTS) return exhaust(key)
+  if (ctx.attempt >= MAX_ATTEMPTS) return park(key)
   if (wt.reason) log(`${key}: ${wt.reason}`)
   const found = [...new Set([foundAt.get(key), wt.reason].filter(Boolean))].join('\n')
   foundAt.delete(key)
