@@ -1613,6 +1613,98 @@ test("an answer restarts the attempt budget: unblock-pass resolves the story's o
   ]);
 });
 
+// A question on the tree as `omni behaviour question --json` shows it: open, or answered with `answer` by `by`.
+const treeQuestion = (id, answer = null, by = "human") => ({
+  id,
+  node_id: "n1",
+  node_path: "a",
+  question: "asked text",
+  recommendation: null,
+  state: answer === null ? "open" : "answered",
+  answered_by: answer === null ? null : by,
+  asked_by: { kind: "agent", run: null, role: null },
+  answer: answer === null ? null : { answer, given_by: by, author: "someone", at: "2026-11-01T00:00:00Z" },
+});
+// The decision question-ask leaves on a task for the question `id`.
+const asked = (question, id) => ({ question, choice: askedOn(id, "n1"), by: "agent" });
+
+test("unblock-pass records an answered tree question as a decision with the asked question and the answer's text, by human or agent as the answer was given, resolves the task's open findings and unblocks it", (t) => {
+  const findings = [{ stage: "review", text: "[attempt 1] Still blue", files: [], resolved: false }];
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, findings, decisions: [asked("Which red?", "q-1")] }),
+    story("US-2", { blocked: true, decisions: [asked("How big?", "q-2")] }),
+  ], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00", "human"), treeQuestion("q-2", "Large", "agent")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual([body.unblocked, body.log], [["US-1", "US-2"], []]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), { question: "Which red?", choice: "#c00", by: "human" }]);
+  assert.deepEqual(dirs.story("US-2").decisions, [asked("How big?", "q-2"), { question: "How big?", choice: "Large", by: "agent" }]);
+  assert.deepEqual(dirs.story("US-1").findings.map((f) => f.resolved), [true]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-2").blocked], [false, false]);
+});
+
+test("unblock-pass keeps a task with one of its two asked questions open blocked, records neither answer, and logs the open question", (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), asked("How big?", "q-2")] })], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00"), treeQuestion("q-2")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual([body.unblocked, body.log], [[], ["US-1 stays blocked: the question q-2 is open"]]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), asked("How big?", "q-2")]);
+  assert.equal(dirs.story("US-1").blocked, true);
+});
+
+test("unblock-pass keeps a task whose asked question cannot be read blocked, records not even its answered one, logs why, and goes on with the next task", (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), asked("How big?", "q-gone")] }),
+    story("US-2", { blocked: true, decisions: [asked("Which font?", "q-2")] }),
+  ], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00"), treeQuestion("q-2", "Inter")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual([body.ok, body.unblocked, body.log], [true, ["US-2"], ["US-1 stays blocked: the question q-gone could not be read: not_found: no question q-gone in this feature"]]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), asked("How big?", "q-gone")]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-2").blocked], [true, false]);
+});
+
+test("unblock-pass unblocks a task with a linked thread and an asked question only once the thread is concluded and the question answered", (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, links: [questionLink("th-1")], decisions: [asked("Which red?", "q-1")] }),
+    story("US-2", { blocked: true, links: [questionLink("th-2")], decisions: [asked("Which red?", "q-2")] }),
+    story("US-3", { blocked: true, links: [questionLink("th-3")], decisions: [asked("Which red?", "q-3")] }),
+  ], [
+    thread("th-1", "US-1: Which size?"),
+    thread("th-2", "US-2: Which size?", "Large"),
+    thread("th-3", "US-3: Which size?", "Small"),
+  ], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00"), treeQuestion("q-2"), treeQuestion("q-3", "#f00")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual(body.unblocked, ["US-3"]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => dirs.story(key).blocked), [true, true, false]);
+  assert.deepEqual(["US-1", "US-2"].map((key) => dirs.story(key).decisions.length), [1, 1]);
+  assert.deepEqual(dirs.story("US-3").decisions, [
+    asked("Which red?", "q-3"),
+    { question: "US-3: Which size?", choice: "Small", by: "human" },
+    { question: "Which red?", choice: "#f00", by: "human" },
+  ]);
+});
+
+test("unblock-pass does not record again an answer that is already a decision of the task", (t) => {
+  const earlier = { question: "Which red?", choice: "#c00", by: "human" };
+  const dirs = scratch(t, [story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), earlier] })], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual(body.unblocked, ["US-1"]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), earlier]);
+});
+
 // ---- worktrees and waits ------------------------------------------------------------
 
 test("a new story worktree is cut from the tip of deliver/<slug>, not the checkout's HEAD, on the branch story/<key>", (t) => {
