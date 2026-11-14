@@ -487,6 +487,30 @@ const steps = async (list, { key, past = false, opId, phase } = {}) => {
   return batch.results
 }
 
+// ---- the design ------------------------------------------------------------
+// A task points at a board with a link to a design doc: context gives them as
+// boards. The feature's boards are exported once per run, by design-export,
+// before the first implementer or verifier of a task that has boards. An
+// export that fails stops no task: the run notes it once, the prompts name
+// only omni design read, and the verifier compares from the tags.
+let design = null
+const designFor = (ctx) => {
+  if (!ctx.boards || !ctx.boards.length) return null
+  if (!design) {
+    design = step('design-export', {}).then((b) => ({ dir: b.dir }), (e) => {
+      if (e && e.atCap) {
+        design = null
+        throw e
+      }
+      const why = String((e && e.message) || e).replace(/^courier:design-export: (design-export failed: )?/, '').replace(/^the design could not be exported: /, '')
+      notes.push(`The design could not be exported: ${why}`)
+      log(`The design could not be exported: ${why}; the prompts name omni design read instead`)
+      return { failed: why }
+    })
+  }
+  return design
+}
+
 // ---- prompts ---------------------------------------------------------------
 // An omni command as an agent runs it, as this run and in the feature. The
 // project needs no naming: omni finds the link of the main worktree from any
@@ -782,12 +806,54 @@ const VERIFY_SCHEMA = {
         },
       },
     },
+    boards: {
+      type: 'array',
+      description: 'One entry per board the story links, by its board ID',
+      items: {
+        type: 'object',
+        required: ['board', 'compared', 'reason', 'differences'],
+        properties: {
+          board: { type: 'string', description: 'The board ID' },
+          compared: { type: 'boolean', description: 'true once you compared the built screen with the board' },
+          reason: { type: 'string', description: 'With compared false: why you could not compare it. Empty otherwise' },
+          differences: {
+            type: 'array',
+            description: 'Every difference between the built screen and the board, by the rule. Empty when there is none',
+            items: {
+              type: 'object',
+              required: ['kind', 'what'],
+              properties: {
+                kind: { type: 'string', enum: ['missing_part', 'extra_part', 'order_or_place', 'text', 'missing_state', 'colour', 'type_style'] },
+                what: { type: 'string', description: 'What differs and where: what the board has, and what the screen has' },
+              },
+            },
+          },
+        },
+      },
+    },
   },
 }
+// A task with boards must report on them; one without has no design section.
+const verifySchema = (ctx) => (ctx.boards && ctx.boards.length ? { ...VERIFY_SCHEMA, required: [...VERIFY_SCHEMA.required, 'boards'] } : VERIFY_SCHEMA)
+// The kinds of a difference from a board, in words.
+const KINDS = { missing_part: 'a part missing', extra_part: 'a part extra', order_or_place: 'another order or place', text: 'other text', missing_state: 'a missing state', colour: 'a colour that is not the board\'s', type_style: 'a type style that is not the board\'s' }
+// A task's boards, each by its doc ID and board ID with the command that
+// prints its tags, and, unless the export failed, where its image is: the
+// script never builds a board's file path, the export's manifest gives it.
+const boardLines = (ctx, role) => ctx.boards.map((x) => `- the board ${x.board} of the design doc ${x.doc}: \`${omniAs(role)} design read --doc ${x.doc} --board ${x.board}\` prints its tags`).join('\n')
+const boardImages = (design) => `The run exported the feature's boards to ${design.dir}. In ${design.dir}/manifest.json, the entry of files with a board's doc ID as doc_id and its board ID as board_id has path, the board's tags file relative to ${design.dir}. The board's image is the file of the same name ending .png, beside it: open it with the Read tool. A board without such an image is compared from its tags.`
+const designSection = (ctx, design) => (ctx.boards && ctx.boards.length ? `
+## The design
+The story links ${plural(ctx.boards.length, 'board', 'boards')} of the feature's design. Compare the built screen with each one:
+${boardLines(ctx, 'verify')}
+${design && !design.failed ? boardImages(design) : 'The design could not be exported in this run, so there is no image of a board: compare each one from its tags.'} A value such as $color.brand in the tags is a token of the design system: \`${omniAs('verify')} tokens export\` prints the values of the tokens.
+
+Open the built screen in ${laneDir}, in each state the boards show, and compare it with each board. A difference is a part missing (missing_part) or extra (extra_part), parts in another order or place (order_or_place), other text (text), a state the boards show missing (missing_state), or a colour (colour) or type style (type_style) that is not the board's. Small differences in size and position are fine: they are no difference. Return in boards one entry per board, by its board ID: compared true once you compared it, with every difference by its kind and what differs; compared false, with the reason, when you could not compare it.
+` : '')
 // The project's commands a criterion about one is checked by; those unset
 // are left out.
 const commandsOf = () => ['fast', 'stack', 'lint'].filter((name) => checks[name]).map((name) => `${name} is \`${checks[name]}\``)
-const verifyPrompt = (ctx, file) => `You check ONE story of the feature "${feature}" by running it. ${READ_ONLY}
+const verifyPrompt = (ctx, file, design) => `You check ONE story of the feature "${feature}" by running it. ${READ_ONLY}
 
 ## Where
 The lane worktree ${laneDir} holds story/${ctx.key} rebased onto ${branch}, on a detached HEAD, and the story's checks passed there${checks.stack_up ? `; the stack is up, as \`${checks.stack_up}\` started it from there. Exercise the story against that stack, not another copy on the machine` : ''}. Work only there: cd into it first, and run every command there. ${LANE_HEAD}
@@ -802,7 +868,7 @@ ${BOARD}
 - The stack has no users until the seed runs${checks.seed ? `. For a credential, run the seed command as \`OMNI_STORY=${ctx.key} OMNI_RUN=${runId} sh -c ${quote(checks.seed)}\` in ${laneDir}: it prints what to sign in with` : ', and this run has no seed command'}. Never write into the stack's database yourself.
 ${commandsOf().length ? `- A criterion about a command is checked by running that command: ${commandsOf().join(', ')}.\n` : ''}- A criterion with human_check true: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
 - ok false only for a criterion the behaviour does not meet. Say what is wrong and where.
-
+${designSection(ctx, design)}
 ${criteriaSection(ctx)}
 
 ${resultFile(file)}
@@ -1468,6 +1534,8 @@ const implement = async (key, rework, claimed) => {
     claimed()
   }
   if (ctx.attempt >= MAX_ATTEMPTS) return park(key)
+  // The design is exported before the first agent that builds to it.
+  await designFor(ctx)
   if (wt.reason) log(`${key}: ${wt.reason}`)
   const found = [...new Set([foundAt.get(key), wt.reason].filter(Boolean))].join('\n')
   foundAt.delete(key)
@@ -1823,6 +1891,21 @@ const conflicts = new Map()
 // as a failed review does, and puts the lane back at the tip, with the stack
 // reset and rebuilt there when it holds the story's build. The story's tests
 // are written once it has landed, outside this turn (writeTests).
+// The boards of a task the verifier that landed it did not compare, with the
+// distinct reasons, or null when it compared them all.
+const uncompared = []
+const uncomparedOf = (ctx, v) => {
+  const boards = []
+  const reasons = []
+  for (const x of ctx.boards || []) {
+    const entry = (Array.isArray(v.boards) ? v.boards : []).find((y) => y && y.board === x.board)
+    if (entry && entry.compared === true) continue
+    boards.push(x.board)
+    const why = !entry ? 'the verifier did not report on this board' : String(entry.reason || '').trim() || 'the verifier gave no reason'
+    if (!reasons.includes(why)) reasons.push(why)
+  }
+  return boards.length ? { boards, reason: reasons.join('; ').slice(0, 300) } : null
+}
 const laneStory = async (key) => {
   if (laneStopped) return { key, outcome: 'reviewed', detail: 'the lane stopped earlier in this run, so the story waits in reviewed for the next run' }
   // The claim, the rebase into the lane and the story's context, for the
@@ -1898,7 +1981,8 @@ const laneStory = async (key) => {
       return fail([{ text: `The ${name} check (\`${checks[name]}\`) ${failedHow(run)}. It passes on ${branch} without the story.`, files: [], job: run.id }], `its ${name} check, which passes on ${branch} without it`)
     }
 
-    const v = await persist(key, 'the verifier', () => act('verify', (file) => verifyPrompt(ctx, file), { label: `verify:${key}`, phase: 'Lane', schema: VERIFY_SCHEMA }))
+    const design = await designFor(ctx)
+    const v = await persist(key, 'the verifier', () => act('verify', (file) => verifyPrompt(ctx, file, design), { label: `verify:${key}`, phase: 'Lane', schema: verifySchema(ctx) }))
     if (!v) {
       await toTip()
       return noResult(key, `the verifier returned nothing, ${AGAIN_AFTER.length + 1} times`)
@@ -1911,7 +1995,17 @@ const laneStory = async (key) => {
     for (const [pos, c] of (v.criteria || []).entries()) if (c && Number.isInteger(c.index) && !ran.has(c.index)) ran.set(c.index, pos)
     const evidence = (pos) => part(v, ['criteria', pos, 'evidence'], String(v.criteria[pos].evidence ?? ''))
     const unmet = range(ctx.criteria).flatMap((i) => (owed.has(i) || (ran.has(i) && v.criteria[ran.get(i)].ok === true) ? [] : [{ text: words('Criterion not met when run: ', ...named(i, v, ran.get(i)), '. ', ran.has(i) ? evidence(ran.get(i)) : 'The verifier did not exercise it.'), files: [] }]))
-    if (unmet.length) return fail(unmet, `its verification with ${unmet.length} criteri${unmet.length === 1 ? 'on' : 'a'} not met`)
+    // Every difference from a board is a finding, whatever its entry says of
+    // compared, and uses the same try as the criteria not met.
+    const entries = ctx.boards && ctx.boards.length && Array.isArray(v.boards) ? v.boards : []
+    const differs = entries.flatMap((x, i) => (x && Array.isArray(x.differences) ? x.differences : []).flatMap((d, j) => (d ? [{
+      text: words('Differs from the board ', part(v, ['boards', i, 'board'], String(x.board ?? '')), ': ', KINDS[d.kind] || part(v, ['boards', i, 'differences', j, 'kind'], 'a difference'), ': ', part(v, ['boards', i, 'differences', j, 'what'], String(d.what ?? ''))),
+      files: [],
+    }] : [])))
+    if (unmet.length || differs.length) {
+      const what = [...(unmet.length ? [`${unmet.length} criteri${unmet.length === 1 ? 'on' : 'a'} not met`] : []), ...(differs.length ? [plural(differs.length, 'difference', 'differences') + ' from the boards'] : [])].join(' and ')
+      return fail([...unmet, ...differs], `its verification with ${what}`)
+    }
 
     // The story lands as its checks and its verifier found it: lane-clean
     // for what the verifier left, and lane-land, in one call. A lane that
@@ -1926,6 +2020,8 @@ const laneStory = async (key) => {
     if (!landed.landed) return fail([{ text: `It did not land: ${landed.reason}`, files: [] }], `its landing: ${landed.reason}`)
     tip = landed.final
     log(`${key}: landed on ${branch} at ${tip.slice(0, 7)}`)
+    const missed = uncomparedOf(ctx, v)
+    if (missed) uncompared.push({ key, ...missed })
     // Its tests are written from here on, outside the lane's lock: the story
     // is done, and the lane is free for the next one.
     queueTests(key, { base, final: landed.final, confirmed: range(ctx.criteria).filter((i) => !owed.has(i)) })
@@ -2136,6 +2232,7 @@ const finish = async (journeyLines) => {
     outcomes: outcomes.map((o) => ({ key: o.key, outcome: o.outcome, ...(o.detail ? { detail: o.detail } : {}) })),
     council: tally,
     ...(journeyLines ? { journeys: journeyLines } : {}),
+    ...(uncompared.length ? { uncompared } : {}),
     notes,
   }
   // A journeys check whose file the helper cannot take has its journeys

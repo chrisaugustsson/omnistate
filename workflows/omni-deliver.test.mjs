@@ -2168,6 +2168,69 @@ test("the verifier's prompt leaves out the seed and lint commands when the check
   assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1")], [[{ key: "US-1", outcome: "done" }], []]);
 });
 
+// ---- the design boards --------------------------------------------------------------
+
+// A feature with one design doc of two boards, b1 and b2, and a linked folder.
+const designed = (extra = {}) => ({
+  link: { path: "/work/app", matched: "/work/app", workspace_id: "w-1", project_id: "p-1" },
+  docList: [{ id: "0190aaaa-d1d1d1d1", kind: "design", pillar: "ui", title: "Screens" }],
+  boards: [{ doc: "0190aaaa-d1d1d1d1", board: "b1", name: "List" }, { doc: "0190aaaa-d1d1d1d1", board: "b2", name: "Empty" }],
+  ...extra,
+});
+const boardLinks = (...boards) => boards.map((b) => ({ doc_id: "0190aaaa-d1d1d1d1", node_id: b, label: "" }));
+// A verifier that met every criterion, with these entries for the boards.
+const compared = (boards) => (call, serial, dirs) => ({ ...verified()(call, serial, dirs), boards });
+
+test("a difference from a board sends the task back with every criterion met: each is a testing finding naming the board and the kind in words, a try is used, and the next try lands; the design is exported once in the run, before the first implementer", { timeout: 120000 }, async (t) => {
+  const criteria = [{ text: "The list shows", human_check: false }];
+  const dirs = scratch(t, [story("US-1", { criteria, links: boardLinks("b1") }), story("US-2", { criteria, links: boardLinks("b2"), blocked_by: ["US-1"] })], [], designed());
+  const differs = [{ board: "b1", compared: true, reason: "", differences: [{ kind: "text", what: "The title reads Items, the board says List" }, { kind: "colour", what: "The button is grey" }] }];
+  const roles = { "verify:US-1": [compared(differs), compared([{ board: "b1", compared: true, reason: "", differences: [] }])] };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(findingsOf(dirs, "US-1"), [
+    ["testing", "[attempt 1] Differs from the board b1: other text: The title reads Items, the board says List", [], true],
+    ["testing", "[attempt 1] Differs from the board b1: a colour that is not the board's: The button is grey", [], true],
+  ]);
+  assert.deepEqual([agentsOf(calls, "impl:US-1").length, dirs.story("US-1").status, result.landed], [2, "done", ["US-1", "US-2"]]);
+  assert.equal(stepsNamed(calls, "design-export").length, 1);
+  const order = calls.map((c) => c.label);
+  assert.ok(order.indexOf("courier:design-export") < order.indexOf("impl:US-1"), order.join(" "));
+  const [verify] = agentsOf(calls, "verify:US-1");
+  assert.deepEqual(verify.schema.required, ["criteria", "boards"]);
+});
+
+test("a board the verifier did not compare, or gave no entry for, lands the task with every criterion met and no difference, and the report's uncompared names the task, the boards and the distinct reasons; a task without boards gets a verifier whose schema does not require them, lands on its criteria and is not in uncompared", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { links: boardLinks("b1", "b2") }), story("US-2", { blocked_by: ["US-1"] })], [], designed());
+  const roles = { "verify:US-1": [compared([{ board: "b1", compared: false, reason: "The page did not open", differences: [] }])] };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(result.landed, ["US-1", "US-2"]);
+  const [finish] = agentsOf(calls, "courier:finish");
+  assert.deepEqual(filledOf(finish).report.uncompared, [{ key: "US-1", boards: ["b1", "b2"], reason: "The page did not open; the verifier did not report on this board" }]);
+  const [verify] = agentsOf(calls, "verify:US-2");
+  assert.deepEqual(verify.schema.required, ["criteria"]);
+});
+
+test("a design export that fails stops no task: the run notes it once, and the tasks with boards land on their verifiers", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { links: boardLinks("b1") }), story("US-2", { links: boardLinks("b2") })], [], designed({ link: undefined }));
+  const roles = {
+    "verify:US-1": [compared([{ board: "b1", compared: true, reason: "", differences: [] }])],
+    "verify:US-2": [compared([{ board: "b2", compared: true, reason: "", differences: [] }])],
+  };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual([...result.landed].sort(), ["US-1", "US-2"]);
+  assert.deepEqual(result.notes.filter((n) => n.startsWith("The design could not be exported")), ["The design could not be exported: this folder is not linked to a project: run omni link <project name|id> here, or pass --project"]);
+  assert.equal(stepsNamed(calls, "design-export").length, 1);
+});
+
 test("no prompt needs a skill this machine may lack: the verifier opens a page with a browser tool if one is available, and the test author's policy carries the rules of writing tests itself, naming the writing-tests skill as optional", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
 
