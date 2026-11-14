@@ -436,15 +436,15 @@ test("a courier is a haiku agent at low effort with the schema {exitCode, output
 
   assert.equal(error, null);
   const couriers = couriersOf(calls);
-  assert.deepEqual(couriers.map((c) => c.label), ["courier:start", "courier:unblock-pass+clarity-pending", "courier:list", "courier:finish"]);
+  assert.deepEqual(couriers.map((c) => c.label), ["courier:start", "courier:unblock-pass+retry-pass+clarity-pending", "courier:list", "courier:finish"]);
   for (const c of couriers) {
     assert.deepEqual([c.model, c.effort, c.agentType, c.schema.required], ["haiku", "low", "omni-courier", ["exitCode", "output"]]);
     assert.match(c.prompt, /\. Run the helper\. Use the Bash tool, with its timeout set to 600000, to run this command exactly as written, once:\n/);
   }
   const startHash = fnv1a(JSON.stringify({ opId: "start-1", feature: "Bob's board", force: true }));
   assert.deepEqual([fileIn(couriers[0].prompt), commandIn(couriers[0].prompt)], [null, `node ${helper} start --op start-1 --feature 'Bob'\\''s board' --force --hash ${startHash}`]);
-  const file = join(dirs.repo, ".omni", "runs", result.run, "in", "unblock-pass-clarity-pending-1.json");
-  const payload = JSON.stringify({ opId: "unblock-pass-clarity-pending-1", steps: [{ name: "unblock-pass", fields: {} }, { name: "clarity-pending", fields: {} }] });
+  const file = join(dirs.repo, ".omni", "runs", result.run, "in", "unblock-pass-retry-pass-clarity-pending-1.json");
+  const payload = JSON.stringify({ opId: "unblock-pass-retry-pass-clarity-pending-1", steps: [{ name: "unblock-pass", fields: {} }, { name: "retry-pass", fields: {} }, { name: "clarity-pending", fields: {} }] });
   assert.deepEqual([fileIn(couriers[1].prompt), payloadIn(couriers[1].prompt), commandIn(couriers[1].prompt)], [file, payload, `node ${helper} batch --run ${result.run} --payload ${file} --hash ${fnv1a(payload)}`]);
   const list = join(dirs.repo, ".omni", "runs", result.run, "in", "list-1.json");
   assert.deepEqual([fileIn(couriers[2].prompt), payloadIn(couriers[2].prompt), commandIn(couriers[2].prompt)], [list, '{"opId":"list-1"}', `node ${helper} list --run ${result.run} --payload ${list} --hash ${fnv1a('{"opId":"list-1"}')}`]);
@@ -1177,7 +1177,7 @@ test("a story version the old runner kept in the clarity cache is not a clarity 
   }
 });
 
-test("from attempt 2 the implementer runs on implRetry, in the same worktree; it reads the story with omni story read as this run's impl, and its prompt counts the open findings by kind, those since the human's latest answer, those that used no attempt and those before it, never quoting one", { timeout: 60000 }, async (t) => {
+test("from attempt 2 the implementer runs on implRetry, in the same worktree; it reads the story with omni story read as this run's impl, and its prompt counts the open findings by kind, those of this round, those that used no attempt and those of an earlier round, never quoting one", { timeout: 60000 }, async (t) => {
   const answered = { stage: "testing", text: "[attempt 1] The badge was blue", files: [], resolved: true };
   const conflict = { stage: "testing", text: "rebase conflict in README: rebase it onto deliver/board", files: ["README"], resolved: false };
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }], findings: [answered, conflict] })]);
@@ -1191,12 +1191,12 @@ test("from attempt 2 the implementer runs on implRetry, in the same worktree; it
   assert.deepEqual(impls.map((c) => c.model), ["sonnet", "opus", "opus"]);
   assert.deepEqual(impls.map((c) => worktreeIn(c.prompt)), [1, 2, 3].map(() => dirs.worktree("US-1")));
   assert.deepEqual(impls.map((c) => lineAfter(c.prompt, "## Your task now\n")), [
-    "This is attempt 1 of 3 since the human's latest answer. Implement the story: build what its criteria require, commit it, and return the result.",
-    "This is attempt 2 of 3 since the human's latest answer. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every open finding of the story.",
-    "This is attempt 3 of 3 since the human's latest answer. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every open finding of the story.",
+    "This is attempt 1 of 3 of this round. Implement the story: build what its criteria require, commit it, and return the result.",
+    "This is attempt 2 of 3 of this round. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every open finding of the story.",
+    "This is attempt 3 of 3 of this round. A worktree of an earlier attempt is in place, with its commits and what it left uncommitted: continue from it, do not start over, and fix every open finding of the story.",
   ]);
-  const counts = (open) => `The story has ${open} of earlier attempts, 1 open finding that used no attempt, and 1 finding from before the human's latest answer. Fix every open one.`;
-  assert.deepEqual(impls.map((c) => c.prompt.split("[attempt N] failed before the human's latest answer, and says what failed before it. ")[1].split("\n")[0]), [counts("0 open findings"), counts("1 open finding"), counts("2 open findings")]);
+  const counts = (open) => `The story has ${open} of earlier attempts, 1 open finding that used no attempt, and 1 finding from an earlier round. Fix every open one.`;
+  assert.deepEqual(impls.map((c) => c.prompt.split("[attempt N] is from an earlier round, and says what failed then. ")[1].split("\n")[0]), [counts("0 open findings"), counts("1 open finding"), counts("2 open findings")]);
   for (const c of impls) {
     assert.ok(c.prompt.includes(`\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=impl OMNI_FEATURE='board' omni story read US-1 --json\`.`), c.prompt);
     assert.doesNotMatch(c.prompt, /pink|border|README|was blue|The badge is red/);
@@ -1204,9 +1204,8 @@ test("from attempt 2 the implementer runs on implRetry, in the same worktree; it
   assert.deepEqual(findingsOf(dirs, "US-1").slice(2, 4), [["review", "[attempt 1] The badge is pink", ["src/badge.rs"], true], ["review", "[attempt 2] The badge has no border", ["src/border.rs"], true]]);
 });
 
-test("after 3 failed tries the task is parked: back in the backlog, not blocked, with no holder, its [attempt 3] findings open and no thread; a task that comes with 3 failed tries is parked without an implementer, and the build goes on", { timeout: 60000 }, async (t) => {
-  const open = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still pink`, files: [], resolved: false }));
-  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-2", { findings: open }), story("US-3")]);
+test("after 3 failed tries the task is parked: back in the backlog, not blocked, with no holder, its [attempt 3] findings open and no thread, and the build goes on", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-3")]);
   const unmet = (evidence) => reviewed("fail", { unmet: { 0: evidence } });
   const roles = { "review:US-1": [unmet("Pink at src/badge.rs:1"), unmet("Still pink at src/badge.rs:1"), unmet("Pink again at src/badge.rs:2")] };
 
@@ -1217,10 +1216,29 @@ test("after 3 failed tries the task is parked: back in the backlog, not blocked,
   const parked = dirs.story("US-1");
   assert.deepEqual([parked.status, parked.blocked, parked.holder], ["backlog", false, null]);
   assert.deepEqual(findingsOf(dirs, "US-1").slice(-1), [["review", '[attempt 3] Criterion not met: "The badge is red". Pink again at src/badge.rs:2', [], false]]);
-  assert.equal(agentsOf(calls, "impl:US-2").length, 0);
-  assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").blocked], ["backlog", false]);
   assert.deepEqual(questions(dirs), []);
-  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.detail]).sort(), [["US-1", "parked", "failed 3 tries"], ["US-2", "parked", "failed 3 tries"], ["US-3", "done", undefined]]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.detail]).sort(), [["US-1", "parked", "failed 3 tries"], ["US-3", "done", undefined]]);
+});
+
+test("the next run takes up a parked task: it resolves the task's open findings, logs it, and claims it as a new round, at attempt 0 in a new worktree, its implementer on impl's model, told attempt 1 of 3 of this round and that resolved [attempt N] findings are from an earlier round; no prompt speaks of the human's latest answer", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
+  const unmet = reviewed("fail", { unmet: { 0: "Pink at src/badge.rs:1" } });
+  const first = await deliver(dirs, {}, { "review:US-1": [unmet, unmet, unmet] });
+  assert.deepEqual(first.result.outcomes.map((o) => o.outcome), ["parked"]);
+
+  const { result, error, calls, logs } = await deliver(dirs);
+
+  assert.equal(error, null);
+  assert.ok(logs.includes("Parked tasks tried again: US-1"), logs.join("\n"));
+  assert.deepEqual(first.logs.filter((l) => l.startsWith("Parked tasks tried again")), []);
+  const [, ctx, wt] = JSON.parse(couriersOf(calls).find((c) => c.label.startsWith("courier:claim+context+worktree:US-1")).output.trim().split("\n").pop()).body.results;
+  assert.deepEqual([ctx.attempt, wt.created], [0, true]);
+  const [impl] = agentsOf(calls, "impl:US-1");
+  assert.equal(impl.model, "sonnet");
+  assert.equal(lineAfter(impl.prompt, "## Your task now\n"), "This is attempt 1 of 3 of this round. Implement the story: build what its criteria require, commit it, and return the result.");
+  assert.ok(impl.prompt.includes("A resolved one whose text starts with [attempt N] is from an earlier round, and says what failed then. The story has 0 open findings of earlier attempts, 0 open findings that used no attempt, and 3 findings from an earlier round."), impl.prompt);
+  assert.deepEqual([...first.calls, ...calls].filter((c) => /since the human's latest answer/.test(c.prompt)).map((c) => c.label), []);
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
 test("no courier carries story content: however long a story's text, criteria, decisions and findings, no prompt quotes them and every courier's answer stays within 2,000 characters; every agent is told how to read the story itself", { timeout: 120000 }, async (t) => {
@@ -1246,7 +1264,7 @@ test("no courier carries story content: however long a story's text, criteria, d
   const outputs = couriersOf(calls).map((c) => [c.label, String(c.output || "").length]);
   assert.deepEqual(outputs.filter(([, n]) => n > 2000), [], JSON.stringify([...outputs].sort((a, b) => b[1] - a[1]).slice(0, 3)));
   assert.doesNotMatch(couriersOf(calls).map((c) => c.output).join("\n"), /LONG/);
-  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "parked"]]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "done"]]);
 });
 
 // Every string in a payload, however deep.
@@ -2142,8 +2160,8 @@ test("a rebase conflict in lane-prepare sends the story back with no attempt use
     "claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done",
   ]);
   const impls = agentsOf(calls, "impl:US-1");
-  assert.deepEqual(impls.map((c) => [c.model, lineAfter(c.prompt, "## Your task now\n").startsWith("This is attempt 1 of 3 since ")]), [["sonnet", true], ["sonnet", true]]);
-  assert.ok(impls[1].prompt.includes("The story has 0 open findings of earlier attempts, 1 open finding that used no attempt, and 0 findings from before the human's latest answer. Fix every open one."), impls[1].prompt);
+  assert.deepEqual(impls.map((c) => [c.model, lineAfter(c.prompt, "## Your task now\n").startsWith("This is attempt 1 of 3 of this round. ")]), [["sonnet", true], ["sonnet", true]]);
+  assert.ok(impls[1].prompt.includes("The story has 0 open findings of earlier attempts, 1 open finding that used no attempt, and 0 findings from an earlier round. Fix every open one."), impls[1].prompt);
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 

@@ -1418,6 +1418,40 @@ test("thread-open creates a thread on the feature with its body posted from a fi
   assert.equal(linked.key, "US-1");
 });
 
+// ---- retry-pass -----------------------------------------------------------------------
+
+test("retry-pass resolves every open finding of each task in the backlog, not blocked, with an open finding marked [attempt 3], and gives their keys; a blocked task, one out of the backlog, one short of 3 tries and one whose [attempt 3] is resolved keep theirs; a repeat gives the same keys", (t) => {
+  const tries = (n, resolved = false) => ({ stage: "review", text: `[attempt ${n}] Still blue`, files: [], resolved });
+  const conflict = { stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: false };
+  const parked = [tries(1, true), tries(1), tries(2), tries(3), conflict];
+  const dirs = scratch(t, [
+    story("US-1", { findings: parked }),
+    story("US-2", { blocked: true, findings: parked }),
+    story("US-3", { status: "implemented", findings: parked }),
+    story("US-4", { findings: [tries(1), tries(2)] }),
+    story("US-5", { findings: [tries(3, true), tries(1)] }),
+    story("US-6", { findings: [tries(1), tries(2), tries(3)] }),
+  ]);
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "retry-pass", { opId: "retry-pass-1" });
+  const again = step(dirs, run, "retry-pass", { opId: "retry-pass-1" });
+
+  assert.deepEqual(body.retried, ["US-1", "US-6"]);
+  assert.deepEqual(pick(again), pick(body));
+  const resolved = (key) => dirs.story(key).findings.map((f) => f.resolved);
+  assert.deepEqual(["US-1", "US-2", "US-3", "US-4", "US-5", "US-6"].map(resolved), [
+    [true, true, true, true, true],
+    [true, false, false, false, false],
+    [true, false, false, false, false],
+    [false, false],
+    [true, false],
+    [true, true, true],
+  ]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => [dirs.story(key).status, dirs.story(key).blocked]), [["backlog", false], ["backlog", true], ["implemented", false]]);
+  assert.equal(step(dirs, run, "context", { key: "US-1" }).attempt, 0);
+});
+
 // ---- unblock-pass ---------------------------------------------------------------------
 
 test("unblock-pass records a concluded thread's conclusion as a human decision with the thread's question, unblocks the story, and gives its key", (t) => {
