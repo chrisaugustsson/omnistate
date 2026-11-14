@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fnv1a, TEST_OBLIGATION, testQuestion, waitSeconds, WRITE_BACK, writeBackQuestion } from "./deliver-step.mjs";
+import { fnv1a, prBody, TEST_OBLIGATION, testQuestion, waitSeconds, WRITE_BACK, writeBackQuestion } from "./deliver-step.mjs";
 
 const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
 const fakeOmni = fileURLToPath(new URL("./fixtures/fake-omni.mjs", import.meta.url));
@@ -3240,7 +3240,7 @@ test("finish stops the run's jobs that still run, posts the report on the run's 
 
   const body = step(dirs, run, "finish", { report });
 
-  assert.deepEqual(pick(body), { ok: true, thread: runThread, posted: true, report: runFile(dirs, run, "report.md"), stopped: [stack.id] });
+  assert.deepEqual(pick(body), { ok: true, thread: runThread, posted: true, report: runFile(dirs, run, "report.md"), stopped: [stack.id], pr: null, pushed: false, why: "the checkout has no remote" });
   assert.ok(await eventually(() => gone(-pgid)), "the running job was stopped");
   assert.equal(existsSync(dirs.lock), false);
   const posts = dirs.state().threads.find((th) => th.id === runThread).posts;
@@ -3250,6 +3250,7 @@ test("finish stops the run's jobs that still run, posts the report on the run's 
   assert.equal(existsSync(post.argv[post.argv.indexOf("--body-file") + 1]), false, "the body file is gone once posted");
   const [top, timings] = text.split("## Timings\n");
   assert.equal(top, `# board: build report of ${run}
+No pull request: the checkout has no remote. The work is on the branch deliver/board.
 
 The lane stopped once: the stack did not start.
 
@@ -3386,7 +3387,7 @@ test("a finish whose post failed keeps the report as report.md, gives the lock u
 
   assert.deepEqual([failed.ok, failed.posted, failed.retry, failed.report, lockAfter], [false, false, true, runFile(dirs, run, "report.md"), false]);
   assert.match(failed.error, /^the report could not be posted: /);
-  assert.deepEqual(pick(again), { ok: true, thread: runThread, posted: true, report: failed.report, stopped: [] });
+  assert.deepEqual(pick(again), { ok: true, thread: runThread, posted: true, report: failed.report, stopped: [], pr: null, pushed: false, why: "the checkout has no remote" });
   assert.deepEqual(dirs.state().threads.find((th) => th.id === runThread).posts.map((p) => [p.summary, p.body]), [[`Report of ${run}`, readFileSync(failed.report, "utf8")]]);
   assert.equal(existsSync(dirs.lock), false);
 });
@@ -3423,6 +3424,131 @@ test("the report's timings sort the job columns by name, show a time under a sec
   const timings = readFileSync(body.report, "utf8").split("## Timings\n")[1];
   const time = String.raw`(?:<1s|\d+s)`;
   assert.match(timings, new RegExp(String.raw`^The run took ${time}\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| alpha \| zeta \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| ${time} \| - \| - \| [1-9]\d*s \| <1s \| - \| <1s \|\n\| US-2 \| ${time} \| - \| - \| - \| - \| <1s \| - \|\n\nA time with \(n\) after it adds up n of them: claims of the stage, rebases, or runs of the job\.\n$`), timings);
+});
+
+// ---- the pull request -------------------------------------------------------------------
+
+const fakeGh = fileURLToPath(new URL("./fixtures/fake-gh.mjs", import.meta.url));
+// The fake gh first on PATH, its state in the scratch folder; `script` puts
+// shell lines before it hands over to the fake.
+function withGh(dirs, state = null, script = "") {
+  const statePath = join(dirs.root, "gh-state.json");
+  if (state) writeFileSync(statePath, JSON.stringify({ prs: [], calls: [], fail: null, ...state }));
+  writeFileSync(join(dirs.root, "bin", "gh"), `#!/bin/sh\n${script}exec "${process.execPath}" "${fakeGh}" "$@"\n`);
+  chmodSync(join(dirs.root, "bin", "gh"), 0o755);
+  dirs.env.FAKE_GH_STATE = statePath;
+  const read = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : { prs: [], calls: [] });
+  return { read, calls: () => read().calls.map((c) => c.argv) };
+}
+// A bare repository in the scratch folder as the checkout's remote, with main pushed to it.
+function withRemote(dirs, name = "origin") {
+  const bare = join(dirs.root, `${name}.git`);
+  git(dirs.root, "init", "-q", "--bare", bare);
+  git(dirs.repo, "remote", "add", name, bare);
+  git(dirs.repo, "push", "-q", name, "main");
+  return { bare, at: (ref) => (spawnSync("git", ["-C", bare, "rev-parse", "--verify", "--quiet", ref], { encoding: "utf8" }).stdout || "").trim() };
+}
+const secondLine = (file) => readFileSync(file, "utf8").split("\n")[1];
+
+test("finish pushes deliver/<slug> to the remote of the base branch and opens one pull request into the base, titled with the feature, whose body is the report without its second line, which names the pull request on the Run thread and in report.md", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs, "upstream");
+  git(dirs.repo, "config", "branch.main.remote", "upstream");
+  const gh = withGh(dirs);
+  const { run, thread: runThread } = start(dirs);
+  const tip = landOn(dirs, "deliver/board", "badge.rs");
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.deepEqual([body.ok, body.pr, body.pushed, body.why], [true, { url: "https://example.com/pr/1", created: true }, true, null]);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  const text = readFileSync(body.report, "utf8");
+  const [title, second, ...rest] = text.split("\n");
+  assert.equal(second, "Pull request: https://example.com/pr/1");
+  const [pr] = gh.read().prs;
+  assert.deepEqual([pr.head, pr.base, pr.title, pr.body], ["deliver/board", "main", "board", [title, ...rest].join("\n")]);
+  assert.deepEqual(gh.calls().map((argv) => argv.slice(0, -1)), [["pr", "list", "--head", "deliver/board", "--state", "open", "--json"], ["pr", "create", "--base", "main", "--head", "deliver/board", "--title", "board", "--body-file"]]);
+  assert.equal(dirs.state().threads.find((th) => th.id === runThread).posts[0].body, text);
+  assert.equal(existsSync(dirs.lock), false);
+});
+
+test("finish pushes nothing and opens no pull request, and the report's second line says why and names the branch, with the first reason that holds: no branch checked out, no remote, the base not on the remote, no gh, gh that cannot list pull requests, a branch with nothing the base lacks; a setup run that never opened the repository says the feature has no branch yet", (t) => {
+  const cases = [
+    ["the checkout has no branch checked out", (dirs) => { withRemote(dirs); withGh(dirs); git(dirs.repo, "checkout", "-q", "--detach"); }],
+    ["the checkout has no remote", (dirs) => { withGh(dirs); }],
+    ["main is not on origin", (dirs) => { withGh(dirs); git(dirs.repo, "remote", "add", "origin", join(dirs.root, "nowhere.git")); }],
+    ["the gh command is not installed", (dirs) => {
+      withRemote(dirs);
+      // Only omni and git on PATH.
+      symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(dirs.root, "bin", "git"));
+      dirs.env.PATH = join(dirs.root, "bin");
+    }],
+    ["gh cannot list pull requests on origin: HTTP 502: Bad Gateway", (dirs) => { withRemote(dirs); withGh(dirs, { fail: "\nHTTP 502: Bad Gateway\nmore" }); }],
+    ["deliver/board holds nothing that main lacks", (dirs) => { withRemote(dirs); withGh(dirs); }, false],
+  ];
+  for (const [why, prepare, ahead = true] of cases) {
+    const dirs = scratch(t, [story("US-1")]);
+    prepare(dirs);
+    const { run } = start(dirs);
+    if (ahead) landOn(dirs, "deliver/board", "badge.rs");
+
+    const body = step(dirs, run, "finish", { report: noReport });
+
+    assert.deepEqual([body.ok, body.pr, body.pushed, body.why], [true, null, false, why], why);
+    assert.equal(secondLine(body.report), `No pull request: ${why}. The work is on the branch deliver/board.`);
+    const ghState = join(dirs.root, "gh-state.json");
+    const created = existsSync(ghState) ? JSON.parse(readFileSync(ghState, "utf8")).calls.filter((c) => c.argv[1] === "create") : [];
+    assert.deepEqual(created, [], why);
+    const bare = join(dirs.root, "origin.git");
+    if (existsSync(bare)) assert.equal(spawnSync("git", ["-C", bare, "rev-parse", "--verify", "--quiet", "refs/heads/deliver/board"]).status, 1, why);
+  }
+  const { dirs, run } = setupRun(t);
+  const body = step(dirs, run, "finish", { report: noReport });
+  assert.deepEqual([body.pr, body.pushed, body.why, secondLine(body.report)], [null, false, "the feature has no branch yet", "No pull request: the feature has no branch yet."]);
+});
+
+test("a push or a gh pr create that fails does not stop finish: the report is posted with the error's first line as why the pull request is missing, and the lock is given up", (t) => {
+  const pushing = scratch(t, [story("US-1")]);
+  withRemote(pushing);
+  withGh(pushing);
+  const first = start(pushing);
+  landOn(pushing, "deliver/board", "badge.rs");
+  git(pushing.repo, "remote", "set-url", "origin", join(pushing.root, "gone.git"));
+
+  const failedPush = step(pushing, first.run, "finish", { report: noReport });
+
+  assert.deepEqual([failedPush.ok, failedPush.posted, failedPush.pr, failedPush.pushed], [true, true, null, false]);
+  assert.match(failedPush.why, /gone\.git/);
+  assert.equal(secondLine(failedPush.report), `No pull request: ${failedPush.why}. The work is on the branch deliver/board.`);
+  assert.equal(existsSync(pushing.lock), false);
+
+  const creating = scratch(t, [story("US-1")]);
+  const remote = withRemote(creating);
+  withGh(creating, null, 'if [ "$2" = create ]; then printf "\\nGraphQL: the head is not on the remote\\n" >&2; exit 1; fi\n');
+  const second = start(creating);
+  const tip = landOn(creating, "deliver/board", "badge.rs");
+
+  const failedCreate = step(creating, second.run, "finish", { report: noReport });
+
+  assert.deepEqual([failedCreate.ok, failedCreate.posted, failedCreate.pr, failedCreate.pushed, failedCreate.why], [true, true, null, true, "GraphQL: the head is not on the remote"]);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  assert.equal(secondLine(failedCreate.report), "No pull request: GraphQL: the head is not on the remote. The work is on the branch deliver/board.");
+  assert.equal(existsSync(creating.lock), false);
+});
+
+test("a pull request's body longer than 60,000 characters goes without its Timings; still longer, it is cut so that it and a last line naming the Run thread are 60,000 characters at most, and that line comes only when text was cut", () => {
+  const timings = `\n\n## Timings\n${"t".repeat(5000)}\n`;
+  const fits = `# f: build report of r\n\n${"a".repeat(58000)}${timings}`;
+  const without = `# f: build report of r\n\n${"a".repeat(58000)}\n`;
+  const long = `# f: build report of r\n\n${"a".repeat(70000)}${timings}`;
+
+  assert.equal(prBody(without, "r"), without);
+  assert.equal(prBody(fits, "r"), without);
+  const cutOne = prBody(long, "r");
+  assert.ok(cutOne.length <= 60000, String(cutOne.length));
+  assert.ok(cutOne.endsWith("\n\nThe full report is on the Run thread of r in OmniState.\n"), cutOne.slice(-100));
+  assert.ok(cutOne.startsWith("# f: build report of r\n\naaa"));
+  assert.ok(!cutOne.includes("## Timings"));
 });
 
 // ---- the size of what a courier carries back ----------------------------------------------

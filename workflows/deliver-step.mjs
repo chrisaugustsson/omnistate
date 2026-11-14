@@ -188,7 +188,11 @@
 //   the tests in them
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
 //   majority, asked}, journeys?: [line], notes?: [line], uncompared?: [{key,
-//   boards, reason}]}}: thread, posted, report, stopped. The tasks that wait,
+//   boards, reason}]}}: thread, posted, report, stopped, pr ({url, created}
+//   or null), pushed and why (why there is no pull request, else null). It
+//   pushes deliver/<slug> to the remote of the base branch and opens the
+//   pull request into the base, with the report as its text, whose second
+//   line names it or says why there is none. The tasks that wait,
 //   failed or were not started, and the questions and threads they wait on,
 //   come from the board
 // Outputs stay small, since a courier repeats every byte: whatever a story
@@ -1184,6 +1188,78 @@ const reportText = (b, info, report) => {
   ].join('\n\n')}\n`
 }
 
+// ---- the pull request ------------------------------------------------------
+// finish is the only step that pushes: the feature's branch to the remote of
+// the base branch, the one checked out in the root, and one pull request from
+// it into the base, with the report as its text. It merges nothing.
+const PUSH_MS = 5 * 60000
+const PR_MAX = 60000
+// The first non-empty line a failed command printed on standard error, else
+// the first line of the error's message.
+const firstLine = (e) => {
+  const said = String((e && e.stderr) || '').split('\n').map((l) => l.trim()).find(Boolean)
+  return said || String((e && e.message) || e).split('\n')[0].trim()
+}
+// The pull request's body: the report, without its Timings when it is too
+// long, then cut, with a last line that says where the whole of it is.
+export const prBody = (text, runId) => {
+  if (text.length <= PR_MAX) return text
+  const short = `${text.split('\n\n## Timings\n')[0].replace(/\n*$/, '')}\n`
+  if (short.length <= PR_MAX) return short
+  const tail = `The full report is on the Run thread of ${runId} in OmniState.\n`
+  return `${short.slice(0, PR_MAX - tail.length - 2)}\n\n${tail}`
+}
+// Why there is no pull request to push for, the first reason that holds, or
+// the remote and base, with the open pull request when there is one. Only gh
+// pr list reaches the network: the other reasons come from local refs.
+const prPlan = (b, info) => {
+  if (!info.tip) return { why: 'the feature has no branch yet' }
+  const base = baseOf(b.root)
+  if (!base) return { why: 'the checkout has no branch checked out' }
+  const remote = (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim() || 'origin'
+  if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return { why: 'the checkout has no remote' }
+  if (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${base}`]) === null) return { why: `${base} is not on ${remote}` }
+  let open
+  try {
+    open = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'open', '--json', 'number,url'], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { why: 'the gh command is not installed' }
+    return { why: `gh cannot list pull requests on ${remote}: ${firstLine(e)}` }
+  }
+  const ahead = (tryRun('git', ['-C', b.root, 'rev-list', '--count', `refs/heads/${base}..refs/heads/${b.branch}`]) || '0').trim()
+  if (ahead === '0') return { why: `${b.branch} holds nothing that ${base} lacks` }
+  return { base, remote, open: Array.isArray(open) && open.length ? open[0] : null }
+}
+// Pushes the feature's branch and opens its pull request, or says why not:
+// {pr: {url, created} | null, pushed, why}. A failure is the answer's why,
+// never a throw.
+const pullRequest = (b, info, body) => {
+  let plan
+  try {
+    plan = prPlan(b, info)
+  } catch (e) {
+    return { pr: null, pushed: false, why: firstLine(e) }
+  }
+  if (plan.why) return { pr: null, pushed: false, why: plan.why }
+  const ref = `refs/heads/${b.branch}`
+  try {
+    run('git', ['-C', b.root, 'push', plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+  } catch (e) {
+    return { pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : firstLine(e) }
+  }
+  const file = path.join(runDirOf(b.root, b.runId), 'pull-request.md')
+  fs.writeFileSync(file, prBody(body, b.runId))
+  try {
+    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } })
+    const url = out.trim().split('\n').pop().trim()
+    return { pr: { url, created: true }, pushed: true, why: null }
+  } catch (e) {
+    return { pr: null, pushed: true, why: firstLine(e) }
+  }
+}
+// The report's second line: the pull request, or why there is none.
+const prLine = (b, { pr, why }) => (pr ? `Pull request: ${pr.url}` : why === 'the feature has no branch yet' ? `No pull request: ${why}.` : `No pull request: ${why}. The work is on the branch ${b.branch}.`)
+
 // A thread on the feature with one post, linked from the story and blocking
 // it when a key is given. A repeat uses the thread the first try opened, and
 // posts, links and blocks only what that try did not.
@@ -1951,7 +2027,9 @@ const STEPS = {
   'tests-drop': (b, p) => missing(p, 'key') || { key: p.key, removed: removeWorktree(b, p.key, true) },
 
   // Posts the run's report on its thread, from a body file, after stopping
-  // the run's jobs that still run, and gives the lock up. The report is also
+  // the run's jobs that still run and pushing for the pull request
+  // (pullRequest), and gives the lock up. The marker keeps what the push and
+  // the pull request gave, so that a repeat does neither again. The report is also
   // kept at .omni/runs/<run>/report.md, which is all there is of it when the
   // post fails: the run ends and gives its lock up all the same, as
   // omni-deliver.js does, and a repeat of this finish goes on without the
@@ -1962,7 +2040,16 @@ const STEPS = {
     if (!p.report || typeof p.report !== 'object' || Array.isArray(p.report)) return { ok: false, error: 'the payload needs report: {outcomes, council}' }
     try {
       const stopped = stopJobs(runningJobs(b.root, [b.runId])).map(({ job }) => job.id)
-      const text = reportText(b, info, p.report)
+      const body = reportText(b, info, p.report)
+      // The pull request first, so that the report on the Run thread names
+      // it; a repeat goes on with what the first try did.
+      let pull = marker && marker.pull
+      if (!pull) {
+        pull = pullRequest(b, info, body)
+        mark({ pull })
+      }
+      const [title, ...rest] = body.split('\n')
+      const text = [title, prLine(b, pull), ...rest].join('\n')
       const report = path.join(runDirOf(b.root, b.runId), 'report.md')
       fs.writeFileSync(report, text)
       const summary = `Report of ${b.runId}`
@@ -1970,11 +2057,11 @@ const STEPS = {
         try {
           b.post(info.thread, summary, text)
         } catch (e) {
-          return { ok: false, thread: info.thread || null, posted: false, report, stopped, error: `the report could not be posted: ${failure(e)}`, retry: retryable(e) }
+          return { ok: false, thread: info.thread || null, posted: false, report, stopped, ...pull, error: `the report could not be posted: ${failure(e)}`, retry: retryable(e) }
         }
         mark({ posted: true })
       }
-      return { thread: info.thread, posted: true, report, stopped }
+      return { thread: info.thread, posted: true, report, stopped, ...pull }
     } finally {
       // Marked first, so that a repeat that finds no lock knows this finish
       // gave it up.
