@@ -1108,6 +1108,23 @@ test("the script decides a review from its verdicts on the criteria and its defe
   assert.deepEqual(timeline(dirs, "US-3"), ["claim implementing", "move implemented", "claim review", "move backlog", ...once]);
 });
 
+test("the write-back criterion clarity names is recorded as the write-back and judged by nobody before landing: a review that says it is not met and a verifier that says it is not ok send nothing back, and the task lands", { timeout: 60000 }, async (t) => {
+  const criteria = [{ text: "The badge is red", human_check: false }, { text: "`Operations` and `Tables` say what the landed code does for every operation and table this task touched", human_check: false }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], writeBack: [1], gaps: [] }],
+    "review:US-1": [reviewed("fail", { unmet: { 1: "Operations does not say it" }, defects: [{ text: "Tables is not written", files: [], criterion: criteria[1].text }] })],
+    "verify:US-1": [verified({ 1: "The docs are as they were" })],
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => d.choice), ["treated as the write-back: the workflow's docs agent does it once the task has landed, and the reviewer and the verifier skip it"]);
+  assert.deepEqual(timeline(dirs, "US-1"), ["claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done"]);
+  assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1")], [[{ key: "US-1", outcome: "done" }], []]);
+});
+
 test("a story clarity has checked has its test obligations from clarity's decisions alone: a behaviour criterion with the word test in it is judged by the reviewer and the verifier; a story clarity never checked is read for a test as the thing delivered, never for a bare test or suite", { timeout: 120000 }, async (t) => {
   const button = { text: "The Test connection button shows Connected", human_check: false };
   // Behaviour that reads as a test to add, which clarity, having checked the story, did not record as one.

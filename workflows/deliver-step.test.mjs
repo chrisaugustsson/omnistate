@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fnv1a, TEST_OBLIGATION, testQuestion, waitSeconds } from "./deliver-step.mjs";
+import { fnv1a, TEST_OBLIGATION, testQuestion, waitSeconds, WRITE_BACK, writeBackQuestion } from "./deliver-step.mjs";
 
 const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
 const fakeOmni = fileURLToPath(new URL("./fixtures/fake-omni.mjs", import.meta.url));
@@ -1244,8 +1244,10 @@ test("context gives only the facts the script decides by, and no text of the sto
     clarified: false,
     criteria: 3,
     obligations: [1],
+    writeBack: [],
     findings: { open: 3, uncounted: 1, earlier: 1 },
     nodes: ["node-9", "node-4"],
+    boards: [],
     questions: [fnv1a("Which red?"), fnv1a("How big?")],
   });
   assert.doesNotMatch(JSON.stringify(body), /NODE|STORY TEXT|badge|#c00|border|README|doc-spec|th-1|shows/);
@@ -1293,6 +1295,33 @@ test("obligations writes one decision for two criteria with the same text, which
 
   assert.equal(written.recorded, 1);
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: testQuestion(criteria[0].text), choice: TEST_OBLIGATION, by: "agent" }]);
+});
+
+test("obligations with kind write-back writes the write-back decision of each criterion by index, which context then names as writeBack and not as a test obligation; another kind is refused for good, and nothing is written", (t) => {
+  const criteria = [{ text: "The badge is red" }, { text: "`Operations` and `Tables` say what the landed code does for every operation and table this task touched" }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
+  const { run } = start(dirs);
+  mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
+  writeFileSync(join(dirs.repo, ".omni", "clarity.json"), JSON.stringify({ "US-1": "0123abcd" }));
+
+  const other = step(dirs, run, "obligations", { key: "US-1", indexes: [1], kind: "docs" });
+  const before = step(dirs, run, "context", { key: "US-1" });
+  const written = step(dirs, run, "obligations", { key: "US-1", indexes: [1], kind: "write-back" });
+  const again = step(dirs, run, "obligations", { key: "US-1", indexes: [1], kind: "write-back" });
+  const after = step(dirs, run, "context", { key: "US-1" });
+
+  assert.deepEqual([other.ok, other.retry], [false, false]);
+  assert.deepEqual([before.writeBack, written.recorded, again.recorded], [[], 1, 0]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: writeBackQuestion(criteria[1].text), choice: WRITE_BACK, by: "agent" }]);
+  assert.deepEqual([after.obligations, after.writeBack], [[], [1]]);
+});
+
+test("context gives as the write-back, for a story clarity has not checked, a criterion that contains `say what the landed code does`", (t) => {
+  const criteria = [{ text: "The docs say what the badge does" }, { text: "`Operations` and `Tables` say what the landed code does for every operation and table this task touched" }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
+  const { run } = start(dirs);
+
+  assert.deepEqual(step(dirs, run, "context", { key: "US-1" }).writeBack, [1]);
 });
 
 test("park leaves a task that failed its third try in the backlog, not blocked, with no holder, its findings open and no thread, and removes its worktree and branch; a task that never had them and a repeat say removed too", (t) => {

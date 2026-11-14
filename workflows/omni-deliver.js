@@ -522,8 +522,12 @@ const findingCounts = (ctx, task) => {
   return `The story has ${plural(open, 'open finding', 'open findings')} of earlier attempts, ${plural(uncounted, 'open finding', 'open findings')} that used no attempt, and ${plural(earlier, 'finding', 'findings')} from an earlier round. ${task}`
 }
 // The criteria by number, with the test obligations, which the lane's test
-// author owns; clarity, which decides them, is told none.
-const owedList = (ctx) => (ctx.obligations.length ? `${ctx.obligations.length === 1 ? 'Criterion' : 'Criteria'} ${ctx.obligations.join(', ')} ${ctx.obligations.length === 1 ? 'is a test obligation' : 'are test obligations'}` : 'No criterion is a test obligation')
+// author owns, and the write-back, which the docs agent does once the task has
+// landed; clarity, which decides them, is told none.
+const writeBackOf = (ctx) => ctx.writeBack || []
+const owedList = (ctx) => `${ctx.obligations.length ? `${ctx.obligations.length === 1 ? 'Criterion' : 'Criteria'} ${ctx.obligations.join(', ')} ${ctx.obligations.length === 1 ? 'is a test obligation' : 'are test obligations'}` : 'No criterion is a test obligation'}${writeBackOf(ctx).length ? `. ${writeBackOf(ctx).length === 1 ? 'Criterion' : 'Criteria'} ${writeBackOf(ctx).join(', ')} ${writeBackOf(ctx).length === 1 ? 'is' : 'are'} the write-back, which comes after landing: the workflow's docs agent writes \`Operations\` and \`Tables\` once the task has landed` : ''}`
+// Criteria nobody judges before landing: the test obligations and the write-back.
+const unjudged = (ctx) => new Set([...ctx.obligations, ...writeBackOf(ctx)])
 const criteriaSection = (ctx, owed = true) => `## Acceptance criteria
 ${ctx.criteria ? `The story's ${plural(ctx.criteria, 'criterion', 'criteria')}, numbered from 0 to ${ctx.criteria - 1} in the order the story gives them.${owed ? ` ${owedList(ctx)}.` : ''}` : 'The story has no criteria.'}`
 
@@ -573,6 +577,12 @@ from 0 in the order the story gives its criteria, and raise no gap for it: the
 workflow records it as a test obligation, which the test author owns and the
 verifier skips.
 
+## The write-back
+A criterion that asks that \`Operations\` and \`Tables\` say what the landed code
+does is the write-back. List its number in writeBack, counting from 0, and raise
+no gap for it: the workflow's docs agent does it once the task has landed, and
+the reviewer and the verifier skip it.
+
 ## Impact (decide for every gap)
 Say what the answer decides: scope (what the story does at all), data_security (what
 is stored, sent or deleted; permissions, security or money), ux (what the user sees
@@ -583,9 +593,10 @@ first, and takes your recommendation for the rest.
 
 const CLARITY_SCHEMA = {
   type: 'object',
-  required: ['testObligations', 'gaps'],
+  required: ['testObligations', 'writeBack', 'gaps'],
   properties: {
     testObligations: { type: 'array', items: { type: 'integer', minimum: 0 }, description: 'The numbers of the criteria that name a test instead of outside behaviour, counting from 0 in the order the story gives them' },
+    writeBack: { type: 'array', items: { type: 'integer', minimum: 0 }, description: 'The numbers of the criteria that ask that Operations and Tables say what the landed code does, counting from 0 in the order the story gives them' },
     gaps: {
       type: 'array',
       description: 'Criteria in this story that fail the two-implementation test. Empty when every criterion decides the behaviour',
@@ -619,7 +630,7 @@ ${criteriaSection(ctx, false)} A criterion with human_check true is confirmed by
 
 ${resultFile(file)}
 ## Your task now
-Apply the rules above to every criterion of the story, and return the test obligations and the gaps.
+Apply the rules above to every criterion of the story, and return the test obligations, the write-back and the gaps.
 Return raw structured data only.`
 
 const IMPL_SCHEMA = {
@@ -682,7 +693,7 @@ ${CONVENTIONS}
 - If the story needs a product decision the spec does not make and the story cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
 - If you genuinely cannot continue, status blocked with the reason in summary.
 - Return decisions for every non-obvious technical choice.
-
+${writeBackOf(ctx).length ? `- The criteria named below as the write-back come after landing: the workflow's docs agent writes \`Operations\` and \`Tables\` from what you built once the task has landed, so leave those docs alone. The how they hold is a starting point: build what the task needs, also where the docs say otherwise. Name in decisions each operation and table you built or changed, and each place you went against the docs.\n` : ''}
 ${criteriaSection(ctx)}
 
 ${resultFile(file)}
@@ -707,7 +718,7 @@ const reviewSchema = (n) => ({
         properties: {
           index: { type: 'integer', minimum: 0, maximum: Math.max(n - 1, 0), description: 'The number of the criterion in the list, counting from 0' },
           criterion: { type: 'string', description: 'The criterion text, verbatim' },
-          obligation: { type: 'boolean', description: 'true for a criterion the prompt names as a test obligation, which you do not judge; false for every other' },
+          obligation: { type: 'boolean', description: 'true for a criterion the prompt names as a test obligation or as the write-back, which you do not judge; false for every other' },
           met: { type: 'boolean', description: 'Whether the code meets the criterion; not read for a test obligation' },
           evidence: { type: 'string', description: 'What the code does about it, with path:line; for a criterion not met, what is wrong and where' },
         },
@@ -745,7 +756,7 @@ ${BOARD}
 - Read the diff and the files against every criterion, the interfaces and the linked doc nodes.
 - A new test, test file, test helper, fixture or snapshot in the diff is a defect: the implementer writes no tests, the test author does. An existing test updated to a decision the story names is fine. A missing test is never a defect.
 - A criterion named below as a test obligation is the test author's, and the review never judges it. Give it obligation true, and every other criterion obligation false: every other criterion is judged.
-- A criterion with human_check true: met unless the code contradicts it; a human confirms it later.
+${writeBackOf(ctx).length ? '- A criterion named below as the write-back comes after landing, and the review never judges it either: give it obligation true too.\n' : ''}- A criterion with human_check true: met unless the code contradicts it; a human confirms it later.
 - Give every criterion an entry, by its number counting from 0, with its text copied verbatim: met or not, with the evidence, or obligation true for a test obligation.
 - List every defect you find, not only the first: one per problem, with the files it is in and the criterion it breaks.
 - verdict pass: every criterion that is not a test obligation is met, and you found no defect.
@@ -799,7 +810,7 @@ ${BOARD}
 ## Rules
 - Exercise EVERY criterion by running the behaviour in ${laneDir}: call the endpoint, run the command, and for a criterion about a page, open the page: use a browser tool if one is available. Reading code is not a check.
 - A criterion named below as a test obligation is the test author's: skip it, with ok true and the evidence "a test obligation".
-- The stack has no users until the seed runs${checks.seed ? `. For a credential, run the seed command as \`OMNI_STORY=${ctx.key} OMNI_RUN=${runId} sh -c ${quote(checks.seed)}\` in ${laneDir}: it prints what to sign in with` : ', and this run has no seed command'}. Never write into the stack's database yourself.
+${writeBackOf(ctx).length ? '- A criterion named below as the write-back comes after landing: skip it, with ok true and the evidence "the write-back".\n' : ''}- The stack has no users until the seed runs${checks.seed ? `. For a credential, run the seed command as \`OMNI_STORY=${ctx.key} OMNI_RUN=${runId} sh -c ${quote(checks.seed)}\` in ${laneDir}: it prints what to sign in with` : ', and this run has no seed command'}. Never write into the stack's database yourself.
 ${commandsOf().length ? `- A criterion about a command is checked by running that command: ${commandsOf().join(', ')}.\n` : ''}- A criterion with human_check true: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
 - ok false only for a criterion the behaviour does not meet. Say what is wrong and where.
 
@@ -1231,10 +1242,11 @@ const check = async (key) => {
   // the criterion's text on the board, and refuses an index the story has no
   // criterion for, which fails the check.
   const owed = [...new Set(r.testObligations || [])]
+  const backs = [...new Set(r.writeBack || [])]
   // The obligations and the decisions the check takes by itself go to the
-  // board in one call, in this order: the obligations, the minor gaps, then
-  // the blocking gaps past the cap.
-  const writes = owed.length ? [['obligations', { key, indexes: owed }]] : []
+  // board in one call, in this order: the obligations, the write-back, the
+  // minor gaps, then the blocking gaps past the cap.
+  const writes = [...(owed.length ? [['obligations', { key, indexes: owed }]] : []), ...(backs.length ? [['obligations', { key, indexes: backs, kind: 'write-back' }]] : [])]
   // A question the story has a decision on is settled. The context gives the
   // fnv1a of each decision's question, not its text. A gap's decision is
   // written from the clarity check's file: its question, and its
@@ -1498,7 +1510,7 @@ const implement = async (key, rework, claimed) => {
 // after REVIEW_RETRIES the story is released, since a criterion left out is
 // not a criterion met. The script decides the review from those verdicts and
 // the defects, not from the reviewer's verdict, which it reads only for a
-// question. A test obligation is never judged: the reviewer's obligation
+// question. A test obligation, or the write-back, is never judged: the reviewer's obligation
 // true counts for no other criterion, and a defect that names only an
 // obligation is not the implementer's. A pass needs every other criterion
 // met and no other defect; anything else gives the findings, one per
@@ -1538,7 +1550,7 @@ const review = async (key, wt, first) => {
     }
     // The script has no criterion's text: the reviewer copies each one, and
     // a defect that names an obligation names it as the reviewer copied it.
-    const owed = new Set(ctx.obligations)
+    const owed = unjudged(ctx)
     const owedText = new Set([...owed].map((i) => String(judged.get(i).criterion || '').trim()).filter(Boolean))
     const unmet = range(n).filter((i) => !owed.has(i) && judged.get(i).met !== true)
     const defects = (v.defects || []).map((d, pos) => ({ d, pos })).filter(({ d }) => d && d.text && !owedText.has(String(d.criterion || '').trim()))
@@ -1903,8 +1915,9 @@ const laneStory = async (key) => {
       await toTip()
       return noResult(key, `the verifier returned nothing, ${AGAIN_AFTER.length + 1} times`)
     }
-    // A test obligation is the test author's, whatever the verifier says of it.
-    const owed = new Set(ctx.obligations)
+    // A test obligation is the test author's, and the write-back the docs
+    // agent's, whatever the verifier says of them.
+    const owed = unjudged(ctx)
     // Each criterion's result, by where it is in the verifier's criteria,
     // whose file the findings' text comes from.
     const ran = new Map()

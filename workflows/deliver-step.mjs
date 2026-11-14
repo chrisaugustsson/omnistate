@@ -87,6 +87,7 @@
 //   clarity cache has a hash of the story; a story version the old runner
 //   kept there is not a check of this workflow's), criteria (how many),
 //   obligations (the indexes of the criteria that are test obligations),
+//   writeBack (the indexes of those that are the write-back),
 //   findings ({open, uncounted, earlier}: how many open findings count an
 //   attempt, how many used none, how many came before the human's latest
 //   answer) and questions (the fnv1a of each decision's question). No text
@@ -102,8 +103,9 @@
 //   attempt. A finding that names a job gets the end of its log
 // - decision {key, question, choice, by}: key, recorded (false when the
 //   story has that question with that choice already)
-// - obligations {key, indexes}: key, recorded (how many it wrote); the test
-//   obligation decision of each criterion by index from 0, written with the
+// - obligations {key, indexes, kind?}: key, recorded (how many it wrote); the
+//   test obligation decision of each criterion by index from 0, or with kind
+//   write-back (test when left out) its write-back decision, written with the
 //   criterion's text from the board. An index the story has no criterion for
 //   is refused, and nothing is written
 // - files {key}: key, files (how many)
@@ -895,6 +897,13 @@ const findingsOf = (story) => {
 // A story implemented before clarity ran has none, so for it a test must be
 // the thing the criterion delivers.
 export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
+// A criterion that asks that Operations and Tables say what the landed code
+// does is the write-back, which the docs agent does once the task has landed:
+// recorded and read the same way, with this choice. A story clarity has not
+// checked has it where a criterion says so in the words omni-stories gives it.
+export const WRITE_BACK = 'treated as the write-back: the workflow\'s docs agent does it once the task has landed, and the reviewer and the verifier skip it'
+export const writeBackQuestion = (criterion) => `Is "${criterion}" the write-back?`
+const SAYS_WRITE_BACK = 'say what the landed code does'
 const ASKED_ID = /^Asked on the behaviour tree: question (\S+) on node /
 export const ASKED = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`
 // The node IDs of a task's Covers lines, in order: `- <node id> v<version> \`<path>\``.
@@ -913,6 +922,7 @@ const nodesOf = (story) => [...String(story.text || '').matchAll(/^\s*- (\S+) v\
 export const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
 const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
 const obligationsOf = (story, clarified) => (story.criteria || []).map(criterionOf).flatMap((c, i) => ((story.decisions || []).some((d) => d.question === testQuestion(c.text) && d.choice === TEST_OBLIGATION) || (!clarified && NAMES_TEST.test(c.text)) ? [i] : []))
+const writeBackOf = (story, clarified) => (story.criteria || []).map(criterionOf).flatMap((c, i) => ((story.decisions || []).some((d) => d.question === writeBackQuestion(c.text) && d.choice === WRITE_BACK) || (!clarified && c.text.includes(SAYS_WRITE_BACK)) ? [i] : []))
 // A finding's text without the attempt numbers it starts with: an uncounted
 // finding must never count as an attempt, and a counted one gets only its own.
 const unnumbered = (text) => String(text).replace(/^(?:\[attempt \d+\] ?)+/, '')
@@ -1134,6 +1144,7 @@ const STEPS = {
       clarified,
       criteria: (story.criteria || []).length,
       obligations: obligationsOf(story, clarified),
+      writeBack: writeBackOf(story, clarified),
       findings: { open: count(findings), uncounted: uncounted.length, earlier: count(earlier) },
       nodes: nodesOf(story),
       boards: boardsOf(b, story),
@@ -1242,24 +1253,28 @@ const STEPS = {
     return { key: p.key, recorded: true }
   })(),
 
-  // Clarity's test obligations, by index: the question carries the
-  // criterion's text as the board has it, which obligationsOf matches. Every
-  // index is checked before the first write; one the story already has is
-  // not written again.
+  // Clarity's test obligations, or with kind write-back its write-back
+  // criteria, by index: the question carries the criterion's text as the
+  // board has it, which obligationsOf and writeBackOf match. Every index is
+  // checked before the first write; one the story already has is not written
+  // again.
   obligations: (b, p) => missing(p, 'key') || (() => {
     if (!Array.isArray(p.indexes)) return { ok: false, error: 'the payload needs indexes: [criterion index, ...]' }
+    const kind = p.kind === undefined ? 'test' : p.kind
+    if (kind !== 'test' && kind !== 'write-back') return { ok: false, error: `the payload's kind is test or write-back, not ${JSON.stringify(kind)}`, retry: false }
+    const [ask, choice] = kind === 'test' ? [testQuestion, TEST_OBLIGATION] : [writeBackQuestion, WRITE_BACK]
     const story = b.readStory(p.key)
     const criteria = (story.criteria || []).map(criterionOf)
     const wrong = p.indexes.filter((i) => !Number.isInteger(i) || i < 0 || i >= criteria.length)
     if (wrong.length) return { ok: false, error: `${p.key} has ${criteria.length} criteria, numbered from 0, so ${wrong.map((i) => JSON.stringify(i)).join(', ')} names none of them` }
     // Two criteria with the same text have one question: it is written once.
-    const asked = new Set((story.decisions || []).filter((d) => d.choice === TEST_OBLIGATION).map((d) => d.question))
+    const asked = new Set((story.decisions || []).filter((d) => d.choice === choice).map((d) => d.question))
     let recorded = 0
     for (const i of [...new Set(p.indexes)]) {
-      const question = testQuestion(criteria[i].text)
+      const question = ask(criteria[i].text)
       if (asked.has(question)) continue
       asked.add(question)
-      b.write('decision', p.key, ['--question', question, '--choice', TEST_OBLIGATION, '--by', 'agent'])
+      b.write('decision', p.key, ['--question', question, '--choice', choice, '--by', 'agent'])
       recorded++
     }
     return { key: p.key, recorded }
