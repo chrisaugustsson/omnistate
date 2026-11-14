@@ -1274,7 +1274,8 @@ const pullRequest = (b, info, body) => {
   // push expects no branch there instead.
   const leaseFile = restartedPathOf(b.root, b.feature)
   const restarted = (readText(leaseFile) || '').trim()
-  const push = (lease) => run('git', ['-C', b.root, 'push', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+  // Never tags, whatever the user's push.followTags says.
+  const push = (lease) => run('git', ['-C', b.root, 'push', '--no-follow-tags', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
   const pushFailed = (e) => ({ pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : pushLine(e) })
   try {
     push(restarted || undefined)
