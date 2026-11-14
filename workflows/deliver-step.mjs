@@ -1229,24 +1229,32 @@ const STEPS = {
   // A question on a behaviour tree node, and the task waits for the answer.
   // The node is the first of the payload's node, the task's first Covers node
   // and `.` that the tree has. The decision records the question's ID, so that
-  // the answer is found again. A repeat asks nothing the first try asked.
+  // the answer is found again. A repeat asks nothing the first try asked: the
+  // chosen node is marked before the ask, and a try cut off after the ask
+  // left its question on that node, with the same text, asked by this run.
   'question-ask': (b, p, { marker, mark }) => missing(p, 'key', 'question') || (() => {
     let id = marker && marker.question
     if (!id) {
       const asked = `${p.question} ${Array.isArray(p.options) && p.options.length ? `Options: ${p.options.map((o, i) => `${i + 1}. ${o}`).join(' ')} ` : ''}(Asked by the build of ${p.key}, ${p.asker}.)`
-      let node = null
-      let last = null
-      for (const c of [p.node, nodesOf(b.readStory(p.key))[0], '.']) {
-        if (!c) continue
-        try {
-          b.omni(['behaviour', 'read', c, '--json'])
-          node = c
-          break
-        } catch (e) { last = e }
+      let node = marker && marker.node
+      if (node) {
+        const read = JSON.parse(b.omni(['behaviour', 'read', node, '--json']))
+        const same = (read.questions || []).filter((q) => q.question === asked && (!q.asked_by || !q.asked_by.run || q.asked_by.run === b.runId))
+        if (same.length) id = same[same.length - 1].id
+      } else {
+        let last = null
+        for (const c of [p.node, nodesOf(b.readStory(p.key))[0], '.']) {
+          if (!c) continue
+          try {
+            b.omni(['behaviour', 'read', c, '--json'])
+            node = c
+            break
+          } catch (e) { last = e }
+        }
+        if (!node) return { ok: false, error: `no node of the tree can be read: ${failure(last)}` }
+        mark({ node })
       }
-      if (node === null) return { ok: false, error: `no node of the tree can be read: ${failure(last)}` }
-      const out = b.omni(['behaviour', 'ask', node, asked, ...(p.recommendation ? ['--recommend', p.recommendation] : [])]).trim().split(/\s+/).pop()
-      id = out
+      if (!id) id = b.omni(['behaviour', 'ask', node, asked, ...(p.recommendation ? ['--recommend', p.recommendation] : [])]).trim().split(/\s+/).pop()
       mark({ question: id })
     }
     const parsed = JSON.parse(b.omni(['behaviour', 'question', id, '--json']))
