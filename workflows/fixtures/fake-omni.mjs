@@ -8,7 +8,7 @@
 // FAKE_OMNI_HANG_AFTER="<words>" holds such a call for 30 s after it saved the
 // state: a write that was made, and whose answer never came back.
 // FAKE_OMNI_HANG_MS sets how long either holds, for a call that is only slow.
-// `checks` answers only when the state holds checks; `story list --pickable` applies
+// `checks` prints the state's checks when it holds them; `story list --pickable` applies
 // the board's rule: backlog, not blocked, every blocker done or cancelled, no planned
 // file (files_changed when set, else files_planned) shared with a story in implementing, implemented, review, reviewed or testing,
 // in the board's order: priority, then open (not done or cancelled) dependants, most first, then number. `claim` needs the stage's waiting state (else exit 1, not_waiting); `move` to implemented, reviewed, backlog or done clears the holder; `release` and `block` put a working story in its waiting state and clear the holder. `story finding` appends to the story's findings and
@@ -18,11 +18,22 @@
 // the story after the highest key; `story tick` sets the criterion's ticked/pending.
 // `doc read <id>` prints the state's docs[id], and fails for a doc it lacks;
 // `thread read` fails for a thread it lacks, with the CLI's not_found.
+// `behaviour list`, `read <node>`, `ask <node> <question> [--recommend <text>]` and
+// `question <id>` work on the state's behaviour: {nodes: [{id, path}], questions};
+// a node is named by its id, its path, or `.` for the one whose path is "", and a
+// node or question the state lacks is the CLI's not_found (exit 1). `ask` adds an
+// open question asked by the agent OMNI_RUN and OMNI_ROLE name, and prints its ID.
+// `doc list` prints the state's docList and `link` its link, which fails as the CLI
+// does in a folder that is not linked. The feature's export writes a .png and a .tags
+// per entry of the state's boards, as <out>/ui/<doc>/<name>-<board>. `checks`
+// without checks in the state reads the [checks] table of the .omni.toml in the
+// current folder, and fails as the CLI does without that file.
 // Calls at once each read, change and write the state under a lock file
 // beside it, and a write replaces the file whole, as the server serves
 // requests at once without losing one.
-import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 
 const argv = process.argv.slice(2);
 const named = (variable) => process.env[variable] && `${argv.join(" ")} `.startsWith(`${process.env[variable]} `);
@@ -77,6 +88,32 @@ const story = (key) => {
   }
   return s;
 };
+// The node `given` names: by its id, its path, or `.` for the one whose path is "".
+const node = (given) => {
+  const n = (state.behaviour?.nodes || []).find((x) => x.id === given || x.path === (given === "." ? "" : given));
+  if (!n) {
+    save();
+    process.stderr.write(`not_found: no node ${given} in this feature\n`);
+    process.exit(1);
+  }
+  return n;
+};
+// The [checks] table of a .omni.toml: its `name = "command"` lines up to the next
+// [header], without blank lines and # comments.
+const checksOf = (text) => {
+  const checks = {};
+  let inside = false;
+  for (const line of text.split("\n").map((l) => l.trim())) {
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      inside = line.replace(/\s*#.*$/, "") === "[checks]";
+      continue;
+    }
+    const pair = inside && line.match(/^([\w-]+)\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/);
+    if (pair) checks[pair[1]] = pair[2].startsWith('"') ? JSON.parse(pair[2]) : pair[2].slice(1, -1);
+  }
+  return checks;
+};
 const link = (value) => {
   const [a, b, c] = value.split(":");
   return a === "thread" ? { thread_id: b, label: c ?? "" } : { doc_id: a, node_id: b, label: c ?? "" };
@@ -113,9 +150,65 @@ if (noun === "--help") {
     process.exit(1);
   }
   out(state.docs[target]);
+} else if (noun === "doc" && verb === "list") {
+  save();
+  out(JSON.stringify({ docs: state.docList ?? [] }));
+} else if (noun === "link") {
+  save();
+  if (!state.link) {
+    process.stderr.write("this folder is not linked to a project: run omni link <project name|id> here, or pass --project\n");
+    process.exit(1);
+  }
+  out(JSON.stringify(state.link));
+} else if (noun === "export") {
+  for (const b of state.boards || []) {
+    const dir = join(flag("--out"), "ui", b.doc);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${b.name}-${b.board}.png`), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    writeFileSync(join(dir, `${b.name}-${b.board}.tags`), `<Board name="${b.name}"/>\n`);
+  }
+  save();
+} else if (noun === "behaviour" && verb === "list") {
+  save();
+  out(JSON.stringify({ nodes: state.behaviour?.nodes ?? [] }));
+} else if (noun === "behaviour" && verb === "read") {
+  const n = node(target);
+  save();
+  out(JSON.stringify({ node: n, questions: (state.behaviour.questions || []).filter((q) => q.node_id === n.id) }));
+} else if (noun === "behaviour" && verb === "ask") {
+  const n = node(target);
+  const id = randomUUID();
+  (state.behaviour.questions ||= []).push({
+    id,
+    node_id: n.id,
+    node_path: n.path,
+    question: argv[3],
+    recommendation: flag("--recommend") ?? null,
+    state: "open",
+    answered_by: null,
+    asked_by: { kind: "agent", run: process.env.OMNI_RUN ?? null, role: process.env.OMNI_ROLE ?? null },
+    answer: null,
+  });
+  save();
+  out(`${id}\n`);
+} else if (noun === "behaviour" && verb === "question") {
+  const question = (state.behaviour?.questions || []).find((q) => q.id === target);
+  save();
+  if (!question) {
+    process.stderr.write(`not_found: no question ${target} in this feature\n`);
+    process.exit(1);
+  }
+  out(JSON.stringify({ question }));
 } else if (noun === "checks" && state.checks) {
   save();
   out(JSON.stringify(state.checks));
+} else if (noun === "checks") {
+  save();
+  if (!existsSync(".omni.toml")) {
+    process.stderr.write(".omni.toml not found in this directory or a parent\n");
+    process.exit(1);
+  }
+  out(JSON.stringify(checksOf(readFileSync(".omni.toml", "utf8"))));
 } else if (noun === "post") {
   const body = flag("--body-file") ? readFileSync(flag("--body-file"), "utf8") : readFileSync(0, "utf8");
   state.threads.find((t) => t.id === verb).posts.push({ summary: flag("--summary"), body });
