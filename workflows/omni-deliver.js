@@ -5,6 +5,7 @@ export const meta = {
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, reconciles claims and the lane worktree, sets deliver/<slug> and reads the checks' },
     { title: 'Unblock', detail: 'a story whose threads all have a conclusion gets each one as a human decision and is unblocked, and its attempts count from there' },
+    { title: 'Setup', detail: 'in a setup run, the task "Set up the project" first and alone, straight in the folder: one implementer, setup-check, the fast command as a job there and one verifier, then setup-land and repo-open, which creates deliver/<slug> and the lane; no other task is claimed and no clarity check starts before it has landed, and a setup that does not land ends the run' },
     { title: 'Clarity', detail: 'beside the delivery, which takes the stories in the board\'s order and waits for the check of the next one, not for the checks of those after it: one check per backlog story whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and once a story is checked its obligations come from these decisions alone, a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a thread that blocks the story' },
     { title: 'Deliver', detail: 'at most `implementers` stories implementing at once, each slot free again once its story is implemented: claim, after which the board is listed for the next story, worktree, implementer (on implRetry from attempt 2, reading every finding by attempt from the board, as every agent reads its story itself), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation; a failed review, or a failure in the lane, sends the story back for the next attempt, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step, and 3 failed attempts open a thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first' },
     { title: 'Lane', detail: 'one story at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the story back with no attempt used, but from the third conflict of a story in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the story\'s stops the lane); fast, stack_up and stack run there as jobs, the run\'s first stack_up after stack_reset, for what a stopped run left on the stack, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses an attempt; a verifier runs every criterion but the test obligations, lane-clean throws away what it left uncommitted, and lane-land moves deliver/<slug> by a compare-and-swap, makes the story done and keeps its worktree for its test author; after a failure the lane goes back to the tip, and the stack, when it holds the story\'s build, is reset with stack_reset and rebuilt there' },
@@ -667,7 +668,7 @@ const RESUME = 'An earlier session of this attempt stopped to ask a question, wh
 const implPrompt = (ctx, wt, attempt, task, found, file) => `You implement ONE story of the feature "${feature}" in its own git worktree.
 
 ## Your worktree
-${wt} (branch story/${ctx.key}, cut from ${branch}). Work only there: cd into it first, and run every command there.${found ? `\n${found}` : ''}
+${wt} (branch story/${ctx.key}, cut from ${branch}). Work only there: cd into it first, and run every command there.${found ? `\n${found}` : ''}${setupDoc ? `\nThe project's Setup doc says how to start and test the app: read it with \`${omniAs('impl')} doc read ${setupDoc}\`.` : ''}
 
 ${storySection(ctx, 'impl', { decisions: 'They are settled: build against them as if the spec said so.', findings: 'Fix every open one.' })}
 
@@ -808,6 +809,64 @@ ${criteriaSection(ctx)}
 ${resultFile(file)}
 ## Your task now
 Exercise every criterion of the story, and return one entry for each, by its number, with its text copied verbatim.
+Return raw structured data only.`
+
+// The task "Set up the project" is built straight in the root, before every
+// other task: no worktree, no branch of its own, no lane, no reviewer and no
+// test author. Its implementer makes the repository, the stack, the checks
+// and the project-level Setup doc, and its verifier runs it there.
+const SETUP_FRESH = 'Set the project up as the rules above say, commit it, and return the result.'
+const SETUP_CONTINUE = 'The folder holds the earlier try\'s work: continue from it, do not start over, and fix every open finding of the task.'
+const SETUP_ROUND = 'The folder holds the work of the earlier round of tries: continue from it, do not start over. The task\'s resolved findings say what failed then.'
+const setupPrompt = (ctx, attempt, task, file) => `You set up the project of the feature "${feature}": the task ${ctx.key}, "Set up the project", which is built before every other task of the feature.
+
+## Where
+${root}, the project's folder. Work only there: cd into it first, and run every command there. There is no worktree and no branch of the task's own: you work straight in the folder.
+
+${storySection(ctx, 'impl', { decisions: 'They are settled: build against them as if the spec said so.', findings: 'Fix every open one.' })}
+
+${BOARD} The one exception is the Setup doc below.
+${conventions('Commit on the branch checked out in the folder. Never push, and never add a remote.')}
+## What the setup does
+- Run \`git init\` in ${root}, unless ${root} is itself the top folder of a git repository (\`git rev-parse --show-toplevel\` there prints ${root}).
+- Set up the stack the Project spec names. Find the Project spec with \`${omniAs('impl')} doc list --global --json\` and read it with \`${omniAs('impl')} doc read <its ID>\`. Where it leaves a choice open, choose, and name the choice in decisions.
+- Write \`.omni.toml\` in ${root} with a \`[checks]\` table whose \`fast\` command runs the project's lint or typecheck and its tests. It must pass.
+- Add \`.omni/\` to \`.gitignore\`: the workflow keeps its run there.
+- Commit what the setup made, so that nothing is left uncommitted. Never push, and never add a remote.
+- Last, write the project-level doc \`Setup\` in the pillar \`architecture\`: the folders, the libraries, and the commands to start the app and to run the tests. When a project-level doc titled Setup exists (\`${omniAs('impl')} doc list --global --json\`), update that doc with \`${omniAs('impl')} doc edit <its ID>\`; else create it with \`${omniAs('impl')} doc create --global --kind html --pillar architecture --title Setup\`.
+
+## Rules
+- Build only the setup: nothing a later task of the feature builds.
+- If the setup needs a product decision the spec does not make and the task cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
+- If you genuinely cannot continue, status blocked with the reason in summary.
+- Return decisions for every non-obvious technical choice.
+
+${criteriaSection(ctx)}
+
+${resultFile(file)}
+## Your task now
+This is attempt ${attempt} of ${MAX_ATTEMPTS} of this round. ${task}
+Return raw structured data only.`
+const setupVerifyPrompt = (ctx, file) => `You check the task ${ctx.key}, "Set up the project", of the feature "${feature}" by running it. ${READ_ONLY}
+
+## Where
+${root}, the project's folder, where the task was built and committed, and where its fast check (\`${checks.fast}\`) passed. Work only there: cd into it first, and run every command there. Never check out or create a branch.
+
+${storySection(ctx, 'verify', { decisions: 'They are settled: judge against them as if the spec said so.' })}
+
+${BOARD}
+
+## Rules
+- Exercise EVERY criterion by running it in ${root}: start the app with the start command the Project spec or the project's own files give, run the test command, and read the Setup doc with \`${omniAs('verify')} doc read <its ID>\`. Reading code is not a check. Stop the app before you return, and confirm that nothing you started is left running.
+- A criterion named below as a test obligation is the test author's: skip it, with ok true and the evidence "a test obligation".
+- A criterion with human_check true: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
+- ok false only for a criterion the setup does not meet. Say what is wrong and where.
+
+${criteriaSection(ctx)}
+
+${resultFile(file)}
+## Your task now
+Exercise every criterion of the task, and return one entry for each, by its number, with its text copied verbatim.
 Return raw structured data only.`
 
 // The policy carries the rules of the writing-tests skill itself: another
@@ -1160,7 +1219,12 @@ branch = started.branch
 laneDir = started.lane
 tree = started.tree === true
 for (const line of started.log || []) log(line)
-log(`Run ${runId} on ${feature}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
+// A setup run: the task that sets the project up goes first, and branch,
+// tip and the lane come from repo-open once it has landed.
+const setupKey = started.setupTask || null
+// The project-level Setup doc, which later agents read.
+let setupDoc = started.setup || null
+log(setupKey ? `Run ${runId} on ${feature}: ${setupKey} sets the project up first, in ${root}` : `Run ${runId} on ${feature}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
 let checks = started.checks
 // The tip of deliver/<slug>: where start left it, then where each story landed.
 let tip = started.tip
@@ -1173,13 +1237,22 @@ let tip = started.tip
 // unblock pass, and the stories the clarity pass has to check.
 let unblocked = { unblocked: [] }
 let pendingClarity = []
-const unblock = async () => {
-  const own = A.checks && typeof A.checks === 'object'
-  const bodies = await steps([...(own ? [['checks-set', { checks: A.checks }]] : []), ['unblock-pass', {}], ['retry-pass', {}], ['clarity-pending', {}]])
+let retried = []
+// The checks args.checks sets and the stories the clarity pass has to check:
+// in a setup run, in a call of their own after repo-open. The setup task
+// gets no clarity check.
+const own = A.checks && typeof A.checks === 'object'
+const settings = () => [...(own ? [['checks-set', { checks: A.checks }]] : []), ['clarity-pending', {}]]
+const takeSettings = (bodies) => {
   if (own) checks = bodies[0].checks
-  unblocked = bodies[bodies.length - 3]
-  const retried = bodies[bodies.length - 2].retried || []
-  pendingClarity = bodies[bodies.length - 1].keys
+  pendingClarity = bodies[bodies.length - 1].keys.filter((key) => key !== setupKey)
+}
+const unblock = async () => {
+  const later = setupKey ? [] : settings()
+  const bodies = await steps([...later.slice(0, -1), ['unblock-pass', {}], ['retry-pass', {}], ...later.slice(-1)])
+  if (later.length) takeSettings([...bodies.slice(0, later.length - 1), bodies[bodies.length - 1]])
+  unblocked = bodies[later.length ? later.length - 1 : 0]
+  retried = bodies[later.length ? later.length : 1].retried || []
   for (const line of unblocked.log || []) log(line)
   if (unblocked.unblocked.length) log(`Unblocked ${unblocked.unblocked.join(', ')}`)
   if (retried.length) log(`Parked tasks tried again: ${retried.join(', ')}`)
@@ -1768,13 +1841,13 @@ let lastCheck = null
 // first, past the cap: the job would run on beside the lane's next pass. A
 // start whose answer never came back may have started its job all the same,
 // which job-kill finds by the start's opId.
-const job = async (key, name, cmd, past = false, before = []) => {
+const job = async (key, name, cmd, past = false, before = [], cwd = laneDir) => {
   const call = opIdOf(`job-start-${key}`)
   // The start's own opId: in a batch, the call's with its place in it.
   const start = before.length ? `${call}.${before.length + 1}` : call
   let id = null
   try {
-    const bodies = await steps([...before, ['job-start', { name, key, cmd, cwd: laneDir, waitSeconds: JOB_WAIT }]], { key, past, opId: call })
+    const bodies = await steps([...before, ['job-start', { name, key, cmd, cwd, waitSeconds: JOB_WAIT }]], { key, past, opId: call })
     const started = bodies[bodies.length - 1]
     id = started.id
     let w = started
@@ -2144,6 +2217,101 @@ const finish = async (journeyLines) => {
   log(`The report of ${runId} is on the Run thread ${finished.thread}, and in ${finished.report}`)
 }
 
+// ---- 2b. setup -------------------------------------------------------------------
+// In a setup run the task "Set up the project" goes first and alone, straight
+// in the root, before any other task is claimed or any clarity check starts.
+// A try: the implementer, setup-check, the fast command as a job in the root
+// and one verifier there; it stops at its first failing check, which leaves
+// a finding and uses the try, and after the third the task is parked. Once
+// checked, setup-land makes it done and repo-open does what start does with
+// git in another run: the other tasks then run the normal way. A setup task
+// that is blocked is not claimed. No clarity check, docs agent or test
+// author for it.
+const SETUP = 'Setup'
+const runSetup = async (key, round) => {
+  let ctx = await step('context', { key })
+  if (ctx.blocked) return { key, outcome: 'waiting', detail: 'the setup task is blocked on a question, so nothing else was built' }
+  ;[, ctx] = await steps([['claim', { key, stage: 'implementing' }], ['context', { key }]], { key })
+  let task = round ? SETUP_ROUND : ctx.attempt ? SETUP_CONTINUE : SETUP_FRESH
+  let asked = 0
+  // A failed try: its findings, then the next try, else the task's outcome.
+  const failTry = async (stage, findings, what) => {
+    const back = await sendBack(key, stage, findings, true, what)
+    if (back.outcome) return back
+    ctx = await step('context', { key })
+    task = SETUP_CONTINUE
+    asked = 0
+    return null
+  }
+  for (;;) {
+    if (ctx.attempt >= MAX_ATTEMPTS) return park(key)
+    const attempt = ctx.attempt + 1
+    const r = await persist(key, 'the implementer', () => act(attempt >= 2 ? 'implRetry' : 'impl', (file) => setupPrompt(ctx, attempt, task, file), { label: `impl:${key}`, phase: SETUP, schema: IMPL_SCHEMA }))
+    if (!r) return noResult(key, `the implementer returned nothing, ${AGAIN_AFTER.length + 1} times`)
+    await steps(decisionSteps(key, r), { key })
+    if (r.status === 'needs_decision') {
+      const answer = await question(ctx, r, 'the implementer', root, 'impl-q', asked++)
+      if (!answer.settled) return { key, outcome: 'waiting', ...(answer.question ? { question: answer.question } : { thread: answer.thread }) }
+      ctx = await step('context', { key })
+      task = RESUME
+      continue
+    }
+    let out = null
+    if (r.status !== 'ready') {
+      out = await failTry('implementing', [{ text: part(r, ['summary'], String(r.summary)), files: [] }], 'the implementer was blocked')
+      if (out) return out
+      continue
+    }
+    const checked = await step('setup-check', { key })
+    if (checked.outcome !== 'ready') {
+      out = await failTry('testing', [{ text: `The setup is not ready: ${checked.reason}`, files: [] }], `its setup check: ${checked.reason}`)
+      if (out) return out
+      continue
+    }
+    checks = checked.checks
+    const fast = await job(key, 'fast', checks.fast, false, [], root)
+    if (!fast.ok) {
+      out = await failTry('testing', [{ text: `The fast check (\`${checks.fast}\`) ${failedHow(fast)}.`, files: [], job: fast.id }], 'its fast check')
+      if (out) return out
+      continue
+    }
+    const v = await persist(key, 'the verifier', () => act('verify', (file) => setupVerifyPrompt(ctx, file), { label: `verify:${key}`, phase: SETUP, schema: VERIFY_SCHEMA }))
+    if (!v) return noResult(key, `the verifier returned nothing, ${AGAIN_AFTER.length + 1} times`)
+    const owed = new Set(ctx.obligations)
+    const ran = new Map()
+    for (const [pos, c] of (v.criteria || []).entries()) if (c && Number.isInteger(c.index) && !ran.has(c.index)) ran.set(c.index, pos)
+    const evidence = (pos) => part(v, ['criteria', pos, 'evidence'], String(v.criteria[pos].evidence ?? ''))
+    const unmet = range(ctx.criteria).flatMap((i) => (owed.has(i) || (ran.has(i) && v.criteria[ran.get(i)].ok === true) ? [] : [{ text: words('Criterion not met when run: ', ...named(i, v, ran.get(i)), '. ', ran.has(i) ? evidence(ran.get(i)) : 'The verifier did not exercise it.'), files: [] }]))
+    if (unmet.length) {
+      out = await failTry('testing', unmet, `its verification with ${unmet.length} criteri${unmet.length === 1 ? 'on' : 'a'} not met`)
+      if (out) return out
+      continue
+    }
+    const [, opened] = await steps([['setup-land', { key }], ['repo-open', {}]], { key })
+    branch = opened.branch
+    laneDir = opened.lane
+    tip = opened.tip
+    checks = opened.checks
+    setupDoc = opened.setup
+    for (const line of opened.log || []) log(line)
+    log(`${key}: the project is set up; tasks land on ${branch}, now at ${String(tip).slice(0, 7)}`)
+    return { key, outcome: 'done' }
+  }
+}
+// The setup task's outcome; whether it landed.
+const setUpFirst = async () => {
+  enter(SETUP)
+  const o = await runSetup(setupKey, retried.includes(setupKey)).catch((e) => (e && e.atCap ? stopped(setupKey) : failed(setupKey, e)))
+  outcomes.push(o)
+  log(`${o.key}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}${o.thread ? ` (thread ${o.thread})` : ''}${o.question ? ` (question ${o.question})` : ''}`)
+  if (o.outcome !== 'done') {
+    notes.push(`The setup task ${setupKey} did not land, so no other task was built in this run.`)
+    return false
+  }
+  takeSettings(await steps(settings()))
+  return true
+}
+
 // ---- the run -------------------------------------------------------------------
 // Every step after start runs here, and finish runs whenever start succeeded,
 // after a throw too, so that the lock is given up. A finish that fails after
@@ -2153,10 +2321,12 @@ let threw = true
 try {
   enter('Unblock')
   await unblock()
-  enter('Clarity')
-  clarityPass()
-  enter('Deliver')
-  await deliverAll()
+  if (!setupKey || await setUpFirst()) {
+    enter('Clarity')
+    clarityPass()
+    enter('Deliver')
+    await deliverAll()
+  }
   await Promise.all([...clarityRuns, ...testsRuns])
   enter('Report')
   journeyLines = await journeys()
