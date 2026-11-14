@@ -1410,7 +1410,7 @@ test("a check's finding quotes the end of the check's log, which the helper read
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
-test("an implementer's question the council settles becomes an agent decision and the implementer runs again with it; a reviewer's question it cannot settle opens a thread and blocks the story", { timeout: 60000 }, async (t) => {
+test("an implementer's question the council settles becomes an agent decision and the implementer runs again with it; in a feature without a behaviour tree, a reviewer's question it cannot settle opens a thread and blocks the story, which waits on that thread", { timeout: 60000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
   const asked = { status: "needs_decision", summary: "Stopped.", question: "Which red?", options: ["#c00", "#f00"], recommendation: "#c00" };
   const blink = { verdict: "needs_decision", criteria: [], defects: [], question: "Should the badge blink?", options: ["Yes", "No"], recommendation: "No" };
@@ -1443,8 +1443,58 @@ test("an implementer's question the council settles becomes an agent decision an
   assert.deepEqual([questions(dirs).length, blinking.title], [1, "US-1: Should the badge blink?"]);
   assert.match(blinking.posts[0].body, /\nAsked by the reviewer\.\n[\s\S]*\nRecommendation: No \(the council's majority\)\n$/);
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked], ["implemented", true]);
-  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "needs_decision", thread: blinking.id }]);
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "waiting", thread: blinking.id }]);
   assert.deepEqual(result.council, { settled: 1, majority: 0, asked: 1 });
+});
+
+// A feature with a behaviour tree: a root and two nodes.
+const tree = () => ({ behaviour: { nodes: [{ id: "root", path: "" }, { id: "n1", path: "a" }, { id: "n2", path: "b" }], questions: [] } });
+
+test("in a feature with a behaviour tree, a question of clarity, an implementer or a reviewer the council cannot settle is asked on the node it names, with the council's majority pick or else the asker's as the recommendation: its task is blocked and waits on that question, no thread opens, and another task lands", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, ["US-1", "US-2", "US-3", "US-4"].map((key) => story(key)), [], tree());
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux", { node: "n1" })] }],
+    ...councilOf("US-1", [vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" })], [vote(2)], [vote(1)]),
+    "impl:US-2": [{ status: "needs_decision", summary: "Stopped.", question: "Which red?", options: ["#c00", "#f00"], recommendation: "#f00", node: "n2" }],
+    ...councilOf("US-2", [vote(1)], [vote(2)], [vote(0)]),
+    "review:US-3": [{ verdict: "needs_decision", criteria: [], defects: [], question: "Should the badge blink?", options: ["Yes", "No"], recommendation: "No", node: "n1" }],
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const asked = dirs.state().behaviour.questions;
+  const on = (text) => asked.find((q) => q.question.startsWith(text));
+  assert.deepEqual(asked.map((q) => q.state), ["open", "open", "open"]);
+  assert.deepEqual([on("Which colour is the badge?").node_id, on("Which red?").node_id, on("Should the badge blink?").node_id], ["n1", "n2", "n1"]);
+  assert.match(on("Which colour is the badge?").recommendation, /^Red\b/);
+  assert.match(on("Which red?").recommendation, /^#f00\b/);
+  assert.match(on("Should the badge blink?").recommendation, /^No\b/);
+  assert.deepEqual(questions(dirs), []);
+  assert.deepEqual(["US-1", "US-2", "US-3", "US-4"].map((key) => [dirs.story(key).blocked, dirs.story(key).links]), [[true, []], [true, []], [true, []], [false, []]]);
+  assert.deepEqual([dirs.story("US-3").status, dirs.story("US-4").status], ["implemented", "done"]);
+  assert.deepEqual([...result.outcomes].sort((a, b) => a.key.localeCompare(b.key)), [
+    { key: "US-2", outcome: "waiting", question: on("Which red?").id },
+    { key: "US-3", outcome: "waiting", question: on("Should the badge blink?").id },
+    { key: "US-4", outcome: "done" },
+  ]);
+  assert.deepEqual(result.council, { settled: 0, majority: 0, asked: 3 });
+});
+
+test("in a feature with a behaviour tree, a question whose ask on the tree fails is an error of its task: the task fails with the error, is not blocked, and no thread opens in its place", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")], [], tree());
+  writeFileSync(join(dirs.bin, "omni"), `#!/bin/sh\nif [ "$1" = behaviour ] && [ "$2" = ask ]; then echo "conflict: the tree is being edited" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);
+  const roles = {
+    "impl:US-1": [{ status: "needs_decision", summary: "Stopped.", question: "Which red?", options: ["#c00", "#f00"], recommendation: "#f00", node: "n2" }],
+    ...councilOf("US-1", [vote(1)], [vote(2)], [vote(0)]),
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, "thread" in o, "question" in o]), [["US-1", "failed", false, false]]);
+  assert.match(result.outcomes[0].detail, /conflict: the tree is being edited/);
+  assert.deepEqual([questions(dirs), dirs.state().behaviour.questions, dirs.story("US-1").blocked], [[], [], false]);
 });
 
 test("an implementer that asks a fourth question in one attempt, after the council settled three, has it sent to the human without a council", { timeout: 60000 }, async (t) => {
@@ -2335,6 +2385,28 @@ test("a test author's question goes to the council, which reads the story's work
   assert.equal(dirs.state().calls.filter((c) => c.argv[0] === "story" && (c.argv[1] === "edit" || c.argv[1] === "block")).length, 0);
   assert.deepEqual([existsSync(dirs.worktree("US-1")), existsSync(dirs.worktree("US-2")), git(dirs.repo, "branch", "--list", "story/*").trim()], [false, false, ""]);
   assert.deepEqual(result.council, { settled: 1, majority: 0, asked: 1 });
+});
+
+test("in a feature with a behaviour tree, a test author's question the council cannot settle is asked on its node without blocking: the landed task stays done, its tests are dropped, and the note names the question", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")], [], tree());
+  const roles = {
+    "tests:US-1": [authored({ status: "needs_decision", question: "Does the count wrap?", options: ["Yes", "No"], recommendation: "No", node: "n2" })],
+    ...councilOf("US-1", [vote(1)], [vote(2)], [vote(0)]),
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const [asked] = dirs.state().behaviour.questions;
+  assert.deepEqual([dirs.state().behaviour.questions.length, asked.node_id, asked.state], [1, "n2", "open"]);
+  assert.match(asked.question, /^Does the count wrap\?/);
+  assert.deepEqual(questions(dirs), []);
+  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked], ["done", false]);
+  assert.deepEqual(result.tests.map((x) => [x.key, x.outcome]), [["US-1", "dropped"]]);
+  assert.equal(result.notes.length, 1);
+  assert.ok(result.notes[0].startsWith("US-1 landed without regression tests: ") && result.notes[0].includes(asked.id), result.notes[0]);
+  assert.deepEqual(result.council, { settled: 0, majority: 0, asked: 1 });
 });
 
 test("agents that return nothing for 3 stories in a row stop the run taking stories, with no thread and one note that names the 3 stories; each story goes back with no attempt used, not blocked", { timeout: 120000 }, async (t) => {

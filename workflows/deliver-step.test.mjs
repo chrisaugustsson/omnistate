@@ -1048,6 +1048,17 @@ test("start gives the checks fast, stack_up, stack, stack_reset, seed and lint a
   assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x", lint: "" });
 });
 
+test("a start whose behaviour list fails goes on with tree false, so questions go to threads, and logs the list's error; a tree with a node gives tree true", (t) => {
+  const failing = scratch(t, [], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
+  writeFileSync(join(failing.root, "bin", "omni"), `#!/bin/sh\nif [ "$1" = behaviour ] && [ "$2" = list ]; then echo "behaviour list is down" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);
+  const listed = scratch(t, [], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
+
+  const [down, up] = [start(failing), start(listed)];
+
+  assert.deepEqual([down.ok, down.tree, up.ok, up.tree], [true, false, true, true]);
+  assert.ok(down.log.some((l) => l.includes("behaviour list is down")), down.log.join("\n"));
+});
+
 test("a start whose checks cannot be read stops before any work and leaves no lock, and is not tried again: a repeat would read the same configuration", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })], [], { checks: null });
 
