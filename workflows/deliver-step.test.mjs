@@ -3573,7 +3573,7 @@ function divergedBranch(dirs) {
 }
 const mergedPr = (oid) => ({ number: 2, url: "https://example.com/pr/2", head: "deliver/board", base: "main", state: "merged", title: "board", headRefOid: oid, body: "" });
 
-test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from its tip, when they have diverged and gh lists a merged pull request whose head was that tip: it logs so, and run.json keeps the old tip as restarted; start does the same", (t) => {
+test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from its tip, when they have diverged and gh lists a merged pull request whose head was that tip: it logs so, and .omni/restarted-<slug> keeps the old tip; start does the same, and a later restart keeps the oldest tip there", (t) => {
   const dirs = scratch(t, [setupStory("US-1"), story("US-2")]);
   withRemote(dirs);
   const { run } = start(dirs);
@@ -3585,7 +3585,8 @@ test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from 
 
   assert.deepEqual([body.ok, body.tip, sha(dirs, "refs/heads/deliver/board")], [true, head, head]);
   assert.ok(body.log.includes(`deliver/board starts again at ${head.slice(0, 7)}: its pull request was merged`), body.log.join("\n"));
-  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).restarted, old);
+  const restartedFile = (d) => join(d.repo, ".omni", "restarted-board");
+  assert.equal(readFileSync(restartedFile(dirs), "utf8").trim(), old);
   assert.deepEqual(gh.calls(), [["pr", "list", "--head", "deliver/board", "--state", "merged", "--json", "headRefOid"]]);
 
   const normal = scratch(t, [story("US-1")]);
@@ -3597,7 +3598,15 @@ test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from 
 
   assert.deepEqual([started.ok, started.tip, started.restarted], [true, branch.head, undefined]);
   assert.ok(started.log.includes(`deliver/board starts again at ${branch.head.slice(0, 7)}: its pull request was merged`), started.log.join("\n"));
-  assert.equal(JSON.parse(readFileSync(runFile(normal, started.run, "run.json"), "utf8")).restarted, branch.old);
+  assert.equal(readFileSync(restartedFile(normal), "utf8").trim(), branch.old);
+  step(normal, started.run, "finish", { report: noReport });
+  const later = { old: landOn(normal, "deliver/board", "count.rs"), head: commit(normal.repo, "later.rs") };
+  withGh(normal, { prs: [mergedPr(later.old)] });
+
+  const again = start(normal, { op: "start-later" });
+
+  assert.deepEqual([again.ok, again.tip], [true, later.head], again.error);
+  assert.equal(readFileSync(restartedFile(normal), "utf8").trim(), branch.old);
 });
 
 test("repo-open and start refuse deliver/<slug> and HEAD that have diverged when no merged pull request has the branch's tip, or gh is missing: the branch stays", (t) => {
@@ -3656,6 +3665,28 @@ test("after a restart finish pushes with a lease on the merged tip: a remote bra
       assert.equal(body.why, "! [rejected] deliver/board -> deliver/board (stale info)", what);
     }
   }
+});
+
+test("a restart's lease outlives the run that made it: run 1 starts deliver/<slug> again and lands nothing, run 2 lands a task and its push moves the remote branch from the merged tip and removes .omni/restarted-<slug>", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  const { old } = divergedBranch(dirs);
+  git(dirs.repo, "push", "-q", "origin", "deliver/board");
+  withGh(dirs, { prs: [mergedPr(old)] });
+  const first = start(dirs);
+
+  const nothing = step(dirs, first.run, "finish", { report: noReport });
+
+  assert.deepEqual([nothing.pushed, remote.at("refs/heads/deliver/board")], [false, old], nothing.why);
+  const second = start(dirs, { op: "start-2" });
+  assert.equal(second.ok, true, second.error);
+  const tip = landOn(dirs, "deliver/board", "count.rs");
+
+  const body = step(dirs, second.run, "finish", { report: noReport });
+
+  assert.equal(body.pushed, true, body.why);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  assert.equal(existsSync(join(dirs.repo, ".omni", "restarted-board")), false);
 });
 
 test("a pull request's body longer than 60,000 characters goes without its Timings; still longer, it is cut so that it and a last line naming the Run thread are 60,000 characters at most, and that line comes only when text was cut", () => {

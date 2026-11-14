@@ -397,10 +397,13 @@ const recordedOp = (root, runId, step, opId) => {
   return Object.hasOwn(ops, opId) ? ops[opId] : null
 }
 // run.json holds the run: its feature, root, thread, checks, the tip of
-// deliver/<slug> at its start, and the stories it landed; restarted, the old
-// tip of a deliver/<slug> whose pull request was merged and that this run
-// started again at HEAD, which finish's push takes as its lease.
+// deliver/<slug> at its start, and the stories it landed.
 const runPathOf = (root, runId) => path.join(runDirOf(root, runId), 'run.json')
+// .omni/restarted-<slug> holds the old tip of a deliver/<slug> whose pull
+// request was merged and that a run started again at HEAD. finish's push takes
+// it as its lease, in whichever run pushes next, and removes it once a push of
+// the branch went through: until then the remote still has that tip.
+const restartedPathOf = (root, feature) => path.join(root, '.omni', `restarted-${slugOf(feature)}`)
 const updateRun = (root, runId, change) => withLock(runPathOf(root, runId), () => {
   const info = change(readJson(runPathOf(root, runId)) || {})
   writeJson(runPathOf(root, runId), info)
@@ -1253,22 +1256,25 @@ const pullRequest = (b, info, body) => {
   }
   if (plan.why) return { pr: null, pushed: false, why: plan.why }
   const ref = `refs/heads/${b.branch}`
-  // The run that started the branch again, after its pull request was
-  // merged, moves the remote branch only while it is still at the merged
-  // tip; when the remote has no such branch any more, git rejects that
-  // lease as stale, and the push expects no branch there instead.
+  // A branch started again after its pull request was merged moves the
+  // remote branch only while it is still at the merged tip; when the remote
+  // has no such branch any more, git rejects that lease as stale, and the
+  // push expects no branch there instead.
+  const leaseFile = restartedPathOf(b.root, b.feature)
+  const restarted = (readText(leaseFile) || '').trim()
   const push = (lease) => run('git', ['-C', b.root, 'push', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
   const pushFailed = (e) => ({ pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : pushLine(e) })
   try {
-    push(info.restarted || undefined)
+    push(restarted || undefined)
   } catch (e) {
-    if (!(info.restarted && !e.timedOut && /\(stale info\)/.test(String(e.stderr || '')))) return pushFailed(e)
+    if (!(restarted && !e.timedOut && /\(stale info\)/.test(String(e.stderr || '')))) return pushFailed(e)
     try {
       push('')
     } catch {
       return pushFailed(e)
     }
   }
+  fs.rmSync(leaseFile, { force: true })
   const file = path.join(runDirOf(b.root, b.runId), 'pull-request.md')
   fs.writeFileSync(file, prBody(body, b.runId))
   const env = { ...process.env, GH_PROMPT_DISABLED: '1' }
@@ -1460,7 +1466,7 @@ const STEPS = {
     }
     laneAtStart(b, tip)
     dropDoneWorktrees(b, b.listStories(), log)
-    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set), ...(plan.move === 'restart' ? { restarted: plan.was } : {}) }))
+    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set) }))
     return { branch: b.branch, tip, lane: b.lane, checks, base: baseOf(b.root), setup: setupDocOf(b), log }
   },
 
@@ -2184,11 +2190,9 @@ const start = (flags) => {
     dropLock(root, runId)
     return { ok: false, received, error: body.error, retry: body.retry === true, log }
   }
-  // The old tip of a branch that starts again goes in run.json, not the body.
-  const { restarted, ...rest } = body
-  body = { ok: true, received, ...rest }
+  body = { ok: true, received, ...body }
   fs.mkdirSync(path.join(runDirOf(root, runId), 'in'), { recursive: true })
-  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [], ...(restarted ? { restarted } : {}) })
+  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [] })
   recordOp(root, runId, 'start', opId, body)
   return body
 }
@@ -2283,7 +2287,6 @@ const startRun = (b, log, setupTask = null) => {
     released,
     log,
     setup: setupDocOf(b),
-    ...(repo && repo.move === 'restart' ? { restarted: repo.was } : {}),
   }
 }
 
@@ -2363,6 +2366,12 @@ const branchAt = (b, { head, was, move }, log) => {
       b.git(['update-ref', `refs/heads/${b.branch}`, head, was])
     } catch {
       throw Object.assign(new Error(diverged(b)), { refused: true })
+    }
+    // The oldest tip not pushed over yet is the one the remote still has.
+    const file = restartedPathOf(b.root, b.feature)
+    if (!(readText(file) || '').trim()) {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, `${was}\n`)
     }
   }
   log.push({
