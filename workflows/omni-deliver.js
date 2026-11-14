@@ -2056,19 +2056,25 @@ const conflicts = new Map()
 // reset and rebuilt there when it holds the story's build. The story's tests
 // are written once it has landed, outside this turn (writeTests).
 // The boards of a task the verifier that landed it did not compare, with the
-// distinct reasons, or null when it compared them all.
+// distinct reasons, or null when it compared them all. A reason is a part of
+// the verifier's result file, joined by the helper, which cuts it.
 const uncompared = []
 const uncomparedOf = (ctx, v) => {
+  const entries = Array.isArray(v.boards) ? v.boards : []
   const boards = []
   const reasons = []
+  const seen = []
   for (const x of ctx.boards || []) {
-    const entry = (Array.isArray(v.boards) ? v.boards : []).find((y) => y && y.board === x.board)
-    if (entry && entry.compared === true) continue
+    const i = entries.findIndex((y) => y && y.board === x.board)
+    if (i !== -1 && entries[i].compared === true) continue
     boards.push(x.board)
-    const why = !entry ? 'the verifier did not report on this board' : String(entry.reason || '').trim() || 'the verifier gave no reason'
-    if (!reasons.includes(why)) reasons.push(why)
+    const why = i === -1 ? 'the verifier did not report on this board' : part(v, ['boards', i, 'reason'], 'the verifier gave no reason')
+    const text = typeof why === 'string' ? why : why.value.trim()
+    if (seen.includes(text)) continue
+    seen.push(text)
+    reasons.push(why)
   }
-  return boards.length ? { boards, reason: reasons.join('; ').slice(0, 300) } : null
+  return boards.length ? { boards, reason: words(reasons.flatMap((r, n) => (n ? ['; ', r] : [r]))) } : null
 }
 const laneStory = async (key) => {
   if (laneStopped) return { key, outcome: 'reviewed', detail: 'the lane stopped earlier in this run, so the story waits in reviewed for the next run' }

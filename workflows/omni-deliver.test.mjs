@@ -2270,6 +2270,12 @@ test("a board the verifier did not compare, or gave no entry for, lands the task
   assert.deepEqual(result.landed, ["US-1", "US-2"]);
   const [finish] = agentsOf(calls, "courier:finish");
   assert.deepEqual(filledOf(finish).report.uncompared, [{ key: "US-1", boards: ["b1", "b2"], reason: "The page did not open; the verifier did not report on this board" }]);
+  // The verifier's own words come from its result file, never from the courier's copy.
+  const { outs, report } = payloadOf(finish);
+  const { $join } = report.uncompared[0].reason;
+  assert.deepEqual($join, [{ $out: $join[0].$out, at: ["boards", 0, "reason"] }, "; ", "the verifier did not report on this board"]);
+  assert.match(outs[$join[0].$out].file, /verify/);
+  assert.ok(!JSON.stringify(payloadOf(finish)).includes("The page did not open"));
   const [verify] = agentsOf(calls, "verify:US-2");
   assert.deepEqual(verify.schema.required, ["criteria"]);
 });

@@ -3333,7 +3333,7 @@ test("the report lists each task once: waiting on an open question with its node
   const report = {
     outcomes: [{ key: "US-5", outcome: "failed", detail: "\nthe courier returned nothing\nsecond line" }, { key: "US-4", outcome: "parked", detail: "failed 3 tries" }],
     council: { settled: 0, majority: 0, asked: 0 },
-    uncompared: [{ key: "US-11", boards: ["b1", "b2"], reason: "The page did not open" }],
+    uncompared: [{ key: "US-11", boards: ["b1", "b2"], reason: "The page did not open" }, { key: "US-12", boards: ["b3"], reason: "y".repeat(400) }],
   };
 
   const text = readFileSync(step(dirs, run, "finish", { report }).report, "utf8");
@@ -3354,7 +3354,7 @@ test("the report lists each task once: waiting on an open question with its node
   ].join("\n"));
   assert.equal(sectionOf(text, "Waiting for another task"), "- US-6 Story US-6: waits for US-7, US-4\n- US-7 Story US-7: waits for US-4");
   assert.equal(sectionOf(text, "Not started"), "- US-8 Story US-8\n- US-10 Story US-10");
-  assert.equal(sectionOf(text, "Not compared with its board"), "- US-11 Story US-11: b1, b2: The page did not open");
+  assert.equal(sectionOf(text, "Not compared with its board"), `- US-11 Story US-11: b1, b2: The page did not open\n- US-12 Story US-12: b3: ${"y".repeat(300)}`);
   assert.equal(sectionOf(text, "Journeys"), "- none");
   assert.deepEqual(text.split("\n").filter((l) => l.startsWith("## ")), ["## Built", "## Waiting on a question", "## Failed", "## Waiting for another task", "## Not started", "## Not compared with its board", "## Pending human checks", "## Council", "## Journeys", "## Timings"]);
 });

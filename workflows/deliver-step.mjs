@@ -1178,7 +1178,7 @@ const reportText = (b, info, report) => {
     return `${named(s.key)}: waits for ${keys.join(', ')}`
   })
   const notStarted = stories.filter((s) => s.status === 'backlog' && take(s)).map((s) => named(s.key))
-  const uncompared = list(report.uncompared).filter((u) => u.key).map((u) => `${named(u.key)}: ${list(u.boards).join(', ')}${u.reason ? `: ${u.reason}` : ''}`)
+  const uncompared = list(report.uncompared).filter((u) => u.key).map((u) => `${named(u.key)}: ${list(u.boards).join(', ')}${u.reason ? `: ${String(u.reason).slice(0, 300)}` : ''}`)
   return `${[
     `# ${b.feature}: build report of ${b.runId}`,
     ...list(report.notes).map(String),
