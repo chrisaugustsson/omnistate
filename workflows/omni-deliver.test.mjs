@@ -3174,7 +3174,7 @@ const setUp = (fast = "true") => async (call, serial, dirs) => {
     writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
     writeFileSync(join(dirs.repo, ".omni.toml"), `[checks]\nfast = "${fast}"\n`);
     git(dirs.repo, "add", ".gitignore", ".omni.toml", "README");
-    git(dirs.repo, "commit", "-q", "-m", `feat: Set up with ${fast}`);
+    git(dirs.repo, "commit", "-q", "--allow-empty", "-m", `feat: Set up with ${fast}`);
   });
   return { status: "ready", summary: "Set up.", decisions: [], commits: [] };
 };
@@ -3212,5 +3212,50 @@ test("a setup task still blocked after unblock-pass is not claimed: the run repo
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]), [["US-1", "waiting"]]);
   assert.deepEqual([...claimsOf(dirs, "US-1"), ...claimsOf(dirs, "US-2")], []);
   assert.deepEqual(agentsOf(calls, "impl:US-1"), []);
+  assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
+});
+
+const idle = { status: "ready", summary: "Nothing done.", decisions: [], commits: [] };
+
+test("a setup try stops at its first failing check, which gives one finding and uses the try: not_ready runs no fast job, a failed fast job no verifier; after the third the task is parked, nothing else is claimed and the run finishes; the next run takes it up in a new round", { timeout: 240000 }, async (t) => {
+  const dirs = newProject(t, [setupTask("US-1"), story("US-2", { blocked_by: ["US-1"] })]);
+
+  const first = await deliver(dirs, {}, { "impl:US-1": [idle, setUp("false"), setUp()], "verify:US-1": [verified({ 0: "It does not start." })] });
+
+  assert.equal(first.error, null);
+  assert.deepEqual(dirs.story("US-1").findings.map((f) => [f.stage, f.text.split("\n")[0], f.resolved]), [
+    ["testing", `[attempt 1] The setup is not ready: ${dirs.repo} is not a git repository`, false],
+    ["testing", "[attempt 2] The fast check (`false`) failed.", false],
+    ["testing", "[attempt 3] Criterion not met when run: \"The app starts\". It does not start.", false],
+  ]);
+  assert.equal(stepsNamed(first.calls, "job-start", "US-1").length, 2);
+  assert.equal(agentsOf(first.calls, "verify:US-1").length, 1);
+  const prompts = agentsOf(first.calls, "impl:US-1").map((c) => c.prompt);
+  for (const p of prompts.slice(1)) assert.ok(p.includes("The folder holds the earlier try's work: continue from it, do not start over, and fix every open finding of the task."), p);
+  assert.deepEqual(first.result.outcomes.map((o) => [o.key, o.outcome]), [["US-1", "parked"]]);
+  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked, claimsOf(dirs, "US-2")], ["backlog", false, []]);
+  assert.equal(agentsOf(first.calls, "courier:finish").length, 1);
+  assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
+
+  const second = await deliver(dirs, {}, { "impl:US-1": [setUp()] });
+
+  assert.equal(second.error, null);
+  const [again] = agentsOf(second.calls, "impl:US-1");
+  assert.ok(again.prompt.includes("This is attempt 1 of 3 of this round. The folder holds the work of the earlier round of tries"), again.prompt);
+  assert.deepEqual(second.result.landed, ["US-1", "US-2"]);
+});
+
+test("a setup implementer's question the council does not settle is asked on the node . of the tree, the task is blocked, and the run ends with it waiting", { timeout: 180000 }, async (t) => {
+  const dirs = newProject(t, [setupTask("US-1"), story("US-2", { blocked_by: ["US-1"] })], { behaviour: { nodes: [{ id: "n-root", path: "" }], questions: [] } });
+  const asking = { status: "needs_decision", summary: "Which database?", decisions: [], commits: [], question: "Which database does the app use?", options: ["SQLite", "Postgres"], recommendation: "SQLite" };
+
+  const { result, error } = await deliver(dirs, {}, { "impl:US-1": [asking] });
+
+  assert.equal(error, null);
+  const [q] = dirs.state().behaviour.questions;
+  assert.equal(q.node_id, "n-root");
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.question]), [["US-1", "waiting", q.id]]);
+  assert.equal(dirs.story("US-1").blocked, true);
+  assert.deepEqual(claimsOf(dirs, "US-2"), []);
   assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
 });
