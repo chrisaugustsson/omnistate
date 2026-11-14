@@ -408,10 +408,13 @@ const recordedOp = (root, runId, step, opId) => {
   return Object.hasOwn(ops, opId) ? ops[opId] : null
 }
 // run.json holds the run: its feature, root, thread, checks, the tip of
-// deliver/<slug> at its start, and the stories it landed; restarted, the old
-// tip of a deliver/<slug> whose pull request was merged and that this run
-// started again at HEAD, which finish's push takes as its lease.
+// deliver/<slug> at its start, and the stories it landed.
 const runPathOf = (root, runId) => path.join(runDirOf(root, runId), 'run.json')
+// .omni/restarted-<slug> holds the old tip of a deliver/<slug> whose pull
+// request was merged and that a run started again at HEAD. finish's push takes
+// it as its lease, in whichever run pushes next, and removes it once a push of
+// the branch went through: until then the remote still has that tip.
+const restartedPathOf = (root, feature) => path.join(root, '.omni', `restarted-${slugOf(feature)}`)
 const updateRun = (root, runId, change) => withLock(runPathOf(root, runId), () => {
   const info = change(readJson(runPathOf(root, runId)) || {})
   writeJson(runPathOf(root, runId), info)
@@ -1186,7 +1189,7 @@ const reportText = (b, info, report) => {
     return `${named(s.key)}: waits for ${keys.join(', ')}`
   })
   const notStarted = stories.filter((s) => s.status === 'backlog' && take(s)).map((s) => named(s.key))
-  const uncompared = list(report.uncompared).filter((u) => u.key).map((u) => `${named(u.key)}: ${list(u.boards).join(', ')}${u.reason ? `: ${u.reason}` : ''}`)
+  const uncompared = list(report.uncompared).filter((u) => u.key).map((u) => `${named(u.key)}: ${list(u.boards).join(', ')}${u.reason ? `: ${String(u.reason).slice(0, 300)}` : ''}`)
   return `${[
     `# ${b.feature}: build report of ${b.runId}`,
     ...list(report.notes).map(String),
@@ -1231,6 +1234,17 @@ export const prBody = (text, runId) => {
   const tail = `The full report is on the Run thread of ${runId} in OmniState.\n`
   return `${short.slice(0, PR_MAX - tail.length - 2)}\n\n${tail}`
 }
+// The repository gh works on: --repo <host>/<owner>/<repo> when the URL of
+// the remote names a hosted repository, else nothing, and gh picks one
+// itself. In a checkout with more remotes gh could pick another repository
+// than the one the branch goes to.
+const ghRepo = (url) => {
+  const m = /^https:\/\/(?:[^@/]+@)?([^/@]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url) ||
+    /^[^@/:]+@([^/:]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url) ||
+    /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url)
+  return m ? ['--repo', `${m[1]}/${m[2]}/${m[3]}`] : []
+}
+const ghRepoOf = (root, remote) => ghRepo((tryRun('git', ['-C', root, 'remote', 'get-url', remote]) || '').trim())
 // Why there is no pull request to push for, the first reason that holds, or
 // the remote and base, with the open pull request when there is one. Only gh
 // pr list reaches the network: the other reasons come from local refs.
@@ -1241,16 +1255,17 @@ const prPlan = (b, info) => {
   const remote = (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim() || 'origin'
   if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return { why: 'the checkout has no remote' }
   if (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${base}`]) === null) return { why: `${base} is not on ${remote}` }
+  const repo = ghRepoOf(b.root, remote)
   let open
   try {
-    open = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'open', '--json', 'number,url'], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+    open = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'open', '--json', 'number,url', ...repo], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
   } catch (e) {
     if (e && e.code === 'ENOENT') return { why: 'the gh command is not installed' }
     return { why: `gh cannot list pull requests on ${remote}: ${firstLine(e)}` }
   }
   const ahead = (tryRun('git', ['-C', b.root, 'rev-list', '--count', `refs/heads/${base}..refs/heads/${b.branch}`]) || '0').trim()
   if (ahead === '0') return { why: `${b.branch} holds nothing that ${base} lacks` }
-  return { base, remote, open: Array.isArray(open) && open.length ? open[0] : null }
+  return { base, remote, repo, open: Array.isArray(open) && open.length ? open[0] : null }
 }
 // Pushes the feature's branch and opens its pull request, or says why not:
 // {pr: {url, created} | null, pushed, why}. A failure is the answer's why,
@@ -1264,31 +1279,35 @@ const pullRequest = (b, info, body) => {
   }
   if (plan.why) return { pr: null, pushed: false, why: plan.why }
   const ref = `refs/heads/${b.branch}`
-  // The run that started the branch again, after its pull request was
-  // merged, moves the remote branch only while it is still at the merged
-  // tip; when the remote has no such branch any more, git rejects that
-  // lease as stale, and the push expects no branch there instead.
-  const push = (lease) => run('git', ['-C', b.root, 'push', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+  // A branch started again after its pull request was merged moves the
+  // remote branch only while it is still at the merged tip; when the remote
+  // has no such branch any more, git rejects that lease as stale, and the
+  // push expects no branch there instead.
+  const leaseFile = restartedPathOf(b.root, b.feature)
+  const restarted = (readText(leaseFile) || '').trim()
+  // Never tags, whatever the user's push.followTags says.
+  const push = (lease) => run('git', ['-C', b.root, 'push', '--no-follow-tags', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
   const pushFailed = (e) => ({ pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : pushLine(e) })
   try {
-    push(info.restarted || undefined)
+    push(restarted || undefined)
   } catch (e) {
-    if (!(info.restarted && !e.timedOut && /\(stale info\)/.test(String(e.stderr || '')))) return pushFailed(e)
+    if (!(restarted && !e.timedOut && /\(stale info\)/.test(String(e.stderr || '')))) return pushFailed(e)
     try {
       push('')
     } catch {
       return pushFailed(e)
     }
   }
+  fs.rmSync(leaseFile, { force: true })
   const file = path.join(runDirOf(b.root, b.runId), 'pull-request.md')
   fs.writeFileSync(file, prBody(body, b.runId))
   const env = { ...process.env, GH_PROMPT_DISABLED: '1' }
   try {
     if (plan.open) {
-      run('gh', ['pr', 'edit', String(plan.open.number), '--body-file', file], { cwd: b.root, env })
+      run('gh', ['pr', 'edit', String(plan.open.number), '--body-file', file, ...plan.repo], { cwd: b.root, env })
       return { pr: { url: plan.open.url, created: false }, pushed: true, why: null }
     }
-    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file], { cwd: b.root, env })
+    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file, ...plan.repo], { cwd: b.root, env })
     const url = out.trim().split('\n').pop().trim()
     return { pr: { url, created: true }, pushed: true, why: null }
   } catch (e) {
@@ -1471,7 +1490,7 @@ const STEPS = {
     }
     laneAtStart(b, tip)
     dropDoneWorktrees(b, b.listStories(), log)
-    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set), ...(plan.move === 'restart' ? { restarted: plan.was } : {}) }))
+    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set) }))
     return { branch: b.branch, tip, lane: b.lane, checks, base: baseOf(b.root), setup: setupDocOf(b), log }
   },
 
@@ -2195,11 +2214,9 @@ const start = (flags) => {
     dropLock(root, runId)
     return { ok: false, received, error: body.error, retry: body.retry === true, log }
   }
-  // The old tip of a branch that starts again goes in run.json, not the body.
-  const { restarted, ...rest } = body
-  body = { ok: true, received, ...rest }
+  body = { ok: true, received, ...body }
   fs.mkdirSync(path.join(runDirOf(root, runId), 'in'), { recursive: true })
-  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [], ...(restarted ? { restarted } : {}) })
+  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [] })
   recordOp(root, runId, 'start', opId, body)
   return body
 }
@@ -2294,7 +2311,6 @@ const startRun = (b, log, setupTask = null) => {
     released,
     log,
     setup: setupDocOf(b),
-    ...(repo && repo.move === 'restart' ? { restarted: repo.was } : {}),
   }
 }
 
@@ -2375,6 +2391,12 @@ const branchAt = (b, { head, was, move }, log) => {
     } catch {
       throw Object.assign(new Error(diverged(b)), { refused: true })
     }
+    // The oldest tip not pushed over yet is the one the remote still has.
+    const file = restartedPathOf(b.root, b.feature)
+    if (!(readText(file) || '').trim()) {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, `${was}\n`)
+    }
   }
   log.push({
     create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
@@ -2394,7 +2416,7 @@ const mergedAt = (b, tip) => {
   const remote = (base && (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim()) || 'origin'
   if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return false
   try {
-    const merged = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'merged', '--json', 'headRefOid'], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+    const merged = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'merged', '--json', 'headRefOid', ...ghRepoOf(b.root, remote)], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
     return Array.isArray(merged) && merged.some((pr) => pr && pr.headRefOid === tip)
   } catch {
     return false

@@ -3333,7 +3333,7 @@ test("the report lists each task once: waiting on an open question with its node
   const report = {
     outcomes: [{ key: "US-5", outcome: "failed", detail: "\nthe courier returned nothing\nsecond line" }, { key: "US-4", outcome: "parked", detail: "failed 3 tries" }],
     council: { settled: 0, majority: 0, asked: 0 },
-    uncompared: [{ key: "US-11", boards: ["b1", "b2"], reason: "The page did not open" }],
+    uncompared: [{ key: "US-11", boards: ["b1", "b2"], reason: "The page did not open" }, { key: "US-12", boards: ["b3"], reason: "y".repeat(400) }],
   };
 
   const text = readFileSync(step(dirs, run, "finish", { report }).report, "utf8");
@@ -3354,7 +3354,7 @@ test("the report lists each task once: waiting on an open question with its node
   ].join("\n"));
   assert.equal(sectionOf(text, "Waiting for another task"), "- US-6 Story US-6: waits for US-7, US-4\n- US-7 Story US-7: waits for US-4");
   assert.equal(sectionOf(text, "Not started"), "- US-8 Story US-8\n- US-10 Story US-10");
-  assert.equal(sectionOf(text, "Not compared with its board"), "- US-11 Story US-11: b1, b2: The page did not open");
+  assert.equal(sectionOf(text, "Not compared with its board"), `- US-11 Story US-11: b1, b2: The page did not open\n- US-12 Story US-12: b3: ${"y".repeat(300)}`);
   assert.equal(sectionOf(text, "Journeys"), "- none");
   assert.deepEqual(text.split("\n").filter((l) => l.startsWith("## ")), ["## Built", "## Waiting on a question", "## Failed", "## Waiting for another task", "## Not started", "## Not compared with its board", "## Pending human checks", "## Council", "## Journeys", "## Timings"]);
 });
@@ -3573,7 +3573,7 @@ function divergedBranch(dirs) {
 }
 const mergedPr = (oid) => ({ number: 2, url: "https://example.com/pr/2", head: "deliver/board", base: "main", state: "merged", title: "board", headRefOid: oid, body: "" });
 
-test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from its tip, when they have diverged and gh lists a merged pull request whose head was that tip: it logs so, and run.json keeps the old tip as restarted; start does the same", (t) => {
+test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from its tip, when they have diverged and gh lists a merged pull request whose head was that tip: it logs so, and .omni/restarted-<slug> keeps the old tip; start does the same, and a later restart keeps the oldest tip there", (t) => {
   const dirs = scratch(t, [setupStory("US-1"), story("US-2")]);
   withRemote(dirs);
   const { run } = start(dirs);
@@ -3585,7 +3585,8 @@ test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from 
 
   assert.deepEqual([body.ok, body.tip, sha(dirs, "refs/heads/deliver/board")], [true, head, head]);
   assert.ok(body.log.includes(`deliver/board starts again at ${head.slice(0, 7)}: its pull request was merged`), body.log.join("\n"));
-  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).restarted, old);
+  const restartedFile = (d) => join(d.repo, ".omni", "restarted-board");
+  assert.equal(readFileSync(restartedFile(dirs), "utf8").trim(), old);
   assert.deepEqual(gh.calls(), [["pr", "list", "--head", "deliver/board", "--state", "merged", "--json", "headRefOid"]]);
 
   const normal = scratch(t, [story("US-1")]);
@@ -3597,7 +3598,15 @@ test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from 
 
   assert.deepEqual([started.ok, started.tip, started.restarted], [true, branch.head, undefined]);
   assert.ok(started.log.includes(`deliver/board starts again at ${branch.head.slice(0, 7)}: its pull request was merged`), started.log.join("\n"));
-  assert.equal(JSON.parse(readFileSync(runFile(normal, started.run, "run.json"), "utf8")).restarted, branch.old);
+  assert.equal(readFileSync(restartedFile(normal), "utf8").trim(), branch.old);
+  step(normal, started.run, "finish", { report: noReport });
+  const later = { old: landOn(normal, "deliver/board", "count.rs"), head: commit(normal.repo, "later.rs") };
+  withGh(normal, { prs: [mergedPr(later.old)] });
+
+  const again = start(normal, { op: "start-later" });
+
+  assert.deepEqual([again.ok, again.tip], [true, later.head], again.error);
+  assert.equal(readFileSync(restartedFile(normal), "utf8").trim(), branch.old);
 });
 
 test("repo-open and start refuse deliver/<slug> and HEAD that have diverged when no merged pull request has the branch's tip, or gh is missing: the branch stays", (t) => {
@@ -3656,6 +3665,59 @@ test("after a restart finish pushes with a lease on the merged tip: a remote bra
       assert.equal(body.why, "! [rejected] deliver/board -> deliver/board (stale info)", what);
     }
   }
+});
+
+test("every gh call names the repository of the remote's URL when it has the shape of a hosted one: finish's list and create, and start's look for a merged pull request; a local path names none", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  git(dirs.repo, "remote", "set-url", "origin", "https://example.com/acme/app.git");
+  git(dirs.repo, "config", "remote.origin.pushurl", remote.bare);
+  const gh = withGh(dirs);
+  const { run } = start(dirs);
+  const tip = landOn(dirs, "deliver/board", "badge.rs");
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.deepEqual([body.pushed, body.why, remote.at("refs/heads/deliver/board")], [true, null, tip]);
+  assert.deepEqual(gh.calls().map((argv) => [argv[1], argv.slice(-2)]), [["list", ["--repo", "example.com/acme/app"]], ["create", ["--repo", "example.com/acme/app"]]]);
+
+  for (const [url, repo] of [["git@example.com:acme/app.git", ["--repo", "example.com/acme/app"]], ["ssh://git@example.com/acme/app", ["--repo", "example.com/acme/app"]], [null, []]]) {
+    const restarting = scratch(t, [story("US-1")]);
+    const bare = withRemote(restarting).bare;
+    if (url) {
+      git(restarting.repo, "remote", "set-url", "origin", url);
+      git(restarting.repo, "config", "remote.origin.pushurl", bare);
+    }
+    const { old } = divergedBranch(restarting);
+    const calls = withGh(restarting, { prs: [mergedPr(old)] });
+
+    const started = start(restarting);
+
+    assert.equal(started.ok, true, started.error);
+    assert.deepEqual(calls.calls(), [["pr", "list", "--head", "deliver/board", "--state", "merged", "--json", "headRefOid", ...repo]], url);
+  }
+});
+
+test("a restart's lease outlives the run that made it: run 1 starts deliver/<slug> again and lands nothing, run 2 lands a task and its push moves the remote branch from the merged tip and removes .omni/restarted-<slug>", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  const { old } = divergedBranch(dirs);
+  git(dirs.repo, "push", "-q", "origin", "deliver/board");
+  withGh(dirs, { prs: [mergedPr(old)] });
+  const first = start(dirs);
+
+  const nothing = step(dirs, first.run, "finish", { report: noReport });
+
+  assert.deepEqual([nothing.pushed, remote.at("refs/heads/deliver/board")], [false, old], nothing.why);
+  const second = start(dirs, { op: "start-2" });
+  assert.equal(second.ok, true, second.error);
+  const tip = landOn(dirs, "deliver/board", "count.rs");
+
+  const body = step(dirs, second.run, "finish", { report: noReport });
+
+  assert.equal(body.pushed, true, body.why);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  assert.equal(existsSync(join(dirs.repo, ".omni", "restarted-board")), false);
 });
 
 test("a pull request's body longer than 60,000 characters goes without its Timings; still longer, it is cut so that it and a last line naming the Run thread are 60,000 characters at most, and that line comes only when text was cut", () => {
