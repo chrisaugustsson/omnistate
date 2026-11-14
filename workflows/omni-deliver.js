@@ -2439,6 +2439,7 @@ const finish = async (journeyLines) => {
   // carried another way, by step().
   finished = await step('finish', { report }, { past: true })
   log(`The report of ${runId} is on the Run thread ${finished.thread}, and in ${finished.report}`)
+  log(finished.pr ? `Pull request: ${finished.pr.url}` : `No pull request: ${finished.why}`)
 }
 
 // ---- 2b. setup -------------------------------------------------------------------
@@ -2599,4 +2600,10 @@ return {
   tip,
   report: finished.report,
   posted: finished.posted,
+  // The feature's pull request, or null with why there is none.
+  pr: finished.pr ? finished.pr.url : null,
+  why: finished.why ?? null,
+  // The tasks parked after their third try, and those waiting on a question.
+  parked: outcomes.filter((o) => o.outcome === 'parked').map((o) => o.key),
+  waiting: outcomes.filter((o) => o.outcome === 'waiting').map((o) => o.key),
 }
