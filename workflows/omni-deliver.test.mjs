@@ -204,6 +204,7 @@ const byDefault = (call, serial, dirs) => {
   if (role === "verify") return verified()(call, serial, dirs);
   if (role === "tests") return authored();
   if (role === "final") return { healthy: true, journeys: [], report: "Nothing spans the stories." };
+  if (role === "docs") return { status: "nothing", changed: [], reason: "The docs already say it." };
   throw new Error(`no answer for the agent ${call.label}`);
 };
 
@@ -1108,6 +1109,23 @@ test("the script decides a review from its verdicts on the criteria and its defe
   assert.deepEqual(timeline(dirs, "US-3"), ["claim implementing", "move implemented", "claim review", "move backlog", ...once]);
 });
 
+test("the write-back criterion clarity names is recorded as the write-back and judged by nobody before landing: a review that says it is not met and a verifier that says it is not ok send nothing back, and the task lands", { timeout: 60000 }, async (t) => {
+  const criteria = [{ text: "The badge is red", human_check: false }, { text: "`Operations` and `Tables` say what the landed code does for every operation and table this task touched", human_check: false }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], writeBack: [1], gaps: [] }],
+    "review:US-1": [reviewed("fail", { unmet: { 1: "Operations does not say it" }, defects: [{ text: "Tables is not written", files: [], criterion: criteria[1].text }] })],
+    "verify:US-1": [verified({ 1: "The docs are as they were" })],
+  };
+
+  const { result, error } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  assert.deepEqual(dirs.story("US-1").decisions.map((d) => d.choice), ["treated as the write-back: the workflow's docs agent does it once the task has landed, and the reviewer and the verifier skip it"]);
+  assert.deepEqual(timeline(dirs, "US-1"), ["claim implementing", "move implemented", "claim review", "move reviewed", "claim testing", "move done"]);
+  assert.deepEqual([result.outcomes, findingsOf(dirs, "US-1")], [[{ key: "US-1", outcome: "done" }], []]);
+});
+
 test("a story clarity has checked has its test obligations from clarity's decisions alone: a behaviour criterion with the word test in it is judged by the reviewer and the verifier; a story clarity never checked is read for a test as the thing delivered, never for a bare test or suite", { timeout: 120000 }, async (t) => {
   const button = { text: "The Test connection button shows Connected", human_check: false };
   // Behaviour that reads as a test to add, which clarity, having checked the story, did not record as one.
@@ -1889,13 +1907,51 @@ test("prompts give the context first and the criteria and the task last, tell th
   assert.doesNotMatch(impl.prompt, /You are read-only/);
 });
 
+// ---- the write-back ---------------------------------------------------------------------
+
+test("in a feature with Operations or Tables, each task that lands gets one docs agent after its lane-land has answered landed, one at a time: blocked and no result leave the task done with a note, nothing adds none, and the run returns each outcome; a task sent back gets none for the try that did not land", { timeout: 120000 }, async (t) => {
+  const docList = [{ id: "d-tables", kind: "html", pillar: "db", title: "Tables" }];
+  const dirs = scratch(t, ["US-1", "US-2", "US-3"].map((key) => story(key, { criteria: [{ text: "The badge is red", human_check: false }] })), [], { docList });
+  const roles = {
+    "verify:US-3": [verified({ 0: "The badge is blue" })],
+    "docs:US-1": [{ status: "blocked", changed: [], reason: "Tables has no section for badges" }],
+    "docs:US-2": [null, null, null],
+  };
+
+  const { result, error, calls } = await deliver(dirs, {}, roles, { concurrent: false });
+
+  assert.equal(error, null);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => dirs.story(key).status), ["done", "done", "done"]);
+  assert.deepEqual(result.docs.map((d) => [d.key, d.outcome]).sort(), [["US-1", "blocked"], ["US-2", "none"], ["US-3", "nothing"]]);
+  assert.deepEqual(result.notes.filter((n) => n.includes("write-back")).sort(), ["US-1 landed without its write-back: Tables has no section for badges", "US-2 landed without its write-back: the docs agent returned nothing"]);
+  // Each docs agent comes after its task's lane-land answered landed, and US-3's after its second try in the lane only.
+  for (const key of ["US-1", "US-2", "US-3"]) {
+    const first = calls.findIndex((c) => c.label === `docs:${key}`);
+    const lands = calls.flatMap((c, i) => (c.label.startsWith("courier:") && fileIn(c.prompt) !== null && c.output && JSON.parse(c.output).body.results?.some((r) => r.key === key && r.landed === true) ? [i] : []));
+    assert.ok(lands.length && first > lands[0], `${key}: docs at ${first}, landed at ${lands}`);
+  }
+  assert.equal(agentsOf(calls, "docs:US-3").length, 1);
+  assert.equal(agentsOf(calls, "verify:US-3").length, 2);
+});
+
+test("a feature with neither Operations nor Tables calls no docs agent, and the run returns no write-back", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")], [], { docList: [{ id: "d-ops", kind: "html", pillar: "spec", title: "Operations" }] });
+
+  const { result, error, calls } = await deliver(dirs);
+
+  assert.equal(error, null);
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.deepEqual([calls.filter((c) => c.label.startsWith("docs:")), result.docs], [[], []]);
+});
+
 // ---- the agent types ------------------------------------------------------------------
 
 // One story through every role: a clarity gap the council settles, a review
 // that fails once, so that attempt 2 runs on implRetry, the lane's verifier
-// and test author, and the final check.
+// and test author, the docs agent of a feature with Operations, and the final
+// check.
 async function everyRole(t, agentTypes, runtimeOpts = {}) {
-  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge has a colour", human_check: false }] })]);
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge has a colour", human_check: false }] })], [], { docList: [{ id: "d-ops", kind: "html", pillar: "architecture", title: "Operations" }] });
   const quoted = vote(1, { quote: "Badges are red", source: "doc doc-spec node n1" });
   const roles = {
     "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }],
@@ -1915,7 +1971,7 @@ async function everyRole(t, agentTypes, runtimeOpts = {}) {
   }
   return { byRole, run };
 }
-const ROLES = ["clarity", "council", "impl", "implRetry", "review", "verify", "tests", "final", "courier"];
+const ROLES = ["clarity", "council", "impl", "implRetry", "review", "verify", "tests", "docs", "final", "courier"];
 const typeOf = (role) => (role === "implRetry" ? "omni-impl" : `omni-${role}`);
 
 test("every role runs as its omni- agent type by default, omni-impl for implRetry too, and the courier as omni-courier", { timeout: 60000 }, async (t) => {
