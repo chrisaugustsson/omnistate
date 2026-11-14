@@ -112,7 +112,9 @@
 //   resolved, and done
 // - repo-open {}: branch, tip, lane, checks, base, setup (the ID of the
 //   project-level Setup doc, or null), log; what start does with git in a
-//   run without a setup task, once the setup task has landed
+//   run without a setup task, once the setup task has landed. Both start
+//   deliver/<slug> again at HEAD where it has diverged from HEAD and gh lists
+//   a merged pull request whose head was its tip; else they refuse
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
@@ -395,7 +397,9 @@ const recordedOp = (root, runId, step, opId) => {
   return Object.hasOwn(ops, opId) ? ops[opId] : null
 }
 // run.json holds the run: its feature, root, thread, checks, the tip of
-// deliver/<slug> at its start, and the stories it landed.
+// deliver/<slug> at its start, and the stories it landed; restarted, the old
+// tip of a deliver/<slug> whose pull request was merged and that this run
+// started again at HEAD, which finish's push takes as its lease.
 const runPathOf = (root, runId) => path.join(runDirOf(root, runId), 'run.json')
 const updateRun = (root, runId, change) => withLock(runPathOf(root, runId), () => {
   const info = change(readJson(runPathOf(root, runId)) || {})
@@ -1242,15 +1246,31 @@ const pullRequest = (b, info, body) => {
   }
   if (plan.why) return { pr: null, pushed: false, why: plan.why }
   const ref = `refs/heads/${b.branch}`
+  // The run that started the branch again, after its pull request was
+  // merged, moves the remote branch only while it is still at the merged
+  // tip; when the remote has no such branch any more, git rejects that
+  // lease as stale, and the push expects no branch there instead.
+  const push = (lease) => run('git', ['-C', b.root, 'push', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+  const pushFailed = (e) => ({ pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : firstLine(e) })
   try {
-    run('git', ['-C', b.root, 'push', plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+    push(info.restarted || undefined)
   } catch (e) {
-    return { pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : firstLine(e) }
+    if (!(info.restarted && !e.timedOut && /\(stale info\)/.test(String(e.stderr || '')))) return pushFailed(e)
+    try {
+      push('')
+    } catch {
+      return pushFailed(e)
+    }
   }
   const file = path.join(runDirOf(b.root, b.runId), 'pull-request.md')
   fs.writeFileSync(file, prBody(body, b.runId))
+  const env = { ...process.env, GH_PROMPT_DISABLED: '1' }
   try {
-    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } })
+    if (plan.open) {
+      run('gh', ['pr', 'edit', String(plan.open.number), '--body-file', file], { cwd: b.root, env })
+      return { pr: { url: plan.open.url, created: false }, pushed: true, why: null }
+    }
+    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file], { cwd: b.root, env })
     const url = out.trim().split('\n').pop().trim()
     return { pr: { url, created: true }, pushed: true, why: null }
   } catch (e) {
@@ -1424,10 +1444,16 @@ const STEPS = {
     const log = []
     const plan = repoPlan(b)
     if (plan.ok === false) return { ...plan, retry: plan.retry === true }
-    const tip = branchAt(b, plan, log)
+    let tip
+    try {
+      tip = branchAt(b, plan, log)
+    } catch (e) {
+      if (e.refused) return { ok: false, error: e.message, retry: false }
+      throw e
+    }
     laneAtStart(b, tip)
     dropDoneWorktrees(b, b.listStories(), log)
-    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set) }))
+    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set), ...(plan.move === 'restart' ? { restarted: plan.was } : {}) }))
     return { branch: b.branch, tip, lane: b.lane, checks, base: baseOf(b.root), setup: setupDocOf(b), log }
   },
 
@@ -2151,9 +2177,11 @@ const start = (flags) => {
     dropLock(root, runId)
     return { ok: false, received, error: body.error, retry: body.retry === true, log }
   }
-  body = { ok: true, received, ...body }
+  // The old tip of a branch that starts again goes in run.json, not the body.
+  const { restarted, ...rest } = body
+  body = { ok: true, received, ...rest }
   fs.mkdirSync(path.join(runDirOf(root, runId), 'in'), { recursive: true })
-  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [] })
+  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [], ...(restarted ? { restarted } : {}) })
   recordOp(root, runId, 'start', opId, body)
   return body
 }
@@ -2202,7 +2230,13 @@ const startRun = (b, log, setupTask = null) => {
   // The run's thread, named as omni-deliver.js names it: finish posts the
   // report there.
   const thread = b.omni(['thread', 'create', `Run ${b.runId}`]).trim()
-  const tip = repo ? branchAt(b, repo, log) : null
+  let tip = null
+  try {
+    if (repo) tip = branchAt(b, repo, log)
+  } catch (e) {
+    if (e.refused) return { ok: false, error: e.message, retry: false }
+    throw e
+  }
 
   // The jobs of earlier runs that still run, such as a check in the lane
   // worktree: their supervisors are detached, so a workflow that stopped left
@@ -2242,6 +2276,7 @@ const startRun = (b, log, setupTask = null) => {
     released,
     log,
     setup: setupDocOf(b),
+    ...(repo && repo.move === 'restart' ? { restarted: repo.was } : {}),
   }
 }
 
@@ -2291,8 +2326,10 @@ const repoPlan = (b) => {
   const head = git(['rev-parse', 'HEAD']).trim()
   const was = (tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${b.branch}`]) || '').trim()
   const isAncestor = (a, c) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, c]) !== null
-  const move = !was ? 'create' : was === head ? 'same' : isAncestor(was, head) ? 'fast-forward' : isAncestor(head, was) ? 'ahead' : 'diverged'
-  if (move === 'diverged') return { ok: false, error: `${b.branch} and HEAD have diverged: merge first (git merge ${b.branch}), then start again` }
+  let move = !was ? 'create' : was === head ? 'same' : isAncestor(was, head) ? 'fast-forward' : isAncestor(head, was) ? 'ahead' : 'diverged'
+  // A branch whose pull request was merged at its tip starts again at HEAD.
+  if (move === 'diverged' && mergedAt(b, was)) move = 'restart'
+  if (move === 'diverged') return { ok: false, error: diverged(b) }
   let checks
   // Not tried again: omni checks reads the project's .omni.toml, so what
   // fails here is the project's configuration, which a repeat meets again.
@@ -2309,17 +2346,41 @@ const repoPlan = (b) => {
   if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
   return { head, was, move, checks: checksOf(checks) }
 }
-// deliver/<slug> moved as the plan says, and its tip.
+// deliver/<slug> moved as the plan says, and its tip. A restart that finds
+// the branch moved since the plan is refused (refused set on the error).
 const branchAt = (b, { head, was, move }, log) => {
   if (move === 'create') b.git(['update-ref', `refs/heads/${b.branch}`, head, ''])
   if (move === 'fast-forward') b.git(['update-ref', `refs/heads/${b.branch}`, head, was])
+  if (move === 'restart') {
+    try {
+      b.git(['update-ref', `refs/heads/${b.branch}`, head, was])
+    } catch {
+      throw Object.assign(new Error(diverged(b)), { refused: true })
+    }
+  }
   log.push({
     create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
     same: `${b.branch} is at ${short(was)}, the checkout's HEAD`,
     'fast-forward': `${b.branch} fast-forwarded from ${short(was)} to ${short(head)}, the checkout's HEAD`,
     ahead: `${b.branch} kept at ${short(was)}, ahead of the checkout's HEAD ${short(head)}`,
+    restart: `${b.branch} starts again at ${short(head)}: its pull request was merged`,
   }[move])
-  return move === 'create' || move === 'fast-forward' ? head : was
+  return move === 'ahead' || move === 'same' ? was : head
+}
+const diverged = (b) => `${b.branch} and HEAD have diverged: merge first (git merge ${b.branch}), then start again`
+// Whether gh lists a merged pull request of deliver/<slug> whose head was
+// this tip. No when the base branch's remote is missing, gh is, or its list
+// fails.
+const mergedAt = (b, tip) => {
+  const base = baseOf(b.root)
+  const remote = (base && (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim()) || 'origin'
+  if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return false
+  try {
+    const merged = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'merged', '--json', 'headRefOid'], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+    return Array.isArray(merged) && merged.some((pr) => pr && pr.headRefOid === tip)
+  } catch {
+    return false
+  }
 }
 // The lane worktree stays from run to run, detached.
 const laneAtStart = (b, tip) => {

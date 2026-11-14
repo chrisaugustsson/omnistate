@@ -3536,6 +3536,128 @@ test("a push or a gh pr create that fails does not stop finish: the report is po
   assert.equal(existsSync(creating.lock), false);
 });
 
+test("a later run updates the open pull request of deliver/<slug>: it pushes, replaces its body with the new report and creates none; a gh pr edit that fails is a failed create", (t) => {
+  const open = { number: 4, url: "https://example.com/pr/4", head: "deliver/board", base: "main", state: "open", title: "board", headRefOid: null, body: "Old report\n" };
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  const gh = withGh(dirs, { prs: [open] });
+  const { run } = start(dirs);
+  const tip = landOn(dirs, "deliver/board", "badge.rs");
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.deepEqual([body.pr, body.pushed, body.why], [{ url: "https://example.com/pr/4", created: false }, true, null]);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  const [title, , ...rest] = readFileSync(body.report, "utf8").split("\n");
+  assert.deepEqual(gh.read().prs.map((pr) => [pr.number, pr.body]), [[4, [title, ...rest].join("\n")]]);
+  assert.deepEqual(gh.calls().map((argv) => argv.slice(0, 3)), [["pr", "list", "--head"], ["pr", "edit", "4"]]);
+  assert.equal(secondLine(body.report), "Pull request: https://example.com/pr/4");
+
+  const failing = scratch(t, [story("US-1")]);
+  withRemote(failing);
+  withGh(failing, { prs: [open] }, 'if [ "$2" = edit ]; then echo "GraphQL: could not edit" >&2; exit 1; fi\n');
+  const second = start(failing);
+  landOn(failing, "deliver/board", "badge.rs");
+
+  const failed = step(failing, second.run, "finish", { report: noReport });
+
+  assert.deepEqual([failed.ok, failed.pr, failed.pushed, failed.why], [true, null, true, "GraphQL: could not edit"]);
+  assert.equal(secondLine(failed.report), "No pull request: GraphQL: could not edit. The work is on the branch deliver/board.");
+});
+
+// deliver/<slug> at a tip X that HEAD does not hold, and HEAD at a commit X lacks.
+function divergedBranch(dirs) {
+  const old = landOn(dirs, "deliver/board", "badge.rs");
+  const head = commit(dirs.repo, "other.rs");
+  return { old, head };
+}
+const mergedPr = (oid) => ({ number: 2, url: "https://example.com/pr/2", head: "deliver/board", base: "main", state: "merged", title: "board", headRefOid: oid, body: "" });
+
+test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from its tip, when they have diverged and gh lists a merged pull request whose head was that tip: it logs so, and run.json keeps the old tip as restarted; start does the same", (t) => {
+  const dirs = scratch(t, [setupStory("US-1"), story("US-2")]);
+  withRemote(dirs);
+  const { run } = start(dirs);
+  dirs.edit((s) => { s.stories[0].status = "done"; });
+  const { old, head } = divergedBranch(dirs);
+  const gh = withGh(dirs, { prs: [mergedPr(old)] });
+
+  const body = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([body.ok, body.tip, sha(dirs, "refs/heads/deliver/board")], [true, head, head]);
+  assert.ok(body.log.includes(`deliver/board starts again at ${head.slice(0, 7)}: its pull request was merged`), body.log.join("\n"));
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).restarted, old);
+  assert.deepEqual(gh.calls(), [["pr", "list", "--head", "deliver/board", "--state", "merged", "--json", "headRefOid"]]);
+
+  const normal = scratch(t, [story("US-1")]);
+  withRemote(normal);
+  const branch = divergedBranch(normal);
+  withGh(normal, { prs: [mergedPr(branch.old)] });
+
+  const started = start(normal);
+
+  assert.deepEqual([started.ok, started.tip, started.restarted], [true, branch.head, undefined]);
+  assert.ok(started.log.includes(`deliver/board starts again at ${branch.head.slice(0, 7)}: its pull request was merged`), started.log.join("\n"));
+  assert.equal(JSON.parse(readFileSync(runFile(normal, started.run, "run.json"), "utf8")).restarted, branch.old);
+});
+
+test("repo-open and start refuse deliver/<slug> and HEAD that have diverged when no merged pull request has the branch's tip, or gh is missing: the branch stays", (t) => {
+  for (const [what, prepare] of [
+    ["another tip merged", (dirs) => withGh(dirs, { prs: [mergedPr("0".repeat(40)), { ...mergedPr(null), state: "open" }] })],
+    ["gh that fails", (dirs) => withGh(dirs, { fail: "HTTP 502" })],
+    ["no gh", (dirs) => {
+      symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(dirs.root, "bin", "git"));
+      dirs.env.PATH = join(dirs.root, "bin");
+    }],
+  ]) {
+    const dirs = scratch(t, [setupStory("US-1"), story("US-2")]);
+    withRemote(dirs);
+    const { run } = start(dirs);
+    dirs.edit((s) => { s.stories[0].status = "done"; });
+    const { old } = divergedBranch(dirs);
+    prepare(dirs);
+
+    const body = step(dirs, run, "repo-open", {});
+
+    assert.deepEqual([body.ok, body.retry], [false, false], what);
+    assert.match(body.error, /^deliver\/board and HEAD have diverged/, what);
+    assert.equal(sha(dirs, "refs/heads/deliver/board"), old, what);
+    dirs.edit((s) => { s.stories[0].status = "backlog"; });
+    step(dirs, run, "finish", { report: noReport });
+    dirs.edit((s) => { s.stories[0].status = "done"; });
+    const again = start(dirs, { op: "start-again" });
+    assert.deepEqual([again.ok, again.error], [false, body.error], what);
+  }
+});
+
+test("after a restart finish pushes with a lease on the merged tip: a remote branch still there moves; one deleted after the merge is made again; one that moved elsewhere is a failed push and stays", (t) => {
+  const cases = [
+    ["at the merged tip", () => {}, true],
+    ["deleted", (dirs) => git(dirs.repo, "push", "-q", "origin", ":refs/heads/deliver/board"), true],
+    ["moved", (dirs) => git(dirs.repo, "push", "-q", "-f", "origin", "main:refs/heads/deliver/board"), false],
+  ];
+  for (const [what, remoteChange, pushed] of cases) {
+    const dirs = scratch(t, [story("US-1")]);
+    const remote = withRemote(dirs);
+    const { old } = divergedBranch(dirs);
+    git(dirs.repo, "push", "-q", "origin", "deliver/board");
+    remoteChange(dirs);
+    const before = remote.at("refs/heads/deliver/board");
+    const gh = withGh(dirs, { prs: [mergedPr(old)] });
+    const { run } = start(dirs);
+    const tip = landOn(dirs, "deliver/board", "count.rs");
+
+    const body = step(dirs, run, "finish", { report: noReport });
+
+    assert.equal(body.pushed, pushed, `${what}: ${body.why}`);
+    if (pushed) {
+      assert.deepEqual([remote.at("refs/heads/deliver/board"), body.pr, gh.read().prs.filter((pr) => pr.state === "open").length], [tip, { url: "https://example.com/pr/3", created: true }, 1], what);
+    } else {
+      assert.deepEqual([remote.at("refs/heads/deliver/board"), body.pr], [before, null], what);
+      assert.equal(body.why, `To ${remote.bare}`, what);
+    }
+  }
+});
+
 test("a pull request's body longer than 60,000 characters goes without its Timings; still longer, it is cut so that it and a last line naming the Run thread are 60,000 characters at most, and that line comes only when text was cut", () => {
   const timings = `\n\n## Timings\n${"t".repeat(5000)}\n`;
   const fits = `# f: build report of r\n\n${"a".repeat(58000)}${timings}`;
