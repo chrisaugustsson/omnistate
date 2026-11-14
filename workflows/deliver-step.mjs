@@ -1400,7 +1400,9 @@ const STEPS = {
     const attempt = attemptOf(story)
     if (story.status !== 'backlog') b.write('move', p.key, ['--to', 'backlog'])
     if (story.blocked) b.write('unblock', p.key, [])
-    return { key: p.key, attempt, removed: removeWorktree(b, p.key, true) }
+    // A root that is no repository of its own, as a setup task can leave it,
+    // has no worktree to remove, and git there would work in one around it.
+    return { key: p.key, attempt, removed: ownTree(b.root) ? removeWorktree(b, p.key, true) : true }
   })(),
 
   // A blocked story whose linked threads all have a conclusion gets each
