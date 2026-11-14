@@ -892,6 +892,7 @@ const findingsOf = (story) => {
 // A story implemented before clarity ran has none, so for it a test must be
 // the thing the criterion delivers.
 export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
+const ASKED_ID = /^Asked on the behaviour tree: question (\S+) on node /
 export const ASKED = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`
 // The node IDs of a task's Covers lines, in order: `- <node id> v<version> \`<path>\``.
 const nodesOf = (story) => [...String(story.text || '').matchAll(/^\s*- (\S+) v\d+ `/gm)].map((m) => m[1])
@@ -1293,17 +1294,43 @@ const STEPS = {
     try {
       for (const story of b.listStories()) {
         let threads
+        const waits = []
         try {
           threads = threadsOf(b, story)
+          if (story.blocked && story.status !== 'done' && story.status !== 'cancelled') {
+            for (const d of story.decisions || []) {
+              const m = String(d.choice).match(ASKED_ID)
+              if (!m) continue
+              let q
+              try {
+                q = JSON.parse(b.omni(['behaviour', 'question', m[1], '--json']))
+                q = q.question || q
+              } catch (e) {
+                throw new Error(`the question ${m[1]} could not be read: ${failure(e)}`)
+              }
+              waits.push({ id: m[1], asked: d.question, q })
+            }
+          }
         } catch (e) {
           lines.push(`${story.key} stays blocked: ${e.message}`)
           continue
         }
-        if (!threads || threads.some((t) => !t.conclusion)) continue
+        if (!threads && waits.length === 0) continue
+        if (threads && threads.some((t) => !t.conclusion)) continue
+        const openQ = waits.find((w) => w.q.state !== 'answered' || !w.q.answer)
+        if (openQ) {
+          lines.push(`${story.key} stays blocked: the question ${openQ.id} is open`)
+          continue
+        }
         const recorded = (story.decisions || []).filter((d) => d.by === 'human')
-        for (const t of threads) {
+        for (const t of threads || []) {
           if (recorded.some((d) => d.question === t.question && d.choice === t.conclusion)) continue
           b.write('decision', story.key, ['--question', t.question, '--choice', t.conclusion, '--by', 'human'])
+        }
+        for (const w of waits) {
+          const by = w.q.answered_by === 'human' ? 'human' : 'agent'
+          if ((story.decisions || []).some((d) => d.question === w.asked && d.choice === w.q.answer.answer && d.by === by)) continue
+          b.write('decision', story.key, ['--question', w.asked, '--choice', w.q.answer.answer, '--by', by])
         }
         ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', story.key, ['--finding', String(i)]) })
         b.write('unblock', story.key)
