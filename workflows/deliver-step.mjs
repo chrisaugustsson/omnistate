@@ -106,6 +106,11 @@
 // - files {key}: key, files (how many)
 // - thread-open {title, body, key?, job?}: thread, and key when given. A
 //   body that names a job gets the end of its log
+// - question-ask {key, node, question, recommendation, options, asker, block}:
+//   key, question (the question's ID), node (its node_id); asks on the
+//   payload's node, else the task's first Covers node, else `.`, whichever the
+//   tree has first, records a decision with the ASKED wording, and blocks the
+//   task when block is true
 // - park {key}: key, attempt, removed; the task that failed its third try
 //   goes to the backlog, not blocked, its findings open, and its worktree
 //   and branch are removed (removed: true when both are gone, also when it
@@ -887,6 +892,9 @@ const findingsOf = (story) => {
 // A story implemented before clarity ran has none, so for it a test must be
 // the thing the criterion delivers.
 export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
+export const ASKED = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`
+// The node IDs of a task's Covers lines, in order: `- <node id> v<version> \`<path>\``.
+const nodesOf = (story) => [...String(story.text || '').matchAll(/^\s*- (\S+) v\d+ `/gm)].map((m) => m[1])
 export const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
 const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
 const obligationsOf = (story, clarified) => (story.criteria || []).map(criterionOf).flatMap((c, i) => ((story.decisions || []).some((d) => d.question === testQuestion(c.text) && d.choice === TEST_OBLIGATION) || (!clarified && NAMES_TEST.test(c.text)) ? [i] : []))
@@ -1112,6 +1120,7 @@ const STEPS = {
       criteria: (story.criteria || []).length,
       obligations: obligationsOf(story, clarified),
       findings: { open: count(findings), uncounted: uncounted.length, earlier: count(earlier) },
+      nodes: nodesOf(story),
       questions: [...new Set((story.decisions || []).map((d) => fnv1a(String(d.question))))],
     }
   })(),
@@ -1215,6 +1224,37 @@ const STEPS = {
     const tail = p.job === undefined ? '' : jobTail(b.root, b.runId, p.job)
     if (tail === null) return { ok: false, error: `no job ${p.job} in run ${b.runId}` }
     return openThread(b, { key: p.key, title: p.title, body: tail ? `${p.body.replace(/\n+$/, '')}\n\n${tail}\n` : p.body }, marker, mark)
+  })(),
+
+  // A question on a behaviour tree node, and the task waits for the answer.
+  // The node is the first of the payload's node, the task's first Covers node
+  // and `.` that the tree has. The decision records the question's ID, so that
+  // the answer is found again. A repeat asks nothing the first try asked.
+  'question-ask': (b, p, { marker, mark }) => missing(p, 'key', 'question') || (() => {
+    let id = marker && marker.question
+    if (!id) {
+      const asked = `${p.question} ${Array.isArray(p.options) && p.options.length ? `Options: ${p.options.map((o, i) => `${i + 1}. ${o}`).join(' ')} ` : ''}(Asked by the build of ${p.key}, ${p.asker}.)`
+      let node = null
+      let last = null
+      for (const c of [p.node, nodesOf(b.readStory(p.key))[0], '.']) {
+        if (!c) continue
+        try {
+          b.omni(['behaviour', 'read', c, '--json'])
+          node = c
+          break
+        } catch (e) { last = e }
+      }
+      if (node === null) return { ok: false, error: `no node of the tree can be read: ${failure(last)}` }
+      const out = b.omni(['behaviour', 'ask', node, asked, ...(p.recommendation ? ['--recommend', p.recommendation] : [])]).trim().split(/\s+/).pop()
+      id = out
+      mark({ question: id })
+    }
+    const parsed = JSON.parse(b.omni(['behaviour', 'question', id, '--json']))
+    const nodeId = (parsed.question || parsed).node_id
+    const choice = ASKED(id, nodeId)
+    if (!(b.readStory(p.key).decisions || []).some((d) => d.question === p.question && d.choice === choice)) b.write('decision', p.key, ['--question', p.question, '--choice', choice, '--by', 'agent'])
+    if (p.block === true && !b.readStory(p.key).blocked) b.write('block', p.key)
+    return { key: p.key, question: id, node: nodeId }
   })(),
 
   // A task that failed its third try is left in the backlog, not blocked,
@@ -1675,7 +1715,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'question-ask', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
