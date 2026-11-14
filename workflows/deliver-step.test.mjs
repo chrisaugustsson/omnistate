@@ -1196,7 +1196,7 @@ test("list gives the pickable stories with a worktree from an earlier attempt fi
   assert.deepEqual(body.pickable, ["US-6", "US-2", "US-4", "US-1", "US-3"]);
 });
 
-test("context gives only the facts the script decides by, and no text of the story: the attempt, the status, blocked, clarified, how many criteria, which are test obligations by index, how many findings are open, used no attempt or came before the latest answer, and the fnv1a of each decision's question", (t) => {
+test("context gives only the facts the script decides by, and no text of the story: the attempt, the status, blocked, clarified, how many criteria, which are test obligations by index, how many findings are open, used no attempt or came before the latest answer, the node IDs of its Covers lines in order, and the fnv1a of each decision's question", (t) => {
   const docs = { "doc-spec": '<p data-omni-id="n1" data-rev="1">SPEC NODE ONE</p>' };
   const dirs = scratch(t, [
     story("US-1", { id: "id-1", status: "done" }),
@@ -1204,7 +1204,7 @@ test("context gives only the facts the script decides by, and no text of the sto
       id: "id-2",
       status: "implemented",
       blocked: true,
-      text: "STORY TEXT: show a badge.",
+      text: "STORY TEXT: show a badge.\nCovers, in the feature's behaviour tree (`omni behaviour read <id> --feature \"board\"`):\n- node-9 v2 `shows/red`\n- node-4 v1 `shows`",
       criteria: [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }, { text: "It looks right", human_check: true }],
       files_planned: ["src/badge.rs"],
       blocked_by: ["id-1"],
@@ -1234,9 +1234,10 @@ test("context gives only the facts the script decides by, and no text of the sto
     criteria: 3,
     obligations: [1],
     findings: { open: 3, uncounted: 1, earlier: 1 },
+    nodes: ["node-9", "node-4"],
     questions: [fnv1a("Which red?"), fnv1a("How big?")],
   });
-  assert.doesNotMatch(JSON.stringify(body), /NODE|STORY TEXT|badge|#c00|border|README|doc-spec|th-1/);
+  assert.doesNotMatch(JSON.stringify(body), /NODE|STORY TEXT|badge|#c00|border|README|doc-spec|th-1|shows/);
 });
 
 test("context gives as test obligations, once clarity has checked the story, only the criteria clarity's decisions name, with the question and choice the script writes; before, a criterion that delivers a test, never one with a bare test or suite in it", (t) => {
@@ -1416,6 +1417,86 @@ test("thread-open creates a thread on the feature with its body posted from a fi
   assert.deepEqual(dirs.story("US-1").links, [{ doc_id: "doc-spec", node_id: "n1", label: "spec" }, questionLink(linked.thread)]);
   assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked, dirs.story("US-1").holder], ["backlog", true, null]);
   assert.equal(linked.key, "US-1");
+});
+
+// ---- question-ask ---------------------------------------------------------------------
+
+// The choice of the decision a question on the tree leaves on its task.
+const askedOn = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`;
+// The asks sent to the tree, as their arguments after `behaviour ask`, without the feature every call names.
+const asks = (dirs) => dirs.state().calls.filter((c) => c.argv[0] === "behaviour" && c.argv[1] === "ask").map((c) => c.argv.slice(2).filter((a, i, all) => a !== "--feature" && all[i - 1] !== "--feature"));
+const covers = (...lines) => `Show a badge.\nCovers, in the feature's behaviour tree (\`omni behaviour read <id> --feature "board"\`):\n${lines.map((l) => `${l}\n`).join("")}`;
+
+test("question-ask asks on the payload's node with the options numbered and who asks, and the recommendation; the task gets the question with the Asked wording as the agent's decision, and with block true it is blocked with no holder", (t) => {
+  const dirs = scratch(t, [story("US-1")], [], { behaviour: { nodes: [{ id: "root", path: "" }, { id: "n1", path: "a" }], questions: [] } });
+  const { run } = start(dirs);
+  dirs.edit((s) => Object.assign(s.stories[0], { status: "implementing", holder: { run, stage: "implementing" } }));
+
+  const body = step(dirs, run, "question-ask", { key: "US-1", node: "n1", question: "Which red?", recommendation: "#c00", options: ["#c00", "#f00"], asker: "the implementer", block: true });
+
+  const [q] = dirs.state().behaviour.questions;
+  assert.deepEqual(asks(dirs), [["n1", "Which red? Options: 1. #c00 2. #f00 (Asked by the build of US-1, the implementer.)", "--recommend", "#c00"]]);
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", question: q.id, node: "n1" });
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: askedOn(q.id, "n1"), by: "agent" }]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").holder], [true, null]);
+});
+
+test("question-ask asks on the task's first Covers node when the tree lacks the payload's node, and on . when it lacks that one too, naming the node by its ID; without options or a recommendation the question has no Options part and no --recommend; with block false the task keeps its status and flag", (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { status: "implemented", text: covers("- n2 v1 `b`", "- n3 v2 `c`") }),
+    story("US-2", { status: "implemented", text: covers("- gone-too v1 `x`", "- n2 v1 `b`") }),
+    story("US-3", { status: "implemented", text: "Show a badge." }),
+  ], [], { behaviour: { nodes: [{ id: "root", path: "" }, { id: "n2", path: "b" }, { id: "n3", path: "c" }], questions: [] } });
+  const { run } = start(dirs);
+  const ask = (key) => step(dirs, run, "question-ask", { key, node: "gone", question: "How big?", recommendation: "", options: [], asker: "the reviewer", block: false });
+
+  const bodies = ["US-1", "US-2", "US-3"].map(ask);
+
+  const ids = dirs.state().behaviour.questions.map((q) => q.id);
+  assert.deepEqual(asks(dirs), [
+    ["n2", "How big? (Asked by the build of US-1, the reviewer.)"],
+    [".", "How big? (Asked by the build of US-2, the reviewer.)"],
+    [".", "How big? (Asked by the build of US-3, the reviewer.)"],
+  ]);
+  assert.deepEqual(bodies.map(pick), [
+    { ok: true, key: "US-1", question: ids[0], node: "n2" },
+    { ok: true, key: "US-2", question: ids[1], node: "root" },
+    { ok: true, key: "US-3", question: ids[2], node: "root" },
+  ]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => dirs.story(key).decisions), [
+    [{ question: "How big?", choice: askedOn(ids[0], "n2"), by: "agent" }],
+    [{ question: "How big?", choice: askedOn(ids[1], "root"), by: "agent" }],
+    [{ question: "How big?", choice: askedOn(ids[2], "root"), by: "agent" }],
+  ]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => [dirs.story(key).status, dirs.story(key).blocked]), [["implemented", false], ["implemented", false], ["implemented", false]]);
+});
+
+test("question-ask fails naming the last read's error when the tree has none of the payload's node, the first Covers node and .: nothing is asked, no decision is recorded and the task's status stays", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implemented", text: covers("- gone-too v1 `x`") })], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "question-ask", { key: "US-1", node: "gone", question: "Which red?", recommendation: "#c00", options: [], asker: "the implementer", block: true });
+
+  assert.equal(body.ok, false);
+  assert.match(body.error, /not_found: no node \. in this feature/);
+  assert.deepEqual([asks(dirs), dirs.state().behaviour.questions], [[], []]);
+  assert.deepEqual([dirs.story("US-1").decisions, dirs.story("US-1").status, dirs.story("US-1").blocked], [[], "implemented", false]);
+});
+
+test("a question-ask cut off after its ask is carried on by its repeat without asking again: the tree holds one question, and the task one decision naming it", async (t) => {
+  const dirs = scratch(t, [story("US-1")], [], { behaviour: { nodes: [{ id: "root", path: "" }, { id: "n1", path: "a" }], questions: [] } });
+  const { run } = start(dirs);
+  const obj = { opId: "qa-1", key: "US-1", node: "n1", question: "Which red?", recommendation: "#c00", options: ["#c00", "#f00"], asker: "the implementer", block: true };
+
+  await cutOff(t, dirs, run, "question-ask", obj, () => dirs.state().behaviour.questions.length > 0, { FAKE_OMNI_HANG_AFTER: "behaviour ask" });
+  const again = step(dirs, run, "question-ask", obj);
+
+  const questions = dirs.state().behaviour.questions;
+  assert.equal(questions.length, 1);
+  assert.equal(asks(dirs).length, 1);
+  assert.deepEqual(pick(again), { ok: true, key: "US-1", question: questions[0].id, node: "n1" });
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: askedOn(questions[0].id, "n1"), by: "agent" }]);
+  assert.equal(dirs.story("US-1").blocked, true);
 });
 
 // ---- retry-pass -----------------------------------------------------------------------
