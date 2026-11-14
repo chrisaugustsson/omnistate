@@ -3150,3 +3150,67 @@ test("finish runs whenever start succeeded: a run that throws posts its report, 
   assert.ok(run.posts[0].body.includes("\n## Blocked\n- none\n"), run.posts[0].body);
   assert.equal(agentsOf(calls, "courier:finish").length, 1);
 });
+
+// ---- the setup task -----------------------------------------------------------------
+
+// The folder of a new project: the scratch checkout without its repository,
+// with checks from its .omni.toml once there is one.
+function newProject(t, stories, extra = {}) {
+  const dirs = scratch(t, stories, [], { checks: null, ...extra });
+  rmSync(join(dirs.repo, ".git"), { recursive: true, force: true });
+  rmSync(join(dirs.repo, ".gitignore"), { force: true });
+  return dirs;
+}
+const setupTask = (key, fields = {}) => story(key, { title: "Set up the project", criteria: ["The app starts"], ...fields });
+// A setup implementer that makes the repository in the folder, with a fast
+// command, and commits it.
+const setUp = (fast = "true") => async (call, serial, dirs) => {
+  await serial(() => {
+    if (!existsSync(join(dirs.repo, ".git"))) {
+      git(dirs.repo, "init", "-q", "-b", "main");
+      git(dirs.repo, "config", "user.email", "test@example.com");
+      git(dirs.repo, "config", "user.name", "Test");
+    }
+    writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
+    writeFileSync(join(dirs.repo, ".omni.toml"), `[checks]\nfast = "${fast}"\n`);
+    git(dirs.repo, "add", ".gitignore", ".omni.toml", "README");
+    git(dirs.repo, "commit", "-q", "-m", `feat: Set up with ${fast}`);
+  });
+  return { status: "ready", summary: "Set up.", decisions: [], commits: [] };
+};
+
+test("a setup run builds the task Set up the project first and alone, straight in the folder: implementer, setup-check, fast as a job there, one verifier, setup-land and repo-open; then a task blocked by it is built and landed the normal way, its implementer told of the Setup doc", { timeout: 180000 }, async (t) => {
+  const docList = [{ id: "doc-setup", kind: "html", pillar: "architecture", title: "Setup" }];
+  const dirs = newProject(t, [setupTask("US-1"), story("US-2", { blocked_by: ["US-1"] })], { docList });
+
+  const { result, error, calls } = await deliver(dirs, {}, { "impl:US-1": [setUp()] });
+
+  assert.equal(error, null);
+  const [impl] = agentsOf(calls, "impl:US-1");
+  assert.ok(impl.prompt.includes(`## Where\n${dirs.repo}, the project's folder.`), impl.prompt);
+  const names = stepsOf(calls).map((s) => `${s.name}${s.fields.key ? ` ${s.fields.key}` : ""}`);
+  const at = (name) => names.indexOf(name);
+  assert.ok(at("setup-check US-1") > -1 && at("setup-check US-1") < at("job-start US-1") && at("job-start US-1") < at("setup-land US-1") && at("setup-land US-1") < at("repo-open"), names.join("\n"));
+  assert.equal(stepsNamed(calls, "job-start", "US-1")[0].fields.cwd, dirs.repo);
+  assert.deepEqual(["worktree", "lane-prepare", "lane-land"].flatMap((n) => stepsNamed(calls, n, "US-1")), []);
+  assert.deepEqual([...agentsOf(calls, "review:US-1"), ...agentsOf(calls, "tests:US-1"), ...agentsOf(calls, "clarity:US-1")], []);
+  assert.equal(agentsOf(calls, "verify:US-1").length, 1);
+  // Nothing else starts before repo-open has answered.
+  assert.ok(names.findIndex((n) => n === "claim US-2" || n === "clarity-pending") > at("repo-open"), names.join("\n"));
+  assert.ok(agentsOf(calls, "impl:US-2")[0].prompt.includes("doc read doc-setup"));
+  assert.deepEqual(result.landed, ["US-1", "US-2"]);
+  assert.deepEqual([result.branch, result.tip, result.checks.fast], ["deliver/board", git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim(), "true"]);
+  assert.equal(dirs.story("US-1").status, "done");
+});
+
+test("a setup task still blocked after unblock-pass is not claimed: the run reports it waiting and builds nothing else", { timeout: 120000 }, async (t) => {
+  const dirs = newProject(t, [setupTask("US-1", { blocked: true }), story("US-2", { blocked_by: ["US-1"] })]);
+
+  const { result, error, calls } = await deliver(dirs);
+
+  assert.equal(error, null);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]), [["US-1", "waiting"]]);
+  assert.deepEqual([...claimsOf(dirs, "US-1"), ...claimsOf(dirs, "US-2")], []);
+  assert.deepEqual(agentsOf(calls, "impl:US-1"), []);
+  assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
+});

@@ -826,7 +826,7 @@ test("start names the run by the local time of its start", (t) => {
   assert.match(body.run, new RegExp(`^run-${local}-\\d+$`));
 });
 
-test("a lock whose session lives and whose heartbeat is under 2 hours old refuses the run, naming it and its feature, and nothing is touched", (t) => {
+test("a lock whose session lives and whose heartbeat is under 2 hours old refuses the run, naming it and its feature, and nothing is touched: the board is only read", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })]);
   const held = { run: "run-20261107-090000-1", feature: "billing", pid: liveProcess(t), op: "start-1", started: ago(3 * 3600000), heartbeat: ago(90 * 60000) };
   writeLock(dirs, held);
@@ -836,7 +836,8 @@ test("a lock whose session lives and whose heartbeat is under 2 hours old refuse
   assert.equal(body.ok, false);
   assert.match(body.error, /^the tree is held by run run-20261107-090000-1 for feature billing, .*start with force if that run is dead$/);
   assert.deepEqual(readLock(dirs), held);
-  assert.deepEqual(dirs.state().calls, []);
+  // The only call is the read of the board that tells a setup run from another.
+  assert.deepEqual(dirs.state().calls.map((c) => c.argv.slice(0, 2).join(" ")), ["story list"]);
   assert.equal(git(dirs.repo, "branch", "--list", "deliver/*"), "");
 });
 
@@ -1025,7 +1026,7 @@ test("start keeps deliver/<slug> where it is when it is ahead of the checkout's 
   assert.ok(body.log.includes(`deliver/board kept at ${landed.slice(0, 7)}, ahead of the checkout's HEAD ${head.slice(0, 7)}`), body.log.join("\n"));
 });
 
-test("start stops with 'merge first' when deliver/<slug> and the checkout's HEAD have diverged, before any work: no lock left, nothing asked of the board, the branch untouched and no lane", (t) => {
+test("start stops with 'merge first' when deliver/<slug> and the checkout's HEAD have diverged, before any work: no lock left, nothing asked of the board but its tasks, the branch untouched and no lane", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })]);
   const landed = landOn(dirs, "deliver/board", "landed.rs");
   commit(dirs.repo, "main.rs");
@@ -1035,7 +1036,8 @@ test("start stops with 'merge first' when deliver/<slug> and the checkout's HEAD
   assert.equal(body.ok, false);
   assert.equal(body.error, "deliver/board and HEAD have diverged: merge first (git merge deliver/board), then start again");
   assert.equal(existsSync(dirs.lock), false);
-  assert.deepEqual(dirs.state().calls, []);
+  // The only call is the read of the board that tells a setup run from another.
+  assert.deepEqual(dirs.state().calls.map((c) => c.argv.slice(0, 2).join(" ")), ["story list"]);
   assert.equal(sha(dirs, "refs/heads/deliver/board"), landed);
   assert.equal(existsSync(dirs.lane), false);
 });
@@ -1207,6 +1209,199 @@ test("start releases the stories another run holds, and the working ones nobody 
   assert.deepEqual(dirs.state().calls.filter((c) => c.argv[1] === "release").map((c) => c.argv[c.argv.indexOf("--run") + 1]), [body.run, body.run, body.run, body.run]);
   assert.deepEqual(body.stories, { keys: ["US-1", "US-2", "US-3", "US-4", "US-5"], counts: { implemented: 3, reviewed: 1, backlog: 1 }, blocked: 1 });
   assert.equal(readFileSync(join(wt, "work.rs"), "utf8"), "work.rs\n");
+});
+
+// ---- start: a folder without a repository ---------------------------------------------
+
+// The scratch checkout without its repository: a folder of a new project.
+function noRepo(dirs) {
+  rmSync(join(dirs.repo, ".git"), { recursive: true, force: true });
+  rmSync(join(dirs.repo, ".gitignore"), { force: true });
+  return dirs;
+}
+const setupStory = (key, fields = {}) => story(key, { title: "Set up the project", ...fields });
+// start run in another folder than the checkout's top.
+function startIn(dirs, cwd) {
+  const r = spawnSync(process.execPath, [helper, ...startArgv()], { cwd, env: dirs.env, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout).body;
+}
+
+test("start in a folder that is no git repository, with a backlog task Set up the project, takes the lock, creates the Run thread and the stories folder, and does nothing with git: branch, tip and lane null, six empty checks", (t) => {
+  const dirs = noRepo(scratch(t, [setupStory("US-1"), story("US-2", { blocked_by: ["US-1"] })]));
+
+  const body = start(dirs);
+
+  assert.equal(body.ok, true, body.error);
+  assert.deepEqual([body.root, body.setupTask, body.branch, body.tip, body.lane, body.base], [dirs.repo, "US-1", null, null, null, null]);
+  assert.deepEqual(body.checks, { fast: "", stack_up: "", stack: "", stack_reset: "", seed: "", lint: "" });
+  assert.equal(readLock(dirs).run, body.run);
+  assert.ok(dirs.state().threads.some((th) => th.id === body.thread && th.title === `Run ${body.run}`));
+  assert.ok(existsSync(join(dirs.root, "app-stories")));
+  assert.equal(existsSync(join(dirs.repo, ".git")), false);
+  assert.equal(existsSync(dirs.lane), false);
+  assert.equal(dirs.state().calls.some((c) => c.argv[0] === "checks"), false);
+});
+
+test("start in a folder without a repository refuses when the feature has no task Set up the project, or only one that is done or cancelled, before the lock: nothing is left behind", (t) => {
+  for (const stories of [[story("US-1")], [setupStory("US-1", { status: "done" })], [setupStory("US-1", { status: "cancelled" })]]) {
+    const dirs = noRepo(scratch(t, stories));
+
+    const body = start(dirs);
+
+    assert.deepEqual([body.ok, body.retry], [false, false]);
+    assert.equal(body.error, `${dirs.repo} has no git repository, and the feature has no task "Set up the project" to make one: split the feature with omni-stories first`);
+    assert.equal(existsSync(dirs.lock), false);
+    assert.equal(existsSync(join(dirs.root, "app-stories")), false);
+    assert.equal(dirs.state().threads.length, 0);
+  }
+});
+
+test("start in a repository whose task set up the project, in any letter case, is not done gives its key as setupTask, and creates no deliver/<slug>, no lane worktree and reads no checks; without that task setupTask is null and base the branch checked out", (t) => {
+  const setup = scratch(t, [story("US-1", { title: "SET UP the Project", status: "implementing" }), story("US-2")]);
+  const plain = scratch(t, [setupStory("US-1", { status: "done" })]);
+
+  const [s, p] = [start(setup), start(plain)];
+
+  assert.deepEqual([s.ok, s.setupTask, s.branch, s.lane, s.base], [true, "US-1", null, null, "main"]);
+  assert.equal(git(setup.repo, "branch", "--list", "deliver/*"), "");
+  assert.equal(existsSync(setup.lane), false);
+  assert.equal(setup.state().calls.some((c) => c.argv[0] === "checks"), false);
+  assert.deepEqual([p.ok, p.setupTask, p.branch, p.lane, p.base], [true, null, "deliver/board", plain.lane, "main"]);
+});
+
+test("a setup run whose omni link matches a folder inside the checkout, not its top, works in that folder: the lock and the stories folder go there; started elsewhere it is refused; a run that is no setup run keeps the checkout's top", (t) => {
+  const dirs = scratch(t, [setupStory("US-1")]);
+  const sub = join(dirs.repo, "web");
+  mkdirSync(sub);
+  dirs.edit((s) => { s.link = { project_id: "p1", matched: sub }; });
+
+  const elsewhere = startIn(dirs, dirs.repo);
+  assert.deepEqual([elsewhere.ok, elsewhere.retry, elsewhere.error], [false, false, `start the build from ${sub}, the folder linked to the project`]);
+  assert.equal(existsSync(dirs.lock), false);
+
+  const body = startIn(dirs, sub);
+  assert.deepEqual([body.ok, body.root, body.base], [true, sub, null]);
+  assert.ok(existsSync(join(sub, ".omni", "run.lock")));
+  assert.ok(existsSync(join(dirs.repo, "web-stories")));
+
+  const plain = scratch(t, [story("US-1")]);
+  mkdirSync(join(plain.repo, "web"));
+  plain.edit((s) => { s.link = { project_id: "p1", matched: join(plain.repo, "web") }; });
+  const kept = startIn(plain, join(plain.repo, "web"));
+  assert.deepEqual([kept.ok, kept.root], [true, plain.repo]);
+});
+
+// ---- the setup steps ------------------------------------------------------------------
+
+// A setup run in a folder without a repository, and what its setup task makes there.
+function setupRun(t, stories = [setupStory("US-1")], extra = {}) {
+  const dirs = noRepo(scratch(t, stories, [], { checks: null, ...extra }));
+  const body = start(dirs);
+  assert.equal(body.ok, true, body.error);
+  return { dirs, run: body.run };
+}
+function gitInit(dirs) {
+  git(dirs.repo, "init", "-q", "-b", "main");
+  git(dirs.repo, "config", "user.email", "test@example.com");
+  git(dirs.repo, "config", "user.name", "Test");
+}
+
+test("setup-check answers not_ready with the first reason that holds: no repository, no commit, uncommitted changes outside .omni/, no fast command; then ready with HEAD and the checks, which go into run.json, and .omni/ into .git/info/exclude", (t) => {
+  const { dirs, run } = setupRun(t);
+  const reason = () => step(dirs, run, "setup-check", { key: "US-1" }).reason;
+
+  assert.equal(reason(), `${dirs.repo} is not a git repository`);
+  gitInit(dirs);
+  assert.equal(reason(), "the repository has no commit");
+  commit(dirs.repo, "README");
+  for (const f of ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"]) writeFileSync(join(dirs.repo, f), "x\n");
+  writeFileSync(join(dirs.repo, "README"), "changed\n");
+  assert.equal(reason(), "uncommitted changes in 7 files (README, a.rs, b.rs, c.rs, d.rs)");
+  git(dirs.repo, "add", ".");
+  git(dirs.repo, "reset", "-q", ".omni");
+  git(dirs.repo, "commit", "-q", "-m", "app");
+  const noFast = "omni checks gives no fast command: add fast to the [checks] table of .omni.toml";
+  assert.equal(reason(), noFast);
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"\"\n");
+  git(dirs.repo, "add", ".omni.toml");
+  git(dirs.repo, "commit", "-q", "-m", "checks");
+  assert.equal(reason(), noFast);
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"make check\"\n");
+  git(dirs.repo, "commit", "-q", "-am", "fast");
+
+  const body = step(dirs, run, "setup-check", { key: "US-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "ready", head: sha(dirs, "HEAD"), checks: { fast: "make check", stack_up: "", stack: "", stack_reset: "", seed: "", lint: "" } });
+  assert.match(readFileSync(join(dirs.repo, ".git", "info", "exclude"), "utf8"), /^\.omni\/$/m);
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).checks.fast, "make check");
+});
+
+test("setup-check keeps the checks checks-set gave the run on top of those omni checks gives", (t) => {
+  const { dirs, run } = setupRun(t);
+  gitInit(dirs);
+  writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"make check\"\nstack = \"make stack\"\n");
+  git(dirs.repo, "add", ".gitignore", ".omni.toml", "README");
+  git(dirs.repo, "commit", "-q", "-m", "setup");
+  step(dirs, run, "checks-set", { checks: { stack: "make e2e" } });
+
+  const body = step(dirs, run, "setup-check", { key: "US-1" });
+
+  assert.equal(body.outcome, "ready", body.reason);
+  assert.deepEqual([body.checks.fast, body.checks.stack], ["make check", "make e2e"]);
+});
+
+test("setup-land records the paths git ls-files gives as the task's files, ticks every criterion, a human check as pending, resolves its open findings and moves it to done; a repeat writes nothing twice", (t) => {
+  const { dirs, run } = setupRun(t, [setupStory("US-1", { status: "implementing", criteria: ["It starts", { text: "It looks right", human_check: true }], findings: [{ stage: "testing", text: "[attempt 1] no commit", files: [], resolved: false }] })]);
+  gitInit(dirs);
+  commit(dirs.repo, "README");
+  commit(dirs.repo, "main.rs");
+
+  const fields = { opId: "setup-land-1", key: "US-1" };
+  const body = step(dirs, run, "setup-land", fields);
+  const calls = dirs.state().calls.length;
+  const again = step(dirs, run, "setup-land", fields);
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", head: sha(dirs, "HEAD"), files: 2 });
+  assert.deepEqual(pick(again), pick(body));
+  assert.equal(dirs.state().calls.length, calls);
+  const s = dirs.story("US-1");
+  assert.deepEqual(s.files_changed, ["README", "main.rs"]);
+  assert.deepEqual(s.criteria.map((c) => [c.ticked, c.pending === true]), [[true, false], [true, true]]);
+  assert.deepEqual([s.findings[0].resolved, s.status], [true, "done"]);
+});
+
+test("repo-open creates deliver/<slug> at HEAD and the lane worktree, and gives the checks, base as the branch checked out and setup as the project-level Setup doc of pillar architecture, else null", (t) => {
+  const docList = [{ id: "d0", kind: "html", pillar: "architecture", title: "Setup", feature_id: "f1" }, { id: "d1", kind: "html", pillar: "spec", title: "Setup" }, { id: "d2", kind: "html", pillar: "architecture", title: "SETUP" }, { id: "d3", kind: "html", pillar: "architecture", title: "setup" }];
+  const { dirs, run } = setupRun(t, [setupStory("US-1"), story("US-2")], { docList, checks: { fast: "make check" } });
+  dirs.edit((s) => { s.stories[0].status = "done"; });
+  gitInit(dirs);
+  writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
+  git(dirs.repo, "add", ".gitignore");
+  git(dirs.repo, "commit", "-q", "-m", "setup");
+
+  const body = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([body.ok, body.branch, body.tip, body.lane, body.base, body.setup], [true, "deliver/board", sha(dirs, "HEAD"), dirs.lane, "main", "d2"]);
+  assert.equal(body.checks.fast, "make check");
+  assert.equal(sha(dirs, "refs/heads/deliver/board"), sha(dirs, "HEAD"));
+  assert.equal(git(dirs.lane, "rev-parse", "HEAD").trim(), sha(dirs, "HEAD"));
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).tip, sha(dirs, "HEAD"));
+  dirs.edit((s) => { s.docList = []; });
+  assert.equal(step(dirs, run, "repo-open", {}).setup, null);
+});
+
+test("repo-open refuses for good a root that is no repository, and one without a commit", (t) => {
+  const { dirs, run } = setupRun(t);
+
+  const none = step(dirs, run, "repo-open", {});
+  gitInit(dirs);
+  const empty = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([none.ok, none.retry, none.error], [false, false, `${dirs.repo} is not a git repository`]);
+  assert.deepEqual([empty.ok, empty.retry, empty.error], [false, false, `${dirs.repo} has no commit to start the feature's branch from`]);
+  assert.equal(existsSync(dirs.lane), false);
 });
 
 // ---- the board steps ------------------------------------------------------------------

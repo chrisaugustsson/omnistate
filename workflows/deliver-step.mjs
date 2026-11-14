@@ -79,7 +79,12 @@
 // - start, from flags: run, root, branch, tip, lane, thread, checks, stories
 //   ({keys, counts by status, blocked}), released, log, setup (the ID of the
 //   project-level architecture doc titled Setup, else null), how ({operations,
-//   tables}: the IDs of the feature's docs Operations and Tables, or null)
+//   tables}: the IDs of the feature's docs Operations and Tables, or null),
+//   base (the branch checked out in the root, or null) and setupTask (the key
+//   of the task "Set up the project" while it is not done or cancelled, else
+//   null). A setup run, one with a setupTask, does nothing with git: branch,
+//   tip and lane are null and the checks empty, and the root may be a folder
+//   with no repository. A folder without one and no setup task is refused
 // - checks-set {checks: {name: command}}: checks, all six
 // - list {}: waiting (the implemented and reviewed stories not blocked,
 //   each with key and status), pickable (those with a
@@ -98,6 +103,16 @@
 // - design-export {}: dir, boards (how many PNG files). Runs omni export once
 //   per run, into <root>/.omni/runs/<run>/design, whose manifest.json gives
 //   each board's files; a failure is not remembered
+// - setup-check {key}: key, outcome: ready with head and checks (stored in
+//   run.json under those checks-set gave), or not_ready with reason; whether
+//   the setup task left a repository with a commit, nothing uncommitted
+//   outside .omni/ and a fast check
+// - setup-land {key}: key, head, files (how many paths of git ls-files it
+//   recorded, at most 200); the setup task's criteria ticked, its findings
+//   resolved, and done
+// - repo-open {}: branch, tip, lane, checks, base, setup (the ID of the
+//   project-level Setup doc, or null), log; what start does with git in a
+//   run without a setup task, once the setup task has landed
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
@@ -1202,6 +1217,58 @@ const STEPS = {
     return body
   },
 
+  // Whether the setup task, built straight in the root, left a repository
+  // the other tasks can build on: the first reason that holds, else ready
+  // with the HEAD commit and the checks, which go into the run's run.json
+  // under those checks-set gave the run. Nothing under .omni/ counts as a
+  // change: the run's own files are there.
+  'setup-check': (b, p) => missing(p, 'key') || (() => {
+    const not = (reason) => ({ key: p.key, outcome: 'not_ready', reason })
+    if (!ownTree(b.root)) return not(`${b.root} is not a git repository`)
+    const head = (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim()
+    if (!head) return not('the repository has no commit')
+    const dirty = changedFiles(b.root).filter((f) => f !== '.omni' && !f.startsWith('.omni/'))
+    if (dirty.length) return not(`uncommitted changes in ${dirty.length} files (${dirty.slice(0, 5).join(', ')})`)
+    let fresh = null
+    try { fresh = JSON.parse(b.omni(['checks', '--json'])) } catch {}
+    if (!fresh || typeof fresh.fast !== 'string' || !fresh.fast.trim()) return not('omni checks gives no fast command: add fast to the [checks] table of .omni.toml')
+    excludeOmni(b)
+    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, checks: checksOf(fresh, info.set) }))
+    return { key: p.key, outcome: 'ready', head, checks }
+  })(),
+
+  // The setup task, checked, is done: what the repository holds becomes its
+  // files (the first 200 paths), its criteria are ticked, a human check as
+  // pending, and its open findings resolved. A repeat writes only what the
+  // first try did not.
+  'setup-land': (b, p) => missing(p, 'key') || (() => {
+    const head = b.git(['rev-parse', 'HEAD']).trim()
+    const files = b.git(['-c', 'core.quotePath=false', 'ls-files', '-z']).split('\0').filter(Boolean).slice(0, 200)
+    const story = b.readStory(p.key)
+    const had = story.files_changed || []
+    if (files.length && (had.length !== files.length || had.some((f, i) => f !== files[i]))) b.write('files', p.key, files)
+    ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
+    ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
+    if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+    return { key: p.key, head, files: files.length }
+  })(),
+
+  // What start does with git in a run without a setup task, once the setup
+  // task has landed: deliver/<slug> at HEAD, the checks, the lane worktree.
+  // The checks go into run.json under those checks-set gave the run.
+  'repo-open': (b) => {
+    if (!ownTree(b.root)) return { ok: false, error: `${b.root} is not a git repository`, retry: false }
+    if (!hasRepo(b.root)) return { ok: false, error: `${b.root} has no commit to start the feature's branch from`, retry: false }
+    const log = []
+    const plan = repoPlan(b)
+    if (plan.ok === false) return { ...plan, retry: plan.retry === true }
+    const tip = branchAt(b, plan, log)
+    laneAtStart(b, tip)
+    dropDoneWorktrees(b, b.listStories(), log)
+    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set) }))
+    return { branch: b.branch, tip, lane: b.lane, checks, base: baseOf(b.root), setup: setupDocOf(b), log }
+  },
+
   claim: stateWrite('claim', ['stage'], (p) => ['--stage', p.stage], (s, p, b) => s.status === p.stage && !!s.holder && s.holder.run === b.runId),
   // A story sent back for its next attempt, held where it failed: to the
   // backlog and claimed for implementing in one call, where two couriers left
@@ -1527,7 +1594,7 @@ const STEPS = {
     if (unknown.length) return { ok: false, error: `no check ${unknown.join(', ')}; the checks are ${CHECKS.join(', ')}` }
     const odd = Object.keys(p.checks).filter((name) => typeof p.checks[name] !== 'string')
     if (odd.length) return { ok: false, error: `a check is a command, as a string: ${odd.join(', ')}` }
-    return { checks: updateRun(b.root, b.runId, (info) => ({ ...info, checks: { ...info.checks, ...p.checks } })).checks }
+    return { checks: updateRun(b.root, b.runId, (info) => ({ ...info, checks: { ...info.checks, ...p.checks }, set: { ...info.set, ...p.checks } })).checks }
   },
 
   // Starts a job and returns once its supervisor has started the command. A
@@ -1830,7 +1897,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'question-ask', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'design-export', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'question-ask', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'design-export', 'setup-check', 'setup-land', 'repo-open', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
@@ -1843,14 +1910,36 @@ const start = (flags) => {
   // Flags that do not hash to --hash came wrong from the courier.
   if (!opId || !feature || !flags.hash) return { ok: false, received, error: 'start needs --op <opId>, --feature <name> and --hash <fnv1a of {opId, feature, force}>', retry: true }
   if (flags.hash !== received) return { ok: false, received, error: `the flags hash to ${received}, not ${flags.hash}: run the command again exactly`, retry: true }
-  const top = tryRun('git', ['rev-parse', '--show-toplevel'])
-  if (top === null) return { ok: false, received, error: `${process.cwd()} is not in a git checkout`, retry: false }
-  const root = top.trim()
+  const now = new Date()
+  const runId = `run-${stamp(now)}-${process.pid}`
+  // The root is the top folder of the checkout the current folder is in, or
+  // the current folder where it is in none. The board decides the mode: a
+  // task "Set up the project" that is not done makes a setup run, which
+  // touches no git. Every refusal comes before the lock, so it leaves
+  // nothing behind.
+  const here = process.cwd()
+  const top = (tryRun('git', ['rev-parse', '--show-toplevel']) || '').trim() || null
+  let root = top || here
+  let setupTask
+  try {
+    setupTask = setupTaskOf(boardOf(root, runId, feature).listStories())
+  } catch (e) {
+    return { ok: false, received, error: `the feature's tasks could not be listed: ${failure(e)}`, retry: retryable(e) }
+  }
+  // A setup run in a folder that lies inside another checkout works in the
+  // folder linked to the project, which has no repository of its own yet.
+  if (setupTask && top) {
+    let matched = null
+    try { matched = JSON.parse(tryRun('omni', ['link', '--json'], { cwd: here })).matched } catch {}
+    if (typeof matched === 'string' && matched && real(matched).startsWith(`${real(top)}${path.sep}`)) {
+      if (real(here) !== real(matched)) return { ok: false, received, error: `start the build from ${matched}, the folder linked to the project`, retry: false }
+      root = here
+    }
+  }
+  if (!setupTask && !hasRepo(root)) return { ok: false, received, error: `${root} has no git repository, and the feature has no task "Set up the project" to make one: split the feature with omni-stories first`, retry: false }
   const session = sessionPid()
   const lockPath = lockPathOf(root)
   const log = []
-  const now = new Date()
-  const runId = `run-${stamp(now)}-${process.pid}`
   // The lock is read and taken in one step: of two starts at once, one waits
   // for the other and then finds its lock.
   const taken = withLock(lockPath, () => {
@@ -1878,7 +1967,7 @@ const start = (flags) => {
   if (taken.refused) return { ok: false, received, error: taken.refused, retry: false }
   let body
   try {
-    body = startRun(boardOf(root, runId, feature), log)
+    body = startRun(boardOf(root, runId, feature), log, setupTask)
   } catch (e) {
     body = { ok: false, error: failure(e), retry: retryable(e) }
   }
@@ -1895,44 +1984,12 @@ const start = (flags) => {
 }
 
 // Everything that can stop the run comes before anything that changes the
-// board or the branch.
-// The project-level doc of pillar architecture titled Setup, in any letter
-// case: the first omni doc list gives, else null, also when the list fails.
-const setupDocOf = (b) => {
-  try {
-    const docs = JSON.parse(run('omni', ['doc', 'list', '--global', '--json'], { cwd: b.root, env: { ...process.env, OMNI_RUN: b.runId, OMNI_ROLE: 'deliver' } })).docs || []
-    const doc = docs.find((d) => d && !d.feature_id && d.pillar === 'architecture' && String(d.title).toLowerCase() === 'setup')
-    return doc ? doc.id : null
-  } catch {
-    return null
-  }
-}
-const startRun = (b, log) => {
-  const { root, git } = b
-  // .omni/ holds the lock, the runs and the clarity cache, none of which is
-  // committed.
-  if (tryRun('git', ['-C', root, 'check-ignore', '-q', '.omni/']) === null) {
-    const exclude = path.resolve(root, git(['rev-parse', '--git-path', 'info/exclude']).trim())
-    let text = ''
-    try { text = fs.readFileSync(exclude, 'utf8') } catch {}
-    fs.mkdirSync(path.dirname(exclude), { recursive: true })
-    fs.writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.omni/\n`)
-  }
-  // The integration branch, checked out nowhere: stories land on it, and the
-  // run never moves the checkout's own branch.
-  const head = git(['rev-parse', 'HEAD']).trim()
-  const was = (tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${b.branch}`]) || '').trim()
-  const isAncestor = (a, c) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, c]) !== null
-  const move = !was ? 'create' : was === head ? 'same' : isAncestor(was, head) ? 'fast-forward' : isAncestor(head, was) ? 'ahead' : 'diverged'
-  if (move === 'diverged') return { ok: false, error: `${b.branch} and HEAD have diverged: merge first (git merge ${b.branch}), then start again` }
-  let checks
-  // Not tried again: omni checks reads the project's .omni.toml, so what
-  // fails here is the project's configuration, which a repeat meets again.
-  try {
-    checks = JSON.parse(b.omni(['checks', '--json']))
-  } catch (e) {
-    return { ok: false, error: `the checks could not be read: ${failure(e)}`, retry: false }
-  }
+// board or the branch. A setup run does nothing with git: repo-open does it
+// once the setup task has landed.
+const startRun = (b, log, setupTask = null) => {
+  const { root } = b
+  const repo = setupTask ? null : repoPlan(b)
+  if (repo && repo.ok === false) return repo
   // Whether the feature has a behaviour tree, which decides where a question
   // for the human goes. A list that fails counts as no tree, with the error
   // in the log.
@@ -1955,12 +2012,6 @@ const startRun = (b, log) => {
   } catch (e) {
     log.push(`The docs could not be listed, so no task writes back to Operations and Tables: ${failure(e)}`)
   }
-  // Pruned first: a lane folder that lost its .git file is still listed until
-  // the prune, and would pass for the lane worktree. git there would work in
-  // whatever repository is around the folder, and the clean below would hit
-  // that one.
-  tryRun('git', ['-C', root, 'worktree', 'prune'])
-  if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
   // The stories folder lies beside the checkout, where a session's sandbox
   // lets nothing write unless the human added it: found here, not at the
   // first worktree.
@@ -1976,28 +2027,14 @@ const startRun = (b, log) => {
   // The run's thread, named as omni-deliver.js names it: finish posts the
   // report there.
   const thread = b.omni(['thread', 'create', `Run ${b.runId}`]).trim()
-  if (move === 'create') git(['update-ref', `refs/heads/${b.branch}`, head, ''])
-  if (move === 'fast-forward') git(['update-ref', `refs/heads/${b.branch}`, head, was])
-  const tip = move === 'create' || move === 'fast-forward' ? head : was
-  log.push({
-    create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
-    same: `${b.branch} is at ${short(was)}, the checkout's HEAD`,
-    'fast-forward': `${b.branch} fast-forwarded from ${short(was)} to ${short(head)}, the checkout's HEAD`,
-    ahead: `${b.branch} kept at ${short(was)}, ahead of the checkout's HEAD ${short(head)}`,
-  }[move])
+  const tip = repo ? branchAt(b, repo, log) : null
 
   // The jobs of earlier runs that still run, such as a check in the lane
   // worktree: their supervisors are detached, so a workflow that stopped left
   // them going. This run holds the lock, so those runs are over.
   for (const { run, job } of stopJobs(runningJobs(root, runsIn(root)))) log.push(`Stopped the job ${job.id} of run ${run}, which had ended`)
 
-  // The lane worktree stays from run to run, detached.
-  if (fs.existsSync(b.lane)) {
-    cleanTree(b, b.lane)
-  } else {
-    fs.mkdirSync(b.storiesDir, { recursive: true })
-    git(['worktree', 'add', '-q', '--detach', b.lane, tip])
-  }
+  if (repo) laneAtStart(b, tip)
 
   // A story another run holds is released: this run holds the lock, so no
   // other run of this checkout is alive. A working story nobody holds (a claim
@@ -2011,31 +2048,122 @@ const startRun = (b, log) => {
   // The feature's stories as keys and counts: the script lists them itself
   // when it needs more.
   const stories = b.listStories()
-  // A story lands before its tests are written, and its worktree is kept for
-  // their author: a run that stopped before that author was done left the
-  // worktree of a story that is done, which goes, with the tests in it.
-  for (const story of stories) {
-    if (story.status !== 'done' || !(fs.existsSync(b.worktreeOf(story.key)) || hasBranch(root, `story/${story.key}`))) continue
-    log.push(removeWorktree(b, story.key, true)
-      ? `Removed the worktree of ${story.key}, which is done: a run that stopped left it for its test author, and its regression tests were not written`
-      : `${b.worktreeOf(story.key)}, the worktree a run that stopped left of ${story.key}, which is done, could not be removed: move it away`)
-  }
+  if (repo) dropDoneWorktrees(b, stories, log)
   const counts = {}
   for (const s of stories) counts[s.status] = (counts[s.status] || 0) + 1
   return {
     run: b.runId,
     root,
-    branch: b.branch,
+    branch: repo ? b.branch : null,
     tip,
-    lane: b.lane,
+    lane: repo ? b.lane : null,
     thread,
     tree,
     how,
-    checks: Object.fromEntries(CHECKS.map((name) => [name, String((checks && checks[name]) || '')])),
+    checks: repo ? repo.checks : checksOf({}),
+    base: baseOf(root),
+    setupTask,
     stories: { keys: stories.map((s) => s.key), counts, blocked: stories.filter((s) => s.blocked).length },
     released,
     log,
     setup: setupDocOf(b),
+  }
+}
+
+// ---- the repository: the deliver branch, the checks, the lane --------------
+// The feature's task that sets the project up, by its title in any case,
+// while it is not done or cancelled; else null.
+const setupTaskOf = (stories) => (stories.find((s) => String(s.title || '').trim().toLowerCase() === 'set up the project' && s.status !== 'done' && s.status !== 'cancelled') || {}).key || null
+// A folder has a repository when it is itself the top folder of one with a
+// commit.
+const hasRepo = (dir) => ownTree(dir) && tryRun('git', ['-C', dir, 'rev-parse', '--verify', '--quiet', 'HEAD']) !== null
+// The branch checked out in the root, or null where the root is not itself
+// the top folder of a repository or has a detached HEAD.
+const baseOf = (root) => (ownTree(root) ? (tryRun('git', ['-C', root, 'symbolic-ref', '-q', '--short', 'HEAD']) || '').trim() || null : null)
+// The six checks as omni checks gives them, an empty string for each it
+// lacks, under those checks-set gave the run.
+const checksOf = (fresh, set = {}) => ({ ...Object.fromEntries(CHECKS.map((name) => [name, String((fresh && fresh[name]) || '')])), ...set })
+
+// .omni/, which holds the lock, the runs and the clarity cache, is never
+// committed: added to .git/info/exclude when git does not ignore it.
+const excludeOmni = (b) => {
+  if (tryRun('git', ['-C', b.root, 'check-ignore', '-q', '.omni/']) !== null) return
+  const exclude = path.resolve(b.root, b.git(['rev-parse', '--git-path', 'info/exclude']).trim())
+  let text = ''
+  try { text = fs.readFileSync(exclude, 'utf8') } catch {}
+  fs.mkdirSync(path.dirname(exclude), { recursive: true })
+  fs.writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.omni/\n`)
+}
+// The project-level doc of pillar architecture titled Setup, in any letter
+// case: the first omni doc list gives, or null when none is, or the list
+// fails.
+const setupDocOf = (b) => {
+  try {
+    const docs = JSON.parse(run('omni', ['doc', 'list', '--global', '--json'], { cwd: b.root })).docs || []
+    const doc = docs.find((d) => d && !d.feature_id && d.pillar === 'architecture' && String(d.title).toLowerCase() === 'setup')
+    return doc ? doc.id : null
+  } catch {
+    return null
+  }
+}
+// What the repository work needs, checked before anything changes the board
+// or the branch: how deliver/<slug> moves to HEAD, and the checks.
+const repoPlan = (b) => {
+  const { root, git } = b
+  excludeOmni(b)
+  // The integration branch, checked out nowhere: stories land on it, and the
+  // run never moves the checkout's own branch.
+  const head = git(['rev-parse', 'HEAD']).trim()
+  const was = (tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${b.branch}`]) || '').trim()
+  const isAncestor = (a, c) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, c]) !== null
+  const move = !was ? 'create' : was === head ? 'same' : isAncestor(was, head) ? 'fast-forward' : isAncestor(head, was) ? 'ahead' : 'diverged'
+  if (move === 'diverged') return { ok: false, error: `${b.branch} and HEAD have diverged: merge first (git merge ${b.branch}), then start again` }
+  let checks
+  // Not tried again: omni checks reads the project's .omni.toml, so what
+  // fails here is the project's configuration, which a repeat meets again.
+  try {
+    checks = JSON.parse(b.omni(['checks', '--json']))
+  } catch (e) {
+    return { ok: false, error: `the checks could not be read: ${failure(e)}`, retry: false }
+  }
+  // Pruned first: a lane folder that lost its .git file is still listed until
+  // the prune, and would pass for the lane worktree. git there would work in
+  // whatever repository is around the folder, and the clean below would hit
+  // that one.
+  tryRun('git', ['-C', root, 'worktree', 'prune'])
+  if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
+  return { head, was, move, checks: checksOf(checks) }
+}
+// deliver/<slug> moved as the plan says, and its tip.
+const branchAt = (b, { head, was, move }, log) => {
+  if (move === 'create') b.git(['update-ref', `refs/heads/${b.branch}`, head, ''])
+  if (move === 'fast-forward') b.git(['update-ref', `refs/heads/${b.branch}`, head, was])
+  log.push({
+    create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
+    same: `${b.branch} is at ${short(was)}, the checkout's HEAD`,
+    'fast-forward': `${b.branch} fast-forwarded from ${short(was)} to ${short(head)}, the checkout's HEAD`,
+    ahead: `${b.branch} kept at ${short(was)}, ahead of the checkout's HEAD ${short(head)}`,
+  }[move])
+  return move === 'create' || move === 'fast-forward' ? head : was
+}
+// The lane worktree stays from run to run, detached.
+const laneAtStart = (b, tip) => {
+  if (fs.existsSync(b.lane)) {
+    cleanTree(b, b.lane)
+  } else {
+    fs.mkdirSync(b.storiesDir, { recursive: true })
+    b.git(['worktree', 'add', '-q', '--detach', b.lane, tip])
+  }
+}
+// A story lands before its tests are written, and its worktree is kept for
+// their author: a run that stopped before that author was done left the
+// worktree of a story that is done, which goes, with the tests in it.
+const dropDoneWorktrees = (b, stories, log) => {
+  for (const story of stories) {
+    if (story.status !== 'done' || !(fs.existsSync(b.worktreeOf(story.key)) || hasBranch(b.root, `story/${story.key}`))) continue
+    log.push(removeWorktree(b, story.key, true)
+      ? `Removed the worktree of ${story.key}, which is done: a run that stopped left it for its test author, and its regression tests were not written`
+      : `${b.worktreeOf(story.key)}, the worktree a run that stopped left of ${story.key}, which is done, could not be removed: move it away`)
   }
 }
 
