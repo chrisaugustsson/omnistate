@@ -77,7 +77,8 @@
 // The steps, each with its payload and the fields its body has besides ok and
 // received:
 // - start, from flags: run, root, branch, tip, lane, thread, checks, stories
-//   ({keys, counts by status, blocked}), released, log
+//   ({keys, counts by status, blocked}), released, log, how ({operations,
+//   tables}: the IDs of the feature's docs Operations and Tables, or null)
 // - checks-set {checks: {name: command}}: checks, all six
 // - list {}: waiting (the implemented and reviewed stories not blocked,
 //   each with key and status), pickable (those with a
@@ -1925,6 +1926,18 @@ const startRun = (b, log) => {
   } catch (e) {
     log.push(`The behaviour tree could not be listed, so questions go to threads: ${failure(e)}`)
   }
+  // The feature's how, which a landed task's docs agent writes back to: the
+  // IDs of its docs Operations (pillar architecture) and Tables (pillar db),
+  // or null. A list that fails counts as neither, with the error in the log.
+  const how = { operations: null, tables: null }
+  try {
+    const docs = JSON.parse(b.omni(['doc', 'list', '--json'])).docs || []
+    const idOf = (title, pillar) => (docs.find((d) => d.title === title && d.pillar === pillar) || {}).id || null
+    how.operations = idOf('Operations', 'architecture')
+    how.tables = idOf('Tables', 'db')
+  } catch (e) {
+    log.push(`The docs could not be listed, so no task writes back to Operations and Tables: ${failure(e)}`)
+  }
   // Pruned first: a lane folder that lost its .git file is still listed until
   // the prune, and would pass for the lane worktree. git there would work in
   // whatever repository is around the folder, and the clean below would hit
@@ -2000,6 +2013,7 @@ const startRun = (b, log) => {
     lane: b.lane,
     thread,
     tree,
+    how,
     checks: Object.fromEntries(CHECKS.map((name) => [name, String((checks && checks[name]) || '')])),
     stories: { keys: stories.map((s) => s.key), counts, blocked: stories.filter((s) => s.blocked).length },
     released,

@@ -1048,6 +1048,23 @@ test("start gives the checks fast, stack_up, stack, stack_reset, seed and lint a
   assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x", lint: "" });
 });
 
+test("start gives as how the IDs of the feature's docs titled Operations with pillar architecture and Tables with pillar db, or null for one it lacks, and null for both when the docs cannot be listed, which it logs", (t) => {
+  const docList = [
+    { id: "d-ops-spec", kind: "html", pillar: "spec", title: "Operations" },
+    { id: "d-ops", kind: "html", pillar: "architecture", title: "Operations" },
+    { id: "d-map", kind: "html", pillar: "architecture", title: "Map" },
+  ];
+  const one = scratch(t, [], [], { docList });
+  const both = scratch(t, [], [], { docList: [...docList, { id: "d-tables", kind: "html", pillar: "db", title: "Tables" }] });
+  const failing = scratch(t, [], [], { docList });
+  writeFileSync(join(failing.root, "bin", "omni"), `#!/bin/sh\nif [ "$1" = doc ] && [ "$2" = list ]; then echo "doc list is down" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);
+
+  const [a, b, down] = [start(one), start(both), start(failing)];
+
+  assert.deepEqual([a.how, b.how, down.ok, down.how], [{ operations: "d-ops", tables: null }, { operations: "d-ops", tables: "d-tables" }, true, { operations: null, tables: null }]);
+  assert.ok(down.log.some((l) => l.includes("doc list is down")), down.log.join("\n"));
+});
+
 test("a start whose behaviour list fails goes on with tree false, so questions go to threads, and logs the list's error; a tree with a node gives tree true", (t) => {
   const failing = scratch(t, [], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
   writeFileSync(join(failing.root, "bin", "omni"), `#!/bin/sh\nif [ "$1" = behaviour ] && [ "$2" = list ]; then echo "behaviour list is down" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);

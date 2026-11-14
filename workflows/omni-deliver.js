@@ -38,12 +38,12 @@ const storyLimit = Number.isInteger(A.storyLimit) && A.storyLimit > 0 ? A.storyL
 const HELPER = typeof A.helper === 'string' && A.helper ? A.helper : '~/.claude/omni/deliver-step.mjs'
 // Opus judges and takes over rework, Sonnet builds the first attempt, Haiku
 // carries the steps.
-const MODELS = { clarity: 'opus', council: 'opus', impl: 'sonnet', implRetry: 'opus', review: 'opus', verify: 'opus', tests: 'opus', final: 'opus', courier: 'haiku', ...(A.models || {}) }
+const MODELS = { clarity: 'opus', council: 'opus', impl: 'sonnet', implRetry: 'opus', review: 'opus', verify: 'opus', tests: 'opus', final: 'opus', docs: 'sonnet', courier: 'haiku', ...(A.models || {}) }
 // Each role's agent type lists only the tools the role needs, since every
 // tool definition is in an agent's starting context: the agent files in
 // workflows/agents/, which make install-agent-tools links into
 // ~/.claude/agents/. A tool a machine lacks, such as the browser's, is left out.
-const AGENT_TYPES = { clarity: 'omni-clarity', council: 'omni-council', impl: 'omni-impl', implRetry: 'omni-impl', review: 'omni-review', verify: 'omni-verify', tests: 'omni-tests', final: 'omni-final', courier: 'omni-courier', ...(A.agentTypes || {}) }
+const AGENT_TYPES = { clarity: 'omni-clarity', council: 'omni-council', impl: 'omni-impl', implRetry: 'omni-impl', review: 'omni-review', verify: 'omni-verify', tests: 'omni-tests', final: 'omni-final', docs: 'omni-docs', courier: 'omni-courier', ...(A.agentTypes || {}) }
 
 // Attempts a story gets since the human's latest answer.
 const MAX_ATTEMPTS = 3
@@ -68,11 +68,14 @@ const QUESTIONS_PER_ATTEMPT = 3
 // each: the council's 3, the decision, the context, the author again) and
 // its first turn in the lane fails (the prepare, 2 authors, and 4 for each
 // turn in the lane): TESTS_CALLS leaves room past that.
+// A landed task's write-back is set aside for too, until it has ended: its
+// docs agent, asked twice more when it returns nothing, and the two waits.
 const AGENT_CAP = 900
 const HARD_CAP = 960
 const STORY_CALLS = 90
 const CHECK_CALLS = 20
 const TESTS_CALLS = 30
+const DOCS_CALLS = 5
 const COUNCILS = 2
 // Rebase conflicts that send a story back with no attempt used, per story in
 // a run. One the implementer resolves by a merge, which the lane's rebase
@@ -94,8 +97,9 @@ let agentCalls = 0
 // Set once the run stops taking new work for the cap.
 let capped = false
 // Whether the calls made, and those set aside for that many stories, clarity
-// checks and landed stories' tests in flight, fit under AGENT_CAP.
-const fits = (stories, checksInFlight, testsInFlight) => agentCalls + STORY_CALLS * stories + CHECK_CALLS * checksInFlight + TESTS_CALLS * testsInFlight <= AGENT_CAP
+// checks and landed stories' tests in flight, and for the write-backs in
+// flight, fit under AGENT_CAP.
+const fits = (stories, checksInFlight, testsInFlight) => agentCalls + STORY_CALLS * stories + CHECK_CALLS * checksInFlight + TESTS_CALLS * testsInFlight + DOCS_CALLS * docsRuns.size <= AGENT_CAP
 // Notes for the run's report.
 const notes = []
 // An agent type this machine has not installed: the runtime refuses it at
@@ -971,6 +975,56 @@ ${resultFile(file)}
 ${task}
 Return raw structured data only.`
 
+// The docs agent writes back what a landed task changed to the feature's how,
+// the docs Operations and Tables. The rules are those of the omni-how skill's
+// write-back.md, carried here in full: another machine may not have the skill.
+const DOCS_SCHEMA = {
+  type: 'object',
+  required: ['status', 'changed', 'reason'],
+  properties: {
+    status: { type: 'string', enum: ['written', 'nothing', 'blocked'], description: 'written: you edited a doc; nothing: the docs already said what the landed code does; blocked: you could not write what you had to' },
+    changed: { type: 'array', items: { type: 'string' }, description: 'Each operation and table whose nodes you edited, by the name the docs give it' },
+    reason: { type: 'string', description: 'Why: what was written, why nothing had to be, or what blocks you' },
+  },
+}
+const docsList = () => [['Operations', 'architecture', how.operations], ['Tables', 'db', how.tables]]
+const docsPrompt = (ctx, base, final, file) => `You write back to the how of the feature "${feature}" what one landed task changed. You are read-only in the checkout: you change no file there but your result file, and make no commit. You write only to the docs named below.
+
+## What landed
+The task ${ctx.key} has landed on ${branch}. Work in ${root}: cd into it first. What it changed is \`git diff ${base}..${final}\`; read the changed files at ${final} with \`git show ${final}:<path>\`.
+
+${storySection(ctx, 'docs', { decisions: 'The implementer named in them each operation and table it built or changed, and each place it went against the docs.', docs: false })}
+
+## The docs
+${docsList().map(([title, pillar, id]) => (id ? `- \`${title}\` (pillar ${pillar}): doc ${id}.` : `- \`${title}\` does not exist in this feature: it gets no write.`)).join('\n')}
+Read each with \`${omniAs('docs')} doc read <doc>\`: it prints every node with its \`data-omni-id\` and its \`data-rev\`.
+
+## The rules
+The how is a starting point: the task built what it needed, also where the docs say otherwise, and the docs now have to say what the landed code does.
+- An operation the task built: \`set\` its \`Shape\` cell to the exact shape: how it is called, what goes in, what comes back, how it fails.
+- An operation it added, renamed or gave another job: \`insert\` or \`replace\` its row. One the feature no longer needs: \`delete\` its row.
+- A table it built or changed differently from the doc: \`replace\` the column rows and key lines that differ, so the doc states the table as the code has it. A table the doc lacks: \`insert\` its section in the doc's shape. One the feature no longer needs: \`delete\` its section.
+- An existing part it started to use, or stopped using: \`insert\` or \`delete\` its row under \`Builds on\` or \`Used as they are\`.
+- A choice (a \`Choice C<n>\` block) it went against: \`set\` the block to what now holds and why, under the same ID.
+- Write the state as it now is ("status is booked, cancelled or done"). Edit only the nodes that change, each with the \`rev\` you read.
+- A conflict means another task wrote first: read the doc again and resend.
+- Leave the \`Map\` doc as it is: the next run of the how step draws a fresh one.
+
+## How to edit a doc
+\`${omniAs('docs')} doc edit <doc> --body-file -\` takes on standard input a JSON array of operations, applied all or nothing:
+- \`{"op": "set", "node": "<id>", "rev": <rev>, "properties": {"html": "<inner HTML>"}}\` changes a node's inner HTML.
+- \`{"op": "replace", "node": "<id>", "rev": <rev>, "content": "<one block-level element>"}\` swaps a node for new content.
+- \`{"op": "insert", "parent": "<id> or null", "position": {"after": "<sibling id> or null"}, "content": "<one block-level element>"}\` adds a child of parent after that sibling (null is first); it needs no rev.
+- \`{"op": "delete", "node": "<id>", "rev": <rev>}\` removes a node.
+Each rev is the node's \`data-rev\` from your read. Leave \`data-omni-id\` and \`data-rev\` out of what you write. A stale rev is a conflict: nothing changes, and the error names the current revision. Write any scratch file outside the checkout.
+
+${BOARD}
+
+${resultFile(file)}
+## Your task now
+Make the docs say what the landed code does for every operation and table the task touched, and return the result: status written when you edited a doc, nothing when the docs already said it, blocked with the reason when you could not.
+Return raw structured data only.`
+
 const FINAL_SCHEMA = {
   type: 'object',
   required: ['healthy', 'journeys', 'report'],
@@ -1056,6 +1110,8 @@ const councilSlots = semaphore(COUNCILS)
 const tally = { settled: 0, majority: 0, asked: 0 }
 // Whether the feature has a behaviour tree, as start found it.
 let tree = false
+// The IDs of the feature's docs Operations and Tables, as start found them.
+let how = { operations: null, tables: null }
 // A question an agent asked, at `at` in its result r: its text, for the
 // prompts and the logs, and where it is, for what the board gets, which
 // comes from the agent's file (said).
@@ -1170,6 +1226,7 @@ root = started.root
 branch = started.branch
 laneDir = started.lane
 tree = started.tree === true
+how = started.how || { operations: null, tables: null }
 for (const line of started.log || []) log(line)
 log(`Run ${runId} on ${feature}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
 let checks = started.checks
@@ -1739,7 +1796,7 @@ const deliverAll = async () => {
       // check is in flight, and lists the board again once one has ended.
       // The tests in flight keep it going only while the calls set aside for
       // them leave no room for a story.
-      const waits = [...running, ...clarityRuns, ...(crowded() ? testsRuns : [])]
+      const waits = [...running, ...clarityRuns, ...(crowded() ? [...testsRuns, ...docsRuns] : [])]
       if (!waits.length) break
       if (taking) await Promise.race(waits)
     }
@@ -1942,6 +1999,7 @@ const laneStory = async (key) => {
     // Its tests are written from here on, outside the lane's lock: the story
     // is done, and the lane is free for the next one.
     queueTests(key, { base, final: landed.final, confirmed: range(ctx.criteria).filter((i) => !owed.has(i)) })
+    if (how.operations || how.tables) queueDocs(key, ctx, base, landed.final)
     return { key, outcome: 'done' }
   } catch (e) {
     // The lane goes back to the tip whatever stopped the story, past the agent
@@ -2113,6 +2171,47 @@ const queueTests = (key, story) => {
   testsRuns.add(run)
 }
 
+// ---- the write-back ------------------------------------------------------------
+// A landed task's changes go into the feature's Operations and Tables, by a
+// docs agent of its own, once lane-land has answered landed: outside the
+// lane's lock, one write-back at a time, as a promise chain, as the tests'
+// queue is. A feature with neither doc gets none. The task stays done
+// whatever the agent returns: blocked, or nothing at all, adds a note.
+let docsTurn = Promise.resolve()
+// The write-backs queued or at work, which the agent cap sets calls aside for
+// and the run waits for before its report, and how each ended: the agent's
+// status, or none.
+const docsRuns = new Set()
+const docsOutcomes = []
+const writeBack = async (key, ctx, base, final) => {
+  const r = await persist(key, 'the docs agent', () => act('docs', (file) => docsPrompt(ctx, base, final, file), { label: `docs:${key}`, phase: 'Lane', schema: DOCS_SCHEMA }))
+  if (!r) {
+    notes.push(`${key} landed without its write-back: the docs agent returned nothing`)
+    log(`${key}: landed without its write-back: the docs agent returned nothing`)
+    return { key, outcome: 'none' }
+  }
+  if (r.status === 'blocked') {
+    notes.push(words(`${key} landed without its write-back: `, part(r, ['reason'], 'no reason given')))
+    log(`${key}: landed without its write-back: ${r.reason || 'no reason given'}`)
+  } else log(`${key}: the docs agent's write-back: ${r.status}`)
+  return { key, outcome: r.status }
+}
+const queueDocs = (key, ctx, base, final) => {
+  const turn = docsTurn.then(() => writeBack(key, ctx, base, final))
+  docsTurn = turn.catch(() => {})
+  const run = turn
+    .catch((e) => {
+      if (e && e.atCap) capped = true
+      const why = e && e.atCap ? `the run reached its agent cap of ${HARD_CAP}` : `it stopped on an error: ${(e && e.message) || e}`
+      notes.push(`${key} landed without its write-back: ${why}`)
+      log(`${key}: landed without its write-back: ${why}`)
+      return { key, outcome: 'none' }
+    })
+    .then((o) => { docsOutcomes.push(o) })
+    .finally(() => docsRuns.delete(run))
+  docsRuns.add(run)
+}
+
 // ---- 7. report -----------------------------------------------------------------
 // The journeys check of the stories this run landed, then finish, which posts
 // the report on the Run thread and gives the lock up. The run does not wait
@@ -2170,7 +2269,7 @@ try {
   clarityPass()
   enter('Deliver')
   await deliverAll()
-  await Promise.all([...clarityRuns, ...testsRuns])
+  await Promise.all([...clarityRuns, ...testsRuns, ...docsRuns])
   enter('Report')
   journeyLines = await journeys()
   threw = false
@@ -2179,8 +2278,9 @@ try {
   throw e
 } finally {
   // Nothing writes to the board once finish has given the lock up: the
-  // clarity checks and the tests still in flight end first, after a throw too.
-  await Promise.all([...clarityRuns, ...testsRuns])
+  // clarity checks, the tests and the write-backs still in flight end first,
+  // after a throw too.
+  await Promise.all([...clarityRuns, ...testsRuns, ...docsRuns])
   try {
     await finish(journeyLines)
   } catch (e) {
@@ -2202,6 +2302,9 @@ return {
   outcomes,
   // How the tests of each story landed in this run ended: landed, none or dropped.
   tests: testsOutcomes,
+  // How the write-back of each story landed in this run ended: the docs
+  // agent's status, or none.
+  docs: docsOutcomes,
   council: tally,
   agents: agentCalls,
   capped,
