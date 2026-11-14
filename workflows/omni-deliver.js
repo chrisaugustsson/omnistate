@@ -905,10 +905,10 @@ const TESTS_SCHEMA = {
       description: 'Ranked oracle rows you did not write a test for, because another test already catches them',
       items: { type: 'object', required: ['row', 'caughtBy'], properties: { row: { type: 'string' }, caughtBy: { type: 'string', description: 'The existing or newly added test that already catches it' } } },
     },
-    defect: {
-      type: 'object',
-      properties: { test: { type: 'string' }, observed: { type: 'string' }, expected: { type: 'string' } },
-      description: 'With status found_defect: the behaviour your test exposed as wrong against the story',
+    defects: {
+      type: 'array',
+      items: { type: 'object', required: ['test', 'observed', 'expected'], properties: { test: { type: 'string' }, observed: { type: 'string' }, expected: { type: 'string' } } },
+      description: 'With status found_defect: every failing test that exposed behaviour as wrong against the story, one per test, not only the first',
     },
     blockers: { type: 'string' },
     learnings: { type: 'array', items: { type: 'string' } },
@@ -940,7 +940,7 @@ ${CONVENTIONS}${TEST_POLICY}
 ## Rules
 - Record \`git rev-parse HEAD\` first. You may change only ${TEST_ASSETS}.
 - A criterion named below as a test obligation names a test the story owes: the verifier skipped it, and it is yours. Meet it with a test the gate admits, or name in reused the existing test that already does.
-- ORACLE FIRST: write the oracle table from the story BEFORE you open any production file or run the code. Return it in oracle. Every expected value in your tests comes from a row. If the code disagrees with a row and the story clearly supports the row, that is a defect (status found_defect); if the story does not settle it, return status needs_decision with question, options and recommendation. In both cases leave no uncommitted test changes.
+- ORACLE FIRST: write the oracle table from the story BEFORE you open any production file or run the code. Return it in oracle. Every expected value in your tests comes from a row. If the code disagrees with a row and the story clearly supports the row, that is a defect (status found_defect, with every failing test in defects, not only the first); if the story does not settle it, return status needs_decision with question, options and recommendation. In both cases leave no uncommitted test changes.
 - INVENTORY, before writing any test. Besides the search the policy names, search by the names in the story's files and by what \`git diff ${base}..${final}\` touches, which is what the story changed. Record each existing test found in existingCoverage, and for each new test the closest existing ones in overlapCheck.
 - PROVE IT GOES RED for every new test: record in sensitivity each mutant you applied, that the new test went red, and which existing tests you ran against it that stayed green. Production files must be unchanged when you finish (git status shows no production changes).
 - Never start the stack or run the stack tests${checks.stack ? ` (\`${checks.stack}\`)` : ''}, and never run \`docker compose up\` or \`docker compose run\`: the stack is shared, and by now it may hold another story's build. A risk that only a test against the stack would catch gets no test from you: list it in notAdmitted, with "needs the stack" as what catches it.
@@ -1939,8 +1939,8 @@ const laneStory = async (key) => {
 // check runs, and the lane is at the tip afterwards. A turn that fails, on a
 // rebase conflict, a red check or a refused landing, gets the author once
 // more, with the reason; a second failure drops the tests. So does every
-// other ending: a defect, which the note names with its test, what was
-// observed and what was expected, and uses no attempt, since the story has
+// other ending: a defect, which the note names with every failing test,
+// what was observed and what was expected, and uses no attempt, since the story has
 // landed; a question the council does not settle; an author
 // that is blocked or returns nothing; a lane that has stopped; the hard cap.
 // Dropped tests cost the story nothing: its worktree goes, and the report
@@ -1995,9 +1995,11 @@ const writeTests = async (key, { base, final, confirmed }) => {
         continue
       }
       if (r.status === 'found_defect') {
-        const d = (name, none) => part(r, ['defect', name], none)
-        log(`${key}: its tests found a defect after it landed`)
-        return { drop: words('its tests found a defect in it: the test ', d('test', '(unnamed)'), ', observed: ', d('observed', '(not given)'), ', expected: ', d('expected', '(not given)')) }
+        const found = Array.isArray(r.defects) && r.defects.length ? r.defects.map((_, i) => i) : [null]
+        const d = (i, name, none) => (i === null ? none : part(r, ['defects', i, name], none))
+        const each = found.flatMap((i, n) => [n ? '; the test ' : 'the test ', d(i, 'test', '(unnamed)'), ', observed: ', d(i, 'observed', '(not given)'), ', expected: ', d(i, 'expected', '(not given)')])
+        log(`${key}: its tests found ${found.length === 1 ? 'a defect' : `${found.length} defects`} after it landed`)
+        return { drop: words(`its tests found ${found.length === 1 ? 'a defect' : `${found.length} defects`} in it: `, each) }
       }
       if (r.status !== 'done') {
         return { drop: words('the test author is blocked: ', part(r, ['blockers'], String(r.status))) }
