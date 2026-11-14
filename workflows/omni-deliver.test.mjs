@@ -1209,6 +1209,7 @@ test("after 3 failed tries the task is parked: back in the backlog, not blocked,
   assert.deepEqual(logs.filter((l) => l.startsWith("Parked tasks tried again")), ["Parked tasks tried again: US-2"]);
   assert.equal(agentsOf(calls, "impl:US-2").length, 1);
   assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.detail]).sort(), [["US-1", "parked", "failed 3 tries"], ["US-2", "done", undefined], ["US-3", "done", undefined]]);
+  assert.deepEqual([result.parked, result.waiting], [["US-1"], []]);
 });
 
 test("no courier carries story content: however long a story's text, criteria, decisions and findings, no prompt quotes them and every courier's answer stays within 2,000 characters; every agent is told how to read the story itself", { timeout: 120000 }, async (t) => {
@@ -1496,6 +1497,7 @@ test("in a feature with a behaviour tree, a question of clarity, an implementer 
     { key: "US-3", outcome: "waiting", question: on("Should the badge blink?").id },
     { key: "US-4", outcome: "done" },
   ]);
+  assert.deepEqual([[...result.waiting].sort(), result.parked], [["US-2", "US-3"], []]);
   assert.deepEqual(result.council, { settled: 0, majority: 0, asked: 3 });
 });
 
@@ -3074,9 +3076,10 @@ test("the run ends with the journeys check in the lane worktree, then finish get
     final: [{ healthy: true, journeys: ["Badge, then count: works"], report: "One journey spans them." }],
   };
 
-  const { result, error, calls, phases } = await deliver(dirs, { storyLimit: 2 }, roles);
+  const { result, error, calls, phases, logs } = await deliver(dirs, { storyLimit: 2 }, roles);
 
   assert.equal(error, null);
+  assert.deepEqual([result.pr, result.why, logs.filter((l) => /^(No p|P)ull request/.test(l))], [null, "the checkout has no remote", ["No pull request: the checkout has no remote"]]);
   const [final] = agentsOf(calls, "final");
   assert.deepEqual([final.model, final.phase], ["opus", "Report"]);
   assert.ok(final.prompt.includes(`The lane worktree ${laneOf(dirs)}, on a detached HEAD at the tip of deliver/board, where this run landed its stories.`), final.prompt);
@@ -3094,8 +3097,8 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   assert.equal(posted[0].body, readFileSync(result.report, "utf8"));
   assert.deepEqual(stepsNamed(calls, "context", "US-3"), []);
   assert.equal(result.report, join(dirs.repo, ".omni", "runs", result.run, "report.md"));
-  assert.match(posted[0].body, /\n## Landed on deliver\/board\n- US-1 Story US-1: [0-9a-f]{7} feat: US-1\.txt\n- US-2 Story US-2: [0-9a-f]{7} feat: US-2\.txt\n\nBring them into your branch with `git merge --ff-only deliver\/board`\.\n/);
-  assert.ok(posted[0].body.includes("\n## Blocked\n- US-3 Story US-3: thread th-1\n"), posted[0].body);
+  assert.match(posted[0].body, /\n## Built\n- US-1 Story US-1: [0-9a-f]{7} feat: US-1\.txt\n- US-2 Story US-2: [0-9a-f]{7} feat: US-2\.txt\n\n## /);
+  assert.ok(posted[0].body.includes("\n## Waiting on a question\n- US-3 Story US-3: thread th-1\n"), posted[0].body);
   assert.ok(posted[0].body.includes("\n## Journeys\n- healthy: One journey spans them.\n- Badge, then count: works\n"), posted[0].body);
   assert.deepEqual([result.landed, result.tip], [["US-1", "US-2"], git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim()]);
   assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
@@ -3140,15 +3143,34 @@ test("finish runs whenever start succeeded: a run that throws posts its report, 
   // The board cannot be listed: the deliver loop throws, and finish lists the blocked stories itself.
   const fault = (call) => (call.label === "courier:list" ? "nothing" : null);
 
-  const { error, calls } = await deliver(dirs, {}, {}, { fault });
+  const { error, calls, logs } = await deliver(dirs, {}, {}, { fault });
 
   assert.equal(error.message, "courier:list: the courier returned nothing, after 3 retries");
+  assert.equal(logs.at(-1), "No pull request: the checkout has no remote");
   assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
   const [run] = dirs.state().threads.filter((th) => /^Run run-\d{8}-\d{6}-\d+$/.test(th.title));
   assert.equal(run.posts.length, 1);
   assert.ok(run.posts[0].body.includes("\nThe run stopped on an error: courier:list: the courier returned nothing, after 3 retries\n"), run.posts[0].body);
-  assert.ok(run.posts[0].body.includes("\n## Blocked\n- none\n"), run.posts[0].body);
+  assert.ok(run.posts[0].body.includes("\n## Waiting on a question\n- none\n"), run.posts[0].body);
   assert.equal(agentsOf(calls, "courier:finish").length, 1);
+});
+
+test("a run on a checkout whose base branch is on a remote with gh ends with the feature's pull request, which it logs and returns", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const bare = join(dirs.root, "origin.git");
+  git(dirs.root, "init", "-q", "--bare", bare);
+  git(dirs.repo, "remote", "add", "origin", bare);
+  git(dirs.repo, "push", "-q", "origin", "main");
+  const fakeGh = fileURLToPath(new URL("./fixtures/fake-gh.mjs", import.meta.url));
+  writeFileSync(join(dirs.bin, "gh"), `#!/bin/sh\nexec "${process.execPath}" "${fakeGh}" "$@"\n`);
+  chmodSync(join(dirs.bin, "gh"), 0o755);
+  dirs.env.FAKE_GH_STATE = join(dirs.root, "gh-state.json");
+
+  const { result, error, logs } = await deliver(dirs);
+
+  assert.equal(error, null);
+  assert.deepEqual([result.pr, result.why, logs.at(-1)], ["https://example.com/pr/1", null, "Pull request: https://example.com/pr/1"]);
+  assert.equal(git(bare, "rev-parse", "refs/heads/deliver/board").trim(), result.tip);
 });
 
 // ---- the setup task -----------------------------------------------------------------
