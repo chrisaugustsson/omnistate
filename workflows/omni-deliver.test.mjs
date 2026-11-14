@@ -1497,6 +1497,58 @@ test("in a feature with a behaviour tree, a question whose ask on the tree fails
   assert.deepEqual([questions(dirs), dirs.state().behaviour.questions, dirs.story("US-1").blocked], [[], [], false]);
 });
 
+// A task's text with Covers lines for the given node IDs.
+const coversNodes = (...ids) => `Show a badge.\nCovers, in the feature's behaviour tree (\`omni behaviour read <id> --feature "board"\`):\n${ids.map((id, i) => `- ${id} v1 \`badge/${i}\`\n`).join("")}`;
+
+test("a task that covers tree nodes has every building agent read them with omni behaviour read, an answered question settled, a binding rule and an open question undecided; a task that covers none has no word of the tree in any prompt", { timeout: 120000 }, async (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { text: coversNodes("node-badge", "node-colour") }),
+    story("US-2", { text: coversNodes("node-badge", "node-colour") }),
+    story("US-3", { text: "Show a badge." }),
+    story("US-4", { text: "Show a badge." }),
+  ]);
+  const roles = {
+    "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }],
+    "clarity:US-3": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }],
+  };
+
+  const { error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  // Clarity and the council judge the task with a gap; the others build the one without.
+  const promptsOf = (gapKey, buildKey) => [
+    `clarity:${gapKey}`, `council:${gapKey}:spec`, `council:${gapKey}:code`, `council:${gapKey}:user`,
+    `impl:${buildKey}`, `review:${buildKey}`, `verify:${buildKey}`, `tests:${buildKey}`,
+  ].map((label) => [label, agentsOf(calls, label)[0]]);
+  for (const [label, c] of promptsOf("US-1", "US-2")) {
+    assert.ok(c, label);
+    assert.match(c.prompt, /omni behaviour read <node id>/, label);
+    assert.match(c.prompt, /node-badge, node-colour/, label);
+    assert.match(c.prompt, /An answered question on a node is settled/, label);
+    assert.match(c.prompt, /A rule that reaches the node binds/, label);
+    assert.match(c.prompt, /An open question is not decided/, label);
+  }
+  for (const [label, c] of promptsOf("US-3", "US-4")) {
+    assert.ok(c, label);
+    assert.doesNotMatch(c.prompt, /behaviour read|node-badge|answered question|reaches the node|open question is not decided/, label);
+  }
+});
+
+test("for every task, clarity and each council member are told the shape of an operation is not a gap unless a covered node or a criterion states it, and no blocking rule or impact names an API contract", { timeout: 60000 }, async (t) => {
+  const dirs = scratch(t, [story("US-1", { text: "Show a badge." })]);
+  const roles = { "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux")] }] };
+
+  const { error, calls } = await deliver(dirs, {}, roles);
+
+  assert.equal(error, null);
+  const judges = ["clarity:US-1", "council:US-1:spec", "council:US-1:code", "council:US-1:user"].map((label) => [label, agentsOf(calls, label)[0]]);
+  for (const [label, c] of judges) {
+    assert.ok(c, label);
+    assert.match(c.prompt.replace(/\s+/g, " "), /the shape of an operation: how it is called, what it returns and how it fails, unless a covered node or a criterion states it/, label);
+    assert.doesNotMatch(c.prompt, /API contract/, label);
+  }
+});
+
 test("an implementer that asks a fourth question in one attempt, after the council settled three, has it sent to the human without a council", { timeout: 60000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const ask = (n) => ({ status: "needs_decision", summary: "Stopped.", question: `Question ${n}?`, options: ["A", "B"], recommendation: "B" });
