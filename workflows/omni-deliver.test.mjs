@@ -2682,8 +2682,7 @@ test("defects the test author's tests find after the story has landed open no th
   assert.deepEqual([result.outcomes, result.tests.map((o) => [o.key, o.outcome])], [[{ key: "US-1", outcome: "done" }], [["US-1", "dropped"]]]);
   assert.equal(result.notes.length, 1, result.notes.join("\n"));
   const [note] = result.notes;
-  assert.match(note, /^US-1 landed without regression tests: .*badge_is_red.*pink.*red.*badge_shows_count.*0.*3/s);
-  assert.doesNotMatch(note, /\[object Object\]/);
+  assert.equal(note, "US-1 landed without regression tests: its tests found 2 defects in it: the test badge_is_red, observed: pink, expected: red; the test badge_shows_count, observed: 0, expected: 3.");
   assert.ok(readFileSync(result.report, "utf8").includes(`\n${note}\n`), readFileSync(result.report, "utf8"));
   assert.deepEqual([existsSync(dirs.worktree("US-1")), git(dirs.repo, "branch", "--list", "story/US-1").trim()], [false, ""]);
 });
