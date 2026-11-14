@@ -91,6 +91,9 @@
 //   attempt, how many used none, how many came before the human's latest
 //   answer) and questions (the fnv1a of each decision's question). No text
 //   of the story: every agent reads it with omni story read
+//   boards: [{doc, board}], the design boards the story links (at most 20)
+// - design-export {}: dir, boards (how many PNG files). Runs omni export once
+//   per run, into <root>/.omni/runs/<run>/design
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
@@ -895,6 +898,17 @@ export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test a
 const ASKED_ID = /^Asked on the behaviour tree: question (\S+) on node /
 export const ASKED = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`
 // The node IDs of a task's Covers lines, in order: `- <node id> v<version> \`<path>\``.
+// The design boards a story links: its links to a doc of kind design that
+// name a board, as {doc, board}, each pair once, the first 20 in link order.
+const boardsOf = (b, story) => {
+  const designs = new Set((JSON.parse(b.omni(['doc', 'list', '--json'])).docs || []).filter((d) => d.kind === 'design').map((d) => d.id))
+  const pairs = []
+  for (const l of story.links || []) {
+    if (!l.doc_id || !l.node_id || !designs.has(l.doc_id)) continue
+    if (!pairs.some((x) => x.doc === l.doc_id && x.board === l.node_id)) pairs.push({ doc: l.doc_id, board: l.node_id })
+  }
+  return pairs.slice(0, LISTED)
+}
 const nodesOf = (story) => [...String(story.text || '').matchAll(/^\s*- (\S+) v\d+ `/gm)].map((m) => m[1])
 export const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
 const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
@@ -1122,9 +1136,47 @@ const STEPS = {
       obligations: obligationsOf(story, clarified),
       findings: { open: count(findings), uncounted: uncounted.length, earlier: count(earlier) },
       nodes: nodesOf(story),
+      boards: boardsOf(b, story),
       questions: [...new Set((story.decisions || []).map((d) => fnv1a(String(d.question))))],
     }
   })(),
+
+  // The feature's boards as images, once per run: omni export writes each as
+  // <dir>/ui/<doc>/<name>-<board>.png with its .tags beside it. Only a
+  // success is remembered; a failure is exported again by the next call.
+  'design-export': (b) => {
+    const dir = path.join(runDirOf(b.root, b.runId), 'design')
+    const done = path.join(runDirOf(b.root, b.runId), 'design-export.json')
+    const had = readJson(done)
+    if (had && had.dir === dir) return had
+    const refuse = (what) => ({ ok: false, error: `the design could not be exported: ${what}`, retry: false })
+    const said = (e) => String((e && e.stderr) || '').trim() || String((e && e.stdout) || '').trim() || `omni exited with code ${e && e.status}`
+    let project
+    try {
+      project = JSON.parse(run('omni', ['link', '--json'], { cwd: b.root })).project_id
+    } catch (e) {
+      return refuse(said(e).slice(0, 300))
+    }
+    if (!project) return refuse('omni link gives no project_id for this folder')
+    fs.rmSync(dir, { recursive: true, force: true })
+    try {
+      run('omni', ['export', '--project', String(project), '--feature', b.feature, '--out', dir], { cwd: b.root, timeout: 5 * 60000 })
+    } catch (e) {
+      if (e && e.timedOut) return refuse('omni export ran past 5 minutes')
+      return refuse(said(e).slice(0, 300))
+    }
+    let boards = 0
+    const walk = (d) => {
+      for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+        if (f.isDirectory()) walk(path.join(d, f.name))
+        else if (f.name.endsWith('.png')) boards++
+      }
+    }
+    if (isDir(path.join(dir, 'ui'))) walk(path.join(dir, 'ui'))
+    const body = { dir, boards }
+    writeJson(done, body)
+    return body
+  },
 
   claim: stateWrite('claim', ['stage'], (p) => ['--stage', p.stage], (s, p, b) => s.status === p.stage && !!s.holder && s.holder.run === b.runId),
   // A story sent back for its next attempt, held where it failed: to the
@@ -1750,7 +1802,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'question-ask', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'question-ask', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'design-export', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
