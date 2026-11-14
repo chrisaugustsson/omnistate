@@ -4,11 +4,15 @@ A delivery run is the `omni-deliver` workflow (`workflows/omni-deliver.js`),
 which Claude Code runs with its Workflow tool. It takes a feature's stories
 from the OmniState board, implements, reviews and tests them, and lands them on
 the branch `deliver/<feature slug>`; each story's regression tests are written
-once it has landed. The script holds the flow, but it can run
-no command itself: every git, omni and check command runs in its host helper,
-`workflows/deliver-step.mjs`, which a cheap courier agent runs for each step.
-The helper's header describes that protocol and every step; the script's
-`meta` sums up a run.
+once it has landed, and its changes are written back into the feature's
+`Operations` and `Tables`. The run ends with that branch pushed and one pull
+request, whose text is the report. Only the human starts it, never another
+skill or workflow. Here a task is a story record on the board: the commands
+(`omni story ...`), the keys and the helper's steps still say story. The
+script holds the flow, but it can run no command itself: every git, omni, gh
+and check command runs in its host helper, `workflows/deliver-step.mjs`,
+which a cheap courier agent runs for each step. The helper's header describes
+that protocol and every step; the script's `meta` sums up a run.
 
 A courier call takes about ten seconds, of which the helper works a fraction
 of one, so steps that always follow each other with nothing to decide in
@@ -41,10 +45,10 @@ holds:
   hundreds of KB. The clarity check reads the spec, architecture and db docs
   whole.
 - An agent that needs a check's output reads the job's log by the path the
-  prompt names. A finding or a thread about a check names the job, and the
-  helper adds the end of its log.
-- The helper writes the thread of a story out of attempts, and the report's
-  list of blocked stories, from the board.
+  prompt names. A finding about a check names the job, and the helper adds
+  the end of its log.
+- The helper writes the report's lists of the tasks that wait, failed or were
+  not started, and the questions they wait on, from the board.
 
 A courier copies the payload it writes for the helper the same way, so no
 payload carries an agent's text either: no string in one passes about 500
@@ -93,7 +97,7 @@ body says no more than that the prompt defines the task:
 | Role | Agent type | Tools |
 | --- | --- | --- |
 | `courier` | `omni-courier` | Bash, Write, Read |
-| `clarity`, `council`, `review` | `omni-clarity`, `omni-council`, `omni-review` | Read, Grep, Glob, Bash, Write |
+| `clarity`, `council`, `review`, `docs` | `omni-clarity`, `omni-council`, `omni-review`, `omni-docs` | Read, Grep, Glob, Bash, Write |
 | `impl`, `implRetry` | `omni-impl` | Read, Edit, Write, Bash, Grep, Glob, Monitor, ToolSearch |
 | `tests` | `omni-tests` | Read, Edit, Write, Bash, Grep, Glob, Monitor, ToolSearch |
 | `verify`, `final` | `omni-verify`, `omni-final` | Read, Grep, Glob, Bash, Write, Monitor, ToolSearch, `mcp__Claude_Browser` |
@@ -113,7 +117,8 @@ error, so the verifier on a CLI without that browser runs without one.
 with the type's tools and body, asked for one word. It spends real tokens, so
 no test runs it. A tool the CLI lacks is not counted.
 
-A run starts from a Claude Code session in the project's main checkout:
+A run starts from a Claude Code session in the project's main checkout, or,
+for a new project, in its folder (see A new project):
 
 - The checkout's folder is linked to its OmniState project (`omni link`, or
   `OMNI_PROJECT`).
@@ -141,16 +146,18 @@ args such as `{"feature": "Rename a project", "storyLimit": 3}`:
 | `storyLimit` | none | the most stories the run takes, for a first run on a feature |
 | `force` | false | takes over the lock of a run the human knows is dead |
 | `checks` | none | check commands on top of those in `.omni.toml` (see The checks) |
-| `models` | see below | the model of a role: `clarity`, `council`, `impl`, `implRetry`, `review`, `verify`, `tests`, `final` or `courier` |
+| `models` | see below | the model of a role: `clarity`, `council`, `impl`, `implRetry`, `review`, `verify`, `tests`, `final`, `docs` or `courier` |
 | `agentTypes` | `omni-<role>` | the agent type of a role (see The agent types); `implRetry` is set apart from `impl` |
 | `helper` | `~/.claude/omni/deliver-step.mjs` | another path to the helper |
 
-Every role runs on opus, except `impl`, a story's first attempt, on sonnet, and
-`courier` on haiku.
+Every role runs on opus, except `impl`, a story's first attempt, and `docs` on
+sonnet, and `courier` on haiku.
 
-The run never pushes, and never moves the checkout's branch or changes its
-files: it reads the checkout's HEAD at its start, and keeps its own state in
-`.omni/`, which git ignores.
+The run pushes once, at its end: the feature's branch, for its pull request
+(see The pull request). It merges nothing, and never moves the checkout's
+branch. Outside a setup run it never changes the checkout's files either: it
+reads the checkout's HEAD at its start, and keeps its own state in `.omni/`,
+which git ignores.
 
 ## What a run does
 
@@ -158,9 +165,14 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   and opens the run's thread, `Run <run id>`. It releases the stories a dead
   run still holds, stops the jobs of earlier runs that still run, and cleans
   the lane worktree with `reset --hard` and `clean -fd`, never `-x`, so that
-  ignored build caches stay warm.
-- **Unblock.** A story whose threads all have a conclusion gets each one as a
-  human decision, and is unblocked. Its attempts count from there.
+  ignored build caches stay warm. In a setup run it does nothing with git
+  (see A new project).
+- **Unblock.** A blocked task whose questions are all answered gets each
+  answer as a decision, its open findings resolved, and is unblocked, with a
+  new round of tries (see Questions). Then each task parked after 3 tries is
+  taken up again (see Parking).
+- **Setup.** In a setup run only: the task `Set up the project`, first and
+  alone, straight in the folder (see A new project).
 - **Clarity.** One check for each backlog story whose text, criteria, linked
   nodes or decisions changed since its last check. A criterion that names a
   test becomes a test obligation, which the story's test author owns and the
@@ -174,8 +186,10 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   as one implemented before it ran, is read for a test as the thing
   delivered: "A regression test covers ...", "Add a test ...", "Tests cover
   ...". The story versions that the old runner kept in `clarity.json` are not
-  checks of this kind, since it recorded no test obligation. A minor gap takes
-  its recommendation.
+  checks of this kind, since it recorded no test obligation. A criterion that
+  asks that `Operations` and `Tables` say what the landed code does is
+  recorded the same way, as the write-back (see The write-back). A minor gap
+  takes its recommendation.
   The 3 blocking gaps of most impact go to the council, and the rest take
   their recommendation.
   The checks run beside the delivery: the run starts them all and goes on to
@@ -194,15 +208,19 @@ files: it reads the checkout's HEAD at its start, and keeps its own state in
   of the three pick the same option and each of the two quotes its source:
   the decision then says it was 2 of 3 and names the third member's pick, so
   the human can see the split. Otherwise, with no majority or a majority
-  without a quote from each of its two, a thread opens with each member's pick
-  and evidence, and the story is blocked until the thread has a conclusion.
+  without a quote from each of its two, the question goes to the human on a
+  node of the feature's behaviour tree, with each member's pick and evidence
+  and a recommendation, and that task waits for the answer (see Questions).
 - **Deliver,** in the three stages below.
 - **Tests.** Each story's regression tests, written once it has landed, by
   one author at a time, beside the delivery of the stories after it (see
   below).
-- **Report.** Once every clarity check and every story's tests have ended, a
-  check of the user journeys across the stories landed, then the report. The journeys check runs none of the checks, since an agent's Bash
-  call stops after 10 minutes: it is told the result of the lane's last one.
+- **Report.** Once every clarity check, every story's tests and every
+  write-back have ended, a check of the user journeys across the stories
+  landed, then `finish`: the report, the push and the pull request (see The
+  pull request). The journeys check runs none of the checks, since an agent's
+  Bash call stops after 10 minutes: it is told the result of the lane's last
+  one.
 
 The run does not wait for answers: the next run's Unblock takes them.
 
@@ -236,14 +254,16 @@ and testing.
    - The checks `fast`, `stack_up` and `stack` run there, in that order, as
      jobs. The run's first `stack_up` comes after `stack_reset`, when it is
      set, for what a run that was stopped left on the stack.
-   - A verifier exercises every criterion but the test obligations, on the
-     stack that `stack_up` started.
+   - A verifier exercises every criterion but the test obligations and the
+     write-back, on the stack that `stack_up` started, and compares the built
+     screen with each design board the story links (see The design check).
    - `lane-clean` throws away what the verifier left uncommitted, and
      `lane-land` lands the story and moves it to done. Its worktree and
      `story/<key>` stay, for its test author. A lane that `lane-land` refuses
      for its state, such as a branch an agent checked out there, goes back to
      the story as it was checked (`lane-candidate`), and the story lands from
-     that.
+     that. Once it has landed, a docs agent writes its changes into
+     `Operations` and `Tables` (see The write-back).
 
 A story's **regression tests** are written once it has landed, outside the
 lane's lock: in the lane, their author took 2 to 25 minutes a story, with the
@@ -277,33 +297,35 @@ written.
   a question the council does not settle, is blocked, or returns nothing
   after its retries, when the lane has stopped for the run, and at the hard
   cap.
-- A defect the tests find comes after the landing: it uses no attempt, and
-  the story is not sent back. A thread opens with the test, what it observed
-  and what the story expects, for the human to decide, and the report notes
-  it.
-- The board lets nothing be linked from a story that is done, so a thread of
-  the test author (a defect, a question, a blocker) names the story in its
-  title, and neither is linked from it nor blocks it.
+- A defect the tests find comes after the landing: it uses no attempt, the
+  story is not sent back, and no thread opens. The report's note names each
+  failing test, what it observed and what the story expects, for the human
+  to decide.
+- A question of the test author that the council does not settle blocks
+  nothing, since the story is done: it is asked on a node of the behaviour
+  tree like any other, without blocking the story, and in a feature without
+  a tree its thread names the story in its title and is not linked from it.
+  Either way the tests are dropped.
 - A run stopped from outside while tests were pending leaves the worktree of
   a story that is done. The next start removes it and says so: those tests
   are not written.
 
 What sends a story back:
 
-- A failed review or verification uses one of the story's 3 attempts since
-  the human's latest answer. The story stays held where it failed until an implementer's slot is free, ahead
-  of new stories; then one helper step, `rework`, moves it to the backlog and
-  claims it again, and its next implementer goes on in its worktree. After the
-  third, the story is blocked on a thread with every attempt's findings, which
-  the helper writes from the board.
+- A failed review or verification, a criterion not met or a difference from
+  a design board, uses one of the story's 3 tries in its round. The story
+  stays held where it failed until an implementer's slot is free, ahead of
+  new stories; then one helper step, `rework`, moves it to the backlog and
+  claims it again, and its next implementer goes on in its worktree. After
+  the third, the story is parked (see Parking).
 - A failed lane check runs once more on the tip without the story, after
   `stack_reset` when the check is `stack_up` or `stack` (see The checks). When
   it passes there, the failure is the story's, and uses an attempt. When it
   fails there too, the trouble is not the story's: the lane stops for the rest
-  of the run, with one thread for the run, and the story goes back to reviewed
-  with no attempt used. Implementers and reviewers finish what they hold. For
-  a stack check, the thread names the likely cause: a story left state on the
-  stack, which `stack_reset` (or `stack_up`) should reset.
+  of the run, which the report's notes say, and the story goes back to
+  reviewed with no attempt used. Implementers and reviewers finish what they
+  hold. For a stack check, the note names the likely cause: a story left
+  state on the stack, which `stack_reset` (or `stack_up`) should reset.
 - A rebase conflict sends the story back with no attempt used, to rebase and
   resolve in its worktree, twice per story in a run: from the third, a
   conflict uses an attempt, so that one resolved by a merge, which the lane's
@@ -312,11 +334,13 @@ What sends a story back:
   attempt.
 - An agent that returns nothing is asked again after 30 s and after 2 minutes,
   and then its story goes back to where it waited, with no attempt used. When
-  agents return nothing for 3 stories in a row, the run takes no new story and
-  opens one thread for the run.
-- A story whose delivery stops on an error is released and blocked on a thread
-  with the error. When the same error stops a second story, the run takes no
-  new story and opens one thread for the run.
+  agents return nothing for 3 stories in a row, the run takes no new story,
+  which the report's notes say.
+- A story whose delivery stops on an error is released, and the report lists
+  it under Failed with the error. When the same error stops a second story,
+  the run takes no new story, which the notes say.
+
+None of these opens a thread: the run's trouble is a line in its report.
 
 After a failure in the lane, the lane worktree goes back to the tip, and when
 the stack holds the story's build, `stack_reset` (when set) and `stack_up` run
@@ -336,22 +360,191 @@ start:
 - when it is missing, it is created at the checkout's HEAD;
 - when HEAD is ahead of it, it is fast-forwarded to HEAD;
 - when it is ahead of HEAD, with the stories of an earlier run, it is kept;
-- when the two have diverged, the run stops before any work and says to merge
-  first.
+- when the two have diverged and `gh` lists a merged pull request of the
+  branch whose head was its tip, it starts again at HEAD;
+- when the two have diverged otherwise, the run stops before any work and
+  says to merge first.
 
 `lane-land` moves the branch with a compare-and-swap, from the tip the story
 was tested on to the tested commit, and checks that the branch then holds the
 tested tree. A branch that moved in between is not swapped.
 
-The report lists the stories landed, with their commits. To bring them into
-main:
+The report lists the stories landed, with their commits. They reach the
+checkout's branch through the feature's pull request, which the human merges
+(see The pull request); the run merges nothing.
 
-```bash
-git merge --ff-only deliver/<slug>
-```
+## A new project
 
-When main has moved on since, `git merge deliver/<slug>` instead; the next run
-fast-forwards the branch to that merge.
+A feature of a project with no code yet has a task titled
+`Set up the project`, which the omni-stories skill writes. While that task is
+not done or cancelled, a run on the feature is a setup run, whether the folder
+has a repository or not:
+
+- `start` takes the lock, opens the Run thread and probes the stories folder,
+  and does nothing with git: `branch`, `tip` and `lane` are null and the
+  checks empty. The root is the top folder of the checkout the current folder
+  is in, else the current folder. A setup run started inside another checkout
+  works in the folder `omni link` matches for the project, and is refused,
+  naming that folder, when it is started anywhere else.
+- The setup task runs first and alone, straight in the folder: no worktree,
+  no branch of its own, no lane, no reviewer, no test author, no clarity
+  check and no docs agent, and no other task is claimed before it has
+  landed. One implementer runs `git init` unless the folder is the top of a
+  repository already, sets up the stack the Project spec names, writes
+  `.omni.toml` with a `fast` check, adds `.omni/` to `.gitignore`, commits,
+  and last writes the project-level `Setup` doc (pillar `architecture`): the
+  folders, the libraries, and the commands to start the app and to run the
+  tests.
+- `setup-check` then wants a repository with a commit, nothing uncommitted
+  outside `.omni/`, and a `fast` command; `fast` runs as a job in the folder,
+  and one verifier exercises the task's criteria there. Each failing step is
+  a finding and uses a try; after the third the task is parked.
+- Once checked, `setup-land` records the repository's files on the task,
+  ticks its criteria and makes it done; the report lists it under Built with
+  the commits up to its head. `repo-open` does what `start` does with git in
+  any other run: `deliver/<slug>` at HEAD, the checks and the lane worktree.
+  The other tasks then run the normal way, in the same run.
+- A setup task that does not land, or is blocked on a question, ends the run
+  with nothing else built, which the report notes.
+
+A folder without a repository whose feature has no such task is refused,
+with the reason and a pointer to split the feature with omni-stories first.
+
+Every later implementer and verifier is told to read the `Setup` doc, whose
+ID `start` and `repo-open` give. A verifier in a project with no stack
+command starts the app itself, with the start command the `Setup` doc gives.
+
+## Questions
+
+The council sits first, as above. A question it does not settle goes to the
+human, and only its own task waits:
+
+- In a feature with a behaviour tree, which `start` finds with
+  `omni behaviour list`, the helper's `question-ask` runs
+  `omni behaviour ask <node> "<question>" --recommend "<answer>"` on the node
+  the asking agent names, else the task's first Covers node, else the root
+  `.`, whichever the tree has first. The question carries its options and who
+  asked. A decision on the task records the question's ID, as
+  `Asked on the behaviour tree: question <id> on node <node>. The task waits for the answer.`,
+  and the task is blocked; the other tasks go on.
+- The report lists the task under Waiting on a question, with the node and
+  the recommendation, and says to answer on the feature's Behaviour screen.
+- The next run's `unblock-pass` reads each such question with
+  `omni behaviour question <id> --json`. When every question of a blocked
+  task is answered, and every thread linked from it has a conclusion, each
+  answer becomes a decision of the task (by `human`, or `agent` when an agent
+  answered it), its open findings are resolved, which starts a new round of
+  3 tries, and it is unblocked. A question that cannot be read keeps its task
+  blocked and says so in the log.
+- A feature without a behaviour tree has no node to ask on: there the
+  question opens a thread linked from the task, which blocks it, and the
+  thread's conclusion is the answer.
+
+A clarity check sends at most 3 blocking questions; an implementer, a
+reviewer or a test author gets at most 3 questions settled by the council in
+one try, and the next goes to the human directly.
+
+## The design check
+
+A task points at a design board with a link whose doc is a design doc
+(`omni doc list` gives `kind: "design"`) and whose node is the board's ID, as
+omni-stories saves it. `context` gives those links as `boards`, at most 20.
+
+- Before the first implementer or verifier of a task with boards, the helper's
+  `design-export` runs `omni export` once per run, into
+  `.omni/runs/<run>/design`. Its `manifest.json` gives each board's tags file,
+  with the board's PNG beside it. An export that fails stops no task: the
+  report notes it, and the agents read each board's tags with
+  `omni design read` instead.
+- The implementer is told to build to the boards.
+- The verifier opens the built screen, compares it with each board's image and
+  tags, and returns for each board whether it compared it, why not, and its
+  differences. A difference is one of: a part missing, a part extra, another
+  order or place, other text, a missing state, a colour that is not the
+  board's, a type style that is not the board's. Size and position are not
+  compared.
+- Every difference is a finding, `Differs from the board ...`, and sends the
+  task back, using the same try as the criteria not met.
+- A board the verifier did not compare, for one because it found no way to
+  start the app, does not stop the landing: the report lists it under Not
+  compared with its board, with the reason.
+
+A task without a board is checked on its criteria only.
+
+## Parking
+
+A task gets 3 tries per round. A round starts on its first run, after an
+answer to its question, and when a later run takes it up after parking.
+
+- After the third failed try in a round, the helper's `park` leaves the task
+  in the backlog, not blocked, with its findings open, and removes its
+  worktree and `story/<key>`. No thread opens.
+- The report lists it under Failed, `parked after 3 tries`, with the last
+  try's findings. A task whose `blocked_by` names it is not pickable on the
+  board, and the report lists it under Waiting for another task.
+- The next run's `retry-pass`, after the unblock pass, finds every task in
+  the backlog, not blocked, with an open finding marked `[attempt 3]`, and
+  resolves its open findings: its tries count from 0 again, with fresh
+  agents.
+
+No failure of a task or of a run opens a thread. The Run thread, with the
+report, stays.
+
+## The pull request
+
+`finish` is the only step that pushes. In order, it stops the run's jobs that
+still run, writes the report, pushes `deliver/<slug>` to the remote of the base
+branch (its `branch.<base>.remote`, else `origin`), and opens one pull request
+into the base with `gh pr create`, titled with the feature's name, or updates
+the open one with `gh pr edit`. The base is the branch the checkout had
+checked out. The pull request's text is the report; past 60,000 characters it
+loses its Timings, and then is cut with a line that points at the Run thread.
+Then the report, with the pull request's address as its second line, goes on
+the Run thread and into `.omni/runs/<run>/report.md`, and the lock is given
+up. The helper never runs `gh pr merge` and never moves the base branch.
+
+Where no pull request can be opened, nothing is pushed and the report's second
+line says why and names the branch:
+`No pull request: <why>. The work is on the branch deliver/<slug>.` The
+cases, the first that holds:
+
+- the feature has no branch yet, as after a setup run whose task did not land;
+- the checkout has no branch checked out;
+- the checkout has no remote;
+- the base branch is not on the remote;
+- `gh` is not installed, or cannot list pull requests there;
+- `deliver/<slug>` holds nothing the base lacks.
+
+A push that fails, or runs past 5 minutes, gives git's reason the same way;
+a `gh` that fails after the push gives its own.
+
+Once the human has merged the pull request, the next run finds
+`deliver/<slug>` diverged from HEAD with a merged pull request at its tip, and
+starts the branch again at HEAD. Its push then moves the remote branch only
+while it is still at the merged tip, or expects none there when the forge
+deleted it.
+
+## The write-back
+
+A feature whose how has the docs `Operations` (pillar `architecture`) or
+`Tables` (pillar `db`) gets the changes of each landed task written into them.
+`start` gives their IDs.
+
+- The criterion that asks for the write-back is recorded by the clarity check
+  as a write-back obligation, as test obligations are, so neither the reviewer
+  nor the verifier judges it before landing. The implementer leaves those docs
+  alone and names in its decisions each operation and table it built or
+  changed.
+- Once `lane-land` has answered landed, a docs agent (role `docs`, agent type
+  `omni-docs`) reads the landed diff and edits the two docs by the rules of
+  `agent-skills/omni-how/write-back.md`, which its prompt carries in full. It
+  runs outside the lane's lock, one write-back at a time, and returns
+  written, nothing or blocked.
+- The task stays done whatever the agent returns. Blocked, nothing returned
+  after its retries, an error or the hard cap add a note:
+  `<key> landed without its write-back`.
+- The run waits for every write-back before its report. The `Map` doc is not
+  touched, and the setup task gets no write-back.
 
 ## The checks
 
@@ -423,23 +616,36 @@ already; this repo's `.gitignore` does.
 
 The helper records the start and the end of every step and every job in
 `.omni/runs/<run>/timings.jsonl`. Every run that started ends with `finish`,
-after an error too: it stops the run's jobs that still run, writes the report
-to `.omni/runs/<run>/report.md`, posts it on the run's thread, and gives the
-lock up. When the post fails, the file still holds the report.
+after an error too: it stops the run's jobs that still run, writes the report,
+pushes and opens or updates the pull request (see The pull request), writes
+the report to `.omni/runs/<run>/report.md`, posts it on the run's thread, and
+gives the lock up. When the post fails, the file still holds the report.
 
-The report has:
+The report is the pull request's text. Each task is in one of Built, Waiting
+on a question, Failed, Waiting for another task and Not started at most, the
+first that holds; a board that cannot be read leaves the lists that come
+from it as unknown, which the report says. It has, in order:
 
-- the run's notes, such as why it stopped taking stories, the stories that
-  landed without regression tests, with the reason, and a defect a story's
-  tests found after it landed, with its thread;
-- the stories landed on `deliver/<slug>`, with their commits, each story's
-  tests on a line of their own, and the command that brings them in;
-- the blocked stories, with their threads, from the board, or that the board
-  could not be read;
-- every story's outcome;
+- its title, then the pull request's address, or why there is none, naming
+  the branch;
+- the run's notes, such as why it stopped taking stories, why the lane
+  stopped, the stories that landed without regression tests or without their
+  write-back, with the reason, and a defect a story's tests found after it
+  landed;
+- Built: the tasks landed on `deliver/<slug>`, with their commits, each
+  task's tests on a line of their own;
+- Waiting on a question: each open question, with its node and its
+  recommendation, or the open thread, from the board;
+- Failed: the tasks parked after 3 tries, with the last try's findings, and
+  those stopped on an error, with the error;
+- Waiting for another task: the backlog tasks held through `blocked_by` by a
+  task that waits or failed, with the keys they wait for;
+- Not started: the rest of the backlog;
+- Not compared with its board: the boards a verifier did not compare, with
+  the reason;
+- the human checks still pending;
 - how many questions the council settled, how many of those by a majority of
   2, and how many it sent to the human;
-- the human checks still pending;
 - the journeys check;
 - the timings: for each story its total time, its time in each stage, the
   time the writing of its tests took after it landed (test writing), its
@@ -453,11 +659,12 @@ The report has:
   one took 89 when every step had a call of its own, which is where the 90
   set aside for a story comes from. A run takes a new story only while its
   calls leave room under 900 for the stories in flight, at 90 each, for the
-  clarity checks in flight, at 20 each, and for the landed stories' tests
+  clarity checks in flight, at 20 each, for the landed stories' tests
   still to be written or landed, at 30 each (a chain of them makes 5 calls
   when all goes well, and 23 with two questions settled and a failed turn in
-  the lane); a story that only the checks or the tests leave no room for
-  waits until one of them has ended. It stops
+  the lane), and for the write-backs still to run, at 5 each; a story that
+  only the checks, the tests or the write-backs leave no room for waits until
+  one of them has ended. It stops
   a story that reaches 960 all the same, released with no attempt used. A
   long feature takes more than one run: the report says when a run stopped
   for the cap, and the next run carries on.
@@ -560,7 +767,7 @@ Without a `stack_reset`:
   since the rerun on the base meets its migration, and it does so again in
   every run after, with no attempt used.
 
-The lane-stop thread names that likely cause, and
+The report's note on the lane stop names that likely cause, and
 `docker compose -p omnistate-test logs api` shows it: `migration <n> was
 previously applied but is missing in the resolved migrations`. Run
 `make test-stack-down` before the next run.

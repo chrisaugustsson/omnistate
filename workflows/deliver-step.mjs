@@ -75,34 +75,40 @@
 //   reports them.
 //
 // The steps, each with its payload and the fields its body has besides ok and
-// received:
-// - start, from flags: run, root, branch, tip, lane, thread, checks, stories
-//   ({keys, counts by status, blocked}), released, log, setup (the ID of the
-//   project-level architecture doc titled Setup, else null), how ({operations,
+// received, in the order STEPS gives them after start:
+// - start, from flags: run, root, branch, tip, lane, thread (the Run thread),
+//   tree (whether the feature has a behaviour tree), how ({operations,
 //   tables}: the IDs of the feature's docs Operations and Tables, or null),
-//   base (the branch checked out in the root, or null) and setupTask (the key
-//   of the task "Set up the project" while it is not done or cancelled, else
-//   null). A setup run, one with a setupTask, does nothing with git: branch,
-//   tip and lane are null and the checks empty, and the root may be a folder
-//   with no repository. A folder without one and no setup task is refused
-// - checks-set {checks: {name: command}}: checks, all six
+//   checks, base (the branch checked out in the root, or null), setupTask
+//   (the key of the task "Set up the project" while it is not done or
+//   cancelled, else null), stories ({keys, counts by status, blocked}),
+//   released, log and setup (the ID of the project-level architecture doc
+//   titled Setup, else null). deliver/<slug> is created at HEAD, moved
+//   forward to it, kept ahead of it, or started again at HEAD where the two
+//   have diverged and gh lists a merged pull request whose head was its tip;
+//   else start refuses. A setup run, one with a setupTask, does nothing with
+//   git: branch, tip and lane are null and the checks empty, and the root may
+//   be a folder with no repository. A folder without one and no setup task is
+//   refused, with the reason
 // - list {}: waiting (the implemented and reviewed stories not blocked,
-//   each with key and status), pickable (those with a
-//   worktree from an earlier attempt first, then in the board's order:
-//   priority, then how many stories each one unblocks, then number)
+//   each with key and status), pickable (those with a worktree from an
+//   earlier attempt first, then in the board's order: priority, then how
+//   many stories each one unblocks, then number)
 // - context {key}: key, status, blocked, attempt, clarified (whether the
 //   clarity cache has a hash of the story; a story version the old runner
 //   kept there is not a check of this workflow's), criteria (how many),
 //   obligations (the indexes of the criteria that are test obligations),
-//   writeBack (the indexes of those that are the write-back),
-//   findings ({open, uncounted, earlier}: how many open findings count an
-//   attempt, how many used none, how many came before the human's latest
-//   answer) and questions (the fnv1a of each decision's question). No text
-//   of the story: every agent reads it with omni story read
-//   boards: [{doc, board}], the design boards the story links (at most 20)
+//   writeBack (the indexes of those that are the write-back), findings
+//   ({open, uncounted, earlier}: how many open findings count an attempt,
+//   how many used none, how many came before the human's latest answer),
+//   nodes (the node IDs of the story's Covers lines), boards ([{doc, board}],
+//   the design boards the story links, at most 20) and questions (the fnv1a
+//   of each decision's question). No text of the story: every agent reads it
+//   with omni story read
 // - design-export {}: dir, boards (how many PNG files). Runs omni export once
 //   per run, into <root>/.omni/runs/<run>/design, whose manifest.json gives
-//   each board's files; a failure is not remembered
+//   each board's files; a failure is not remembered, and is refused with
+//   retry false
 // - setup-check {key}: key, outcome: ready with head and checks (stored in
 //   run.json under those checks-set gave), or not_ready with reason; whether
 //   the setup task left a repository with a commit, nothing uncommitted
@@ -112,9 +118,7 @@
 //   resolved, and done
 // - repo-open {}: branch, tip, lane, checks, base, setup (the ID of the
 //   project-level Setup doc, or null), log; what start does with git in a
-//   run without a setup task, once the setup task has landed. Both start
-//   deliver/<slug> again at HEAD where it has diverged from HEAD and gh lists
-//   a merged pull request whose head was its tip; else they refuse
+//   run without a setup task, once the setup task has landed
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
@@ -130,17 +134,24 @@
 //   is refused, and nothing is written
 // - files {key}: key, files (how many)
 // - thread-open {title, body, key?, job?}: thread, and key when given. A
-//   body that names a job gets the end of its log
-// - question-ask {key, node, question, recommendation, options, asker, block}:
-//   key, question (the question's ID), node (its node_id); asks on the
-//   payload's node, else the task's first Covers node, else `.`, whichever the
-//   tree has first, records a decision with the ASKED wording, and blocks the
-//   task when block is true
+//   body that names a job gets the end of its log. Only a question in a
+//   feature without a behaviour tree opens one
+// - question-ask {key, question, node?, recommendation?, options?, asker,
+//   block?}: key, question (the question's ID), node (its node_id); asks on
+//   the payload's node, else the task's first Covers node, else `.`,
+//   whichever the tree has first, records the decision "Asked on the
+//   behaviour tree: question <id> on node <node>. The task waits for the
+//   answer.", and blocks the task when block is true
 // - park {key}: key, attempt, removed; the task that failed its third try
 //   goes to the backlog, not blocked, its findings open, and its worktree
 //   and branch are removed (removed: true when both are gone, also when it
 //   never had them); no thread
-// - unblock-pass {}: unblocked, log (at most 20 lines, then a count)
+// - unblock-pass {}: unblocked, log (at most 20 lines, then a count). A
+//   blocked task whose tree questions are all answered and whose linked
+//   threads all have a conclusion gets each answer as a decision, its open
+//   findings resolved, and is unblocked
+// - retry-pass {}: retried (the keys of the tasks in the backlog, not blocked,
+//   with an open finding marked [attempt 3], whose open findings it resolved)
 // - worktree {key}: key, path, branch, created (true when the story starts on
 //   a branch of its own just cut, false when its branch has earlier work);
 //   for a worktree found with another branch or a detached HEAD checked out,
@@ -148,11 +159,10 @@
 //   story/<key>, oldest first), back (true when it checked story/<key> out
 //   again, false when it left a worktree with work in progress as it was)
 //   and reason, what the implementer has to do about it
-// - retry-pass {}: retried (the keys of the tasks in the backlog, not blocked,
-//   with an open finding marked [attempt 3], whose open findings it resolved)
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
 // - clarity-record {key}: key, hash
+// - checks-set {checks: {name: command}}: checks, all six
 // - job-start {name, key?, cmd, cwd, limitMinutes?, waitSeconds?}: id, log.
 //   The command runs with OMNI_RUN set to the run, and OMNI_STORY to the key
 //   when given. With waitSeconds it then waits for the job as job-wait does,
@@ -191,12 +201,13 @@
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
 //   majority, asked}, journeys?: [line], notes?: [line], uncompared?: [{key,
 //   boards, reason}]}}: thread, posted, report, stopped, pr ({url, created}
-//   or null), pushed and why (why there is no pull request, else null). It
-//   pushes deliver/<slug> to the remote of the base branch and opens the
-//   pull request into the base, with the report as its text, whose second
-//   line names it or says why there is none. The tasks that wait,
-//   failed or were not started, and the questions and threads they wait on,
-//   come from the board
+//   or null), pushed and why (why there is no pull request, else null). The
+//   only step that pushes: it pushes deliver/<slug> to the remote of the base
+//   branch and opens the pull request into the base, or updates the open
+//   one, with the report as its text, whose second line names it or says why
+//   there is none; it merges nothing. The tasks that wait, failed or were
+//   not started, and the questions and threads they wait on, come from the
+//   board
 // Outputs stay small, since a courier repeats every byte: whatever a story
 // holds, no output the script reads passes about 2,000 characters. No output
 // carries story content (text, criteria, decisions, findings), doc text or a
