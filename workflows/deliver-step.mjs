@@ -1151,11 +1151,17 @@ const STEPS = {
     if (had && had.dir === dir) return had
     const refuse = (what) => ({ ok: false, error: `the design could not be exported: ${what}`, retry: false })
     const said = (e) => String((e && e.stderr) || '').trim() || String((e && e.stdout) || '').trim() || `omni exited with code ${e && e.status}`
-    let project
+    let linked
     try {
-      project = JSON.parse(run('omni', ['link', '--json'], { cwd: b.root })).project_id
+      linked = run('omni', ['link', '--json'], { cwd: b.root })
     } catch (e) {
       return refuse(said(e).slice(0, 300))
+    }
+    let project
+    try {
+      project = JSON.parse(linked).project_id
+    } catch {
+      return refuse('omni link printed no JSON')
     }
     if (!project) return refuse('omni link gives no project_id for this folder')
     fs.rmSync(dir, { recursive: true, force: true })
