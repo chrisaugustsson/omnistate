@@ -1200,6 +1200,7 @@ test("from attempt 2 the implementer runs on implRetry, in the same worktree; it
   for (const c of impls) {
     assert.ok(c.prompt.includes(`\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=impl OMNI_FEATURE='board' omni story read US-1 --json\`.`), c.prompt);
     assert.doesNotMatch(c.prompt, /pink|border|README|was blue|The badge is red/);
+    assert.doesNotMatch(c.prompt, /since the human's latest answer/);
   }
   assert.deepEqual(findingsOf(dirs, "US-1").slice(2, 4), [["review", "[attempt 1] The badge is pink", ["src/badge.rs"], true], ["review", "[attempt 2] The badge has no border", ["src/border.rs"], true]]);
 });
