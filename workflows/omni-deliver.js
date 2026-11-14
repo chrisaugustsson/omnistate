@@ -598,6 +598,7 @@ const CLARITY_SCHEMA = {
           options: { type: 'array', items: { type: 'string' }, minItems: 2, description: 'Concrete behaviours, each one a reasonable implementation would show' },
           recommendation: { type: 'string', description: 'The option you suggest' },
           reason: { type: 'string', description: 'The spec text behind the recommendation, quoted' },
+          node: { type: 'string', description: 'The ID of the node of the story\'s Covers lines this question belongs to; leave out when none fits' },
         },
       },
     },
@@ -634,6 +635,7 @@ const IMPL_SCHEMA = {
     question: { type: 'string', description: 'Only with needs_decision: the product decision the story cannot avoid, as one plain question' },
     options: { type: 'array', items: { type: 'string' }, description: 'Only with needs_decision: the concrete options' },
     recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
+    node: { type: 'string', description: 'Only with needs_decision: the ID of the node of the story\'s Covers lines the question belongs to; leave out when none fits' },
   },
 }
 // The last line says where to commit: the implementer and the test author
@@ -725,6 +727,7 @@ const reviewSchema = (n) => ({
     question: { type: 'string', description: 'Only with needs_decision: the product decision the story cannot avoid, as one plain question' },
     options: { type: 'array', items: { type: 'string' }, description: 'Only with needs_decision: the concrete options' },
     recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
+    node: { type: 'string', description: 'Only with needs_decision: the ID of the node of the story\'s Covers lines the question belongs to; leave out when none fits' },
   },
 })
 const reviewPrompt = (ctx, wt, file) => `You review ONE story of the feature "${feature}" before it goes to the test lane. ${READ_ONLY} You run no test, build or app either.
@@ -864,6 +867,7 @@ const TESTS_SCHEMA = {
     question: { type: 'string', description: 'Only with needs_decision: what the story does not settle, as one plain question' },
     options: { type: 'array', items: { type: 'string' }, description: 'Only with needs_decision: the concrete options' },
     recommendation: { type: 'string', description: 'Only with needs_decision: the option you suggest' },
+    node: { type: 'string', description: 'Only with needs_decision: the ID of the node of the story\'s Covers lines the question belongs to; leave out when none fits' },
     commit: { type: 'string', description: 'The test: commit hash, or empty string when no test change was needed' },
     check: { type: 'string', description: 'The one command, run from the root of your worktree, as the workflow runs it from the root of its lane worktree, that runs exactly the tests you added (e.g. cargo test -p omni-core --test design_tokens, or pnpm --filter web exec vitest run src/x.test.tsx); empty when you added nothing' },
     oracle: {
@@ -1037,12 +1041,14 @@ const councilSlots = semaphore(COUNCILS)
 // For the run's report: questions the council settled, how many of those by
 // a majority of 2 to 1, and those sent to the human.
 const tally = { settled: 0, majority: 0, asked: 0 }
+// Whether the feature has a behaviour tree, as start found it.
+let tree = false
 // A question an agent asked, at `at` in its result r: its text, for the
 // prompts and the logs, and where it is, for what the board gets, which
 // comes from the agent's file (said).
 const questionOf = (r, at, asker) => {
   const q = valueAt(r, at) || {}
-  return { r, at, asker, question: String(q.question || '(no question given)'), criterion: q.criterion || '', options: Array.isArray(q.options) ? q.options : [], recommendation: q.recommendation || '', reason: q.reason || '' }
+  return { r, at, asker, question: String(q.question || '(no question given)'), criterion: q.criterion || '', options: Array.isArray(q.options) ? q.options : [], recommendation: q.recommendation || '', reason: q.reason || '', node: q.node || '' }
 }
 const said = (q, path, fallback = '') => part(q.r, [...q.at, ...path], fallback)
 const option = (q, n) => said(q, ['options', n - 1], String(q.options[n - 1]))
@@ -1056,6 +1062,15 @@ const quoted = (v) => ['"', part(v, ['quote']), '" (', part(v, ['source']), ')']
 // or block: its thread names it in its title only.
 const askHuman = async (ctx, q, label, recommendation, council, { phase, link = true } = {}) => {
   const key = ctx.key
+  // A feature with a tree gets the question on the node it belongs to, which
+  // blocks the story unless it has landed (link false). A step that fails is
+  // an error of the story, not a reason for a thread.
+  if (tree) {
+    const { question: id } = await step('question-ask', { key, node: said(q, ['node'], ''), question: said(q, ['question'], q.question), recommendation: words(...recommendation), options: list(q.r, [...q.at, 'options']), asker: q.asker, block: link }, { label: `${label}-ask`, key, phase })
+    tally.asked++
+    log(`${key}: asked the human "${q.question}" as question ${id} on the behaviour tree`)
+    return { settled: false, question: id }
+  }
   const body = words(
     said(q, ['question'], q.question),
     ...(q.criterion ? ['\n\nCriterion: ', said(q, ['criterion'])] : []),
@@ -1141,6 +1156,7 @@ runId = started.run
 root = started.root
 branch = started.branch
 laneDir = started.lane
+tree = started.tree === true
 for (const line of started.log || []) log(line)
 log(`Run ${runId} on ${feature}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
 let checks = started.checks
@@ -1256,8 +1272,9 @@ const check = async (key) => {
   // Recorded after the check's own writes, so that they do not make the
   // story pending again.
   await step('clarity-record', { key }, { phase: CLARITY })
-  const threads = answers.filter((a) => !a.settled).map((a) => a.thread)
-  clarity.push({ key, obligations: owed.length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads })
+  const threads = answers.filter((a) => !a.settled && a.thread).map((a) => a.thread)
+  const questions = answers.filter((a) => !a.settled && a.question).map((a) => a.question)
+  clarity.push({ key, obligations: owed.length, minor: gaps.filter((x) => !x.blocking).length, deferred: Math.max(blocking.length - CLARITY_QUESTIONS, 0), settled: answers.filter((a) => a.settled).length, threads, ...(questions.length ? { questions } : {}) })
 }
 // Starts every pending story's check, and waits for none: the delivery starts
 // beside them, with the first story in the board's order once its own check
@@ -1462,7 +1479,7 @@ const implement = async (key, rework, claimed) => {
     await steps([...decisionSteps(key, r), ...(r.status === 'ready' ? [['files', { key }], ['move', { key, to: 'implemented' }]] : [])], { key })
     if (r.status === 'needs_decision') {
       const answer = await question(ctx, r, 'the implementer', wt.path, 'impl-q', asked)
-      if (!answer.settled) return { key, outcome: 'needs_decision', thread: answer.thread }
+      if (!answer.settled) return { key, outcome: 'waiting', ...(answer.question ? { question: answer.question } : { thread: answer.thread }) }
       ctx = await step('context', { key })
       task = RESUME
       continue
@@ -1497,7 +1514,7 @@ const review = async (key, wt, first) => {
     if (!v) return noResult(key, `the reviewer returned nothing, ${AGAIN_AFTER.length + 1} times`)
     if (v.verdict === 'needs_decision') {
       const answer = await question(ctx, v, 'the reviewer', wt, 'review-q', asked++)
-      if (!answer.settled) return { key, outcome: 'needs_decision', thread: answer.thread }
+      if (!answer.settled) return { key, outcome: 'waiting', ...(answer.question ? { question: answer.question } : { thread: answer.thread }) }
       continue
     }
     // Each criterion's verdict, and where it is in the reviewer's criteria.
@@ -1636,7 +1653,7 @@ const launch = (key, from, held) => {
     .catch((e) => (e && e.atCap ? stopped(key) : failed(key, e)))
     .then((o) => {
       outcomes.push(o)
-      log(`${o.key}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}${o.thread ? ` (thread ${o.thread})` : ''}`)
+      log(`${o.key}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}${o.thread ? ` (thread ${o.thread})` : ''}${o.question ? ` (question ${o.question})` : ''}`)
     })
     .finally(() => {
       claimed()
@@ -1989,7 +2006,7 @@ const writeTests = async (key, { base, final, confirmed }) => {
       if (!r) return { drop: `the test author returned nothing, ${AGAIN_AFTER.length + 1} times` }
       if (r.status === 'needs_decision') {
         const answer = await question(tctx, r, 'the test author', wt, 'tests-q', asked++, { link: false })
-        if (!answer.settled) return { drop: `the test author asked a question the council did not settle (thread ${answer.thread})` }
+        if (!answer.settled) return { drop: `the test author asked a question the council did not settle (${answer.question ? `question ${answer.question}` : `thread ${answer.thread}`})` }
         tctx = await step('context', { key })
         task = RESUME_TESTS
         continue

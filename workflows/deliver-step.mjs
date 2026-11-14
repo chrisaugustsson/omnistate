@@ -1842,6 +1842,16 @@ const startRun = (b, log) => {
   } catch (e) {
     return { ok: false, error: `the checks could not be read: ${failure(e)}`, retry: false }
   }
+  // Whether the feature has a behaviour tree, which decides where a question
+  // for the human goes. A list that fails counts as no tree, with the error
+  // in the log.
+  let tree = false
+  try {
+    const listed = JSON.parse(b.omni(['behaviour', 'list', '--json']))
+    tree = Array.isArray(listed && listed.nodes) && listed.nodes.length > 0
+  } catch (e) {
+    log.push(`The behaviour tree could not be listed, so questions go to threads: ${failure(e)}`)
+  }
   // Pruned first: a lane folder that lost its .git file is still listed until
   // the prune, and would pass for the lane worktree. git there would work in
   // whatever repository is around the folder, and the clean below would hit
@@ -1916,6 +1926,7 @@ const startRun = (b, log) => {
     tip,
     lane: b.lane,
     thread,
+    tree,
     checks: Object.fromEntries(CHECKS.map((name) => [name, String((checks && checks[name]) || '')])),
     stories: { keys: stories.map((s) => s.key), counts, blocked: stories.filter((s) => s.blocked).length },
     released,
