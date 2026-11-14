@@ -1048,6 +1048,24 @@ test("start gives the checks fast, stack_up, stack, stack_reset, seed and lint a
   assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x", lint: "" });
 });
 
+test("start gives as setup the first project-level architecture doc titled Setup in any letter case that the project's doc list gives, read with --global; a feature's doc, another pillar or another title is not it, and with none setup is null", (t) => {
+  const docList = [
+    { id: "d-feature", kind: "html", pillar: "architecture", title: "Setup", feature_id: "f-1" },
+    { id: "d-spec", kind: "html", pillar: "spec", title: "Setup" },
+    { id: "d-notes", kind: "html", pillar: "architecture", title: "Setup notes" },
+    { id: "d-setup", kind: "html", pillar: "architecture", title: "SETUP" },
+    { id: "d-second", kind: "html", pillar: "architecture", title: "setup" },
+  ];
+  const dirs = scratch(t, [], [], { docList });
+  const bare = scratch(t, [], [], { docList: docList.slice(0, 3) });
+
+  const body = start(dirs);
+
+  assert.equal(body.setup, "d-setup");
+  assert.equal(start(bare).setup, null);
+  assert.ok(dirs.state().calls.some((c) => c.argv.join(" ") === "doc list --global --json"), JSON.stringify(dirs.state().calls.map((c) => c.argv)));
+});
+
 test("a start whose behaviour list fails goes on with tree false, so questions go to threads, and logs the list's error; a tree with a node gives tree true", (t) => {
   const failing = scratch(t, [], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
   writeFileSync(join(failing.root, "bin", "omni"), `#!/bin/sh\nif [ "$1" = behaviour ] && [ "$2" = list ]; then echo "behaviour list is down" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);

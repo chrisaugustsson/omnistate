@@ -688,7 +688,17 @@ const CONTINUE = 'A worktree of an earlier attempt is in place, with its commits
 const RESUME = 'An earlier session of this attempt stopped to ask a question, which the story\'s decisions now settle. What it committed or left uncommitted is in the worktree: continue from it, do not start over.'
 // found: what the worktree step found when the worktree was not on
 // story/<key>, and what to do about it.
-const implPrompt = (ctx, wt, attempt, task, found, file) => `You implement ONE story of the feature "${feature}" in its own git worktree.
+// What an implementer builds a task with boards to.
+const buildSection = (ctx, design) => (ctx.boards && ctx.boards.length ? `
+## The design
+The story links ${plural(ctx.boards.length, 'board', 'boards')} of the feature's design. Build the screen to them:
+${boardLines(ctx, 'impl')}
+${design && !design.failed ? `${boardImages(design, 'built')}\n` : ''}Every part, its order and place, its text, each state the boards show, and each colour and type style come from the board. Where the project's code has the design tokens, use a token by its name (a value such as $color.brand in the tags), not its value: \`${omniAs('impl')} tokens export\` prints them.
+` : '')
+// Where the commands to start and test the app are, when the project has a
+// Setup doc.
+const setupLine = (role) => (setupDoc ? `\n- The commands to start and test the app are in the project's Setup doc: read it with \`${omniAs(role)} doc read ${setupDoc}\`.` : '')
+const implPrompt = (ctx, wt, attempt, task, found, file, design) => `You implement ONE story of the feature "${feature}" in its own git worktree.
 
 ## Your worktree
 ${wt} (branch story/${ctx.key}, cut from ${branch}). Work only there: cd into it first, and run every command there.${found ? `\n${found}` : ''}
@@ -705,8 +715,8 @@ ${CONVENTIONS}
 - Never start the stack or run the stack tests${checks.stack ? ` (\`${checks.stack}\`)` : ''}, and never run \`docker compose up\` or \`docker compose run\`: the stack is shared, and the lane runs it on the story after the review. When your change needs the stack to be checked, say so in decisions.
 - If the story needs a product decision the spec does not make and the story cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
 - If you genuinely cannot continue, status blocked with the reason in summary.
-- Return decisions for every non-obvious technical choice.
-
+- Return decisions for every non-obvious technical choice.${setupLine('impl')}
+${buildSection(ctx, design)}
 ${criteriaSection(ctx)}
 
 ${resultFile(file)}
@@ -841,7 +851,7 @@ const KINDS = { missing_part: 'a part missing', extra_part: 'a part extra', orde
 // prints its tags, and, unless the export failed, where its image is: the
 // script never builds a board's file path, the export's manifest gives it.
 const boardLines = (ctx, role) => ctx.boards.map((x) => `- the board ${x.board} of the design doc ${x.doc}: \`${omniAs(role)} design read --doc ${x.doc} --board ${x.board}\` prints its tags`).join('\n')
-const boardImages = (design) => `The run exported the feature's boards to ${design.dir}. In ${design.dir}/manifest.json, the entry of files with a board's doc ID as doc_id and its board ID as board_id has path, the board's tags file relative to ${design.dir}. The board's image is the file of the same name ending .png, beside it: open it with the Read tool. A board without such an image is compared from its tags.`
+const boardImages = (design, verb = 'compared') => `The run exported the feature's boards to ${design.dir}. In ${design.dir}/manifest.json, the entry of files with a board's doc ID as doc_id and its board ID as board_id has path, the board's tags file relative to ${design.dir}. The board's image is the file of the same name ending .png, beside it: open it with the Read tool. A board without such an image is ${verb} from its tags.`
 const designSection = (ctx, design) => (ctx.boards && ctx.boards.length ? `
 ## The design
 The story links ${plural(ctx.boards.length, 'board', 'boards')} of the feature's design. Compare the built screen with each one:
@@ -853,10 +863,14 @@ Open the built screen in ${laneDir}, in each state the boards show, and compare 
 // The project's commands a criterion about one is checked by; those unset
 // are left out.
 const commandsOf = () => ['fast', 'stack', 'lint'].filter((name) => checks[name]).map((name) => `${name} is \`${checks[name]}\``)
+// A run without a stack_up check: the verifier starts the app itself, with
+// the start command the Setup doc gives, else the Project spec or the
+// project's own files, and stops it again.
+const startApp = (ctx) => `This run has no stack command. To run what the story needs running, start the app in ${laneDir} yourself, with the start command ${setupDoc ? `the project's Setup doc gives (\`${omniAs('verify')} doc read ${setupDoc}\`); where it gives none, take it from` : 'from'} the project's Spec doc (\`${omniAs('verify')} doc list --global\` lists it) or the project's own files, such as its README or its build files.${ctx.boards && ctx.boards.length ? ' When you find no start command, return compared false for each board, with that reason.' : ' When you find no start command, say so in the evidence of each criterion that needs the app running.'} Stop the app before you return, and confirm that nothing you started is left running.`
 const verifyPrompt = (ctx, file, design) => `You check ONE story of the feature "${feature}" by running it. ${READ_ONLY}
 
 ## Where
-The lane worktree ${laneDir} holds story/${ctx.key} rebased onto ${branch}, on a detached HEAD, and the story's checks passed there${checks.stack_up ? `; the stack is up, as \`${checks.stack_up}\` started it from there. Exercise the story against that stack, not another copy on the machine` : ''}. Work only there: cd into it first, and run every command there. ${LANE_HEAD}
+The lane worktree ${laneDir} holds story/${ctx.key} rebased onto ${branch}, on a detached HEAD, and the story's checks passed there${checks.stack_up ? `; the stack is up, as \`${checks.stack_up}\` started it from there. Exercise the story against that stack, not another copy on the machine` : ''}. Work only there: cd into it first, and run every command there. ${LANE_HEAD}${checks.stack_up ? '' : `\n\n${startApp(ctx)}`}
 
 ${storySection(ctx, 'verify', { decisions: 'They are settled: judge against them as if the spec said so.' })}
 
@@ -867,7 +881,7 @@ ${BOARD}
 - A criterion named below as a test obligation is the test author's: skip it, with ok true and the evidence "a test obligation".
 - The stack has no users until the seed runs${checks.seed ? `. For a credential, run the seed command as \`OMNI_STORY=${ctx.key} OMNI_RUN=${runId} sh -c ${quote(checks.seed)}\` in ${laneDir}: it prints what to sign in with` : ', and this run has no seed command'}. Never write into the stack's database yourself.
 ${commandsOf().length ? `- A criterion about a command is checked by running that command: ${commandsOf().join(', ')}.\n` : ''}- A criterion with human_check true: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
-- ok false only for a criterion the behaviour does not meet. Say what is wrong and where.
+- ok false only for a criterion the behaviour does not meet. Say what is wrong and where.${setupLine('verify')}
 ${designSection(ctx, design)}
 ${criteriaSection(ctx)}
 
@@ -1228,6 +1242,8 @@ tree = started.tree === true
 for (const line of started.log || []) log(line)
 log(`Run ${runId} on ${feature}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
 let checks = started.checks
+// The project's Setup doc, which says how to start and test the app, or null.
+const setupDoc = typeof started.setup === 'string' && started.setup ? started.setup : null
 // The tip of deliver/<slug>: where start left it, then where each story landed.
 let tip = started.tip
 // From here on every step runs in the try at the end, whose finally finishes
@@ -1535,14 +1551,14 @@ const implement = async (key, rework, claimed) => {
   }
   if (ctx.attempt >= MAX_ATTEMPTS) return park(key)
   // The design is exported before the first agent that builds to it.
-  await designFor(ctx)
+  const design = await designFor(ctx)
   if (wt.reason) log(`${key}: ${wt.reason}`)
   const found = [...new Set([foundAt.get(key), wt.reason].filter(Boolean))].join('\n')
   foundAt.delete(key)
   let task = wt.created ? FRESH : CONTINUE
   for (let asked = 0; ; asked++) {
     const attempt = ctx.attempt + 1
-    const r = await persist(key, 'the implementer', () => act(attempt >= 2 ? 'implRetry' : 'impl', (file) => implPrompt(ctx, wt.path, attempt, task, found, file), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }))
+    const r = await persist(key, 'the implementer', () => act(attempt >= 2 ? 'implRetry' : 'impl', (file) => implPrompt(ctx, wt.path, attempt, task, found, file, design), { label: `impl:${key}`, phase: 'Deliver', schema: IMPL_SCHEMA }))
     if (!r) return noResult(key, `the implementer returned nothing, ${AGAIN_AFTER.length + 1} times`)
     // Its decisions, and for a story that is ready its files and its move to
     // implemented, go to the board in one call.

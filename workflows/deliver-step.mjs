@@ -77,7 +77,8 @@
 // The steps, each with its payload and the fields its body has besides ok and
 // received:
 // - start, from flags: run, root, branch, tip, lane, thread, checks, stories
-//   ({keys, counts by status, blocked}), released, log
+//   ({keys, counts by status, blocked}), released, log, setup (the ID of the
+//   project-level architecture doc titled Setup, else null)
 // - checks-set {checks: {name: command}}: checks, all six
 // - list {}: waiting (the implemented and reviewed stories not blocked,
 //   each with key and status), pickable (those with a
@@ -1879,6 +1880,17 @@ const start = (flags) => {
 
 // Everything that can stop the run comes before anything that changes the
 // board or the branch.
+// The project-level doc of pillar architecture titled Setup, in any letter
+// case: the first omni doc list gives, else null, also when the list fails.
+const setupDocOf = (b) => {
+  try {
+    const docs = JSON.parse(run('omni', ['doc', 'list', '--global', '--json'], { cwd: b.root, env: { ...process.env, OMNI_RUN: b.runId, OMNI_ROLE: 'deliver' } })).docs || []
+    const doc = docs.find((d) => d && !d.feature_id && d.pillar === 'architecture' && String(d.title).toLowerCase() === 'setup')
+    return doc ? doc.id : null
+  } catch {
+    return null
+  }
+}
 const startRun = (b, log) => {
   const { root, git } = b
   // .omni/ holds the lock, the runs and the clarity cache, none of which is
@@ -1994,6 +2006,7 @@ const startRun = (b, log) => {
     stories: { keys: stories.map((s) => s.key), counts, blocked: stories.filter((s) => s.blocked).length },
     released,
     log,
+    setup: setupDocOf(b),
   }
 }
 
