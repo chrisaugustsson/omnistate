@@ -3249,28 +3249,36 @@ test("finish stops the run's jobs that still run, posts the report on the run's 
   const post = dirs.state().calls.find((c) => c.argv[0] === "post" && c.argv[1] === runThread);
   assert.equal(existsSync(post.argv[post.argv.indexOf("--body-file") + 1]), false, "the body file is gone once posted");
   const [top, timings] = text.split("## Timings\n");
-  assert.equal(top, `# Run ${run} on board
+  assert.equal(top, `# board: build report of ${run}
 
 The lane stopped once: the stack did not start.
 
-## Landed on deliver/board
+## Built
 - US-1 Story US-1: ${feat} feat: badge.rs; ${tests} feat: badge.test
 
-Bring them into your branch with \`git merge --ff-only deliver/board\`.
-
-## Blocked
+## Waiting on a question
 - US-2 Story US-2: thread th-1
-- US-3 Story US-3: thread (none linked)
+- US-3 Story US-3: blocked
 
-## Outcomes
-- US-1 Story US-1: done
-- US-2 Story US-2: blocked: a question for the human
+Answer on the feature's Behaviour screen; the next build takes these tasks up.
 
-## Council
-- 2 questions settled by the council, 1 of them by a majority of 2, 1 sent to the human
+## Failed
+- none
+
+## Waiting for another task
+- none
+
+## Not started
+- none
+
+## Not compared with its board
+- none
 
 ## Pending human checks
 - US-1: It looks right
+
+## Council
+- 2 questions settled by the council, 1 of them by a majority of 2, 1 sent to the human
 
 ## Journeys
 - healthy: the badge flow works
@@ -3282,7 +3290,7 @@ Bring them into your branch with \`git merge --ff-only deliver/board\`.
 
 const noReport = { outcomes: [], council: { settled: 0, asked: 0 } };
 
-test("a finish that cannot read the board says so in the report's blocked stories and pending human checks, instead of none", (t) => {
+test("a finish that cannot read the board says so in the report's sections that come from it, instead of none", (t) => {
   const dirs = scratch(t, [story("US-1", { blocked: true, criteria: [{ text: "It looks right", human_check: true, pending: true }] })]);
   const { run, thread: runThread } = start(dirs);
   const down = join(dirs.root, "down");
@@ -3292,8 +3300,75 @@ test("a finish that cannot read the board says so in the report's blocked storie
 
   const text = readFileSync(body.report, "utf8");
   assert.deepEqual([body.ok, dirs.state().threads.find((th) => th.id === runThread).posts.length], [true, 1]);
-  assert.ok(text.includes("\n## Blocked\n- unknown: the board could not be read (Connection refused)\n\n"), text);
-  assert.ok(text.includes("\n## Pending human checks\n- unknown: the board could not be read (Connection refused)\n\n"), text);
+  for (const section of ["Waiting on a question", "Waiting for another task", "Not started", "Pending human checks"]) assert.ok(text.includes(`\n## ${section}\n- unknown: the board could not be read (Connection refused)\n\n`), text);
+});
+
+// The report's section with this heading, without it.
+const sectionOf = (text, heading) => text.split(`\n## ${heading}\n`)[1].split("\n\n## ")[0];
+
+test("the report lists each task once: waiting on an open question with its node path and recommendation, on an open thread, or blocked; parked with its last try's findings cut to 300 characters, or failed with its error's first line; waiting for another task through a chain with every key; else not started; and the boards not compared", (t) => {
+  const attempt3 = [
+    { stage: "review", text: "[attempt 1] Old one", files: [], resolved: true },
+    { stage: "review", text: "[attempt 2] Still blue", files: [], resolved: false },
+    { stage: "testing", text: `[attempt 3] ${"x".repeat(400)}`, files: [], resolved: false },
+    { stage: "testing", text: "[attempt 3] The badge\n\nis blue", files: [], resolved: false },
+  ];
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), asked("How big?", "q-2"), asked("Done?", "q-3")] }),
+    story("US-2", { blocked: true, links: [questionLink("th-1"), questionLink("th-2")] }),
+    story("US-3", { blocked: true, decisions: [asked("Gone?", "q-9")] }),
+    story("US-4", { findings: attempt3 }),
+    story("US-5"),
+    story("US-6", { blocked_by: ["US-7"] }),
+    story("US-7", { blocked_by: ["US-4"] }),
+    story("US-8", { blocked_by: ["US-12"] }),
+    story("US-10", { findings: [{ stage: "review", text: "[attempt 3] Fixed since", files: [], resolved: true }] }),
+    story("US-11", { status: "done" }),
+    story("US-12", { status: "done" }),
+  ], [thread("th-1", "US-2: Which red?"), thread("th-2", "US-2: Which size?", "Large")], {
+    behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [{ ...treeQuestion("q-1"), recommendation: "#c00" }, treeQuestion("q-2"), treeQuestion("q-3", "Yes")] },
+  });
+  const { run } = start(dirs);
+  const report = {
+    outcomes: [{ key: "US-5", outcome: "failed", detail: "\nthe courier returned nothing\nsecond line" }, { key: "US-4", outcome: "parked", detail: "failed 3 tries" }],
+    council: { settled: 0, majority: 0, asked: 0 },
+    uncompared: [{ key: "US-11", boards: ["b1", "b2"], reason: "The page did not open" }],
+  };
+
+  const text = readFileSync(step(dirs, run, "finish", { report }).report, "utf8");
+
+  assert.equal(sectionOf(text, "Waiting on a question"), [
+    '- US-1 Story US-1: "Which red?" on a (recommended: #c00)',
+    '- US-1 Story US-1: "How big?" on a',
+    "- US-2 Story US-2: thread th-1",
+    "- US-3 Story US-3: blocked: the question q-9 could not be read: not_found: no question q-9 in this feature",
+    "",
+    "Answer on the feature's Behaviour screen; the next build takes these tasks up.",
+  ].join("\n"));
+  assert.equal(sectionOf(text, "Failed"), [
+    "- US-4 Story US-4: parked after 3 tries",
+    `  - ${"x".repeat(299)}…`,
+    "  - The badge is blue",
+    "- US-5 Story US-5: failed: the courier returned nothing",
+  ].join("\n"));
+  assert.equal(sectionOf(text, "Waiting for another task"), "- US-6 Story US-6: waits for US-7, US-4\n- US-7 Story US-7: waits for US-4");
+  assert.equal(sectionOf(text, "Not started"), "- US-8 Story US-8\n- US-10 Story US-10");
+  assert.equal(sectionOf(text, "Not compared with its board"), "- US-11 Story US-11: b1, b2: The page did not open");
+  assert.equal(sectionOf(text, "Journeys"), "- none");
+  assert.deepEqual(text.split("\n").filter((l) => l.startsWith("## ")), ["## Built", "## Waiting on a question", "## Failed", "## Waiting for another task", "## Not started", "## Not compared with its board", "## Pending human checks", "## Council", "## Journeys", "## Timings"]);
+});
+
+test("the report lists a setup task that landed under Built, with the commits up to its head, and closes Waiting on a question with no line about answers when no task waits", (t) => {
+  const { dirs, run } = setupRun(t, [setupStory("US-1", { status: "implementing" })]);
+  gitInit(dirs);
+  const first = commit(dirs.repo, "README").slice(0, 7);
+  const second = commit(dirs.repo, "main.rs").slice(0, 7);
+  step(dirs, run, "setup-land", { key: "US-1" });
+
+  const text = readFileSync(step(dirs, run, "finish", { report: noReport }).report, "utf8");
+
+  assert.equal(sectionOf(text, "Built"), `- US-1 Set up the project: ${first} feat: README; ${second} feat: main.rs`);
+  assert.equal(sectionOf(text, "Waiting on a question"), "- none");
 });
 
 test("a finish whose post failed keeps the report as report.md, gives the lock up, and says it may be tried again; its repeat with the same opId goes on without the lock and posts the report once", (t) => {

@@ -187,8 +187,10 @@
 // - tests-drop {key}: key, removed; that worktree and its branch gone, with
 //   the tests in them
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
-//   majority, asked}, journeys?: [line], notes?: [line]}}: thread, posted, report,
-//   stopped. The blocked stories and their threads come from the board
+//   majority, asked}, journeys?: [line], notes?: [line], uncompared?: [{key,
+//   boards, reason}]}}: thread, posted, report, stopped. The tasks that wait,
+//   failed or were not started, and the questions and threads they wait on,
+//   come from the board
 // Outputs stay small, since a courier repeats every byte: whatever a story
 // holds, no output the script reads passes about 2,000 characters. No output
 // carries story content (text, criteria, decisions, findings), doc text or a
@@ -1065,10 +1067,43 @@ const timingTable = (records, jobs) => {
   const head = ['Story', 'Total', ...STAGES, ...written, 'rebase', ...names]
   return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows, '', 'A time with (n) after it adds up n of them: claims of the stage, rebases, or runs of the job.'].join('\n')
 }
-// The report, modelled on the one omni-deliver.js posts: what the script knows
-// (the outcomes, the council's counts, the journeys, the notes) and what the
-// helper does (the commits landed, the blocked stories and their threads, the
-// human checks left, the timings), from the board.
+// A text cut to n characters at most, ending in … when it was cut.
+const cut = (text, n) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
+// What the report says of a blocked task, one line per open question asked
+// on the tree and per open linked thread; a task with neither says blocked,
+// and why when a question of it could not be read. A thread that cannot be
+// read counts as open.
+const waitsOf = (b, story) => {
+  const lines = []
+  let unreadable = null
+  for (const d of story.decisions || []) {
+    const m = String(d.choice).match(ASKED_ID)
+    if (!m) continue
+    let q
+    try {
+      q = JSON.parse(b.omni(['behaviour', 'question', m[1], '--json']))
+      q = q.question || q
+    } catch (e) {
+      unreadable = unreadable || `the question ${m[1]} could not be read: ${cut(failure(e).split('\n')[0], 300)}`
+      continue
+    }
+    if (q.state === 'answered' && q.answer) continue
+    lines.push(`"${d.question}" on ${q.node_path ?? q.node_id}${q.recommendation ? ` (recommended: ${q.recommendation})` : ''}`)
+  }
+  for (const l of story.links || []) {
+    if (!l.thread_id) continue
+    let open = true
+    try { open = !readThread(b, l.thread_id).conclusion } catch {}
+    if (open) lines.push(`thread ${l.thread_id}`)
+  }
+  return lines.length ? lines : [`blocked${unreadable ? `: ${unreadable}` : ''}`]
+}
+// The report, the text of the feature's pull request: what the script knows
+// (the outcomes, the council's counts, the journeys, the notes, the boards
+// not compared) and what the helper does (the commits landed, the tasks that
+// wait or failed, the human checks left, the timings), from the board. Each
+// task is in one of Built, Waiting on a question, Failed, Waiting for
+// another task and Not started at most, the first that holds.
 const reportText = (b, info, report) => {
   const list = (v) => (Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : [])
   const lines = (items) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- none')
@@ -1080,22 +1115,71 @@ const reportText = (b, info, report) => {
   const titles = new Map(stories.map((s) => [s.key, s.title]))
   const named = (key) => (titles.get(key) ? `${key} ${titles.get(key)}` : String(key))
   const landed = list(info.landed)
-  const commitsOf = (l) => (tryRun('git', ['-C', b.root, 'log', '--reverse', '--format=%h %s', `${l.base}..${l.final}`]) || '').split('\n').filter(Boolean)
+  // The setup task's entry has no base: its commits are those up to its head.
+  const commitsOf = (l) => (tryRun('git', ['-C', b.root, 'log', '--reverse', '--format=%h %s', l.base ? `${l.base}..${l.final}` : l.final]) || '').split('\n').filter(Boolean)
   const council = report.council && typeof report.council === 'object' ? report.council : {}
   const count = (n) => (Number.isInteger(n) && n > 0 ? n : 0)
   const settled = count(council.settled)
   const checks = stories.flatMap((s) => (s.criteria || []).filter((c) => c && c.pending).map((c) => `${s.key}: ${criterionOf(c).text}`))
   const jobs = jobsOf(b.root, b.runId).map((job) => ({ ...job, result: readJson(job.files.result) }))
   const began = Date.parse(info.started)
+  const open = (s) => s.status !== 'done' && s.status !== 'cancelled'
+  const listed = new Set(landed.map((l) => l.key))
+  const take = (s) => !listed.has(s.key) && listed.add(s.key)
+  const asking = stories.filter((s) => s.blocked && open(s) && take(s))
+  const waiting = asking.flatMap((s) => waitsOf(b, s).map((w) => `${named(s.key)}: ${w}`))
+  const parked = stories.filter((s) => s.status === 'backlog' && !s.blocked && !listed.has(s.key) && (s.findings || []).some((f) => !f.resolved && Number((String(f.text).match(ATTEMPT) || [])[1]) === 3) && take(s))
+  const failedLines = parked.map((s) => {
+    const { findings } = findingsOf(s)
+    const last = findings.length ? findings[findings.length - 1].findings : []
+    return [`${named(s.key)}: parked after 3 tries`, ...last.map((f) => `  - ${cut(f.text.replace(/\s+/g, ' ').trim(), 300)}`)].join('\n')
+  })
+  for (const o of list(report.outcomes)) {
+    if (!o.key || o.outcome !== 'failed' || listed.has(o.key)) continue
+    listed.add(o.key)
+    failedLines.push(`${named(o.key)}: failed: ${cut((String(o.detail || '').split('\n').find((l) => l.trim()) || 'no error given').trim(), 300)}`)
+  }
+  // A backlog task held by one that waits or failed, also through a chain:
+  // its line gives every key it waits for that way.
+  const stuck = new Set([...asking.map((s) => s.key), ...parked.map((s) => s.key), ...list(report.outcomes).filter((o) => o.outcome === 'failed').map((o) => o.key)])
+  const byKey = new Map(stories.map((s) => [s.key, s]))
+  const held = []
+  for (let grew = true; grew;) {
+    grew = false
+    for (const s of stories) {
+      if (s.status !== 'backlog' || listed.has(s.key) || !(s.blocked_by || []).some((k) => stuck.has(k))) continue
+      take(s)
+      stuck.add(s.key)
+      held.push(s)
+      grew = true
+    }
+  }
+  const heldLines = stories.filter((s) => held.includes(s)).map((s) => {
+    const keys = []
+    const walk = (k) => {
+      for (const d of (byKey.get(k) || {}).blocked_by || []) {
+        if (!stuck.has(d) || keys.includes(d) || d === s.key) continue
+        keys.push(d)
+        walk(d)
+      }
+    }
+    walk(s.key)
+    return `${named(s.key)}: waits for ${keys.join(', ')}`
+  })
+  const notStarted = stories.filter((s) => s.status === 'backlog' && take(s)).map((s) => named(s.key))
+  const uncompared = list(report.uncompared).filter((u) => u.key).map((u) => `${named(u.key)}: ${list(u.boards).join(', ')}${u.reason ? `: ${u.reason}` : ''}`)
   return `${[
-    `# Run ${b.runId} on ${b.feature}`,
+    `# ${b.feature}: build report of ${b.runId}`,
     ...list(report.notes).map(String),
-    `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}${l.tests ? ', its tests' : ''}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
-    `## Blocked\n${unread || lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
-    `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
-    `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.majority)} of them by a majority of 2, ${count(council.asked)} sent to the human`,
+    `## Built\n${lines(landed.map((l) => `${named(l.key)}${l.tests ? ', its tests' : ''}: ${commitsOf(l).join('; ') || 'no commits'}`))}`,
+    `## Waiting on a question\n${unread || `${lines(waiting)}${waiting.length ? '\n\nAnswer on the feature\'s Behaviour screen; the next build takes these tasks up.' : ''}`}`,
+    `## Failed\n${unread ? [unread, ...failedLines.map((l) => `- ${l}`)].join('\n') : lines(failedLines)}`,
+    `## Waiting for another task\n${unread || lines(heldLines)}`,
+    `## Not started\n${unread || lines(notStarted)}`,
+    `## Not compared with its board\n${lines(uncompared)}`,
     `## Pending human checks\n${unread || lines(checks)}`,
-    ...(Array.isArray(report.journeys) ? [`## Journeys\n${lines(list(report.journeys).map(String))}`] : []),
+    `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.majority)} of them by a majority of 2, ${count(council.asked)} sent to the human`,
+    `## Journeys\n${lines(list(report.journeys).map(String))}`,
     `## Timings\n${Number.isFinite(began) ? `The run took ${took(Date.now() - began)}.\n\n` : ''}${timingTable(timingsOf(b.root, b.runId), jobs)}`,
   ].join('\n\n')}\n`
 }
@@ -1250,6 +1334,8 @@ const STEPS = {
     ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
     ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
     if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+    // The report lists it under Built, with the commits up to its head.
+    updateRun(b.root, b.runId, (info) => ({ ...info, landed: [...(info.landed || []).filter((l) => l.key !== p.key || l.base !== null), { key: p.key, base: null, final: head }] }))
     return { key: p.key, head, files: files.length }
   })(),
 

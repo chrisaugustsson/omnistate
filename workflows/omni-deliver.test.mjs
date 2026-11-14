@@ -3094,8 +3094,8 @@ test("the run ends with the journeys check in the lane worktree, then finish get
   assert.equal(posted[0].body, readFileSync(result.report, "utf8"));
   assert.deepEqual(stepsNamed(calls, "context", "US-3"), []);
   assert.equal(result.report, join(dirs.repo, ".omni", "runs", result.run, "report.md"));
-  assert.match(posted[0].body, /\n## Landed on deliver\/board\n- US-1 Story US-1: [0-9a-f]{7} feat: US-1\.txt\n- US-2 Story US-2: [0-9a-f]{7} feat: US-2\.txt\n\nBring them into your branch with `git merge --ff-only deliver\/board`\.\n/);
-  assert.ok(posted[0].body.includes("\n## Blocked\n- US-3 Story US-3: thread th-1\n"), posted[0].body);
+  assert.match(posted[0].body, /\n## Built\n- US-1 Story US-1: [0-9a-f]{7} feat: US-1\.txt\n- US-2 Story US-2: [0-9a-f]{7} feat: US-2\.txt\n\n## /);
+  assert.ok(posted[0].body.includes("\n## Waiting on a question\n- US-3 Story US-3: thread th-1\n"), posted[0].body);
   assert.ok(posted[0].body.includes("\n## Journeys\n- healthy: One journey spans them.\n- Badge, then count: works\n"), posted[0].body);
   assert.deepEqual([result.landed, result.tip], [["US-1", "US-2"], git(dirs.repo, "rev-parse", "refs/heads/deliver/board").trim()]);
   assert.equal(existsSync(join(dirs.repo, ".omni", "run.lock")), false);
@@ -3147,7 +3147,7 @@ test("finish runs whenever start succeeded: a run that throws posts its report, 
   const [run] = dirs.state().threads.filter((th) => /^Run run-\d{8}-\d{6}-\d+$/.test(th.title));
   assert.equal(run.posts.length, 1);
   assert.ok(run.posts[0].body.includes("\nThe run stopped on an error: courier:list: the courier returned nothing, after 3 retries\n"), run.posts[0].body);
-  assert.ok(run.posts[0].body.includes("\n## Blocked\n- none\n"), run.posts[0].body);
+  assert.ok(run.posts[0].body.includes("\n## Waiting on a question\n- none\n"), run.posts[0].body);
   assert.equal(agentsOf(calls, "courier:finish").length, 1);
 });
 
