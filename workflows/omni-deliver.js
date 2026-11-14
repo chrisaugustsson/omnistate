@@ -514,11 +514,11 @@ Read the story ${ctx.key} first, from OmniState, with ${storyRead(ctx, role)}. I
 - criteria: its acceptance criteria, numbered from 0 in the order they come; human_check true marks one that a human confirms later.
 - decisions: each a question, the choice taken, and by whom, agent or human. ${decisions}${docs ? `
 - links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`${omniAs(role)} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.` : ''}${findings ? `
-- findings: each with its stage, text, files and resolved. An open one has resolved false: one whose text starts with [attempt N] is what failed attempt N since the human's latest answer, and one without that number used no attempt, such as a rebase conflict. A resolved one whose text starts with [attempt N] failed before the human's latest answer, and says what failed before it. ${findingCounts(ctx, findings)}` : ''}`
+- findings: each with its stage, text, files and resolved. An open one has resolved false: one whose text starts with [attempt N] is what failed attempt N of this round, and one without that number used no attempt, such as a rebase conflict. A resolved one whose text starts with [attempt N] is from an earlier round, and says what failed then. ${findingCounts(ctx, findings)}` : ''}`
 const findingCounts = (ctx, task) => {
   const { open, uncounted, earlier } = ctx.findings
   if (!open && !uncounted && !earlier) return 'The story has no finding now.'
-  return `The story has ${plural(open, 'open finding', 'open findings')} of earlier attempts, ${plural(uncounted, 'open finding', 'open findings')} that used no attempt, and ${plural(earlier, 'finding', 'findings')} from before the human's latest answer. ${task}`
+  return `The story has ${plural(open, 'open finding', 'open findings')} of earlier attempts, ${plural(uncounted, 'open finding', 'open findings')} that used no attempt, and ${plural(earlier, 'finding', 'findings')} from an earlier round. ${task}`
 }
 // The criteria by number, with the test obligations, which the lane's test
 // author owns; clarity, which decides them, is told none.
@@ -683,7 +683,7 @@ ${criteriaSection(ctx)}
 
 ${resultFile(file)}
 ## Your task now
-This is attempt ${attempt} of ${MAX_ATTEMPTS} since the human's latest answer. ${task}
+This is attempt ${attempt} of ${MAX_ATTEMPTS} of this round. ${task}
 Return raw structured data only.`
 
 // Every criterion gets an entry, numbered from 0 as the story orders them.
@@ -1157,12 +1157,14 @@ let unblocked = { unblocked: [] }
 let pendingClarity = []
 const unblock = async () => {
   const own = A.checks && typeof A.checks === 'object'
-  const bodies = await steps([...(own ? [['checks-set', { checks: A.checks }]] : []), ['unblock-pass', {}], ['clarity-pending', {}]])
+  const bodies = await steps([...(own ? [['checks-set', { checks: A.checks }]] : []), ['unblock-pass', {}], ['retry-pass', {}], ['clarity-pending', {}]])
   if (own) checks = bodies[0].checks
-  unblocked = bodies[bodies.length - 2]
+  unblocked = bodies[bodies.length - 3]
+  const retried = bodies[bodies.length - 2].retried || []
   pendingClarity = bodies[bodies.length - 1].keys
   for (const line of unblocked.log || []) log(line)
   if (unblocked.unblocked.length) log(`Unblocked ${unblocked.unblocked.join(', ')}`)
+  if (retried.length) log(`Parked tasks tried again: ${retried.join(', ')}`)
 }
 
 // ---- 3. clarity --------------------------------------------------------------

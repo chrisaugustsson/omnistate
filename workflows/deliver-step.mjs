@@ -118,6 +118,8 @@
 //   story/<key>, oldest first), back (true when it checked story/<key> out
 //   again, false when it left a worktree with work in progress as it was)
 //   and reason, what the implementer has to do about it
+// - retry-pass {}: retried (the keys of the tasks in the backlog, not blocked,
+//   with an open finding marked [attempt 3], whose open findings it resolved)
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
 // - clarity-record {key}: key, hash
@@ -1265,6 +1267,26 @@ const STEPS = {
     return { unblocked, log: log() }
   },
 
+  // A task parked after its third failed try (in the backlog, not blocked,
+  // an open finding marked [attempt 3]) is taken up again by the next run:
+  // its open findings are resolved, so that attempts count from 0 (attemptOf).
+  // A repeat finds nothing left open on those it did.
+  'retry-pass': (b) => {
+    const retried = []
+    try {
+      for (const story of b.listStories()) {
+        if (story.status !== 'backlog' || story.blocked) continue
+        const open = (story.findings || []).map((f, i) => [f, i]).filter(([f]) => !f.resolved)
+        if (!open.some(([f]) => Number((String(f.text).match(ATTEMPT) || [])[1]) === 3)) continue
+        for (const [, i] of open) b.write('resolve', story.key, ['--finding', String(i)])
+        retried.push(story.key)
+      }
+    } catch (e) {
+      return { ok: false, retried, error: failure(e), retry: retryable(e) }
+    }
+    return { retried }
+  },
+
   // A new worktree starts at the tip of deliver/<slug>, what the lane last
   // landed, on a new branch story/<key>. A branch story/<key> without its
   // worktree keeps its work: the worktree is made again on it. An existing
@@ -1653,7 +1675,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'park', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
