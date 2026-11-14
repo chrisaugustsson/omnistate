@@ -93,7 +93,8 @@
 //   of the story: every agent reads it with omni story read
 //   boards: [{doc, board}], the design boards the story links (at most 20)
 // - design-export {}: dir, boards (how many PNG files). Runs omni export once
-//   per run, into <root>/.omni/runs/<run>/design
+//   per run, into <root>/.omni/runs/<run>/design, whose manifest.json gives
+//   each board's files; a failure is not remembered
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
@@ -897,7 +898,6 @@ const findingsOf = (story) => {
 export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
 const ASKED_ID = /^Asked on the behaviour tree: question (\S+) on node /
 export const ASKED = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`
-// The node IDs of a task's Covers lines, in order: `- <node id> v<version> \`<path>\``.
 // The design boards a story links: its links to a doc of kind design that
 // name a board, as {doc, board}, each pair once, the first 20 in link order.
 const boardsOf = (b, story) => {
@@ -909,6 +909,7 @@ const boardsOf = (b, story) => {
   }
   return pairs.slice(0, LISTED)
 }
+// The node IDs of a task's Covers lines, in order: `- <node id> v<version> \`<path>\``.
 const nodesOf = (story) => [...String(story.text || '').matchAll(/^\s*- (\S+) v\d+ `/gm)].map((m) => m[1])
 export const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
 const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
@@ -1141,9 +1142,13 @@ const STEPS = {
     }
   })(),
 
-  // The feature's boards as images, once per run: omni export writes each as
-  // <dir>/ui/<doc>/<name>-<board>.png with its .tags beside it. Only a
-  // success is remembered; a failure is exported again by the next call.
+  // The feature's boards as images, once per run. The files stay where omni
+  // export puts them: each board as <dir>/ui/<doc title as a slug>-<last 8
+  // characters of the doc ID>/<board name as a slug>-<board ID>.tags, with
+  // its .png beside it when the server gave a picture, and every board listed
+  // in <dir>/manifest.json, an entry of files with path (the .tags file,
+  // relative to <dir>), doc_id, board_id and board. Only a success is
+  // remembered; a failure is exported again by the next call.
   'design-export': (b) => {
     const dir = path.join(runDirOf(b.root, b.runId), 'design')
     const done = path.join(runDirOf(b.root, b.runId), 'design-export.json')

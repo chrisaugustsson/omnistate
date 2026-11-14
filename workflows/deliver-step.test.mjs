@@ -1246,9 +1246,68 @@ test("context gives only the facts the script decides by, and no text of the sto
     obligations: [1],
     findings: { open: 3, uncounted: 1, earlier: 1 },
     nodes: ["node-9", "node-4"],
+    boards: [],
     questions: [fnv1a("Which red?"), fnv1a("How big?")],
   });
   assert.doesNotMatch(JSON.stringify(body), /NODE|STORY TEXT|badge|#c00|border|README|doc-spec|th-1|shows/);
+});
+
+// ---- the design boards ---------------------------------------------------------
+
+test("context gives as boards each link to a board of a design doc, as {doc, board}, each pair once and the first 20 in link order; a link to an html doc or to a design doc without a node is not a board, and a task with no such link has none", (t) => {
+  const docList = [{ id: "d1", kind: "design", pillar: "ui", title: "Screens" }, { id: "d2", kind: "html", pillar: "spec", title: "Spec" }, { id: "d3", kind: "design", pillar: "ui", title: "More" }];
+  const many = Array.from({ length: 22 }, (_, i) => ({ doc_id: "d3", node_id: `m${i}`, label: "" }));
+  const dirs = scratch(t, [
+    story("US-1", { links: [{ doc_id: "d2", node_id: "n1", label: "spec" }, { doc_id: "d1", node_id: "b2", label: "" }, questionLink("th-1"), { doc_id: "d1", node_id: "b1", label: "" }, { doc_id: "d1", node_id: "b2", label: "again" }, { doc_id: "d1", label: "" }] }),
+    story("US-2", { links: [{ doc_id: "d2", node_id: "n1", label: "spec" }] }),
+    story("US-3", { links: many }),
+  ], [], { docList });
+  const { run } = start(dirs);
+
+  assert.deepEqual(step(dirs, run, "context", { key: "US-1" }).boards, [{ doc: "d1", board: "b2" }, { doc: "d1", board: "b1" }]);
+  assert.deepEqual(step(dirs, run, "context", { key: "US-2" }).boards, []);
+  assert.deepEqual(step(dirs, run, "context", { key: "US-3" }).boards, many.slice(0, 20).map((l) => ({ doc: "d3", board: l.node_id })));
+});
+
+const exportsOf = (dirs) => dirs.state().calls.filter((c) => c.argv[0] === "export").map((c) => c.argv);
+const designState = () => ({
+  link: { path: "/work/app", matched: "/work/app", workspace_id: "w-1", project_id: "p-1" },
+  docList: [{ id: "0190aaaa-d1d1d1d1", kind: "design", pillar: "ui", title: "Rename screens" }],
+  boards: [{ doc: "0190aaaa-d1d1d1d1", board: "b1", name: "Rename" }, { doc: "0190aaaa-d1d1d1d1", board: "b2", name: "Name taken" }],
+});
+
+test("design-export runs omni export for the linked project and the feature into the run's design folder and leaves the files where it puts them: the manifest gives each board's tags file, with its image beside it; a second design-export under a new opId exports nothing again and gives the same body", (t) => {
+  const dirs = scratch(t, [], [], designState());
+  const { run } = start(dirs);
+  const dir = join(dirs.repo, ".omni", "runs", run, "design");
+
+  const body = step(dirs, run, "design-export");
+  const again = step(dirs, run, "design-export");
+
+  assert.deepEqual(pick(body), { ok: true, dir, boards: 2 });
+  assert.deepEqual(pick(again), pick(body));
+  assert.deepEqual(exportsOf(dirs), [["export", "--project", "p-1", "--feature", "board", "--out", dir]]);
+  const entry = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).files.find((f) => f.doc_id === "0190aaaa-d1d1d1d1" && f.board_id === "b1");
+  assert.equal(entry.path, "ui/rename-screens-d1d1d1d1/rename-b1.tags");
+  assert.equal(existsSync(join(dir, entry.path)), true);
+  assert.equal(existsSync(join(dir, entry.path.replace(/\.tags$/, ".png"))), true);
+});
+
+test("design-export answers ok false and retry false with omni's message, trimmed, when omni link fails or omni export exits non-zero, and names a link without a project_id; only a success is remembered, so the next call exports again", (t) => {
+  const dirs = scratch(t, [], [], { ...designState(), link: undefined });
+  const { run } = start(dirs);
+
+  const unlinked = step(dirs, run, "design-export");
+  dirs.edit((s) => { s.link = { path: "/work/app", workspace_id: "w-1" }; });
+  const noProject = step(dirs, run, "design-export");
+  dirs.edit((s) => { s.link = designState().link; });
+  const failed = step(dirs, run, "design-export", {}, { FAKE_OMNI_FAIL: "export" });
+  const worked = step(dirs, run, "design-export");
+
+  assert.deepEqual(pick(unlinked), { ok: false, error: "the design could not be exported: this folder is not linked to a project: run omni link <project name|id> here, or pass --project", retry: false });
+  assert.deepEqual(pick(noProject), { ok: false, error: "the design could not be exported: omni link gives no project_id for this folder", retry: false });
+  assert.deepEqual(pick(failed), { ok: false, error: "the design could not be exported: export failed: the server could not render the boards", retry: false });
+  assert.deepEqual([worked.ok, worked.boards, exportsOf(dirs).length], [true, 2, 2]);
 });
 
 test("context gives as test obligations, once clarity has checked the story, only the criteria clarity's decisions name, with the question and choice the script writes; before, a criterion that delivers a test, never one with a bare test or suite in it", (t) => {

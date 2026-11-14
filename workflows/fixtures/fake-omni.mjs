@@ -1,6 +1,7 @@
 // A stand-in for the omni CLI, for workflow tests. Its state (stories, threads,
 // posts, a thread's conclusion when it has one, and every call with the lock file seen at that moment) lives in the
-// JSON file FAKE_OMNI_STATE names. FAKE_OMNI_FAIL=thread makes thread create fail.
+// JSON file FAKE_OMNI_STATE names. FAKE_OMNI_FAIL=thread makes thread create fail,
+// and FAKE_OMNI_FAIL=export makes export fail, writing nothing.
 // While the file FAKE_OMNI_DOWN names exists, `story list` fails with that file's
 // text on stderr (the server is down), and the call is recorded with refused: true.
 // FAKE_OMNI_HANG="<words>" holds a call whose arguments start with those words
@@ -163,6 +164,10 @@ if (noun === "--help") {
     process.exit(1);
   }
   out(JSON.stringify(state.link));
+} else if (noun === "export" && process.env.FAKE_OMNI_FAIL === "export") {
+  save();
+  process.stderr.write("  export failed: the server could not render the boards  \n");
+  process.exit(1);
 } else if (noun === "export") {
   const slug = (title) => title.split(/[^\p{L}\p{N}]+/u).filter(Boolean).join("-").toLowerCase() || "doc";
   const files = [];
