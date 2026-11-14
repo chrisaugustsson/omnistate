@@ -1939,8 +1939,9 @@ const laneStory = async (key) => {
 // check runs, and the lane is at the tip afterwards. A turn that fails, on a
 // rebase conflict, a red check or a refused landing, gets the author once
 // more, with the reason; a second failure drops the tests. So does every
-// other ending: a defect, which opens a thread and uses no attempt, since
-// the story has landed; a question the council does not settle; an author
+// other ending: a defect, which the note names with its test, what was
+// observed and what was expected, and uses no attempt, since the story has
+// landed; a question the council does not settle; an author
 // that is blocked or returns nothing; a lane that has stopped; the hard cap.
 // Dropped tests cost the story nothing: its worktree goes, and the report
 // notes that it landed without regression tests, and why. A thread of this
@@ -1958,15 +1959,19 @@ const inTests = (task) => {
 // author added no test) or dropped, with why.
 const testsRuns = new Set()
 const testsOutcomes = []
+// why: a text, or words(...) with parts of the author's result, which the
+// report's note carries from its file; the log and the outcome read them as
+// text.
+const plainOf = (why) => (why && why[WORDS] ? why[WORDS].map((p) => (typeof p === 'string' ? p : p.value)).join('') : why)
 const dropTests = async (key, why) => {
   try {
     await step('tests-drop', { key }, { past: true })
   } catch (e) {
     log(`${key}: the worktree its test author worked in could not be removed: ${(e && e.message) || e}`)
   }
-  notes.push(`${key} landed without regression tests: ${why}.`)
-  log(`${key}: landed without regression tests: ${why}`)
-  return { key, outcome: 'dropped', detail: why }
+  notes.push(words(`${key} landed without regression tests: `, why && why[WORDS] ? why[WORDS] : why, /[.!?]$/.test(plainOf(why).trim()) ? '' : '.'))
+  log(`${key}: landed without regression tests: ${plainOf(why)}`)
+  return { key, outcome: 'dropped', detail: plainOf(why) }
 }
 // base and final: the tip the story was rebased onto and the commit it landed
 // as; confirmed: the criteria its verifier confirmed.
@@ -1991,12 +1996,11 @@ const writeTests = async (key, { base, final, confirmed }) => {
       }
       if (r.status === 'found_defect') {
         const d = (name, none) => part(r, ['defect', name], none)
-        const what = `the test ${d('test', '(unnamed)')}, observed: ${d('observed', '(not given)')}, expected: ${d('expected', '(not given)')}`
         log(`${key}: its tests found a defect after it landed`)
-        return { drop: `its tests found a defect in it: ${what}` }
+        return { drop: words('its tests found a defect in it: the test ', d('test', '(unnamed)'), ', observed: ', d('observed', '(not given)'), ', expected: ', d('expected', '(not given)')) }
       }
       if (r.status !== 'done') {
-        return { drop: `the test author is blocked: ${part(r, ['blockers'], String(r.status))}` }
+        return { drop: words('the test author is blocked: ', part(r, ['blockers'], String(r.status))) }
       }
       return { tests: r }
     }
@@ -2169,7 +2173,7 @@ return {
   capped,
   halted,
   lane: laneStopped,
-  notes,
+  notes: notes.map(plainOf),
   storyLimit: storyLimit === Infinity ? null : storyLimit,
   // The landed state: the stories this run landed, and the tip of the branch.
   landed: outcomes.filter((o) => o.outcome === 'done').map((o) => o.key),
