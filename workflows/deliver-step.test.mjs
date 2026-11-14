@@ -1257,6 +1257,118 @@ test("a setup run whose omni link matches a folder inside the checkout, not its 
   assert.deepEqual([kept.ok, kept.root], [true, plain.repo]);
 });
 
+// ---- the setup steps ------------------------------------------------------------------
+
+// A setup run in a folder without a repository, and what its setup task makes there.
+function setupRun(t, stories = [setupStory("US-1")], extra = {}) {
+  const dirs = noRepo(scratch(t, stories, [], { checks: null, ...extra }));
+  const body = start(dirs);
+  assert.equal(body.ok, true, body.error);
+  return { dirs, run: body.run };
+}
+function gitInit(dirs) {
+  git(dirs.repo, "init", "-q", "-b", "main");
+  git(dirs.repo, "config", "user.email", "test@example.com");
+  git(dirs.repo, "config", "user.name", "Test");
+}
+
+test("setup-check answers not_ready with the first reason that holds: no repository, no commit, uncommitted changes outside .omni/, no fast command; then ready with HEAD and the checks, which go into run.json, and .omni/ into .git/info/exclude", (t) => {
+  const { dirs, run } = setupRun(t);
+  const reason = () => step(dirs, run, "setup-check", { key: "US-1" }).reason;
+
+  assert.equal(reason(), `${dirs.repo} is not a git repository`);
+  gitInit(dirs);
+  assert.equal(reason(), "the repository has no commit");
+  commit(dirs.repo, "README");
+  for (const f of ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"]) writeFileSync(join(dirs.repo, f), "x\n");
+  writeFileSync(join(dirs.repo, "README"), "changed\n");
+  assert.equal(reason(), "uncommitted changes in 7 files (README, a.rs, b.rs, c.rs, d.rs)");
+  git(dirs.repo, "add", ".");
+  git(dirs.repo, "reset", "-q", ".omni");
+  git(dirs.repo, "commit", "-q", "-m", "app");
+  const noFast = "omni checks gives no fast command: add fast to the [checks] table of .omni.toml";
+  assert.equal(reason(), noFast);
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"\"\n");
+  git(dirs.repo, "add", ".omni.toml");
+  git(dirs.repo, "commit", "-q", "-m", "checks");
+  assert.equal(reason(), noFast);
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"make check\"\n");
+  git(dirs.repo, "commit", "-q", "-am", "fast");
+
+  const body = step(dirs, run, "setup-check", { key: "US-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "ready", head: sha(dirs, "HEAD"), checks: { fast: "make check", stack_up: "", stack: "", stack_reset: "", seed: "", lint: "" } });
+  assert.match(readFileSync(join(dirs.repo, ".git", "info", "exclude"), "utf8"), /^\.omni\/$/m);
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).checks.fast, "make check");
+});
+
+test("setup-check keeps the checks checks-set gave the run on top of those omni checks gives", (t) => {
+  const { dirs, run } = setupRun(t);
+  gitInit(dirs);
+  writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"make check\"\nstack = \"make stack\"\n");
+  git(dirs.repo, "add", ".gitignore", ".omni.toml", "README");
+  git(dirs.repo, "commit", "-q", "-m", "setup");
+  step(dirs, run, "checks-set", { checks: { stack: "make e2e" } });
+
+  const body = step(dirs, run, "setup-check", { key: "US-1" });
+
+  assert.equal(body.outcome, "ready", body.reason);
+  assert.deepEqual([body.checks.fast, body.checks.stack], ["make check", "make e2e"]);
+});
+
+test("setup-land records the paths git ls-files gives as the task's files, ticks every criterion, a human check as pending, resolves its open findings and moves it to done; a repeat writes nothing twice", (t) => {
+  const { dirs, run } = setupRun(t, [setupStory("US-1", { status: "implementing", criteria: ["It starts", { text: "It looks right", human_check: true }], findings: [{ stage: "testing", text: "[attempt 1] no commit", files: [], resolved: false }] })]);
+  gitInit(dirs);
+  commit(dirs.repo, "README");
+  commit(dirs.repo, "main.rs");
+
+  const fields = { opId: "setup-land-1", key: "US-1" };
+  const body = step(dirs, run, "setup-land", fields);
+  const calls = dirs.state().calls.length;
+  const again = step(dirs, run, "setup-land", fields);
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", head: sha(dirs, "HEAD"), files: 2 });
+  assert.deepEqual(pick(again), pick(body));
+  assert.equal(dirs.state().calls.length, calls);
+  const s = dirs.story("US-1");
+  assert.deepEqual(s.files_changed, ["README", "main.rs"]);
+  assert.deepEqual(s.criteria.map((c) => [c.ticked, c.pending === true]), [[true, false], [true, true]]);
+  assert.deepEqual([s.findings[0].resolved, s.status], [true, "done"]);
+});
+
+test("repo-open creates deliver/<slug> at HEAD and the lane worktree, and gives the checks, base as the branch checked out and setup as the project-level Setup doc of pillar architecture, else null", (t) => {
+  const docList = [{ id: "d0", kind: "html", pillar: "architecture", title: "Setup", feature_id: "f1" }, { id: "d1", kind: "html", pillar: "spec", title: "Setup" }, { id: "d2", kind: "html", pillar: "architecture", title: "SETUP" }, { id: "d3", kind: "html", pillar: "architecture", title: "setup" }];
+  const { dirs, run } = setupRun(t, [setupStory("US-1"), story("US-2")], { docList, checks: { fast: "make check" } });
+  dirs.edit((s) => { s.stories[0].status = "done"; });
+  gitInit(dirs);
+  writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
+  git(dirs.repo, "add", ".gitignore");
+  git(dirs.repo, "commit", "-q", "-m", "setup");
+
+  const body = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([body.ok, body.branch, body.tip, body.lane, body.base, body.setup], [true, "deliver/board", sha(dirs, "HEAD"), dirs.lane, "main", "d2"]);
+  assert.equal(body.checks.fast, "make check");
+  assert.equal(sha(dirs, "refs/heads/deliver/board"), sha(dirs, "HEAD"));
+  assert.equal(git(dirs.lane, "rev-parse", "HEAD").trim(), sha(dirs, "HEAD"));
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).tip, sha(dirs, "HEAD"));
+  dirs.edit((s) => { s.docList = []; });
+  assert.equal(step(dirs, run, "repo-open", {}).setup, null);
+});
+
+test("repo-open refuses for good a root that is no repository, and one without a commit", (t) => {
+  const { dirs, run } = setupRun(t);
+
+  const none = step(dirs, run, "repo-open", {});
+  gitInit(dirs);
+  const empty = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([none.ok, none.retry, none.error], [false, false, `${dirs.repo} is not a git repository`]);
+  assert.deepEqual([empty.ok, empty.retry, empty.error], [false, false, `${dirs.repo} has no commit to start the feature's branch from`]);
+  assert.equal(existsSync(dirs.lane), false);
+});
+
 // ---- the board steps ------------------------------------------------------------------
 
 test("list gives, of the other stories, only those the script takes up where they wait, implemented or reviewed and not blocked, as key and status, since outputs stay small, and the keys the board calls pickable", (t) => {
