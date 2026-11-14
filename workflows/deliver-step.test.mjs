@@ -3653,7 +3653,7 @@ test("after a restart finish pushes with a lease on the merged tip: a remote bra
       assert.deepEqual([remote.at("refs/heads/deliver/board"), body.pr, gh.read().prs.filter((pr) => pr.state === "open").length], [tip, { url: "https://example.com/pr/3", created: true }, 1], what);
     } else {
       assert.deepEqual([remote.at("refs/heads/deliver/board"), body.pr], [before, null], what);
-      assert.equal(body.why, `To ${remote.bare}`, what);
+      assert.equal(body.why, "! [rejected] deliver/board -> deliver/board (stale info)", what);
     }
   }
 });

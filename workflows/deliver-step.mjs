@@ -1204,6 +1204,13 @@ const firstLine = (e) => {
   const said = String((e && e.stderr) || '').split('\n').map((l) => l.trim()).find(Boolean)
   return said || String((e && e.message) || e).split('\n')[0].trim()
 }
+// Why a push failed: the line in which git says a ref was rejected, else its
+// first fatal or error line, else the first line. A rejected push starts with
+// "To <remote>", which says nothing.
+const pushLine = (e) => {
+  const lines = String((e && e.stderr) || '').split('\n').map((l) => l.trim().replace(/\s+/g, ' ')).filter(Boolean)
+  return lines.find((l) => l.startsWith('! ')) || lines.find((l) => /^(fatal|error):/.test(l)) || firstLine(e)
+}
 // The pull request's body: the report, without its Timings when it is too
 // long, then cut, with a last line that says where the whole of it is.
 export const prBody = (text, runId) => {
@@ -1251,7 +1258,7 @@ const pullRequest = (b, info, body) => {
   // tip; when the remote has no such branch any more, git rejects that
   // lease as stale, and the push expects no branch there instead.
   const push = (lease) => run('git', ['-C', b.root, 'push', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
-  const pushFailed = (e) => ({ pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : firstLine(e) })
+  const pushFailed = (e) => ({ pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : pushLine(e) })
   try {
     push(info.restarted || undefined)
   } catch (e) {
