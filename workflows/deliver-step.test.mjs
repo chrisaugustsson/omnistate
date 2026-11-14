@@ -1283,64 +1283,33 @@ test("obligations writes one decision for two criteria with the same text, which
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: testQuestion(criteria[0].text), choice: TEST_OBLIGATION, by: "agent" }]);
 });
 
-test("exhaust opens a thread named after the story's attempts, with every attempt's findings whole, those that used no attempt and those before the latest answer, read from the board, links it and blocks the story; its answer gives none of them", (t) => {
-  const long = `Seen:\n\`\`\`\n${"a".repeat(5000)}\nFINAL-ERROR\n\`\`\``;
-  const dirs = scratch(t, [story("US-1", { status: "backlog", findings: [
-    { stage: "review", text: "[attempt 1] Before the answer", files: [], resolved: true },
-    { stage: "review", text: "[attempt 1] The badge is blue", files: ["src/badge.rs"], resolved: false },
-    { stage: "testing", text: `[attempt 2] ${long}`, files: [], resolved: false },
-    { stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: false },
-    { stage: "review", text: "[attempt 3] Still blue", files: [], resolved: false },
-  ] })]);
+test("park leaves a task that failed its third try in the backlog, not blocked, with no holder, its findings open and no thread, and removes its worktree and branch; a task that never had them and a repeat say removed too", (t) => {
+  const findings = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still blue`, files: [], resolved: false }));
+  const dirs = scratch(t, [story("US-1", { status: "implemented", findings }), story("US-2", { findings })]);
   const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "review" });
 
-  const body = step(dirs, run, "exhaust", { key: "US-1", opId: "exhaust-US-1-1" });
-  const again = step(dirs, run, "exhaust", { key: "US-1", opId: "exhaust-US-1-1" });
+  const body = step(dirs, run, "park", { key: "US-1", opId: "park-US-1-1" });
+  const again = step(dirs, run, "park", { key: "US-1", opId: "park-US-1-1" });
+  const never = step(dirs, run, "park", { key: "US-2", opId: "park-US-2-1" });
 
-  const [th] = questions(dirs);
-  assert.deepEqual(pick(body), { ok: true, thread: th.id, key: "US-1", attempt: 3 });
-  assert.equal(th.title, "US-1: still failing after 3 attempts");
-  assert.deepEqual(th.posts.map((p) => p.body), [`The story failed 3 attempts since the human's latest answer. The findings of every attempt:
-
-Attempt 1:
-- [review] The badge is blue (src/badge.rs)
-
-Attempt 2:
-- [testing] ${long}
-
-Attempt 3:
-- [review] Still blue
-
-Open findings that used no attempt:
-- [testing] rebase conflict in README (README)
-
-Before the latest answer:
-
-Attempt 1:
-- [review] Before the answer
-`]);
-  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").links], [true, [questionLink(th.id)]]);
-  assert.deepEqual(again, body);
-  assert.ok(JSON.stringify(body).length < 300);
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", attempt: 3, removed: true });
+  assert.deepEqual(pick(again), pick(body));
+  assert.deepEqual(pick(never), { ok: true, key: "US-2", attempt: 3, removed: true });
+  const parked = dirs.story("US-1");
+  assert.deepEqual([parked.status, parked.blocked, parked.holder, parked.findings.map((f) => [f.text, f.resolved])], ["backlog", false, null, findings.map((f) => [f.text, false])]);
+  assert.deepEqual([existsSync(wt), git(dirs.repo, "branch", "--list", "story/US-1"), questions(dirs)], [false, "", []]);
 });
 
-test("an exhaust cut off after its post is carried on by its repeat from its pending marker: the attempt the first try fixed and its thread, with one post, linked from the story, which is blocked", async (t) => {
-  const findings = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still blue`, files: [], resolved: false }));
-  const dirs = scratch(t, [story("US-1", { findings })]);
+test("exhaust is no longer a step: the helper refuses it", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
   const { run } = start(dirs);
-  const obj = { opId: "exhaust-US-1-cut", key: "US-1" };
 
-  await cutOff(t, dirs, run, "exhaust", obj, () => questions(dirs).some((th) => th.posts.length === 1), { FAKE_OMNI_HANG_AFTER: "post" });
-  const pending = appliedOf(dirs, run, "exhaust")[obj.opId];
-  // Another failed attempt reaches the board before the repeat.
-  dirs.edit((s) => { s.stories[0].findings.push({ stage: "testing", text: "[attempt 4] Blue again", files: [], resolved: false }); });
-  const again = step(dirs, run, "exhaust", obj);
+  const body = helperRun(dirs, stepArgv(dirs, run, "exhaust", { opId: "exhaust-US-1-1", key: "US-1" }));
 
-  const [th, ...others] = questions(dirs);
-  assert.deepEqual([pending.pending, pending.attempt, pending.thread], [true, 3, th.id]);
-  assert.deepEqual(pick(again), { ok: true, thread: th.id, key: "US-1", attempt: 3 });
-  assert.deepEqual([th.title, th.posts.length, others], ["US-1: still failing after 3 attempts", 1, []]);
-  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").links], [true, [questionLink(th.id)]]);
+  assert.equal(body.ok, false);
+  assert.match(body.error, /^no step exhaust/);
 });
 
 test("a story list past 1 MB is read whole", (t) => {
@@ -2912,7 +2881,7 @@ test("no output the script reads passes 2,000 characters, however long a story's
   go("rework", { key: "US-2" });
   go("release", { key: "US-2" });
   go("thread-open", { key: "US-2", title: huge("US-2: a question", 5), body: huge("the options", 200), job: id });
-  go("exhaust", { key: "US-2" });
+  go("park", { key: "US-2" });
   go("unblock", { key: "US-2" });
   // The batches the script sends carry several bodies in one answer.
   const together = (...list) => sized(stepArgv(dirs, run, "batch", { opId: `batch-${++ops}`, steps: list.map(([name, fields = {}]) => ({ name, fields })) }));

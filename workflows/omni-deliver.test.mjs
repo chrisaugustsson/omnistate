@@ -1204,10 +1204,9 @@ test("from attempt 2 the implementer runs on implRetry, in the same worktree; it
   assert.deepEqual(findingsOf(dirs, "US-1").slice(2, 4), [["review", "[attempt 1] The badge is pink", ["src/badge.rs"], true], ["review", "[attempt 2] The badge has no border", ["src/border.rs"], true]]);
 });
 
-test("after 3 failed attempts the story goes back to the backlog, blocked, with one thread holding every attempt's findings and those before the latest answer; a story that comes with 3 failed attempts gets its thread without an implementer", { timeout: 60000 }, async (t) => {
+test("after 3 failed tries the task is parked: back in the backlog, not blocked, with no holder, its [attempt 3] findings open and no thread; a task that comes with 3 failed tries is parked without an implementer, and the build goes on", { timeout: 60000 }, async (t) => {
   const open = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still pink`, files: [], resolved: false }));
-  const answered = { stage: "testing", text: "[attempt 1] The badge was blue", files: [], resolved: true };
-  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }], findings: [answered] }), story("US-2", { findings: open })]);
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-2", { findings: open }), story("US-3")]);
   const unmet = (evidence) => reviewed("fail", { unmet: { 0: evidence } });
   const roles = { "review:US-1": [unmet("Pink at src/badge.rs:1"), unmet("Still pink at src/badge.rs:1"), unmet("Pink again at src/badge.rs:2")] };
 
@@ -1215,32 +1214,16 @@ test("after 3 failed attempts the story goes back to the backlog, blocked, with 
 
   assert.equal(error, null);
   assert.equal(agentsOf(calls, "impl:US-1").length, 3);
-  const threads = new Map(questions(dirs).map((th) => [th.title, th]));
-  const exhausted = threads.get("US-1: still failing after 3 attempts");
-  assert.equal(exhausted.posts[0].body, `The story failed 3 attempts since the human's latest answer. The findings of every attempt:
-
-Attempt 1:
-- [review] Criterion not met: "The badge is red". Pink at src/badge.rs:1
-
-Attempt 2:
-- [review] Criterion not met: "The badge is red". Still pink at src/badge.rs:1
-
-Attempt 3:
-- [review] Criterion not met: "The badge is red". Pink again at src/badge.rs:2
-
-Before the latest answer:
-
-Attempt 1:
-- [testing] The badge was blue
-`);
-  assert.deepEqual([dirs.story("US-1").status, dirs.story("US-1").blocked, dirs.story("US-1").links], ["backlog", true, [{ thread_id: exhausted.id, label: "question" }]]);
-  assert.deepEqual(timeline(dirs, "US-1").slice(-2), ["claim review", "move backlog"]);
+  const parked = dirs.story("US-1");
+  assert.deepEqual([parked.status, parked.blocked, parked.holder], ["backlog", false, null]);
+  assert.deepEqual(findingsOf(dirs, "US-1").slice(-1), [["review", '[attempt 3] Criterion not met: "The badge is red". Pink again at src/badge.rs:2', [], false]]);
   assert.equal(agentsOf(calls, "impl:US-2").length, 0);
-  assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").blocked, threads.has("US-2: still failing after 3 attempts")], ["backlog", true, true]);
-  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "attempts_exhausted"], ["US-2", "attempts_exhausted"]]);
+  assert.deepEqual([dirs.story("US-2").status, dirs.story("US-2").blocked], ["backlog", false]);
+  assert.deepEqual(questions(dirs), []);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.detail]).sort(), [["US-1", "parked", "failed 3 tries"], ["US-2", "parked", "failed 3 tries"], ["US-3", "done", undefined]]);
 });
 
-test("no courier carries story content: however long a story's text, criteria, decisions and findings, no prompt quotes them and every courier's answer stays within 2,000 characters; every agent is told how to read the story itself, and the thread of a story out of attempts holds every finding whole", { timeout: 120000 }, async (t) => {
+test("no courier carries story content: however long a story's text, criteria, decisions and findings, no prompt quotes them and every courier's answer stays within 2,000 characters; every agent is told how to read the story itself", { timeout: 120000 }, async (t) => {
   const long = (label) => `${label}-LONG ${"x".repeat(3000)}`;
   const many = (attempt, n) => Array.from({ length: n }, (_, i) => ({ stage: "review", text: `[attempt ${attempt}] ${long(`a${attempt}-${i + 1}`)}`, files: [], resolved: false }));
   const fields = (findings) => ({
@@ -1263,9 +1246,7 @@ test("no courier carries story content: however long a story's text, criteria, d
   const outputs = couriersOf(calls).map((c) => [c.label, String(c.output || "").length]);
   assert.deepEqual(outputs.filter(([, n]) => n > 2000), [], JSON.stringify([...outputs].sort((a, b) => b[1] - a[1]).slice(0, 3)));
   assert.doesNotMatch(couriersOf(calls).map((c) => c.output).join("\n"), /LONG/);
-  const [exhausted] = questions(dirs).filter((th) => th.title === "US-2: still failing after 3 attempts");
-  for (const f of dirs.story("US-2").findings) assert.ok(exhausted.posts[0].body.includes(f.text.replace(/^\[attempt \d\] /, "")), f.text.slice(0, 40));
-  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "attempts_exhausted"]]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]).sort(), [["US-1", "done"], ["US-2", "parked"]]);
 });
 
 // Every string in a payload, however deep.
@@ -1658,7 +1639,7 @@ test("a story in flight has 90 agent calls set aside: one whose lane fails three
   const { result, error, calls } = await deliver(dirs, {}, { "verify:US-1": [pink, pink, pink] });
 
   assert.equal(error, null);
-  assert.deepEqual(result.outcomes.map((o) => o.outcome), ["attempts_exhausted"]);
+  assert.deepEqual(result.outcomes.map((o) => o.outcome), ["parked"]);
   const made = calls.filter((c) => c.label.endsWith(":US-1") || c.label.includes(":US-1:")).length;
   assert.ok(made > 40 && made <= 60, `${made} calls`);
   assert.ok(SOURCE.includes("\nconst STORY_CALLS = 90\n"), "STORY_CALLS is 90");
@@ -2522,7 +2503,7 @@ test("a rebase the implementer left in progress in the story's worktree is the s
   assert.deepEqual([result.lane, questions(dirs), result.outcomes.map((o) => [o.key, o.outcome]).sort()], [null, [], [["US-1", "done"], ["US-2", "done"]]]);
 });
 
-test("a story's rebase conflicts send it back with no attempt used twice in a run; from the third, one its implementer resolves by a merge, which the lane's rebase meets again, uses an attempt, so the story ends on its thread instead of cycling to the agent cap", { timeout: 300000 }, async (t) => {
+test("a story's rebase conflicts send it back with no attempt used twice in a run; from the third, one its implementer resolves by a merge, which the lane's rebase meets again, uses an attempt, so the story is parked instead of cycling to the agent cap", { timeout: 300000 }, async (t) => {
   // Low caps, so that a story that cycles stops soon.
   const source = capped({ AGENT_CAP: 150, HARD_CAP: 200 });
   const dirs = scratch(t, [story("US-1")]);
@@ -2552,11 +2533,11 @@ test("a story's rebase conflicts send it back with no attempt used twice in a ru
   const { result, error, calls } = await deliver(dirs, {}, { "impl:US-1": [first, ...Array(8).fill(merge)] }, { source });
 
   assert.equal(error, null);
-  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]), [["US-1", "attempts_exhausted"]]);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome]), [["US-1", "parked"]]);
   assert.deepEqual(agentsOf(calls, "impl:US-1").map((c) => c.model), ["sonnet", "sonnet", "sonnet", "opus", "opus"]);
   const conflict = "rebase conflict in README: story/US-1 no longer rebases onto deliver/board; rebase it onto deliver/board in its worktree and resolve the conflicts";
   assert.deepEqual(findingsOf(dirs, "US-1").map(([, text]) => text), [conflict, conflict, `[attempt 1] ${conflict}`, `[attempt 2] ${conflict}`, `[attempt 3] ${conflict}`]);
-  assert.deepEqual(questions(dirs).map((th) => th.title), ["US-1: still failing after 3 attempts"]);
+  assert.deepEqual(questions(dirs), []);
 });
 
 // A stack whose database keeps the migrations it applied, as omnistate's test
