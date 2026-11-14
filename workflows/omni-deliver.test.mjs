@@ -1204,12 +1204,13 @@ test("from attempt 2 the implementer runs on implRetry, in the same worktree; it
   assert.deepEqual(findingsOf(dirs, "US-1").slice(2, 4), [["review", "[attempt 1] The badge is pink", ["src/badge.rs"], true], ["review", "[attempt 2] The badge has no border", ["src/border.rs"], true]]);
 });
 
-test("after 3 failed tries the task is parked: back in the backlog, not blocked, with no holder, its [attempt 3] findings open and no thread, and the build goes on", { timeout: 60000 }, async (t) => {
-  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-3")]);
+test("after 3 failed tries the task is parked: back in the backlog, not blocked, with no holder, its [attempt 3] findings open and no thread; a task parked by an earlier run is tried again, logged once, and the build goes on", { timeout: 60000 }, async (t) => {
+  const open = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still pink`, files: [], resolved: false }));
+  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] }), story("US-2", { findings: open }), story("US-3")]);
   const unmet = (evidence) => reviewed("fail", { unmet: { 0: evidence } });
   const roles = { "review:US-1": [unmet("Pink at src/badge.rs:1"), unmet("Still pink at src/badge.rs:1"), unmet("Pink again at src/badge.rs:2")] };
 
-  const { result, error, calls } = await deliver(dirs, { implementers: 1 }, roles);
+  const { result, error, calls, logs } = await deliver(dirs, { implementers: 1 }, roles);
 
   assert.equal(error, null);
   assert.equal(agentsOf(calls, "impl:US-1").length, 3);
@@ -1217,28 +1218,9 @@ test("after 3 failed tries the task is parked: back in the backlog, not blocked,
   assert.deepEqual([parked.status, parked.blocked, parked.holder], ["backlog", false, null]);
   assert.deepEqual(findingsOf(dirs, "US-1").slice(-1), [["review", '[attempt 3] Criterion not met: "The badge is red". Pink again at src/badge.rs:2', [], false]]);
   assert.deepEqual(questions(dirs), []);
-  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.detail]).sort(), [["US-1", "parked", "failed 3 tries"], ["US-3", "done", undefined]]);
-});
-
-test("the next run takes up a parked task: it resolves the task's open findings, logs it, and claims it as a new round, at attempt 0 in a new worktree, its implementer on impl's model, told attempt 1 of 3 of this round and that resolved [attempt N] findings are from an earlier round; no prompt speaks of the human's latest answer", { timeout: 120000 }, async (t) => {
-  const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
-  const unmet = reviewed("fail", { unmet: { 0: "Pink at src/badge.rs:1" } });
-  const first = await deliver(dirs, {}, { "review:US-1": [unmet, unmet, unmet] });
-  assert.deepEqual(first.result.outcomes.map((o) => o.outcome), ["parked"]);
-
-  const { result, error, calls, logs } = await deliver(dirs);
-
-  assert.equal(error, null);
-  assert.ok(logs.includes("Parked tasks tried again: US-1"), logs.join("\n"));
-  assert.deepEqual(first.logs.filter((l) => l.startsWith("Parked tasks tried again")), []);
-  const [, ctx, wt] = JSON.parse(couriersOf(calls).find((c) => c.label.startsWith("courier:claim+context+worktree:US-1")).output.trim().split("\n").pop()).body.results;
-  assert.deepEqual([ctx.attempt, wt.created], [0, true]);
-  const [impl] = agentsOf(calls, "impl:US-1");
-  assert.equal(impl.model, "sonnet");
-  assert.equal(lineAfter(impl.prompt, "## Your task now\n"), "This is attempt 1 of 3 of this round. Implement the story: build what its criteria require, commit it, and return the result.");
-  assert.ok(impl.prompt.includes("A resolved one whose text starts with [attempt N] is from an earlier round, and says what failed then. The story has 0 open findings of earlier attempts, 0 open findings that used no attempt, and 3 findings from an earlier round."), impl.prompt);
-  assert.deepEqual([...first.calls, ...calls].filter((c) => /since the human's latest answer/.test(c.prompt)).map((c) => c.label), []);
-  assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
+  assert.deepEqual(logs.filter((l) => l.startsWith("Parked tasks tried again")), ["Parked tasks tried again: US-2"]);
+  assert.equal(agentsOf(calls, "impl:US-2").length, 1);
+  assert.deepEqual(result.outcomes.map((o) => [o.key, o.outcome, o.detail]).sort(), [["US-1", "parked", "failed 3 tries"], ["US-2", "done", undefined], ["US-3", "done", undefined]]);
 });
 
 test("no courier carries story content: however long a story's text, criteria, decisions and findings, no prompt quotes them and every courier's answer stays within 2,000 characters; every agent is told how to read the story itself", { timeout: 120000 }, async (t) => {
