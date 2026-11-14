@@ -25,7 +25,10 @@
 // open question asked by the agent OMNI_RUN and OMNI_ROLE name, and prints its ID.
 // `doc list` prints the state's docList and `link` its link, which fails as the CLI
 // does in a folder that is not linked. The feature's export writes a .png and a .tags
-// per entry of the state's boards, as <out>/ui/<doc>/<name>-<board>. `checks`
+// per entry of the state's boards, named as the CLI names them:
+// <out>/ui/<doc title as a slug>-<last 8 characters of the doc ID>/<board name as a
+// slug>-<board>, the title taken from docList ("doc" without one), and lists each
+// .tags file in <out>/manifest.json as {path, doc_id, board_id, board}. `checks`
 // without checks in the state reads the [checks] table of the .omni.toml in the
 // current folder, and fails as the CLI does without that file.
 // Calls at once each read, change and write the state under a lock file
@@ -161,12 +164,19 @@ if (noun === "--help") {
   }
   out(JSON.stringify(state.link));
 } else if (noun === "export") {
+  const slug = (title) => title.split(/[^\p{L}\p{N}]+/u).filter(Boolean).join("-").toLowerCase() || "doc";
+  const files = [];
   for (const b of state.boards || []) {
-    const dir = join(flag("--out"), "ui", b.doc);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${b.name}-${b.board}.png`), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-    writeFileSync(join(dir, `${b.name}-${b.board}.tags`), `<Board name="${b.name}"/>\n`);
+    const title = (state.docList || []).find((d) => d.id === b.doc)?.title ?? "";
+    const stem = `ui/${slug(title)}-${b.doc.slice(-8)}`;
+    const file = `${stem}/${slug(b.name)}-${b.board}`;
+    mkdirSync(join(flag("--out"), stem), { recursive: true });
+    writeFileSync(join(flag("--out"), `${file}.png`), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    writeFileSync(join(flag("--out"), `${file}.tags`), `<Board name="${b.name}"/>\n`);
+    files.push({ path: `${file}.tags`, doc_id: b.doc, pillar: "ui", title, seq: 0, board_id: b.board, board: b.name });
   }
+  mkdirSync(flag("--out"), { recursive: true });
+  writeFileSync(join(flag("--out"), "manifest.json"), `${JSON.stringify({ files }, null, 2)}\n`);
   save();
 } else if (noun === "behaviour" && verb === "list") {
   save();

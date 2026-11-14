@@ -145,25 +145,32 @@ test("link --json prints the state's link; without one it says on standard error
   assert.deepEqual(unlinked, { status: 1, stdout: "", stderr: "this folder is not linked to a project: run omni link <project name|id> here, or pass --project\n" });
 });
 
-test("export --project p --feature f --out <dir> writes a non-empty <name>-<board>.png and <name>-<board>.tags under <dir>/ui/<doc> for each of the state's boards", (t) => {
+test("export --project p --feature f --out <dir> writes for each of the state's boards a non-empty .png and .tags named as the CLI names them, and a manifest.json that lists each board's .tags file", (t) => {
   const boards = [
-    { doc: "d-2", board: "b-1", name: "rename" },
-    { doc: "d-2", board: "b-2", name: "name-taken" },
+    { doc: "0190aaaa-d2d2d2d2", board: "b-1", name: "Rename" },
+    { doc: "0190aaaa-d2d2d2d2", board: "b-2", name: "Name taken" },
     { doc: "d-3", board: "b-9", name: "settings" },
   ];
-  const dirs = scratch(t, { boards });
+  const docList = [{ id: "0190aaaa-d2d2d2d2", kind: "design", pillar: "ui", title: "Rename: screens" }];
+  const dirs = scratch(t, { boards, docList });
   const dir = join(dirs.root, "out", "feature");
 
   const r = dirs.omni("export", "--project", "p", "--feature", "f", "--out", dir);
 
   assert.deepEqual([r.status, r.stderr], [0, ""]);
-  for (const file of ["d-2/rename-b-1", "d-2/name-taken-b-2", "d-3/settings-b-9"]) {
+  const files = ["ui/rename-screens-d2d2d2d2/rename-b-1", "ui/rename-screens-d2d2d2d2/name-taken-b-2", "ui/doc-d-3/settings-b-9"];
+  for (const file of files) {
     for (const ending of [".png", ".tags"]) {
-      const path = join(dir, "ui", `${file}${ending}`);
+      const path = join(dir, `${file}${ending}`);
       assert.equal(existsSync(path), true, path);
       assert.ok(readFileSync(path).length > 0, path);
     }
   }
+  const listed = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).files;
+  assert.deepEqual(
+    listed.map((f) => [f.path, f.doc_id, f.board_id, f.board]),
+    boards.map((b, i) => [`${files[i]}.tags`, b.doc, b.board, b.name]),
+  );
 });
 
 test("checks --json without checks in the state prints the [checks] table of the folder's .omni.toml as one JSON object; without the file it says so on standard error and exits 1; checks in the state are printed as before", (t) => {
