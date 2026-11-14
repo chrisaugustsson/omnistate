@@ -921,7 +921,14 @@ ${root}, the project's folder. Work only there: cd into it first, and run every 
 ${storySection(ctx, 'impl', { decisions: 'They are settled: build against them as if the spec said so.', findings: 'Fix every open one.' })}
 
 ${BOARD} The one exception is the Setup doc below.
-${conventions('Commit on the branch checked out in the folder. Never push, and never add a remote.')}
+
+## Conventions (MUST follow)
+- Write each commit message in plain words, a short subject line first. End the message body with the Co-Authored-By line from your own commit-attribution reminder, copied exactly.
+- Stage files EXPLICITLY with git add <paths>. NEVER git add -A / git add .
+- NEVER stage or commit scratch or debug files, or anything under .claude/.
+- Do NOT create notes, plan, progress, or memory files anywhere in the folder. Everything you learned or decided goes in your structured return value. Temp/debug files go in your scratchpad directory, never the folder.
+- Commit on the branch checked out in the folder. Never push, and never add a remote.
+
 ## What the setup does
 - Run \`git init\` in ${root}, unless ${root} is itself the top folder of a git repository (\`git rev-parse --show-toplevel\` there prints ${root}).
 - Set up the stack the Project spec names. Find the Project spec with \`${omniAs('impl')} doc list --global --json\` and read it with \`${omniAs('impl')} doc read <its ID>\`. Where it leaves a choice open, choose, and name the choice in decisions.
@@ -952,7 +959,7 @@ ${storySection(ctx, 'verify', { decisions: 'They are settled: judge against them
 ${BOARD}
 
 ## Rules
-- Exercise EVERY criterion by running it in ${root}: start the app with the start command the Project spec or the project's own files give, run the test command, and read the Setup doc with \`${omniAs('verify')} doc read <its ID>\`. Reading code is not a check. Stop the app before you return, and confirm that nothing you started is left running.
+- Exercise EVERY criterion by running it in ${root}: start the app with the start command the Project spec or the project's own files give, run the test command, and read the project-level doc titled Setup: find it with \`${omniAs('verify')} doc list --global --json\` and read it with \`${omniAs('verify')} doc read <its ID>\`. Reading code is not a check. Stop the app before you return, and confirm that nothing you started is left running.
 - A criterion named below as a test obligation is the test author's: skip it, with ok true and the evidence "a test obligation".
 - A criterion with human_check true: exercise what you can; ok is true unless what you ran contradicts it. A human confirms it later.
 - ok false only for a criterion the setup does not meet. Say what is wrong and where.
@@ -1157,7 +1164,7 @@ The how is a starting point: the task built what it needed, also where the docs 
 - \`{"op": "delete", "node": "<id>", "rev": <rev>}\` removes a node.
 Each rev is the node's \`data-rev\` from your read. Leave \`data-omni-id\` and \`data-rev\` out of what you write. A stale rev is a conflict: nothing changes, and the error names the current revision. Write any scratch file outside the checkout.
 
-${BOARD}
+${BOARD} The one exception is the docs named above, which you edit with \`${omniAs('docs')} doc edit\`.
 
 ${resultFile(file)}
 ## Your task now
@@ -2453,16 +2460,19 @@ const finish = async (journeyLines) => {
 // author for it.
 const SETUP = 'Setup'
 const runSetup = async (key, round) => {
-  let ctx = await step('context', { key })
+  // No docs agent runs for the setup task, so none of its criteria is the
+  // write-back: each is judged here, like any other.
+  const facts = async (calls) => ({ ...(calls ? (await steps(calls, { key }))[calls.length - 1] : await step('context', { key })), writeBack: [] })
+  let ctx = await facts()
   if (ctx.blocked) return { key, outcome: 'waiting', detail: 'the setup task is blocked on a question, so nothing else was built' }
-  ;[, ctx] = await steps([['claim', { key, stage: 'implementing' }], ['context', { key }]], { key })
+  ctx = await facts([['claim', { key, stage: 'implementing' }], ['context', { key }]])
   let task = round ? SETUP_ROUND : ctx.attempt ? SETUP_CONTINUE : SETUP_FRESH
   let asked = 0
   // A failed try: its findings, then the next try, else the task's outcome.
   const failTry = async (stage, findings, what) => {
     const back = await sendBack(key, stage, findings, true, what)
     if (back.outcome) return back
-    ctx = await step('context', { key })
+    ctx = await facts()
     task = SETUP_CONTINUE
     asked = 0
     return null
@@ -2476,7 +2486,7 @@ const runSetup = async (key, round) => {
     if (r.status === 'needs_decision') {
       const answer = await question(ctx, r, 'the implementer', root, 'impl-q', asked++)
       if (!answer.settled) return { key, outcome: 'waiting', ...(answer.question ? { question: answer.question } : { thread: answer.thread }) }
-      ctx = await step('context', { key })
+      ctx = await facts()
       task = RESUME
       continue
     }

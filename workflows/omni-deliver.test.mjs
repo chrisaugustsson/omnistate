@@ -3245,6 +3245,17 @@ test("a setup try stops at its first failing check, which gives one finding and 
   assert.deepEqual(second.result.landed, ["US-1", "US-2"]);
 });
 
+test("a setup task's criterion worded like the write-back is judged by its verifier, since no docs agent runs for the setup task: not met, it gives a finding and a second try", { timeout: 180000 }, async (t) => {
+  const dirs = newProject(t, [setupTask("US-1", { criteria: ["The app starts", "Operations and Tables say what the landed code does"] }), story("US-2", { blocked_by: ["US-1"] })]);
+
+  const { calls } = await deliver(dirs, {}, { "impl:US-1": [setUp(), setUp()], "verify:US-1": [verified({ 1: "The docs say nothing yet." }), verified()] });
+
+  assert.equal(agentsOf(calls, "impl:US-1").length, 2);
+  assert.deepEqual(dirs.story("US-1").findings.map((f) => f.text.split("\n")[0]), ['[attempt 1] Criterion not met when run: "Operations and Tables say what the landed code does". The docs say nothing yet.']);
+  assert.equal(dirs.story("US-1").status, "done");
+  assert.equal(agentsOf(calls, "verify:US-1")[0].prompt.includes("is the write-back"), false);
+});
+
 test("a setup implementer's question the council does not settle is asked on the node . of the tree, the task is blocked, and the run ends with it waiting", { timeout: 180000 }, async (t) => {
   const dirs = newProject(t, [setupTask("US-1"), story("US-2", { blocked_by: ["US-1"] })], { behaviour: { nodes: [{ id: "n-root", path: "" }], questions: [] } });
   const asking = { status: "needs_decision", summary: "Which database?", decisions: [], commits: [], question: "Which database does the app use?", options: ["SQLite", "Postgres"], recommendation: "SQLite" };
