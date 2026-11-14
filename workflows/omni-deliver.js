@@ -1314,12 +1314,7 @@ const noResult = async (key, what, empty = true) => {
     emptied = true
     const row = emptyRow.join(', ')
     halted = halted || `agents returned nothing for ${row}, in a row`
-    try {
-      const { thread } = await step('thread-open', { title: `Run ${runId}: agents return nothing`, body: `Agents of run ${runId} returned nothing for ${row}, in a row, each after ${AGAIN_AFTER.length} retries over ${AGAIN_AFTER.reduce((a, s) => a + s, 0)} s; the stories went back to their waiting states with no attempt used.\n\nThe run takes no new story: those in flight finish. Check the Claude Code session that runs it, its limits and its connection, then start a new run.\n` }, { label: 'no-results' })
-      notes.push(`The run took no new story once agents returned nothing for ${row}, in a row (thread ${thread}).`)
-    } catch (e) {
-      log(`The thread about agents that return nothing could not be opened: ${(e && e.message) || e}`)
-    }
+    notes.push(`The run took no new story once agents returned nothing for ${row}, in a row, each after ${AGAIN_AFTER.length} retries; those stories went back to their waiting states with no attempt used.`)
     log(`Agents returned nothing for ${row}, in a row: the run takes no new story`)
   }
   return { key, outcome: 'no_result', detail: `${what}; the story is released without using an attempt` }
@@ -1374,28 +1369,16 @@ const failed = async (key, e) => {
     repeated = true
     halted = `${first} and ${key} stopped on the same error`
   }
-  let thread = null
   try {
     await step('release', { key }, { past: true })
   } catch (r) {
     log(`${key}: the release failed too: ${(r && r.message) || r}`)
   }
   if (first) {
-    try {
-      const runThread = (await step('thread-open', { title: `Run ${runId}: stories stop on the same error`, body: `${first} and ${key} stopped on the same error:\n\n${message}\n\nThe run takes no new story: those in flight finish, and a story that stops on an error after this is only released, with no thread of its own. ${first} is blocked on its own thread, and ${key} is back in its waiting state. Fix the cause, answer the thread of ${first}, then start a new run.\n` }, { label: 'repeated-error', past: true })).thread
-      notes.push(`The run took no new story once ${first} and ${key} stopped on the same error (thread ${runThread}).`)
-    } catch (t) {
-      log(`The thread about the repeated error could not be opened: ${(t && t.message) || t}`)
-    }
+    notes.push(`The run took no new story once ${first} and ${key} stopped on the same error: ${message}`)
     log(`${key}: stopped on the same error as ${first}: the run takes no new story`)
   }
-  if (first !== undefined) return { key, outcome: 'failed', detail: message }
-  try {
-    thread = (await step('thread-open', { key, title: `${key}: delivery stopped on an error`, body: `The workflow stopped delivering ${key} on this error:\n\n${message}\n\nThe story is back in its waiting state, and blocked until this thread is answered; answer it once the cause is fixed.\n` }, { past: true })).thread
-  } catch (t) {
-    log(`${key}: the thread about the error could not be opened: ${(t && t.message) || t}`)
-  }
-  return { key, outcome: 'failed', detail: message, ...(thread ? { thread } : {}) }
+  return { key, outcome: 'failed', detail: message }
 }
 
 // A task that failed its third try is parked: the helper leaves it in the
@@ -1485,8 +1468,7 @@ const implement = async (key, rework, claimed) => {
       continue
     }
     if (r.status !== 'ready') {
-      const { thread } = await step('thread-open', { key, title: `${key}: the implementer is blocked`, body: words(part(r, ['summary'], String(r.summary)), '\n') })
-      return { key, outcome: 'blocked', thread }
+      return sendBack(key, 'implementing', [{ text: part(r, ['summary'], String(r.summary)), files: [] }], true, 'the implementer was blocked')
     }
     return { path: wt.path }
   }
@@ -1604,8 +1586,11 @@ const deliverStory = async (key, from, held, claimed) => {
       const built = await inSlot(implSlots, held, () => implement(key, rework, claimed))
       held = false
       if (built.outcome) return built
-      wt = built.path
-      at = 'implemented'
+      if (built.rework) at = 'rework'
+      else {
+        wt = built.path
+        at = 'implemented'
+      }
     }
     if (at === 'implemented') {
       const assessed = await reviewSlots.run(() => assess(key, wt))
@@ -1802,13 +1787,7 @@ const stopLane = async (key, why, more = '', job = undefined) => {
   } catch (e) {
     notes.push(`${key} could not be released when the lane stopped, and stays in testing until the next run's start releases it: ${(e && e.message) || e}`)
   }
-  let thread = null
-  try {
-    thread = (await step('thread-open', { title: `Run ${runId}: the lane stopped`, body: `The lane stopped for the rest of run ${runId}, on ${key}: ${why}.${more ? `\n\n${more}` : ''}\n\nThis is not the story's trouble: ${key} is back in reviewed with no attempt used, and a story that reaches the lane after it waits in reviewed for the next run, while implementers and reviewers finish what they hold. Fix the cause, then start a new run.\n`, ...(job ? { job } : {}) }, { label: 'lane-stop' })).thread
-  } catch (e) {
-    log(`The thread about the lane could not be opened: ${(e && e.message) || e}`)
-  }
-  notes.push(`The lane stopped on ${key}: ${why}${thread ? ` (thread ${thread})` : ''}.`)
+  notes.push(`The lane stopped on ${key}: ${why}.${more ? ` ${more}` : ''}`)
   log(`${key}: the lane stopped for the rest of the run: ${why}`)
   return { key, outcome: 'lane_stopped', detail: why }
 }
@@ -2012,14 +1991,12 @@ const writeTests = async (key, { base, final, confirmed }) => {
       }
       if (r.status === 'found_defect') {
         const d = (name, none) => part(r, ['defect', name], none)
-        const { thread } = await step('thread-open', { title: `${key}: its tests found a defect after it landed`, body: words(`${key} has landed on ${branch}, and the test author's test `, d('test', '(unnamed)'), ' found a defect in it. Observed: ', d('observed', '(not given)'), '. Expected: ', d('expected', '(not given)'), '.\n\nThe story is done, and this uses none of its attempts: the test did not land, and the story is not sent back. Decide what becomes of the defect, such as a story of its own.\n') }, { label: 'tests-defect', key })
-        notes.push(`The tests of ${key} found a defect after it landed (thread ${thread}).`)
-        log(`${key}: its tests found a defect after it landed (thread ${thread})`)
-        return { drop: `its tests found a defect in it (thread ${thread})` }
+        const what = `the test ${d('test', '(unnamed)')}, observed: ${d('observed', '(not given)')}, expected: ${d('expected', '(not given)')}`
+        log(`${key}: its tests found a defect after it landed`)
+        return { drop: `its tests found a defect in it: ${what}` }
       }
       if (r.status !== 'done') {
-        const { thread } = await step('thread-open', { title: `${key}: the test author is blocked`, body: words(part(r, ['blockers'], String(r.status)), '\n') }, { label: 'tests-blocked', key })
-        return { drop: `the test author is blocked (thread ${thread})` }
+        return { drop: `the test author is blocked: ${part(r, ['blockers'], String(r.status))}` }
       }
       return { tests: r }
     }
