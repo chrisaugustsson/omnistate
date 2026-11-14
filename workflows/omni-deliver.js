@@ -1269,17 +1269,18 @@ const said = (q, path, fallback = '') => part(q.r, [...q.at, ...path], fallback)
 const option = (q, n) => said(q, ['options', n - 1], String(q.options[n - 1]))
 // A member's quote and its source, as the council's evidence.
 const quoted = (v) => ['"', part(v, ['quote']), '" (', part(v, ['source']), ')']
-// A question for the human: a thread named after the story, with the
-// options and a recommendation, linked from the story, which is blocked
-// until it concludes. recommendation and council: the parts of their text.
+// A question for the human: on its node of the feature's behaviour tree,
+// with the options and a recommendation, blocking the story until it is
+// answered; in a feature without a tree, a thread named after the story and
+// linked from it. recommendation and council: the parts of their text.
 // how, here and for the council below: phase, as for step(), and link, false
-// for a story that has landed, which the board lets no thread be linked from
-// or block: its thread names it in its title only.
+// for a story that has landed, which no question blocks and the board lets no
+// thread be linked from: its thread names it in its title only.
 const askHuman = async (ctx, q, label, recommendation, council, { phase, link = true } = {}) => {
   const key = ctx.key
   // A feature with a tree gets the question on the node it belongs to, which
   // blocks the story unless it has landed (link false). A step that fails is
-  // an error of the story, not a reason for a thread.
+  // an error of the story, with no thread to fall back on.
   if (tree) {
     const { question: id } = await step('question-ask', { key, node: said(q, ['node'], ''), question: said(q, ['question'], q.question), recommendation: words(...recommendation), options: list(q.r, [...q.at, 'options']), asker: q.asker, block: link }, { label: `${label}-ask`, key, phase })
     tally.asked++
@@ -1308,10 +1309,10 @@ const convene = (ctx, q, code, phase = current) => councilSlots.run(() => parall
 // The council settles a question when all three pick the same option and a
 // quote supports it, or all three call the gap minor, or two of the three
 // pick the same option and each of the two quotes its source: it becomes an
-// agent decision and no thread opens. A decision of two notes that it was 2
-// of 3 and names the third member's pick, so the human sees the split.
-// Otherwise the thread opens with each member's pick and evidence, and the
-// majority's pick, else the asker's, as its recommendation.
+// agent decision and the human is not asked. A decision of two notes that it
+// was 2 of 3 and names the third member's pick, so the human sees the split.
+// Otherwise the human is asked, with the majority's pick, else the asker's, as
+// the recommendation, and a thread gives each member's pick and evidence.
 const conclude = async (ctx, q, votes, label, how = {}) => {
   const key = ctx.key
   const options = q.options
@@ -1388,7 +1389,7 @@ let tip = started.tip
 // the run: it posts the report and gives the lock up, after a throw too.
 
 // ---- 2. unblock --------------------------------------------------------------
-// A thread's conclusion is the human's answer, and restarts the story's attempts.
+// An answer to a story's question starts its next round of attempts.
 // One call carries the run's first steps: the checks args.checks sets, the
 // unblock pass, and the stories the clarity pass has to check.
 let unblocked = { unblocked: [] }
@@ -1553,8 +1554,8 @@ const persist = async (key, who, call) => {
 // An agent that returned nothing after its retries, or nothing usable: the
 // story goes back to its waiting state, with no attempt used. Agents that
 // returned nothing for EMPTY_STORIES stories in a row are the
-// infrastructure's trouble: the run takes no new story, and opens one thread
-// for the run.
+// infrastructure's trouble: the run takes no new story, and the report
+// notes the row.
 let emptied = false
 const noResult = async (key, what, empty = true) => {
   await step('release', { key })
@@ -1582,13 +1583,11 @@ const stopped = async (key) => {
   return { key, outcome: 'stopped', detail: `stopped at the agent cap of ${HARD_CAP}` }
 }
 
-// A story whose delivery stopped on an error goes back to its waiting state.
-// The first story an error stops gets a thread with the error, which blocks
-// it: the human hears of it, and no run takes the story again, failing the
-// same way, until the thread is answered. The same error stopping a second
-// story, its key aside, has a lasting cause, such as a deleted deliver
-// branch: the run takes no new story and opens one thread for the run, and
-// from then on a story that fails is only released.
+// A story whose delivery stopped on an error goes back to its waiting state,
+// released, with no thread. The same error stopping a second story, its key
+// aside, has a lasting cause, such as a deleted deliver branch: the run takes
+// no new story, the report notes the error, and from then on a story that
+// fails is only released.
 const errors = new Map()
 let repeated = false
 // An error as the breaker compares it: the story's key taken out where it
@@ -1824,9 +1823,10 @@ const inSlot = async (slots, held, task) => {
 }
 
 // A story from where it waits, backlog, implemented or reviewed, through its
-// attempts until it lands or is blocked on a thread. `held`: the deliver loop
-// has taken an implementer's slot for its first implementing. A reviewed
-// story goes to the lane out of its review slot, and waits for its turn there.
+// attempts until it lands, is parked or waits on a question. `held`: the
+// deliver loop has taken an implementer's slot for its first implementing. A
+// reviewed story goes to the lane out of its review slot, and waits for its
+// turn there.
 // claimed: called once the story's implementing claim is made, or has failed.
 const deliverStory = async (key, from, held, claimed) => {
   let at = from
@@ -1928,7 +1928,7 @@ const deliverAll = async () => {
       // goes first: when the next story's clarity check has not ended, the run
       // waits for it, and takes no later story ahead of it. A check that had
       // not ended when the board was listed counts as running for that
-      // listing, which may be older than the thread the check blocked its
+      // listing, which may be older than the question the check blocked its
       // story with: a check that ends meanwhile has the board listed again.
       const seen = checksEnded
       const pending = new Set(unchecked)
@@ -2022,12 +2022,12 @@ const job = async (key, name, cmd, past = false, before = [], cwd = laneDir) => 
   }
 }
 // How a job ended, and where its log is: no courier carries its output. A
-// finding or a thread names the job, and the helper quotes the log's end.
+// finding or a note names the job, and the helper quotes the log's end.
 const failedHow = (r) => (r.timedOut ? 'ran past its limit' : 'failed')
 const ended = (r) => `${failedHow(r)}: its output is in ${r.log}`
 
 // Trouble that is not the story's stops the lane for the rest of the run,
-// with one thread for the run, and the story goes back to reviewed with no
+// with a note in the report, and the story goes back to reviewed with no
 // attempt used.
 const stopLane = async (key, why, more = '', job = undefined) => {
   laneStopped = why
@@ -2225,9 +2225,10 @@ const laneStory = async (key) => {
 // landed; a question the council does not settle; an author
 // that is blocked or returns nothing; a lane that has stopped; the hard cap.
 // Dropped tests cost the story nothing: its worktree goes, and the report
-// notes that it landed without regression tests, and why. A thread of this
-// chain names its story in its title and is not linked from it: the board
-// lets nothing be linked from a story that is done.
+// notes that it landed without regression tests, and why. A question of this
+// chain blocks nothing; a thread, in a feature without a tree, names its story
+// in its title and is not linked from it: the board lets nothing be linked
+// from a story that is done.
 const TESTS = 'Tests'
 let testsTurn = Promise.resolve()
 const inTests = (task) => {
