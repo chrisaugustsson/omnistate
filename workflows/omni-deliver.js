@@ -513,7 +513,8 @@ Read the story ${ctx.key} first, from OmniState, with ${storyRead(ctx, role)}. I
 - title and text: what the story is; files_planned: the files it plans to change; blocked_by: the ids of the stories it waits on.
 - criteria: its acceptance criteria, numbered from 0 in the order they come; human_check true marks one that a human confirms later.
 - decisions: each a question, the choice taken, and by whom, agent or human. ${decisions}${docs ? `
-- links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`${omniAs(role)} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.` : ''}${findings ? `
+- links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`${omniAs(role)} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.` : ''}${ctx.nodes && ctx.nodes.length ? `
+- covered nodes: the story covers the nodes of the feature's behaviour tree that its text lists (${ctx.nodes.join(', ')}). Read each one with \`${omniAs(role)} behaviour read <node id>\`. An answered question on a node is settled: take its answer as the spec. A rule that reaches the node binds the story. An open question is not decided: do not build, judge or test as if it were.` : ''}${findings ? `
 - findings: each with its stage, text, files and resolved. An open one has resolved false: one whose text starts with [attempt N] is what failed attempt N of this round, and one without that number used no attempt, such as a rebase conflict. A resolved one whose text starts with [attempt N] is from an earlier round, and says what failed then. ${findingCounts(ctx, findings)}` : ''}`
 const findingCounts = (ctx, task) => {
   const { open, uncounted, earlier } = ctx.findings
@@ -550,8 +551,7 @@ Judge each criterion as written, at the case it describes. Not every open case i
 worth a stop: an answer to a minor question only makes the criterion longer, and the
 next check finds a smaller edge in it.
 - BLOCKING: the answer changes what a user sees or can do in the normal flow the
-  story describes; what is stored, sent or deleted; an API contract (status, shape,
-  error text); permissions, security or money; or the spec contradicts itself.
+  story describes; what is stored, sent or deleted; permissions, security or money; or the spec contradicts itself.
 - MINOR: timing and concurrency (races, late or stale responses, requests in flight
   during unmount or while the input changes, overlapping retries); ordering,
   duplicates or normalisation of inputs the story does not name; cosmetic detail
@@ -562,6 +562,8 @@ next check finds a smaller edge in it.
   it is minor. For a minor gap, recommend the most conventional, least surprising
   option; it will be built and verified as if the spec said so, and recorded as an
   agent decision for the human to see.
+- NOT A GAP: the shape of an operation: how it is called, what it returns and how it
+  fails, unless a covered node or a criterion states it. The builder chooses it.
 `
 const TESTS_AND_IMPACT = `
 ## A criterion that names a test
@@ -574,7 +576,7 @@ verifier skips.
 ## Impact (decide for every gap)
 Say what the answer decides: scope (what the story does at all), data_security (what
 is stored, sent or deleted; permissions, security or money), ux (what the user sees
-or can do), or technical (an API contract or other technical behaviour). The
+or can do), or technical (other technical behaviour the user or another system can observe). The
 workflow asks the human at most ${CLARITY_QUESTIONS} blocking questions per story, the highest impact
 first, and takes your recommendation for the rest.
 `
