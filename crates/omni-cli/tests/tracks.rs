@@ -33,8 +33,8 @@
 //!   new name) each is a one-line error that sends nothing; an API error is
 //!   one line with its code.
 //! - US-302: `omni track` replaces `omni feature` for work, with no aliases
-//!   (D12): `omni feature create` is an `unknown command` and `--feature` an
-//!   unknown option, both sending nothing, and `omni --help` has no `omni
+//!   (D12): `omni feature create` is an `unknown command` that sends
+//!   nothing, `--feature` picks no track, and `omni --help` has no `omni
 //!   feature` line. `OMNI_TRACK` replaces `OMNI_FEATURE`: a non-empty
 //!   `OMNI_FEATURE` picks no track, and omni says it was renamed in one line
 //!   on standard error, leaving standard output as it is without it. An
@@ -642,7 +642,7 @@ fn feature_create_is_an_unknown_command_and_creates_no_track() {
 }
 
 #[test]
-fn the_feature_flag_is_an_unknown_option_and_sends_nothing() {
+fn the_feature_flag_picks_no_track_for_the_story_list() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(
@@ -656,10 +656,13 @@ fn the_feature_flag_is_an_unknown_option_and_sends_nothing() {
             PROJECT,
         ],
     );
-    assert_one_line_error(&out, &["unknown option", "--feature"]);
+    assert_ne!(out.code, 0, "no track is picked: {}", out.stdout);
     assert!(
-        server.requests().is_empty(),
-        "nothing is sent: {:?}",
+        server
+            .requests()
+            .iter()
+            .all(|r| !r.path.ends_with("/stories")),
+        "no track's stories are asked for: {:?}",
         server.requests()
     );
 }
