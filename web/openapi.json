@@ -1049,6 +1049,9 @@
               "string",
               "null"
             ]
+          },
+          "part_id": {
+            "description": "The part of the project the track is on: an undeleted part of the same\nproject. Missing or null is 422 `part_required`; any other value that\ndoes not name one is 422 `invalid_part`."
           }
         },
         "type": "object"
@@ -2075,6 +2078,7 @@
           "track.created",
           "track.deleted",
           "track.renamed",
+          "track.moved",
           "part.created",
           "part.deleted",
           "part.renamed",
@@ -2313,6 +2317,14 @@
           "run",
           "to"
         ],
+        "type": "object"
+      },
+      "MoveTrackRequest": {
+        "properties": {
+          "part_id": {
+            "description": "The part to put the track on; same rules as on create."
+          }
+        },
         "type": "object"
       },
       "NewCriterion": {
@@ -3988,6 +4000,10 @@
             "description": "Unique in the project ignoring case; the omni CLI accepts it where it\ntakes a track.",
             "type": "string"
           },
+          "part_id": {
+            "description": "The part of the project the track changes.",
+            "type": "string"
+          },
           "project_id": {
             "type": "string"
           }
@@ -3997,6 +4013,7 @@
           "project_id",
           "name",
           "description",
+          "part_id",
           "created_at"
         ],
         "type": "object"
@@ -8766,6 +8783,16 @@
               }
             },
             "description": "The project has a track of this name, ignoring case"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project"
           }
         },
         "summary": "Creates a track in a project.",
@@ -10616,6 +10643,117 @@
         "summary": "Creates a doc in a track of a project. The doc is readable at once, as the\nempty doc of its kind.",
         "tags": [
           "crate::docs"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move": {
+      "post": {
+        "operationId": "move_track",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveTrackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackResponse"
+                }
+              }
+            },
+            "description": "The track on its part"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not readable"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or it was deleted"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project; the track stays where it was"
+          }
+        },
+        "summary": "Puts a track on another part of its project. Moving it to the part it is\non changes nothing.",
+        "tags": [
+          "crate::tracks"
         ],
         "x-omni-access": "agent"
       }

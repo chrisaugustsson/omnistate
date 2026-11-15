@@ -26,24 +26,67 @@ fn tracks_path(agent: &Agent, project_id: &str) -> String {
     format!("{}/{project_id}/tracks", projects_path(agent))
 }
 
-/// One line: ID and name.
-fn summary(track: &Value) -> String {
+/// The parts of the project that are not deleted.
+fn project_parts(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
+    let path = format!("{}/{project_id}/parts", projects_path(agent));
+    let listed = parsed(&agent.request("GET", &path, None)?.text(), "the parts")?;
+    Ok(listed
+        .get("parts")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .to_vec())
+}
+
+/// The ID of the part `given` names: an ID as it is (the API says whether it
+/// is a part of the project), a name among the parts that are not deleted,
+/// ignoring case.
+fn resolve_part(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
+    if is_uuid(given) {
+        return Ok(given.to_ascii_lowercase());
+    }
+    project_parts(agent, project_id)?
+        .iter()
+        .find(|part| {
+            part.str_at("name")
+                .is_some_and(|name| name.eq_ignore_ascii_case(given.trim()))
+        })
+        .and_then(|part| part.str_at("id"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "unknown_part: no part named {given:?}; `omni part list` shows the parts"
+            ))
+        })
+}
+
+/// One line: ID, name and the part's name (its ID when the part is not listed).
+fn summary(track: &Value, parts: &[Value]) -> String {
     let field = |name: &str| track.str_at(name).unwrap_or("?");
-    format!("{}  {}", field("id"), field("name"))
+    let part_id = field("part_id");
+    let part = parts
+        .iter()
+        .find(|part| part.str_at("id") == Some(part_id))
+        .and_then(|part| part.str_at("name"))
+        .unwrap_or(part_id);
+    format!("{}  {}  {part}", field("id"), field("name"))
 }
 
 pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
     let name = name.map(str::trim).unwrap_or_default();
     if name.is_empty() {
-        bail!("a track needs a name: omni track create <name> [--description <text>]");
+        bail!("a track needs a name: omni track create <name> --part <name|id>");
     }
-    let mut body = format!("{{\"name\":{}", quote(name));
+    let Some(part) = &args.part else {
+        bail!("part_required: a track sits on a part: omni track create <name> --part <name|id>");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let part_id = resolve_part(&agent, &project, part)?;
+    let mut body = format!("{{\"name\":{},\"part_id\":{}", quote(name), quote(&part_id));
     if let Some(description) = &args.description {
         body.push_str(&format!(",\"description\":{}", quote(description)));
     }
     body.push('}');
-    let agent = agent(args)?;
-    let project = project_id(args, &agent)?;
     let response = agent.request(
         "POST",
         &tracks_path(&agent, &project),
@@ -67,22 +110,39 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
+    let part_id = match &args.part {
+        Some(part) => Some(resolve_part(&agent, &project, part)?),
+        None => None,
+    };
     let response = agent.request("GET", &tracks_path(&agent, &project), None)?;
     let text = response.text();
-    if args.json {
+    if args.json && part_id.is_none() {
         print_json(&text);
         return Ok(());
     }
     let body = parsed(&text, "the tracks")?;
-    let tracks = body
+    let tracks: Vec<&Value> = body
         .get("tracks")
         .and_then(Value::as_array)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .iter()
+        .filter(|track| {
+            part_id
+                .as_deref()
+                .is_none_or(|id| track.str_at("part_id") == Some(id))
+        })
+        .collect();
+    if args.json {
+        let items: Vec<String> = tracks.iter().map(|track| track.to_string()).collect();
+        say(&format!("{{\"tracks\":[{}]}}", items.join(",")));
+        return Ok(());
+    }
     if tracks.is_empty() {
         say("no tracks");
     }
+    let parts = project_parts(&agent, &project)?;
     for track in tracks {
-        say(&summary(track));
+        say(&summary(track, &parts));
     }
     Ok(())
 }
@@ -127,7 +187,7 @@ pub fn show(args: &Args, track: Option<&str>) -> Result<()> {
     }
     let body = parsed(&text, "the track")?;
     let track = body.get("track").unwrap_or(&body);
-    say(&summary(track));
+    say(&summary(track, &project_parts(&agent, &project)?));
     say(&format!(
         "project: {}",
         track.str_at("project_id").unwrap_or("?")
@@ -171,6 +231,35 @@ pub fn rename(args: &Args, track: Option<&str>, name: Option<&str>) -> Result<()
         track.str_at("id").unwrap_or(&id),
         track.str_at("name").unwrap_or(name)
     ));
+    Ok(())
+}
+
+/// `omni track move <name|id> --part <name|id>`
+pub fn move_to(args: &Args, track: Option<&str>) -> Result<()> {
+    let usage = "omni track move <name|id> --part <name|id>";
+    let Some(given) = track else {
+        bail!("a track move needs the track and its part: {usage}");
+    };
+    let Some(part) = &args.part else {
+        bail!("part_required: a track move needs a part: {usage}");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let id = resolve_track(&agent, &project, given)?;
+    let part_id = resolve_part(&agent, &project, part)?;
+    let response = agent.request(
+        "POST",
+        &format!("{}/{id}/move", tracks_path(&agent, &project)),
+        Some(format!("{{\"part_id\":{}}}", quote(&part_id)).as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the moved track")?;
+    let track = body.get("track").unwrap_or(&body);
+    say(&summary(track, &project_parts(&agent, &project)?));
     Ok(())
 }
 

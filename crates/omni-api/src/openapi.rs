@@ -57,7 +57,8 @@ use crate::tokens::{
     HeadTokensResponse, ImportTokensRequest, ImportedHeadTokens, InvalidTokensBody,
 };
 use crate::tracks::{
-    CreateTrackRequest, RenameTrackRequest, TrackBody, TrackListResponse, TrackResponse,
+    CreateTrackRequest, MoveTrackRequest, RenameTrackRequest, TrackBody, TrackListResponse,
+    TrackResponse,
 };
 use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
@@ -92,6 +93,7 @@ use utoipa::OpenApi;
         crate::tracks::create_track,
         crate::tracks::show_track,
         crate::tracks::rename_track,
+        crate::tracks::move_track,
         crate::tracks::delete_track,
         crate::projects::list_projects,
         crate::projects::create_project,
@@ -189,6 +191,7 @@ use utoipa::OpenApi;
         TrackBody,
         TrackResponse,
         RenameTrackRequest,
+        MoveTrackRequest,
         TrackListResponse,
         CreateTrackRequest,
         AttachmentBody,

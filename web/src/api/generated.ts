@@ -367,6 +367,7 @@ export type CreateStoryRequest = z.infer<typeof CreateStoryRequestSchema>;
 export const CreateTrackRequestSchema = z.object({
   description: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
+  part_id: z.unknown().optional(),
 });
 export type CreateTrackRequest = z.infer<typeof CreateTrackRequestSchema>;
 
@@ -565,6 +566,7 @@ export const TrackBodySchema = z.object({
   description: z.string(),
   id: z.string(),
   name: z.string(),
+  part_id: z.string(),
   project_id: z.string(),
 });
 export type TrackBody = z.infer<typeof TrackBodySchema>;
@@ -727,7 +729,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -789,6 +791,11 @@ export const MoveStoryRequestSchema = z.object({
   to: z.string(),
 });
 export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
+
+export const MoveTrackRequestSchema = z.object({
+  part_id: z.unknown().optional(),
+});
+export type MoveTrackRequest = z.infer<typeof MoveTrackRequestSchema>;
 
 export const PointerBodySchema = z.object({
   id: z.string(),
@@ -1247,6 +1254,7 @@ export const schemas = {
   ManifestPage: ManifestPageSchema,
   MoveNodeRequest: MoveNodeRequestSchema,
   MoveStoryRequest: MoveStoryRequestSchema,
+  MoveTrackRequest: MoveTrackRequestSchema,
   NewCriterion: NewCriterionSchema,
   NodeBody: NodeBodySchema,
   NodeBox: NodeBoxSchema,
@@ -1723,6 +1731,7 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}": {
@@ -1878,6 +1887,17 @@ export const operations = {
     request: CreateDocRequestSchema,
     responses: {
       "201": DocResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move": {
+    request: MoveTrackRequestSchema,
+    responses: {
+      "200": TrackResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,

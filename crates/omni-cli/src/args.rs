@@ -21,6 +21,9 @@ pub struct Args {
     /// `OMNI_TRACK` says.
     pub track: Option<String>,
     pub global: bool,
+    /// `--part <name or id>`: the part `omni track create` and `omni track
+    /// move` put a track on, and the one `omni track list` keeps to.
+    pub part: Option<String>,
     /// `--title` and `--description` describe a doc or a track.
     pub title: Option<String>,
     pub description: Option<String>,
@@ -293,6 +296,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--body-file" => &mut parsed.body_file,
             "--project" => &mut parsed.project,
             "--track" => &mut parsed.track,
+            "--part" => &mut parsed.part,
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--doc" => &mut parsed.doc,

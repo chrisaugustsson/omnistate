@@ -86,10 +86,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["track", "rename"] => tracks::rename(args, None, None),
         ["track", "rename", track] => tracks::rename(args, Some(track), None),
         ["track", "rename", track, name] => tracks::rename(args, Some(track), Some(name)),
+        ["track", "move"] => tracks::move_to(args, None),
+        ["track", "move", track] => tracks::move_to(args, Some(track)),
         ["track", "delete"] => tracks::delete(args, None),
         ["track", "delete", track] => tracks::delete(args, Some(track)),
         ["track", ..] => {
-            bail!("usage: omni track create|list|show|rename|delete; see `omni --help`")
+            bail!("usage: omni track create|list|show|rename|move|delete; see `omni --help`")
         }
         ["doc", "create"] => docs::create(args),
         ["doc", "list"] => docs::list(args),

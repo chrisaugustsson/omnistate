@@ -27,6 +27,8 @@ pub struct TrackBody {
     /// takes a track.
     pub name: String,
     pub description: String,
+    /// The part of the project the track changes.
+    pub part_id: String,
     pub created_at: String,
 }
 
@@ -45,10 +47,14 @@ pub struct CreateTrackRequest {
     pub name: Option<String>,
     /// Defaults to the empty text.
     pub description: Option<String>,
+    /// The part of the project the track is on: an undeleted part of the same
+    /// project. Missing or null is 422 `part_required`; any other value that
+    /// does not name one is 422 `invalid_part`.
+    pub part_id: Option<serde_json::Value>,
 }
 
 pub(crate) const TRACK_COLUMNS: &str = concat!(
-    "id::text, project_id::text, name, description, to_char(created_at AT TIME ZONE 'UTC', ",
+    "id::text, project_id::text, name, description, part_id::text, to_char(created_at AT TIME ZONE 'UTC', ",
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
 );
 
@@ -68,6 +74,7 @@ pub(crate) const TRACK_COLUMNS: &str = concat!(
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
         (status = 409, description = "The project has a track of this name, ignoring case", body = ErrorBody),
+        (status = 422, description = "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project", body = ErrorBody),
     )
 )]
 pub async fn create_track(
@@ -82,14 +89,16 @@ pub async fn create_track(
     require_project(&mut tx, &project_id).await?;
     let new = new?;
     let name = non_blank(new.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let part_id = require_part(&mut tx, &project_id, new.part_id.as_ref()).await?;
     let inserted = sqlx::query_as::<_, TrackBody>(&format!(
-        "INSERT INTO tracks (workspace_id, project_id, name, description) \
-         VALUES ($1::uuid, $2::uuid, $3, $4) RETURNING {TRACK_COLUMNS}"
+        "INSERT INTO tracks (workspace_id, project_id, name, description, part_id) \
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid) RETURNING {TRACK_COLUMNS}"
     ))
     .bind(&request.workspace_id)
     .bind(&project_id)
     .bind(&name)
     .bind(new.description.unwrap_or_default())
+    .bind(&part_id)
     .fetch_one(&mut *tx)
     .await;
     let track = match inserted {
@@ -110,6 +119,35 @@ pub async fn create_track(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
     Ok((StatusCode::CREATED, Json(TrackResponse { track })))
+}
+
+/// The ID of the undeleted part of the project that `part_id` names: 422
+/// `part_required` when it is missing or null, 422 `invalid_part` when it is
+/// not a UUID or names no such part.
+async fn require_part(
+    tx: &mut Tx,
+    project_id: &str,
+    part_id: Option<&serde_json::Value>,
+) -> Result<String, ApiError> {
+    let unprocessable = StatusCode::UNPROCESSABLE_ENTITY;
+    let given = match part_id {
+        None | Some(serde_json::Value::Null) => {
+            return Err(ApiError::Refused(unprocessable, "part_required"));
+        }
+        Some(given) => given,
+    };
+    let invalid = || ApiError::Refused(unprocessable, "invalid_part");
+    let id = given.as_str().and_then(parse_uuid).ok_or_else(invalid)?;
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM parts \
+         WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL",
+    )
+    .bind(&id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    found.map(|(id,)| id).ok_or_else(invalid)
 }
 
 /// The tracks of a project, in the order they were created.
@@ -241,6 +279,65 @@ pub async fn rename_track(
         &project_id,
         "track.renamed",
         &json!({ "track_id": track.id, "name": track.name }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(TrackResponse { track }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct MoveTrackRequest {
+    /// The part to put the track on; same rules as on create.
+    pub part_id: Option<serde_json::Value>,
+}
+
+/// Puts a track on another part of its project. Moving it to the part it is
+/// on changes nothing.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+    ),
+    request_body = MoveTrackRequest,
+    responses(
+        (status = 200, description = "The track on its part", body = TrackResponse),
+        (status = 400, description = "The body is not readable", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or it was deleted", body = ErrorBody),
+        (status = 422, description = "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project; the track stays where it was", body = ErrorBody),
+    )
+)]
+pub async fn move_track(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<TrackResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<MoveTrackRequest>(&body);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    lock_track(&mut tx, &project_id, &track_id).await?;
+    let part_id = require_part(&mut tx, &project_id, new?.part_id.as_ref()).await?;
+    let track = sqlx::query_as::<_, TrackBody>(&format!(
+        "UPDATE tracks SET part_id = $2::uuid WHERE id = $1::uuid RETURNING {TRACK_COLUMNS}"
+    ))
+    .bind(&track_id)
+    .bind(&part_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "track.moved",
+        &json!({ "track_id": track.id, "part_id": track.part_id }),
     )
     .await?;
     tx.commit().await.map_err(ApiError::database)?;
