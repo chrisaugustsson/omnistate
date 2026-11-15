@@ -217,7 +217,7 @@ fn an_agent_creates_docs_and_reads_them_at_once() {
     let p = ["--project", project.as_str()];
     let feature = run(
         &home,
-        &[&["feature", "create", "Checkout", "--json"][..], &p].concat(),
+        &[&["track", "create", "Checkout", "--json"][..], &p].concat(),
     );
     assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
     let checkout = feature.json()["track"]["id"]
@@ -244,7 +244,7 @@ fn an_agent_creates_docs_and_reads_them_at_once() {
     let plan = create(&[], "html", "spec", "Checkout plan");
     assert_eq!(plan["track_id"], Value::Null, "{plan}");
     let architecture = create(
-        &["--feature", "checkout"],
+        &["--track", "checkout"],
         "html",
         "architecture",
         "Checkout architecture",
@@ -254,7 +254,7 @@ fn an_agent_creates_docs_and_reads_them_at_once() {
         checkout.as_str(),
         "the doc is in the feature: {architecture}"
     );
-    let screens = create(&["--feature", "Checkout"], "design", "ui", "Screens");
+    let screens = create(&["--track", "Checkout"], "design", "ui", "Screens");
     assert_eq!(screens["track_id"], checkout.as_str(), "{screens}");
 
     for doc in [&plan, &architecture] {

@@ -184,7 +184,7 @@ fn a_story_added_claimed_ticked_and_moved_to_done_reads_back_as_done() {
     let feature = run_as(
         &home,
         AGENT,
-        &["feature", "create", "stories", "--project", &project],
+        &["track", "create", "stories", "--project", &project],
     );
     assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
     let file = home.join("story.md");
@@ -197,7 +197,7 @@ fn a_story_added_claimed_ticked_and_moved_to_done_reads_back_as_done() {
          - [ ] It is done\n",
     )
     .unwrap();
-    let scope = ["--project", project.as_str(), "--feature", "stories"];
+    let scope = ["--project", project.as_str(), "--track", "stories"];
     let story = |args: &[&str]| run_as(&home, AGENT, &[args, &scope[..]].concat());
 
     let added = story(&["story", "add", &file.display().to_string()]);

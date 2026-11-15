@@ -282,6 +282,6 @@ fn help_lists_project_rename_under_project_list() {
         .expect("help lists project list");
     assert_eq!(
         lines[list + 1].trim(),
-        "omni project rename <name|id> <new name>   rename a project; its ID, features, docs and threads stay"
+        "omni project rename <name|id> <new name>   rename a project; its ID, tracks, docs and threads stay"
     );
 }

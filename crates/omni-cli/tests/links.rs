@@ -310,7 +310,7 @@ const OTHER_WORKSPACE: &str = "01900000-0000-7000-8000-0000000000cc";
 
 fn feature_list_in(home: &Scratch, folder: &std::path::Path, extra: &[&str]) -> Out {
     omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .args(extra)
         .cwd(folder)
         .run()
@@ -659,14 +659,14 @@ fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() 
     let folder = Scratch::new("folder");
 
     let by_env = omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .env("OMNI_PROJECT", "brand-site")
         .cwd(&folder.path)
         .run();
     assert_eq!(by_env.code, 0, "{}", by_env.stderr);
     let by_flag = omni(&home.path)
         .args(&[
-            "feature",
+            "track",
             "list",
             "--as",
             "run-7/author",
@@ -689,7 +689,7 @@ fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() 
     );
 
     let empty = omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .env("OMNI_PROJECT", "")
         .cwd(&folder.path)
         .run();
@@ -698,15 +698,15 @@ fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() 
 }
 
 #[test]
-fn omni_feature_is_the_feature_flag_and_the_omni_toml_feature_is_not_read() {
+fn omni_track_is_the_track_flag_and_the_omni_toml_feature_is_not_read() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
     std::fs::write(folder.join(".omni.toml"), "feature = \"y\"\n").unwrap();
 
-    let by_env = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &[]);
+    let by_env = doc_list_in(&home, &folder, &[("OMNI_TRACK", FEATURE)], &[]);
     assert_eq!(by_env.code, 0, "{}", by_env.stderr);
-    let by_flag = doc_list_in(&home, &folder, &[], &["--feature", FEATURE]);
+    let by_flag = doc_list_in(&home, &folder, &[], &["--track", FEATURE]);
     assert_eq!(by_flag.code, 0, "{}", by_flag.stderr);
     let neither = doc_list_in(&home, &folder, &[], &[]);
     assert_eq!(neither.code, 0, "{}", neither.stderr);
@@ -723,12 +723,12 @@ fn omni_feature_is_the_feature_flag_and_the_omni_toml_feature_is_not_read() {
 }
 
 #[test]
-fn global_beats_omni_feature() {
+fn global_beats_omni_track() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
 
-    let out = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &["--global"]);
+    let out = doc_list_in(&home, &folder, &[("OMNI_TRACK", FEATURE)], &["--global"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         feature_requests(&server),
@@ -739,12 +739,12 @@ fn global_beats_omni_feature() {
 }
 
 #[test]
-fn a_whitespace_only_omni_feature_counts_as_unset() {
+fn a_whitespace_only_omni_track_counts_as_unset() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
 
-    let out = doc_list_in(&home, &folder, &[("OMNI_FEATURE", "  ")], &[]);
+    let out = doc_list_in(&home, &folder, &[("OMNI_TRACK", "  ")], &[]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         feature_requests(&server),
@@ -753,16 +753,16 @@ fn a_whitespace_only_omni_feature_counts_as_unset() {
 }
 
 #[test]
-fn an_explicit_feature_with_global_is_refused() {
+fn an_explicit_track_with_global_is_refused() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
 
-    let out = doc_list_in(&home, &folder, &[], &["--feature", FEATURE, "--global"]);
+    let out = doc_list_in(&home, &folder, &[], &["--track", FEATURE, "--global"]);
     assert_eq!(out.code, 1);
     assert_eq!(
         out.stderr.trim_end(),
-        "omni: give --feature or --global, not both"
+        "omni: give --track or --global, not both"
     );
     assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
@@ -774,7 +774,7 @@ fn leftover_keys_in_omni_toml_are_warned_about_once_and_checks_stays_quiet() {
     let home = linked_home(&server, &folder);
     let warning = |keys: &str| {
         format!(
-            ".omni.toml sets {keys}, which omni no longer reads; link this folder with omni link <project> and pass --feature or OMNI_FEATURE"
+            ".omni.toml sets {keys}, which omni no longer reads; link this folder with omni link <project> and pass --track or OMNI_TRACK"
         )
     };
 
@@ -783,7 +783,7 @@ fn leftover_keys_in_omni_toml_are_warned_about_once_and_checks_stays_quiet() {
         "feature = \"y\"\nproject = \"x\"\n[checks]\nfast = \"a\"\nstack_up = \"b\"\nstack = \"c\"\n",
     )
     .unwrap();
-    let both = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &[]);
+    let both = doc_list_in(&home, &folder, &[("OMNI_TRACK", FEATURE)], &[]);
     assert_eq!(both.code, 0, "{}", both.stderr);
     assert_eq!(both.stderr.trim_end(), warning("project, feature"));
 
@@ -886,7 +886,7 @@ fn without_git_an_unlinked_folder_gets_the_not_linked_error_alone() {
     let folder = Scratch::new("folder");
 
     let out = omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .env("PATH", "")
         .cwd(&folder.path)
         .run();

@@ -1,4 +1,4 @@
-//! US-059: `omni feature` against the real API. Run with `--features
+//! US-059: `omni track` against the real API. Run with `--features
 //! stack-tests` in the Compose test container, which reaches Postgres at
 //! `postgres:5432`.
 //!
@@ -199,7 +199,7 @@ fn unique(label: &str) -> String {
 }
 
 #[test]
-fn a_feature_is_created_listed_and_shown_from_the_command_line() {
+fn a_track_is_created_listed_and_shown_from_the_command_line() {
     let f = fixture();
     let home = agent_home(f);
     let project = unique("shop");
@@ -209,7 +209,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     let out = run(
         &home,
         &[
-            "feature",
+            "track",
             "create",
             "Checkout",
             "--description",
@@ -218,7 +218,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
             &project,
         ],
     );
-    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
+    assert_eq!(out.code, 0, "track create: {}", out.stderr);
     let lines = non_empty_lines(&out.stdout);
     assert_eq!(lines.len(), 1, "{:?}", out.stdout);
     let (checkout, name) = lines[0]
@@ -230,7 +230,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     let out = run(
         &home,
         &[
-            "feature",
+            "track",
             "create",
             "Wish list",
             "--project",
@@ -238,11 +238,11 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
             "--json",
         ],
     );
-    assert_eq!(out.code, 0, "feature create --json: {}", out.stderr);
+    assert_eq!(out.code, 0, "track create --json: {}", out.stderr);
     let wish_list = out.json()["track"].clone();
     assert!(
         wish_list.get("status").is_none(),
-        "a feature has no status (US-110): {wish_list}"
+        "a track has no status (US-110): {wish_list}"
     );
     assert_eq!(wish_list["description"], "", "{wish_list}");
     let wish_list = wish_list["id"].as_str().expect("an id").to_string();
@@ -250,7 +250,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     // Names are unique in the project, ignoring case.
     let taken = run(
         &home,
-        &["feature", "create", "checkout", "--project", &project],
+        &["track", "create", "checkout", "--project", &project],
     );
     assert_ne!(taken.code, 0, "{:?}", taken.stdout);
     assert!(
@@ -259,7 +259,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
         taken.stderr
     );
 
-    let listed = run(&home, &["feature", "list", "--project", &project]);
+    let listed = run(&home, &["track", "list", "--project", &project]);
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
         non_empty_lines(&listed.stdout),
@@ -267,11 +267,11 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
             format!("{checkout}  Checkout"),
             format!("{wish_list}  Wish list"),
         ],
-        "the features in creation order, `<id>  <name>`"
+        "the tracks in creation order, `<id>  <name>`"
     );
 
     for which in [checkout.as_str(), "Checkout"] {
-        let shown = run(&home, &["feature", "show", which, "--project", &project]);
+        let shown = run(&home, &["track", "show", which, "--project", &project]);
         assert_eq!(shown.code, 0, "show {which}: {}", shown.stderr);
         for needle in [
             checkout.as_str(),
@@ -289,7 +289,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
     // --project works the same way.
     let shown = omni(&home.path)
         .args(&[
-            "feature",
+            "track",
             "show",
             "Wish list",
             "--json",
@@ -313,9 +313,9 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
     let created = run(
         &home,
-        &["feature", "create", "Checkout", "--project", &project],
+        &["track", "create", "Checkout", "--project", &project],
     );
-    assert_eq!(created.code, 0, "feature create: {}", created.stderr);
+    assert_eq!(created.code, 0, "track create: {}", created.stderr);
 
     let doc = |scope: &[&str], kind: &str, pillar: &str, title: &str| {
         let out = run(
@@ -342,7 +342,7 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     };
     let prd = doc(&["--global"], "html", "spec", "Brand PRD");
     let architecture = doc(
-        &["--feature", "Checkout"],
+        &["--track", "Checkout"],
         "html",
         "architecture",
         "Checkout architecture",
@@ -360,7 +360,7 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     );
     for (filter, expected) in [
         (
-            &["--feature", "Checkout"][..],
+            &["--track", "Checkout"][..],
             format!("{architecture}  Checkout  html  architecture  Checkout architecture"),
         ),
         (
@@ -381,18 +381,18 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     }
 }
 
-// US-110: an agent renames and deletes a feature from the command line. A
-// deleted feature is in no list, cannot be shown and leaves its name free.
+// US-110: an agent renames and deletes a track from the command line. A
+// deleted track is in no list, cannot be shown and leaves its name free.
 #[test]
-fn a_feature_is_renamed_and_deleted_from_the_command_line() {
+fn a_track_is_renamed_and_deleted_from_the_command_line() {
     let f = fixture();
     let home = agent_home(f);
     let project = unique("shop");
     let created = run(&home, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
     let create = |name: &str| -> String {
-        let out = run(&home, &["feature", "create", name, "--project", &project]);
-        assert_eq!(out.code, 0, "feature create: {}", out.stderr);
+        let out = run(&home, &["track", "create", name, "--project", &project]);
+        assert_eq!(out.code, 0, "track create: {}", out.stderr);
         non_empty_lines(&out.stdout)[0]
             .split_once("  ")
             .map(|(id, _)| id.to_string())
@@ -404,7 +404,7 @@ fn a_feature_is_renamed_and_deleted_from_the_command_line() {
     let renamed = run(
         &home,
         &[
-            "feature",
+            "track",
             "rename",
             "Checkout",
             "Express checkout",
@@ -412,8 +412,8 @@ fn a_feature_is_renamed_and_deleted_from_the_command_line() {
             &project,
         ],
     );
-    assert_eq!(renamed.code, 0, "feature rename: {}", renamed.stderr);
-    let listed = run(&home, &["feature", "list", "--project", &project]);
+    assert_eq!(renamed.code, 0, "track rename: {}", renamed.stderr);
+    let listed = run(&home, &["track", "list", "--project", &project]);
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
         non_empty_lines(&listed.stdout),
@@ -421,13 +421,13 @@ fn a_feature_is_renamed_and_deleted_from_the_command_line() {
             format!("{checkout}  Express checkout"),
             format!("{search}  Search"),
         ],
-        "the renamed feature keeps its ID"
+        "the renamed track keeps its ID"
     );
 
     let taken = run(
         &home,
         &[
-            "feature",
+            "track",
             "rename",
             "Search",
             "express CHECKOUT",
@@ -444,26 +444,17 @@ fn a_feature_is_renamed_and_deleted_from_the_command_line() {
 
     let deleted = run(
         &home,
-        &[
-            "feature",
-            "delete",
-            "Express checkout",
-            "--project",
-            &project,
-        ],
+        &["track", "delete", "Express checkout", "--project", &project],
     );
-    assert_eq!(deleted.code, 0, "feature delete: {}", deleted.stderr);
-    let listed = run(&home, &["feature", "list", "--project", &project]);
+    assert_eq!(deleted.code, 0, "track delete: {}", deleted.stderr);
+    let listed = run(&home, &["track", "list", "--project", &project]);
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [format!("{search}  Search")],
-        "the deleted feature is in no list"
+        "the deleted track is in no list"
     );
-    let shown = run(
-        &home,
-        &["feature", "show", &checkout, "--project", &project],
-    );
+    let shown = run(&home, &["track", "show", &checkout, "--project", &project]);
     assert_ne!(shown.code, 0, "{:?}", shown.stdout);
     assert!(
         shown.stderr.contains("not_found"),
@@ -473,5 +464,5 @@ fn a_feature_is_renamed_and_deleted_from_the_command_line() {
 
     // The name is free again.
     let again = create("Express checkout");
-    assert_ne!(again, checkout, "a new feature takes the name");
+    assert_ne!(again, checkout, "a new track takes the name");
 }

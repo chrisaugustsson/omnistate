@@ -8,11 +8,11 @@
 //!
 //! - `omni doc create --kind <kind> --pillar <pillar> --title <text>` sends
 //!   `POST /docs` with `{"kind", "pillar", "title"}`: a doc at the app level.
-//!   With `--feature <name or id>` it sends `POST /tracks/{feature_id}/docs`
+//!   With `--track <name or id>` it sends `POST /tracks/{feature_id}/docs`
 //!   (a name is looked up in the project's features, ignoring case, as for
 //!   `omni doc list`); a name the project does not have is a one-line error
-//!   that names it and creates nothing. Without `--feature` the doc is at the app
-//!   level, and `--global` means the app level whatever `OMNI_FEATURE` says. It prints the new doc's ID and title; `--json`
+//!   that names it and creates nothing. Without `--track` the doc is at the app
+//!   level, and `--global` means the app level whatever `OMNI_TRACK` says. It prints the new doc's ID and title; `--json`
 //!   prints the API's answer.
 //! - `omni doc read <doc>` prints the doc's head from `GET /docs/{doc}/html`:
 //!   the HTML of an HTML doc (nothing for a new, empty one, which is no
@@ -220,7 +220,7 @@ fn doc_create_with_a_feature_creates_the_doc_in_that_feature() {
             &[
                 "doc",
                 "create",
-                "--feature",
+                "--track",
                 given,
                 "--kind",
                 "html",
@@ -231,7 +231,7 @@ fn doc_create_with_a_feature_creates_the_doc_in_that_feature() {
                 "--json",
             ],
         );
-        assert_eq!(out.code, 0, "--feature {given}: {}", out.stderr);
+        assert_eq!(out.code, 0, "--track {given}: {}", out.stderr);
         assert_eq!(out.json()["doc"]["track_id"], CHECKOUT, "{}", out.stdout);
     }
     let sent = posts(&server);
@@ -257,16 +257,8 @@ fn doc_create_with_an_unknown_feature_is_one_line_and_creates_nothing() {
     let out = run(
         &home,
         &[
-            "doc",
-            "create",
-            "--feature",
-            "Payments",
-            "--kind",
-            "html",
-            "--pillar",
-            "spec",
-            "--title",
-            "T",
+            "doc", "create", "--track", "Payments", "--kind", "html", "--pillar", "spec",
+            "--title", "T",
         ],
     );
     assert_one_line_error(&out, &["Payments"]);
@@ -292,9 +284,9 @@ fn the_feature_flag_picks_the_feature_and_global_means_the_app_level() {
             .run()
     };
 
-    let out = in_nested(&["--feature", "Checkout"]);
+    let out = in_nested(&["--track", "Checkout"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    let out = in_nested(&["--feature", "Search"]);
+    let out = in_nested(&["--track", "Search"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     let out = in_nested(&["--global"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -307,7 +299,7 @@ fn the_feature_flag_picks_the_feature_and_global_means_the_app_level() {
             format!("{}/tracks/{SEARCH}/docs", base()),
             format!("{}/docs", base()),
         ],
-        "--feature Checkout, then --feature Search, then --global"
+        "--track Checkout, then --track Search, then --global"
     );
 }
 

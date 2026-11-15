@@ -16,7 +16,7 @@
 //! What these tests add is the round trip: the comments the human pins to
 //! nodes of a live doc are listed by `omni comment list` with their doc, node,
 //! text and replies, oldest first; `omni comment reply <id> <text>` reaches
-//! the API and makes the comment wait on the human; `--doc` and `--feature`
+//! the API and makes the comment wait on the human; `--doc` and `--track`
 //! narrow the list; and a comment the human deleted is no longer listed and
 //! cannot be replied to.
 
@@ -265,7 +265,7 @@ fn new_project(home: &Scratch) -> String {
 /// with two paragraphs written straight to its head.
 fn new_paper(home: &Scratch, project: &str, feature: Option<&str>) -> Paper {
     let scope = match feature {
-        Some(feature) => vec!["--feature", feature],
+        Some(feature) => vec!["--track", feature],
         None => vec!["--global"],
     };
     let out = run(

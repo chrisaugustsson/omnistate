@@ -116,7 +116,7 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
     omni(&home.path)
         .args(&["--as", "t1/grill"])
         .args(args)
-        .args(&["--project", PROJECT, "--feature", FEATURE])
+        .args(&["--project", PROJECT, "--track", FEATURE])
         .run()
 }
 

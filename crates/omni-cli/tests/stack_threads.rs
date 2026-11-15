@@ -301,7 +301,7 @@ fn an_agent_starts_threads_at_the_app_level_and_in_a_feature() {
     let out = run_as(
         &home,
         MODERATOR,
-        &["feature", "create", "Checkout", "--project", &project],
+        &["track", "create", "Checkout", "--project", &project],
     );
     assert_eq!(out.code, 0, "feature create: {}", out.stderr);
 
@@ -312,7 +312,7 @@ fn an_agent_starts_threads_at_the_app_level_and_in_a_feature() {
         &home,
         &project,
         &feature_question,
-        &["--feature", "checkout", "--sealed"],
+        &["--track", "checkout", "--sealed"],
     );
 
     let out = run_as(&home, MODERATOR, &["thread", "list", "--project", &project]);

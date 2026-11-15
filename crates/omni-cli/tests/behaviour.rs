@@ -37,7 +37,7 @@
 //! - `--same-as <node>` and `--handoff <node>` on `add` and `edit` send the
 //!   listed id of that node as `same_as` or `handoff`; `--same-as ""` in
 //!   `edit` sends `null`. A uuid the list does not have is exit 1 with
-//!   `not_found: no node <id> in this feature`, and nothing is sent. Both
+//!   `not_found: no node <id> in this track`, and nothing is sent. Both
 //!   flags together are sent, and the API's 422 is the error. `list` ends
 //!   the line of a node with a pointer in ` → same-as <path>` or
 //!   ` → handoff <path>`.
@@ -272,7 +272,7 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
     omni(&home.path)
         .args(&["--as", "t1/grill"])
         .args(args)
-        .args(&["--project", PROJECT, "--feature", FEATURE])
+        .args(&["--project", PROJECT, "--track", FEATURE])
         .run()
 }
 
@@ -663,7 +663,7 @@ fn a_pointer_to_a_uuid_the_feature_does_not_have_exits_1_with_not_found_and_send
     assert_eq!(out.code, 1, "stdout: {}", out.stdout);
     assert!(
         out.stderr
-            .contains(&format!("not_found: no node {foreign} in this feature")),
+            .contains(&format!("not_found: no node {foreign} in this track")),
         "{:?}",
         out.stderr
     );

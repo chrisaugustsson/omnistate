@@ -9,10 +9,10 @@
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
 //! found from `--project`):
 //!
-//! - `omni thread create <question> [--feature <name or id>] [--sealed]`
+//! - `omni thread create <question> [--track <name or id>] [--sealed]`
 //!   sends `POST /threads` with `{"question", "sealed"}` (`sealed` is `true`
 //!   with `--sealed`, else `false` or left out): a thread at the app level,
-//!   with no criteria. With `--feature` it sends `POST
+//!   with no criteria. With `--track` it sends `POST
 //!   /tracks/{feature_id}/threads` instead; a name is looked up in the
 //!   project's features (`GET /tracks`) ignoring case, and a name the
 //!   project does not have is a one-line error that names it and starts
@@ -283,12 +283,12 @@ fn thread_create_starts_a_thread_at_the_app_level_or_in_a_feature() {
     for (extra, path, sealed) in [
         (vec![], "/threads".to_string(), false),
         (
-            vec!["--feature", "checkout", "--sealed"],
+            vec!["--track", "checkout", "--sealed"],
             format!("/tracks/{CHECKOUT}/threads"),
             true,
         ),
         (
-            vec!["--feature", CHECKOUT, "--sealed"],
+            vec!["--track", CHECKOUT, "--sealed"],
             format!("/tracks/{CHECKOUT}/threads"),
             true,
         ),

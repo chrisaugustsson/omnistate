@@ -17,7 +17,7 @@
 //!   browser using dev-browser skill` or holding `(human check)`),
 //!   `blocked_by` (keys resolved by listing the feature), `priority` and
 //!   `links`. It prints only the new key. An unknown blocker key is
-//!   `not_found: no story US-<n> in this feature`, exit 1. `--link`'s doc is
+//!   `not_found: no story US-<n> in this track`, exit 1. `--link`'s doc is
 //!   a doc ID only, as for `omni doc read`.
 //! - `omni story list [--status <s>] [--pickable]` prints `US-<n>  P<priority>
 //!   <status>  <title>` per story in the API's order; `--json` the API's list.
@@ -155,7 +155,7 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
         .args(&[
             "--project",
             PROJECT,
-            "--feature",
+            "--track",
             FEATURE,
             "--as",
             "run-7/implementer",
@@ -319,7 +319,7 @@ fn add_with_a_blocker_the_feature_does_not_have_exits_1_and_posts_nothing() {
     let lines = out.stderr_lines();
     assert_eq!(lines.len(), 1, "{:?}", out.stderr);
     assert!(
-        lines[0].contains("not_found: no story US-9 in this feature"),
+        lines[0].contains("not_found: no story US-9 in this track"),
         "{:?}",
         lines[0]
     );

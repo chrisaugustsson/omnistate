@@ -7,12 +7,12 @@
 //!   line per doc, `<id>  <scope>  <kind>  <pillar>  <title>` (two spaces
 //!   between the fields), where the scope is `project` for a global doc or the
 //!   name of the doc's feature. `--json` prints the API's answer.
-//! - `--feature <name or id>` sends `GET .../docs?track=<id>` (a name is
+//! - `--track <name or id>` sends `GET .../docs?track=<id>` (a name is
 //!   looked up in the project's features) and `--global` sends `GET .../docs?track=global`. A feature name the project
 //!   does not have is a one-line error that names it, and no list is asked
 //!   for.
 //! - `--pillar <pillar>` lists only the docs of that pillar, one of `spec`,
-//!   `ui`, `architecture`, `db` and `research` (with or without `--feature`);
+//!   `ui`, `architecture`, `db` and `research` (with or without `--track`);
 //!   the API's `GET .../docs?pillar=<pillar>` filters the same way. Any other
 //!   pillar is a one-line error that lists the five and asks for no list.
 //! - `omni --help` names `omni doc list`.
@@ -254,19 +254,19 @@ fn doc_list_filters_by_feature_or_global() {
         let before = gets_to(&server, &list_path(CHECKOUT));
         let out = run(
             &home,
-            &["doc", "list", "--feature", feature, "--project", PROJECT],
+            &["doc", "list", "--track", feature, "--project", PROJECT],
         );
-        assert_eq!(out.code, 0, "--feature {feature}: {}", out.stderr);
+        assert_eq!(out.code, 0, "--track {feature}: {}", out.stderr);
         assert_eq!(
             gets_to(&server, &list_path(CHECKOUT)),
             before + 1,
-            "--feature {feature} asks for ?track=<id>: {:?}",
+            "--track {feature} asks for ?track=<id>: {:?}",
             server.requests()
         );
         assert_eq!(
             non_empty_lines(&out.stdout),
             [checkout_line(), checkout_spec_line()],
-            "--feature {feature} lists that feature's docs"
+            "--track {feature} lists that feature's docs"
         );
     }
 
@@ -291,7 +291,7 @@ fn doc_list_of_an_unknown_feature_is_one_line_and_lists_nothing() {
     let home = logged_in(&server.url);
     let control = run(
         &home,
-        &["doc", "list", "--feature", "Search", "--project", PROJECT],
+        &["doc", "list", "--track", "Search", "--project", PROJECT],
     );
     assert_eq!(control.code, 0, "a known feature works: {}", control.stderr);
     let before = doc_lists(&server);
@@ -301,7 +301,7 @@ fn doc_list_of_an_unknown_feature_is_one_line_and_lists_nothing() {
         &[
             "doc",
             "list",
-            "--feature",
+            "--track",
             "Loyalty points",
             "--project",
             PROJECT,
@@ -349,16 +349,16 @@ fn doc_list_with_a_pillar_lists_only_that_pillars_docs() {
             "list",
             "--pillar",
             "spec",
-            "--feature",
+            "--track",
             "Checkout",
             "--project",
             PROJECT,
         ],
     );
-    assert_eq!(out.code, 0, "--pillar with --feature: {}", out.stderr);
+    assert_eq!(out.code, 0, "--pillar with --track: {}", out.stderr);
     assert_eq!(
         non_empty_lines(&out.stdout),
         [checkout_spec_line()],
-        "--pillar spec --feature Checkout lists Checkout's spec docs"
+        "--pillar spec --track Checkout lists Checkout's spec docs"
     );
 }

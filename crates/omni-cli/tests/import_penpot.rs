@@ -1,4 +1,4 @@
-//! US-051, US-105: `omni import penpot <file.penpot> --project <id> [--feature
+//! US-051, US-105: `omni import penpot <file.penpot> --project <id> [--track
 //! <name>]`, tested as the built binary against a mock HTTP server. The import
 //! against the real API is in tests/stack_import_penpot.rs, and the rules of
 //! the import in crates/omni-penpot/tests/import_synthetic.rs.

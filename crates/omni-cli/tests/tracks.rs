@@ -1,37 +1,44 @@
-//! US-059: `omni feature`, tested as the built binary against a mock HTTP
+//! US-059: `omni track`, tested as the built binary against a mock HTTP
 //! server. None of these tests needs Postgres; the real round trip against the
-//! API is in tests/stack_features.rs.
+//! API is in tests/stack_tracks.rs.
 //!
 //! The contract these tests pin down (the rest is the green step's choice):
 //!
-//! - `omni feature create <name> [--description <text>]` sends `POST
+//! - `omni track create <name> [--description <text>]` sends `POST
 //!   /api/v1/w/{workspace}/projects/{project_id}/tracks` with the JSON body
 //!   `{"name", "description"}` (`description` only when it was given) and
 //!   prints one line, `<id>  <name>` (two spaces). The API answers 201
-//!   `{"track": Feature}`, where a Feature has `id`, `project_id`, `name`,
+//!   `{"track": Track}`, where a Track has `id`, `project_id`, `name`,
 //!   `description` and `created_at`, and no status (US-110).
-//! - `omni feature list` sends `GET .../tracks` (`{"tracks": [...]}`, in
-//!   creation order) and prints one line per feature, `<id>  <name>` (two
+//! - `omni track list` sends `GET .../tracks` (`{"tracks": [...]}`, in
+//!   creation order) and prints one line per track, `<id>  <name>` (two
 //!   spaces between the fields), in the API's order.
-//! - `omni feature show <name or id>` prints the feature: its ID, name,
+//! - `omni track show <name or id>` prints the track: its ID, name,
 //!   project and description, and no status. An ID (a UUID) is shown with
-//!   `GET .../tracks/{id}`; a name is looked up in the project's features,
-//!   and its `--json` is `{"track": Feature}` as for an ID (US-301). A name
+//!   `GET .../tracks/{id}`; a name is looked up in the project's tracks,
+//!   and its `--json` is `{"track": Track}` as for an ID (US-301). A name
 //!   that the project does not have is an error that names it.
 //! - All of them take the project from `--project`, as a UUID or a project name (US-016), print the
 //!   API's JSON with `--json`, and report errors as one line on standard
 //!   error (US-015, tests/common/mod.rs). `omni --help` lists them.
-//! - US-110: a feature has no status, so `omni feature done` and `omni feature
-//!   reopen` are gone: each is the one-line usage error of `omni feature`,
-//!   which names the feature commands (rename and delete among them), and
+//! - US-110: a track has no status, so `omni track done` and `omni track
+//!   reopen` are gone: each is the one-line usage error of `omni track`,
+//!   which names the track commands (rename and delete among them), and
 //!   nothing is sent.
-//! - US-110: `omni feature rename <name or id> <new name>` sends `PATCH
+//! - US-110: `omni track rename <name or id> <new name>` sends `PATCH
 //!   .../tracks/{id}` with `{"name": <new name>}` and prints `<id>  <new
-//!   name>`; `omni feature delete <name or id>` sends `DELETE
-//!   .../tracks/{id}` (204) and prints a line with the feature's ID. A name
-//!   is looked up as for `show`, ignoring case. Without the feature (or the
+//!   name>`; `omni track delete <name or id>` sends `DELETE
+//!   .../tracks/{id}` (204) and prints a line with the track's ID. A name
+//!   is looked up as for `show`, ignoring case. Without the track (or the
 //!   new name) each is a one-line error that sends nothing; an API error is
 //!   one line with its code.
+//! - US-302: `omni track` replaces `omni feature` for work, with no aliases
+//!   (D12): `omni feature create` is an `unknown command` and `--feature` an
+//!   unknown option, both sending nothing, and `omni --help` has no `omni
+//!   feature` line. `OMNI_TRACK` replaces `OMNI_FEATURE`: a non-empty
+//!   `OMNI_FEATURE` picks no track, and omni says it was renamed in one line
+//!   on standard error, leaving standard output as it is without it. An
+//!   empty `OMNI_FEATURE`, `--help` and `--version` print no notice.
 
 mod common;
 
@@ -40,15 +47,15 @@ use serde_json::{Value, json};
 
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const OTHER_PROJECT: &str = "01900000-0000-7000-8000-0000000000b2";
-const FEATURE: &str = "01900000-0000-7000-8000-0000000000f1";
+const TRACK: &str = "01900000-0000-7000-8000-0000000000f1";
 const WISH_LIST: &str = "01900000-0000-7000-8000-0000000000f2";
-const NEW_FEATURE: &str = "01900000-0000-7000-8000-0000000000f3";
+const NEW_TRACK: &str = "01900000-0000-7000-8000-0000000000f3";
 
 fn projects_path() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects")
 }
 
-fn features_path(project: &str) -> String {
+fn tracks_path(project: &str) -> String {
     format!("{}/{project}/tracks", projects_path())
 }
 
@@ -56,7 +63,7 @@ fn project_json(id: &str, name: &str) -> Value {
     json!({ "id": id, "name": name, "created_at": "2026-10-23T10:00:00.000000Z" })
 }
 
-fn feature_json(id: &str, project: &str, name: &str, description: &str) -> Value {
+fn track_json(id: &str, project: &str, name: &str, description: &str) -> Value {
     json!({
         "id": id,
         "project_id": project,
@@ -67,8 +74,8 @@ fn feature_json(id: &str, project: &str, name: &str, description: &str) -> Value
 }
 
 fn checkout(project: &str) -> Value {
-    feature_json(
-        FEATURE,
+    track_json(
+        TRACK,
         project,
         "Checkout",
         "Pay for the basket in one step.",
@@ -76,13 +83,13 @@ fn checkout(project: &str) -> Value {
 }
 
 fn wish_list(project: &str) -> Value {
-    feature_json(WISH_LIST, project, "Wish list", "Keep products for later.")
+    track_json(WISH_LIST, project, "Wish list", "Keep products for later.")
 }
 
 /// An API that knows two projects, `brand-site` and `other`, each with the
-/// features "Checkout" and "Wish list", in that order. A new feature named
+/// tracks "Checkout" and "Wish list", in that order. A new track named
 /// "checkout" in any case is refused as taken, and so is a rename to it. A
-/// rename answers the feature with its new name, and a delete answers 204.
+/// rename answers the track with its new name, and a delete answers 204.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -98,7 +105,7 @@ fn mock() -> MockServer {
             );
         }
         for project in [PROJECT, OTHER_PROJECT] {
-            let Some(rest) = path.strip_prefix(&features_path(project)) else {
+            let Some(rest) = path.strip_prefix(&tracks_path(project)) else {
                 continue;
             };
             return match (method, rest) {
@@ -110,34 +117,31 @@ fn mock() -> MockServer {
                     let description = body["description"].as_str().unwrap_or("");
                     Reply::json(
                         201,
-                        &json!({ "track": feature_json(NEW_FEATURE, project, name, description) }),
+                        &json!({ "track": track_json(NEW_TRACK, project, name, description) }),
                     )
                 }
                 ("GET", "") => Reply::json(
                     200,
                     &json!({ "tracks": [checkout(project), wish_list(project)] }),
                 ),
-                ("GET", rest) if rest == format!("/{FEATURE}") => {
+                ("GET", rest) if rest == format!("/{TRACK}") => {
                     Reply::json(200, &json!({ "track": checkout(project) }))
                 }
                 ("GET", rest) if rest == format!("/{WISH_LIST}") => {
                     Reply::json(200, &json!({ "track": wish_list(project) }))
                 }
                 ("PATCH", rest)
-                    if rest == format!("/{FEATURE}") || rest == format!("/{WISH_LIST}") =>
+                    if rest == format!("/{TRACK}") || rest == format!("/{WISH_LIST}") =>
                 {
                     let name = body["name"].as_str().unwrap_or("");
                     if name.eq_ignore_ascii_case("checkout") {
                         return Reply::json(409, &json!({ "error": "name_taken" }));
                     }
                     let id = &rest[1..];
-                    Reply::json(
-                        200,
-                        &json!({ "track": feature_json(id, project, name, "") }),
-                    )
+                    Reply::json(200, &json!({ "track": track_json(id, project, name, "") }))
                 }
                 ("DELETE", rest)
-                    if rest == format!("/{FEATURE}") || rest == format!("/{WISH_LIST}") =>
+                    if rest == format!("/{TRACK}") || rest == format!("/{WISH_LIST}") =>
                 {
                     Reply {
                         status: 204,
@@ -216,17 +220,17 @@ fn assert_nothing_posted(server: &MockServer) {
 }
 
 // ---------------------------------------------------------------------------
-// omni feature create
+// omni track create
 // ---------------------------------------------------------------------------
 
 #[test]
-fn feature_create_sends_the_name_and_description_and_prints_the_id_and_name() {
+fn track_create_sends_the_name_and_description_and_prints_the_id_and_name() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(
         &home,
         &[
-            "feature",
+            "track",
             "create",
             "Search",
             "--description",
@@ -237,7 +241,7 @@ fn feature_create_sends_the_name_and_description_and_prints_the_id_and_name() {
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
 
-    let posts = requests_to(&server, "POST", &features_path(PROJECT));
+    let posts = requests_to(&server, "POST", &tracks_path(PROJECT));
     assert_eq!(posts.len(), 1, "{:?}", server.requests());
     let body = body_of(&posts[0]);
     assert_eq!(body["name"], "Search", "{body}");
@@ -251,50 +255,43 @@ fn feature_create_sends_the_name_and_description_and_prints_the_id_and_name() {
 
     assert_eq!(
         non_empty_lines(&out.stdout),
-        [format!("{NEW_FEATURE}  Search")],
+        [format!("{NEW_TRACK}  Search")],
         "create prints `<id>  <name>`"
     );
 
     let json = run(
         &home,
-        &[
-            "feature",
-            "create",
-            "Search",
-            "--project",
-            PROJECT,
-            "--json",
-        ],
+        &["track", "create", "Search", "--project", PROJECT, "--json"],
     );
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "track": feature_json(NEW_FEATURE, PROJECT, "Search", "") }),
+        json!({ "track": track_json(NEW_TRACK, PROJECT, "Search", "") }),
         "--json prints the whole response"
     );
 }
 
 #[test]
-fn feature_create_without_a_name_is_one_line_and_sends_nothing() {
+fn track_create_without_a_name_is_one_line_and_sends_nothing() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(&home, &["feature", "create", "--project", PROJECT]);
+    let out = run(&home, &["track", "create", "--project", PROJECT]);
     assert_one_line_error(&out, &["name"]);
     assert_nothing_posted(&server);
 }
 
 // ---------------------------------------------------------------------------
-// omni feature list
+// omni track list
 // ---------------------------------------------------------------------------
 
 #[test]
-fn feature_list_prints_one_line_per_feature_without_a_status() {
+fn track_list_prints_one_line_per_track_without_a_status() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(&home, &["feature", "list", "--project", PROJECT]);
+    let out = run(&home, &["track", "list", "--project", PROJECT]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        requests_to(&server, "GET", &features_path(PROJECT)).len(),
+        requests_to(&server, "GET", &tracks_path(PROJECT)).len(),
         1,
         "{:?}",
         server.requests()
@@ -302,13 +299,13 @@ fn feature_list_prints_one_line_per_feature_without_a_status() {
     assert_eq!(
         non_empty_lines(&out.stdout),
         [
-            format!("{FEATURE}  Checkout"),
+            format!("{TRACK}  Checkout"),
             format!("{WISH_LIST}  Wish list"),
         ],
-        "one `<id>  <name>` line per feature, in the API's order"
+        "one `<id>  <name>` line per track, in the API's order"
     );
 
-    let json = run(&home, &["feature", "list", "--project", PROJECT, "--json"]);
+    let json = run(&home, &["track", "list", "--project", PROJECT, "--json"]);
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
@@ -318,27 +315,22 @@ fn feature_list_prints_one_line_per_feature_without_a_status() {
 }
 
 // ---------------------------------------------------------------------------
-// omni feature show
+// omni track show
 // ---------------------------------------------------------------------------
 
 #[test]
-fn feature_show_prints_the_feature_named_by_its_id() {
+fn track_show_prints_the_track_named_by_its_id() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(&home, &["feature", "show", FEATURE, "--project", PROJECT]);
+    let out = run(&home, &["track", "show", TRACK, "--project", PROJECT]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        requests_to(
-            &server,
-            "GET",
-            &format!("{}/{FEATURE}", features_path(PROJECT))
-        )
-        .len(),
+        requests_to(&server, "GET", &format!("{}/{TRACK}", tracks_path(PROJECT))).len(),
         1,
         "an ID is shown with GET .../tracks/{{id}}: {:?}",
         server.requests()
     );
-    for needle in [FEATURE, "Checkout", "Pay for the basket in one step."] {
+    for needle in [TRACK, "Checkout", "Pay for the basket in one step."] {
         assert!(
             out.stdout.contains(needle),
             "the text shows {needle:?}: {:?}",
@@ -349,20 +341,17 @@ fn feature_show_prints_the_feature_named_by_its_id() {
 
     let json = run(
         &home,
-        &["feature", "show", FEATURE, "--project", PROJECT, "--json"],
+        &["track", "show", TRACK, "--project", PROJECT, "--json"],
     );
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(json.json(), json!({ "track": checkout(PROJECT) }));
 }
 
 #[test]
-fn feature_show_finds_a_feature_by_its_name() {
+fn track_show_finds_a_track_by_its_name() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["feature", "show", "Wish list", "--project", PROJECT],
-    );
+    let out = run(&home, &["track", "show", "Wish list", "--project", PROJECT]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     for needle in [WISH_LIST, "Wish list", "Keep products for later."] {
         assert!(
@@ -373,26 +362,19 @@ fn feature_show_finds_a_feature_by_its_name() {
     }
     assert!(
         out.stdout.contains(&format!("project: {PROJECT}\n")),
-        "the text names the feature's project: {:?}",
+        "the text names the track's project: {:?}",
         out.stdout
     );
     assert_no_status(&out.stdout);
     assert!(
-        !out.stdout.contains(FEATURE),
-        "only the named feature is shown: {:?}",
+        !out.stdout.contains(TRACK),
+        "only the named track is shown: {:?}",
         out.stdout
     );
 
     let json = run(
         &home,
-        &[
-            "feature",
-            "show",
-            "Wish list",
-            "--project",
-            PROJECT,
-            "--json",
-        ],
+        &["track", "show", "Wish list", "--project", PROJECT, "--json"],
     );
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(json.json(), json!({ "track": wish_list(PROJECT) }));
@@ -400,12 +382,12 @@ fn feature_show_finds_a_feature_by_its_name() {
 }
 
 #[test]
-fn feature_show_of_a_name_the_project_does_not_have_is_one_line() {
+fn track_show_of_a_name_the_project_does_not_have_is_one_line() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(
         &home,
-        &["feature", "show", "Loyalty points", "--project", PROJECT],
+        &["track", "show", "Loyalty points", "--project", PROJECT],
     );
     assert_one_line_error(&out, &["Loyalty points"]);
     assert_nothing_posted(&server);
@@ -427,32 +409,27 @@ fn the_project_flag_takes_a_name_or_an_id() {
     };
 
     for args in [
-        &["feature", "create", "Search"][..],
-        &["feature", "list"][..],
-        &["feature", "show", FEATURE][..],
+        &["track", "create", "Search"][..],
+        &["track", "list"][..],
+        &["track", "show", TRACK][..],
     ] {
         let out = in_project(&[args, &["--project", "brand-site"]].concat());
         assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
     }
     assert_eq!(
-        requests_to(&server, "POST", &features_path(PROJECT)).len(),
+        requests_to(&server, "POST", &tracks_path(PROJECT)).len(),
         1,
         "the name `brand-site` is looked up and its ID is used: {:?}",
         server.requests()
     );
     assert_eq!(
-        requests_to(&server, "GET", &features_path(PROJECT)).len(),
+        requests_to(&server, "GET", &tracks_path(PROJECT)).len(),
         1,
         "{:?}",
         server.requests()
     );
     assert_eq!(
-        requests_to(
-            &server,
-            "GET",
-            &format!("{}/{FEATURE}", features_path(PROJECT))
-        )
-        .len(),
+        requests_to(&server, "GET", &format!("{}/{TRACK}", tracks_path(PROJECT))).len(),
         1,
         "{:?}",
         server.requests()
@@ -460,19 +437,19 @@ fn the_project_flag_takes_a_name_or_an_id() {
 
     // --project takes a name as well as an ID.
     for project in ["other", OTHER_PROJECT] {
-        let out = in_project(&["feature", "create", "Search", "--project", project]);
+        let out = in_project(&["track", "create", "Search", "--project", project]);
         assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);
-        let out = in_project(&["feature", "list", "--project", project]);
+        let out = in_project(&["track", "list", "--project", project]);
         assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);
     }
     assert_eq!(
-        requests_to(&server, "POST", &features_path(OTHER_PROJECT)).len(),
+        requests_to(&server, "POST", &tracks_path(OTHER_PROJECT)).len(),
         2,
         "{:?}",
         server.requests()
     );
     assert_eq!(
-        requests_to(&server, "GET", &features_path(OTHER_PROJECT)).len(),
+        requests_to(&server, "GET", &tracks_path(OTHER_PROJECT)).len(),
         2,
         "{:?}",
         server.requests()
@@ -485,17 +462,11 @@ fn an_unknown_or_missing_project_is_one_line_and_sends_nothing() {
     let home = logged_in(&server.url);
     let unknown = run(
         &home,
-        &[
-            "feature",
-            "create",
-            "Search",
-            "--project",
-            "no-such-project",
-        ],
+        &["track", "create", "Search", "--project", "no-such-project"],
     );
     assert_one_line_error(&unknown, &["no-such-project"]);
 
-    let missing = run(&home, &["feature", "list"]);
+    let missing = run(&home, &["track", "list"]);
     assert_one_line_error(&missing, &["project"]);
     assert_nothing_posted(&server);
     assert!(
@@ -503,42 +474,42 @@ fn an_unknown_or_missing_project_is_one_line_and_sends_nothing() {
             .requests()
             .iter()
             .all(|r| !r.path.contains("/tracks")),
-        "no feature route is called without a project: {:?}",
+        "no track route is called without a project: {:?}",
         server.requests()
     );
 }
 
-/// What `omni feature show` prints has no status: no line names one, and no
+/// What `omni track show` prints has no status: no line names one, and no
 /// field is left as an unknown `?`.
 fn assert_no_status(stdout: &str) {
     for line in non_empty_lines(stdout) {
         let lower = line.to_lowercase();
         assert!(
             !lower.contains("status") && !lower.contains("active") && !lower.contains("  ?  "),
-            "a feature has no status: {line:?}"
+            "a track has no status: {line:?}"
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// omni feature done / reopen are gone (US-110)
+// omni track done / reopen are gone (US-110)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn feature_done_and_reopen_are_gone() {
+fn track_done_and_reopen_are_gone() {
     let server = mock();
     let home = logged_in(&server.url);
     for command in ["done", "reopen"] {
         for args in [
-            &["feature", command, "Checkout", "--project", PROJECT][..],
-            &["feature", command, FEATURE, "--project", PROJECT][..],
-            &["feature", command][..],
+            &["track", command, "Checkout", "--project", PROJECT][..],
+            &["track", command, TRACK, "--project", PROJECT][..],
+            &["track", command][..],
         ] {
             let out = run(&home, args);
             assert_one_line_error(&out, &["usage", "rename", "delete"]);
             assert!(
                 !out.stderr.contains("reviewer's call"),
-                "no feature can be marked done, by anyone: {:?}",
+                "no track can be marked done, by anyone: {:?}",
                 out.stderr
             );
         }
@@ -551,22 +522,22 @@ fn feature_done_and_reopen_are_gone() {
 }
 
 // ---------------------------------------------------------------------------
-// omni feature rename / delete (US-110)
+// omni track rename / delete (US-110)
 // ---------------------------------------------------------------------------
 
-fn feature_path(project: &str, feature: &str) -> String {
-    format!("{}/{feature}", features_path(project))
+fn track_path(project: &str, track: &str) -> String {
+    format!("{}/{track}", tracks_path(project))
 }
 
 #[test]
-fn feature_rename_sends_the_new_name_and_prints_the_id_and_name() {
+fn track_rename_sends_the_new_name_and_prints_the_id_and_name() {
     let server = mock();
     let home = logged_in(&server.url);
-    for given in ["Checkout", "checkout", FEATURE] {
+    for given in ["Checkout", "checkout", TRACK] {
         let out = run(
             &home,
             &[
-                "feature",
+                "track",
                 "rename",
                 given,
                 "Express checkout",
@@ -577,11 +548,11 @@ fn feature_rename_sends_the_new_name_and_prints_the_id_and_name() {
         assert_eq!(out.code, 0, "rename {given}: {}", out.stderr);
         assert_eq!(
             non_empty_lines(&out.stdout),
-            [format!("{FEATURE}  Express checkout")],
+            [format!("{TRACK}  Express checkout")],
             "rename prints `<id>  <new name>`"
         );
     }
-    let patches = requests_to(&server, "PATCH", &feature_path(PROJECT, FEATURE));
+    let patches = requests_to(&server, "PATCH", &track_path(PROJECT, TRACK));
     assert_eq!(patches.len(), 3, "{:?}", server.requests());
     for patch in &patches {
         assert_eq!(body_of(patch), json!({ "name": "Express checkout" }));
@@ -595,7 +566,7 @@ fn feature_rename_sends_the_new_name_and_prints_the_id_and_name() {
     let json = run(
         &home,
         &[
-            "feature",
+            "track",
             "rename",
             "Wish list",
             "Saved items",
@@ -607,19 +578,19 @@ fn feature_rename_sends_the_new_name_and_prints_the_id_and_name() {
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "track": feature_json(WISH_LIST, PROJECT, "Saved items", "") }),
+        json!({ "track": track_json(WISH_LIST, PROJECT, "Saved items", "") }),
         "--json prints the whole response"
     );
 }
 
 #[test]
-fn feature_rename_without_a_feature_or_a_new_name_is_one_line_and_sends_nothing() {
+fn track_rename_without_a_track_or_a_new_name_is_one_line_and_sends_nothing() {
     let server = mock();
     let home = logged_in(&server.url);
     for args in [
-        &["feature", "rename", "--project", PROJECT][..],
-        &["feature", "rename", "Checkout", "--project", PROJECT][..],
-        &["feature", "rename", "Checkout", "  ", "--project", PROJECT][..],
+        &["track", "rename", "--project", PROJECT][..],
+        &["track", "rename", "Checkout", "--project", PROJECT][..],
+        &["track", "rename", "Checkout", "  ", "--project", PROJECT][..],
     ] {
         let out = run(&home, args);
         assert_one_line_error(&out, &["name"]);
@@ -628,19 +599,170 @@ fn feature_rename_without_a_feature_or_a_new_name_is_one_line_and_sends_nothing(
 }
 
 #[test]
-fn feature_delete_sends_a_delete_and_prints_the_id() {
+fn track_delete_sends_a_delete_and_prints_the_id() {
     let server = mock();
     let home = logged_in(&server.url);
-    for (given, id) in [("Checkout", FEATURE), (WISH_LIST, WISH_LIST)] {
-        let out = run(&home, &["feature", "delete", given, "--project", PROJECT]);
+    for (given, id) in [("Checkout", TRACK), (WISH_LIST, WISH_LIST)] {
+        let out = run(&home, &["track", "delete", given, "--project", PROJECT]);
         assert_eq!(out.code, 0, "delete {given}: {}", out.stderr);
         assert!(
             out.stdout.contains(id),
-            "delete prints the feature's ID: {:?}",
+            "delete prints the track's ID: {:?}",
             out.stdout
         );
-        let deletes = requests_to(&server, "DELETE", &feature_path(PROJECT, id));
+        let deletes = requests_to(&server, "DELETE", &track_path(PROJECT, id));
         assert_eq!(deletes.len(), 1, "{:?}", server.requests());
         assert_eq!(deletes[0].header("x-omni-role"), Some("planner"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// omni feature and OMNI_FEATURE are renamed, with no aliases (US-302)
+// ---------------------------------------------------------------------------
+
+fn run_with_env(home: &Scratch, args: &[&str], name: &str, value: &str) -> Out {
+    omni(&home.path)
+        .args(args)
+        .args(&["--as", "run-7/planner"])
+        .env(name, value)
+        .run()
+}
+
+#[test]
+fn feature_create_is_an_unknown_command_and_creates_no_track() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["feature", "create", "A", "--project", PROJECT]);
+    assert_one_line_error(&out, &["unknown command"]);
+    assert!(
+        server.requests().is_empty(),
+        "nothing is sent: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn the_feature_flag_is_an_unknown_option_and_sends_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "story",
+            "list",
+            "--feature",
+            "Checkout",
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_one_line_error(&out, &["unknown option", "--feature"]);
+    assert!(
+        server.requests().is_empty(),
+        "nothing is sent: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn help_lists_the_track_commands_and_no_feature_command() {
+    let home = Scratch::new("home");
+    let help = omni(&home.path).args(&["--help"]).run();
+    assert_eq!(help.code, 0, "{}", help.stderr);
+    let lines = non_empty_lines(&help.stdout);
+    for command in [
+        "omni track create <name>",
+        "omni track list",
+        "omni track show <name|id>",
+        "omni track rename <name|id> <new name>",
+        "omni track delete <name|id>",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(command)),
+            "omni --help lists {command:?}"
+        );
+    }
+    assert!(
+        !help.stdout.contains("omni feature"),
+        "omni --help has no omni feature command until US-307: {}",
+        help.stdout
+    );
+    assert!(
+        !help.stdout.contains("OMNI_FEATURE"),
+        "omni --help names OMNI_TRACK, not OMNI_FEATURE: {}",
+        help.stdout
+    );
+}
+
+#[test]
+fn omni_feature_picks_no_track_for_the_story_list() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run_with_env(
+        &home,
+        &["story", "list", "--project", PROJECT],
+        "OMNI_FEATURE",
+        "Checkout",
+    );
+    assert_ne!(out.code, 0, "no track is picked: {}", out.stdout);
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|r| !r.path.ends_with("/stories")),
+        "no track's stories are asked for: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn a_set_omni_feature_prints_a_one_line_notice_on_standard_error_and_leaves_standard_output_alone()
+{
+    let server = mock();
+    let home = logged_in(&server.url);
+    let args = ["track", "list", "--project", PROJECT, "--json"];
+    let without = run(&home, &args);
+    assert_eq!(without.code, 0, "{}", without.stderr);
+
+    let with = run_with_env(&home, &args, "OMNI_FEATURE", "Checkout");
+    assert_eq!(with.code, 0, "{}", with.stderr);
+    assert_eq!(with.stdout, without.stdout, "standard output is unchanged");
+    let lines = with.stderr_lines();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one line on standard error: {:?}",
+        with.stderr
+    );
+    assert!(
+        lines[0].contains("OMNI_FEATURE") && lines[0].contains("OMNI_TRACK"),
+        "the notice says OMNI_FEATURE was renamed to OMNI_TRACK: {:?}",
+        lines[0]
+    );
+}
+
+#[test]
+fn an_empty_omni_feature_prints_no_notice() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run_with_env(
+        &home,
+        &["track", "list", "--project", PROJECT],
+        "OMNI_FEATURE",
+        "",
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stderr, "");
+}
+
+#[test]
+fn help_and_version_print_no_omni_feature_notice() {
+    let home = Scratch::new("home");
+    let help = run_with_env(&home, &["--help"], "OMNI_FEATURE", "Checkout");
+    assert_eq!(help.code, 0, "{}", help.stderr);
+    assert_eq!(help.stderr, "", "--help prints no notice");
+
+    let version = run_with_env(&home, &["--version"], "OMNI_FEATURE", "Checkout");
+    assert_eq!(version.code, 0, "{}", version.stderr);
+    assert_eq!(version.stderr, "", "--version prints no notice");
 }

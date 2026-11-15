@@ -9,8 +9,8 @@
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
 //! found from `--project`):
 //!
-//! - `omni comment list [--doc <id>] [--feature <name or id>]` sends `GET
-//!   /comments` and only reads. `--doc <id>` adds `doc=<id>`; `--feature`
+//! - `omni comment list [--doc <id>] [--track <name or id>]` sends `GET
+//!   /comments` and only reads. `--doc <id>` adds `doc=<id>`; `--track`
 //!   adds `track=<id>`, a name being looked up (ignoring case) in `GET
 //!   /tracks` as for `omni doc list`, and a name that no feature has is a
 //!   one-line error that sends no `GET /comments`. It prints every comment in
@@ -423,12 +423,12 @@ fn list_narrows_to_a_doc_or_a_feature_by_name_or_id() {
     for (args, name, value) in [
         (vec!["comment", "list", "--doc", DOC], "doc", DOC),
         (
-            vec!["comment", "list", "--feature", "checkout"],
+            vec!["comment", "list", "--track", "checkout"],
             "track",
             CHECKOUT,
         ),
         (
-            vec!["comment", "list", "--feature", CHECKOUT],
+            vec!["comment", "list", "--track", CHECKOUT],
             "track",
             CHECKOUT,
         ),

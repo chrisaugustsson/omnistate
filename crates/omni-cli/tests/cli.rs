@@ -700,12 +700,12 @@ fn help_lists_the_link_commands_and_names_the_env_fallbacks() {
             "{expected:?} missing"
         );
     }
-    for option in ["--project <name|id>", "--feature <name|id>"] {
+    for option in ["--project <name|id>", "--track <name|id>"] {
         let line = squeezed.iter().find(|l| l.starts_with(option)).unwrap();
         let name = if option == "--project <name|id>" {
             "OMNI_PROJECT"
         } else {
-            "OMNI_FEATURE"
+            "OMNI_TRACK"
         };
         assert!(line.contains(name), "{line:?}");
         assert!(!line.contains(".omni.toml"), "{line:?}");
