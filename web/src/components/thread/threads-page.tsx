@@ -147,7 +147,7 @@ export function ThreadsPage({
       description={() => "Each thread is one question that agents work out and you follow."}
     >
       {(home) => {
-        const names = new Map((home.features ?? []).map(({ feature }) => [feature.id, feature.name]));
+        const names = new Map((home.tracks ?? []).map(({ track: feature }) => [feature.id, feature.name]));
         const scopeName = (featureId: string | null | undefined) =>
           featureId ? (names.get(featureId) ?? "Feature") : "App";
         const options: ScopeOption[] = [
@@ -156,7 +156,7 @@ export function ThreadsPage({
           ...[...names].map(([id, name]) => ({ value: id, label: name })),
         ];
         const shown = home.threads
-          .filter((thread) => scope === undefined || (scope === "app" ? !thread.feature_id : thread.feature_id === scope))
+          .filter((thread) => scope === undefined || (scope === "app" ? !thread.track_id : thread.track_id === scope))
           .sort((a, b) => threadTime(b).localeCompare(threadTime(a)));
         return (
           <>
@@ -166,7 +166,7 @@ export function ThreadsPage({
             ) : (
               <List>
                 {shown.map((thread) => (
-                  <ThreadRow key={thread.id} thread={thread} params={params} scopeName={scopeName(thread.feature_id)} eachFlag />
+                  <ThreadRow key={thread.id} thread={thread} params={params} scopeName={scopeName(thread.track_id)} eachFlag />
                 ))}
               </List>
             )}

@@ -237,7 +237,7 @@ fn send_design(
         quote(title)
     );
     let path = match feature {
-        Some(feature) => format!("{base}/features/{feature}/docs"),
+        Some(feature) => format!("{base}/tracks/{feature}/docs"),
         None => format!("{base}/docs"),
     };
     let response = agent.request("POST", &path, Some(body.as_bytes()))?;

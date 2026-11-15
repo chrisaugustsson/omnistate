@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { Search } from "lucide-react";
-import type { FeatureSummary } from "@/api/generated";
+import type { TrackSummary as FeatureSummary } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
 import { matches } from "@/components/palette/search";
 import { Empty, List } from "@/components/project/items";
@@ -17,21 +17,21 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/featu
 });
 
 /** A feature's last activity, or its creation while it has none. */
-const activityOf = ({ feature, last_activity }: FeatureSummary) => last_activity ?? feature.created_at;
+const activityOf = ({ track: feature, last_activity }: FeatureSummary) => last_activity ?? feature.created_at;
 
 /** Most recent activity first, ties by name. */
 function inOrder(features: FeatureSummary[]): FeatureSummary[] {
   return [...features].sort(
     (a, b) =>
       Date.parse(activityOf(b)) - Date.parse(activityOf(a)) ||
-      a.feature.name.toLowerCase().localeCompare(b.feature.name.toLowerCase()),
+      a.track.name.toLowerCase().localeCompare(b.track.name.toLowerCase()),
   );
 }
 
 const firstLine = (text: string) => text.split(/\r?\n/, 1)[0];
 
 function FeatureRow({ summary, params }: { summary: FeatureSummary; params: { workspaceId: string; projectId: string } }) {
-  const { feature, waiting, last_activity } = summary;
+  const { track: feature, waiting, last_activity } = summary;
   const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
   return (
     <li>
@@ -72,9 +72,9 @@ function Features() {
   const { workspaceId, projectId } = Route.useParams();
   const { home, failed } = useHome(workspaceId, projectId);
   const [query, setQuery] = useState("");
-  const all = useMemo(() => inOrder(home?.features ?? []), [home]);
+  const all = useMemo(() => inOrder(home?.tracks ?? []), [home]);
   const shown = useMemo(
-    () => (query.trim() ? all.filter(({ feature }) => matches(query, feature.name, feature.description)) : all),
+    () => (query.trim() ? all.filter(({ track: feature }) => matches(query, feature.name, feature.description)) : all),
     [all, query],
   );
 
@@ -111,7 +111,7 @@ function Features() {
           ) : (
             <List>
               {shown.map((summary) => (
-                <FeatureRow key={summary.feature.id} summary={summary} params={{ workspaceId, projectId }} />
+                <FeatureRow key={summary.track.id} summary={summary} params={{ workspaceId, projectId }} />
               ))}
             </List>
           )}

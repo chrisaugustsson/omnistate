@@ -1,5 +1,5 @@
 //! Threads. A thread is a question that agents work out at the app level of a
-//! project or in one of its features. It is sealed or not, and an agent
+//! project or in one of its tracks. It is sealed or not, and an agent
 //! writes its conclusion when it has worked the question out
 //! (`thread.concluded`); the thread keeps taking posts after that, so builders
 //! can raise problems with the plan. Starting a thread emits `thread.created`.
@@ -55,11 +55,11 @@ const MAX_URL_CHARS: usize = 2048;
 pub struct ThreadBody {
     pub id: String,
     pub project_id: String,
-    /// `app` for a thread at the app level, `feature` for one in a feature.
+    /// `app` for a thread at the app level, `track` for one in a track.
     #[schema(required = false)]
     pub scope: String,
-    /// The feature the thread belongs to; `null` at the app level.
-    pub feature_id: Option<String>,
+    /// The track the thread belongs to; `null` at the app level.
+    pub track_id: Option<String>,
     pub question: String,
     /// Whether an agent that has not posted in the thread yet reads no other
     /// agent's posts.
@@ -129,8 +129,8 @@ pub struct CreatePostRequest {
 pub struct PostBody {
     pub id: String,
     pub thread_id: String,
-    /// The feature of the thread; `null` for a thread at the app level.
-    pub feature_id: Option<String>,
+    /// The track of the thread; `null` for a thread at the app level.
+    pub track_id: Option<String>,
     /// `{"kind": "agent", "run", "role", "model", "harness"}` for an agent
     /// (each `null` when the request did not say), or `{"kind": "human",
     /// "user_id"}`.
@@ -333,7 +333,7 @@ pub(crate) async fn hide_unseen_links(
 pub(crate) struct PostRow {
     id: String,
     thread_id: String,
-    feature_id: Option<String>,
+    track_id: Option<String>,
     author: String,
     summary: String,
     body: String,
@@ -361,7 +361,7 @@ impl PostRow {
         Ok(PostBody {
             id: self.id,
             thread_id: self.thread_id,
-            feature_id: self.feature_id,
+            track_id: self.track_id,
             author,
             summary: self.summary,
             body_html: omni_core::markdown::render(&self.body),
@@ -379,7 +379,7 @@ impl PostRow {
 struct ThreadRow {
     id: String,
     project_id: String,
-    feature_id: Option<String>,
+    track_id: Option<String>,
     question: String,
     conclusion: Option<String>,
     run_tag: Option<String>,
@@ -387,7 +387,7 @@ struct ThreadRow {
 }
 
 const THREAD_COLUMNS: &str = concat!(
-    "id::text, project_id::text, feature_id::text, ",
+    "id::text, project_id::text, track_id::text, ",
     "question, conclusion, run_tag, ",
     timestamp!("created_at"),
     " AS created_at"
@@ -395,7 +395,7 @@ const THREAD_COLUMNS: &str = concat!(
 
 pub(crate) const POST_COLUMNS: &str = concat!(
     "id::text, thread_id::text, \
-     (SELECT t.feature_id::text FROM threads t WHERE t.id = thread_id) AS feature_id, \
+     (SELECT t.track_id::text FROM threads t WHERE t.id = thread_id) AS track_id, \
      author::text, summary, body, links::text, \
      attachments::text, confidence, replaces::text, ",
     timestamp!("created_at"),
@@ -442,13 +442,13 @@ pub(crate) async fn load_thread(
     Ok(ThreadBody {
         id: row.id,
         project_id: row.project_id,
-        scope: if row.feature_id.is_some() {
-            "feature"
+        scope: if row.track_id.is_some() {
+            "track"
         } else {
             "app"
         }
         .to_string(),
-        feature_id: row.feature_id,
+        track_id: row.track_id,
         question: row.question,
         sealed,
         conclusion: row.conclusion,
@@ -502,26 +502,26 @@ async fn insert_phase(
     Ok(())
 }
 
-/// Starts a thread at the app level or in a feature of the project. Its one
+/// Starts a thread at the app level or in a track of the project. Its one
 /// phase is sealed when the thread is.
 async fn start_live_thread(
     state: &AppState,
     request: &AgentRequest,
     identity: &AgentIdentity,
     project_id: &str,
-    feature_id: Option<&str>,
+    track_id: Option<&str>,
     body: &Bytes,
 ) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
     let new = parse_body::<StartThreadRequest>(body);
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     require_project(&mut tx, project_id).await?;
-    if let Some(feature_id) = feature_id {
+    if let Some(track_id) = track_id {
         let found: Option<(String,)> = sqlx::query_as(
-            "SELECT id::text FROM features \
+            "SELECT id::text FROM tracks \
              WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR SHARE",
         )
-        .bind(feature_id)
+        .bind(track_id)
         .bind(project_id)
         .fetch_optional(&mut *tx)
         .await
@@ -533,12 +533,12 @@ async fn start_live_thread(
     let sealed = new.sealed.unwrap_or(false);
 
     let thread_id: String = sqlx::query_scalar(
-        "INSERT INTO threads (workspace_id, project_id, feature_id, question, criteria, run_tag) \
+        "INSERT INTO threads (workspace_id, project_id, track_id, question, criteria, run_tag) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4, '[]'::jsonb, $5) RETURNING id::text",
     )
     .bind(workspace_id)
     .bind(project_id)
-    .bind(feature_id)
+    .bind(track_id)
     .bind(&question)
     .bind(identity.run())
     .fetch_one(&mut *tx)
@@ -552,7 +552,7 @@ async fn start_live_thread(
         "thread.created",
         &json!({
             "thread_id": thread_id,
-            "feature_id": feature_id,
+            "track_id": track_id,
             "question": question,
             "sealed": sealed,
         }),
@@ -596,14 +596,14 @@ pub async fn create_app_thread(
     start_live_thread(&state, &request, &identity, &project_id, None, &body).await
 }
 
-/// Starts a thread in a feature of a project.
+/// Starts a thread in a track of a project.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/threads",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("X-Omni-Run" = Option<String>, Header, description = "The agent's run; the thread's run tag"),
         ("X-Omni-Role" = Option<String>, Header, description = "The agent's role"),
         ("X-Omni-Model" = Option<String>, Header, description = "The model behind the agent"),
@@ -615,24 +615,24 @@ pub async fn create_app_thread(
         (status = 400, description = "The question is missing or blank, or `sealed` is not a boolean", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace", body = ErrorBody),
     )
 )]
-pub async fn create_feature_thread(
+pub async fn create_track_thread(
     State(state): State<AppState>,
     request: AgentRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     start_live_thread(
         &state,
         &request,
         &identity,
         &project_id,
-        Some(&feature_id),
+        Some(&track_id),
         &body,
     )
     .await
@@ -719,7 +719,7 @@ pub async fn conclude_thread(
         "thread.concluded",
         &json!({
             "thread_id": thread_id,
-            "feature_id": thread.feature_id,
+            "track_id": thread.track_id,
         }),
     )
     .await?;

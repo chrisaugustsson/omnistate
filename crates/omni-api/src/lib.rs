@@ -18,7 +18,6 @@ pub mod delete_workspace;
 mod design;
 mod docs;
 mod exports;
-mod features;
 mod home;
 pub mod live;
 pub mod openapi;
@@ -33,6 +32,7 @@ pub mod setup;
 mod stories;
 mod threads;
 mod tokens;
+mod tracks;
 mod workspace;
 
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -273,14 +273,14 @@ pub fn router(state: AppState) -> Router {
             patch(projects::rename_project),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features",
-            get(features::list_features).post(features::create_feature),
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
+            get(tracks::list_tracks).post(tracks::create_track),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
-            get(features::show_feature)
-                .patch(features::rename_feature)
-                .delete(features::delete_feature),
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
+            get(tracks::show_track)
+                .patch(tracks::rename_track)
+                .delete(tracks::delete_track),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",
@@ -291,8 +291,8 @@ pub fn router(state: AppState) -> Router {
             get(docs::list_docs).post(docs::create_app_doc),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
-            post(docs::create_feature_doc),
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/docs",
+            post(docs::create_track_doc),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}",
@@ -349,107 +349,107 @@ pub fn router(state: AppState) -> Router {
             get(attachments::download),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour",
             get(behaviour::list_nodes),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes",
             post(behaviour::create_node),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}",
             get(behaviour::show_node).patch(behaviour::patch_node),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/move",
             post(behaviour::move_node),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/questions",
             post(behaviour::ask_question),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/rules",
             post(behaviour::create_rule),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules",
             get(behaviour::list_rules),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules/{rule_id}",
             patch(behaviour::patch_rule),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions",
             get(behaviour::list_questions),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/import",
             post(behaviour::import_tree).layer(DefaultBodyLimit::max(BEHAVIOUR_IMPORT_MAX_BYTES)),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}",
             get(behaviour::show_question),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}/answers",
             post(behaviour::answer_question),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories",
             get(stories::list_stories).post(stories::create_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}",
             get(stories::show_story).patch(stories::patch_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/cancel",
             post(stories::cancel_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/claim",
             post(stories::claim_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/release",
             post(stories::release_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/move",
             post(stories::move_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/tick",
             post(stories::tick_criterion),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings",
             post(stories::add_finding),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings/{index}/resolve",
             post(stories::resolve_finding),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/decisions",
             post(stories::add_decision),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/files",
             post(stories::set_files),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/block",
             post(stories::block_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/unblock",
             post(stories::unblock_story),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/check",
             post(stories::check_criterion),
         )
         .route(
@@ -457,8 +457,8 @@ pub fn router(state: AppState) -> Router {
             get(threads::list_threads).post(threads::create_app_thread),
         )
         .route(
-            "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads",
-            post(threads::create_feature_thread),
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/threads",
+            post(threads::create_track_thread),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}",

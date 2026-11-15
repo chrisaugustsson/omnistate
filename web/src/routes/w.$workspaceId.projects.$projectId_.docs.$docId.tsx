@@ -101,7 +101,7 @@ function DocPage() {
   const navigate = Route.useNavigate();
   const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
   const loaded = doc.value?.id === docId ? doc.value : null;
-  useVisit(projectId, loaded ? (loaded.feature_id ?? "app") : undefined, loaded ? docId : undefined);
+  useVisit(projectId, loaded ? (loaded.track_id ?? "app") : undefined, loaded ? docId : undefined);
   const current = useRef({ search, navigate });
   useEffect(() => {
     current.current = { search, navigate };

@@ -114,7 +114,7 @@ function ProjectNav({
       >
         <Layers />
         Features
-        <Count value={home ? (home.features ?? []).length : undefined} zero />
+        <Count value={home ? (home.tracks ?? []).length : undefined} zero />
       </Link>
       <Link
         to="/w/$workspaceId/projects/$projectId/threads"
@@ -134,7 +134,7 @@ const MOST_RECENT = 5;
 
 /** The features of the visits that the project still has, newest first and each once: the last five. */
 function recentFeatures(home: HomeResponse, visits: Visit[]): { id: string; name: string }[] {
-  const names = new Map((home.features ?? []).map(({ feature }) => [feature.id, feature.name]));
+  const names = new Map((home.tracks ?? []).map(({ track: feature }) => [feature.id, feature.name]));
   const ids = [...new Set(visits.map((visit) => visit.scope))].filter((scope) => names.has(scope));
   return ids.slice(0, MOST_RECENT).map((id) => ({ id, name: names.get(id) ?? "" }));
 }
@@ -194,12 +194,12 @@ function treeScope(
   else if (at.threadId) scope = scopeOf(home.threads.find((thread) => thread.id === at.threadId));
   else if (at.onApp) scope = "app";
   scope ??= visits[0]?.scope ?? "app";
-  const exists = scope === "app" || (home.features ?? []).some(({ feature }) => feature.id === scope);
+  const exists = scope === "app" || (home.tracks ?? []).some(({ track: feature }) => feature.id === scope);
   return exists ? scope : "app";
 }
 
-function scopeOf(item?: { feature_id?: string | null }): string | undefined {
-  return item ? (item.feature_id ?? "app") : undefined;
+function scopeOf(item?: { track_id?: string | null }): string | undefined {
+  return item ? (item.track_id ?? "app") : undefined;
 }
 
 /** What the sidebar shows of a project: its places (and the palette they open), the features visited last, and the tree of the current scope. */

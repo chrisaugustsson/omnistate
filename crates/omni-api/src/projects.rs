@@ -1,4 +1,4 @@
-//! Projects. A project holds the app level and the features of one app; the
+//! Projects. A project holds the app level and the tracks of one app; the
 //! docs, threads and comments of a scope hang off it. Agents create projects.
 //! Nothing is deleted.
 //!
@@ -148,7 +148,7 @@ pub async fn list_projects(
     Ok(Json(ProjectListResponse { projects }))
 }
 
-/// Renames a project. Its ID, features, docs and threads stay.
+/// Renames a project. Its ID, tracks, docs and threads stay.
 #[utoipa::path(
     patch,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}",

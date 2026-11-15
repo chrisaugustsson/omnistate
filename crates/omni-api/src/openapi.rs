@@ -30,10 +30,7 @@ use crate::docs::{
     EditRequest, EditResponse, HeadHtmlResponse, InvalidOperationBody, OpResultBody,
     RenameDocRequest,
 };
-use crate::features::{
-    CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse, RenameFeatureRequest,
-};
-use crate::home::{FeatureSummary, HomeResponse, StoryCounts, WaitingBody};
+use crate::home::{HomeResponse, StoryCounts, TrackSummary, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::pins::NodeBox;
 use crate::projects::{
@@ -55,6 +52,9 @@ use crate::threads::{
 };
 use crate::tokens::{
     HeadTokensResponse, ImportTokensRequest, ImportedHeadTokens, InvalidTokensBody,
+};
+use crate::tracks::{
+    CreateTrackRequest, RenameTrackRequest, TrackBody, TrackListResponse, TrackResponse,
 };
 use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
@@ -80,18 +80,18 @@ use utoipa::OpenApi;
         crate::api_keys::create,
         crate::api_keys::revoke,
         crate::home::show,
-        crate::features::list_features,
-        crate::features::create_feature,
-        crate::features::show_feature,
-        crate::features::rename_feature,
-        crate::features::delete_feature,
+        crate::tracks::list_tracks,
+        crate::tracks::create_track,
+        crate::tracks::show_track,
+        crate::tracks::rename_track,
+        crate::tracks::delete_track,
         crate::projects::list_projects,
         crate::projects::create_project,
         crate::projects::rename_project,
         crate::attachments::upload,
         crate::attachments::download,
         crate::docs::create_app_doc,
-        crate::docs::create_feature_doc,
+        crate::docs::create_track_doc,
         crate::docs::list_docs,
         crate::docs::show_doc,
         crate::docs::rename_doc,
@@ -137,7 +137,7 @@ use utoipa::OpenApi;
         crate::stories::unblock_story,
         crate::stories::check_criterion,
         crate::threads::create_app_thread,
-        crate::threads::create_feature_thread,
+        crate::threads::create_track_thread,
         crate::threads::list_threads,
         crate::threads::conclude_thread,
         crate::threads::show_thread,
@@ -172,11 +172,11 @@ use utoipa::OpenApi;
         ProjectListResponse,
         CreateProjectRequest,
         RenameProjectRequest,
-        FeatureBody,
-        FeatureResponse,
-        RenameFeatureRequest,
-        FeatureListResponse,
-        CreateFeatureRequest,
+        TrackBody,
+        TrackResponse,
+        RenameTrackRequest,
+        TrackListResponse,
+        CreateTrackRequest,
         AttachmentBody,
         AttachmentResponse,
         CreateDocRequest,
@@ -284,7 +284,7 @@ use utoipa::OpenApi;
         CreateCommentRequest,
         ReplyRequest,
         WaitingBody,
-        FeatureSummary,
+        TrackSummary,
         StoryCounts,
         HomeResponse
     ))

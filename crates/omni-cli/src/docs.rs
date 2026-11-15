@@ -80,7 +80,7 @@ pub fn create(args: &Args) -> Result<()> {
         quote(title)
     );
     let path = match creation_feature(args, &agent, &project)? {
-        Some(feature) => format!("{}/features/{feature}/docs", project_path(&agent, &project)),
+        Some(feature) => format!("{}/tracks/{feature}/docs", project_path(&agent, &project)),
         None => format!("{}/docs", project_path(&agent, &project)),
     };
     let response = agent.request("POST", &path, Some(body.as_bytes()))?;
@@ -110,10 +110,10 @@ pub fn list(args: &Args) -> Result<()> {
         if args.feature.is_some() {
             bail!("give --feature or --global, not both");
         }
-        query.push("feature=global".to_string());
+        query.push("track=global".to_string());
     } else if let Some(given) = current_feature(args) {
         query.push(format!(
-            "feature={}",
+            "track={}",
             resolve_feature(&agent, &project, &given)?
         ));
     }
@@ -140,13 +140,13 @@ pub fn list(args: &Args) -> Result<()> {
         say("no docs");
     }
     // The names of the features are only looked up when a doc is in one.
-    let features = if docs.iter().any(|doc| doc.str_at("feature_id").is_some()) {
+    let features = if docs.iter().any(|doc| doc.str_at("track_id").is_some()) {
         project_features(&agent, &project).unwrap_or_default()
     } else {
         Vec::new()
     };
     for doc in docs {
-        let scope = match doc.str_at("feature_id") {
+        let scope = match doc.str_at("track_id") {
             None => "project",
             Some(id) => features
                 .iter()

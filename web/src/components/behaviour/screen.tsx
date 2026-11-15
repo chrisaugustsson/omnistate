@@ -166,7 +166,7 @@ export function BehaviourScreen({
     [],
   );
   useProjectEvents(projectId, (event) => {
-    if (!event.event.startsWith("behaviour.") || event.data.feature_id !== featureId) return;
+    if (!event.event.startsWith("behaviour.") || event.data.track_id !== featureId) return;
     const concerned =
       event.event === "behaviour.imported" || event.event === "behaviour.marked" || (chosenRef.current !== null && event.data.node_id === chosenRef.current);
     const state = throttle.current;

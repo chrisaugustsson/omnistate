@@ -1,21 +1,21 @@
 import { callApi } from "./client";
 import { operations, type CreateStoryRequest, type PatchStoryRequest, type StoryBody } from "./generated";
 
-const list = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories"];
+const list = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories"];
 
 /** Every story of a feature, any status, by priority then number. */
 export async function loadStories(workspaceId: string, projectId: string, featureId: string): Promise<StoryBody[]> {
   const loaded = await callApi(
     "GET",
-    `/api/v1/w/${workspaceId}/projects/${projectId}/features/${featureId}/stories`,
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/stories`,
     { response: list.responses["200"] },
   );
   return loaded.stories;
 }
 
 const base = (workspaceId: string, projectId: string, featureId: string) =>
-  `/api/v1/w/${workspaceId}/projects/${projectId}/features/${featureId}/stories`;
-const prefix = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories";
+  `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/stories`;
+const prefix = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories";
 const created = operations[`POST ${prefix}`];
 const patched = operations[`PATCH ${prefix}/{story_id}`];
 const cancelled = operations[`POST ${prefix}/{story_id}/cancel`];

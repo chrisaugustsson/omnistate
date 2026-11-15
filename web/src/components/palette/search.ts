@@ -84,19 +84,19 @@ export function buildIndex(home: HomeResponse): Index {
   });
 
   const features: Entry[] = [];
-  for (const { feature, last_activity } of home.features ?? []) {
+  for (const { track: feature, last_activity } of home.tracks ?? []) {
     scopes.set(feature.id, feature.name);
     add(features, entry("feature", feature.id, feature.name, "", time(last_activity, feature.created_at)));
   }
   const docs: Entry[] = [];
   for (const doc of home.docs) {
-    const scope = scopes.get(doc.feature_id ?? "app") ?? "";
+    const scope = scopes.get(doc.track_id ?? "app") ?? "";
     const pillar = PILLAR_TITLES.get(doc.pillar) ?? doc.pillar;
     add(docs, entry("doc", doc.id, doc.title, `${scope} · ${pillar}`, time(doc.updated_at, doc.created_at)));
   }
   const threads: Entry[] = [];
   for (const thread of home.threads) {
-    const scope = scopes.get(thread.feature_id ?? "app") ?? "";
+    const scope = scopes.get(thread.track_id ?? "app") ?? "";
     add(threads, entry("thread", thread.id, thread.question, scope, time(thread.last_post_at, thread.created_at)));
   }
   places.set(entryKey("app", "app"), entry("app", "app", "App", "", 0));

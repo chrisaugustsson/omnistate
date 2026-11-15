@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 // uppercase labels, and alerts that float over the work.
 
 /** The part of a doc that its breadcrumb shows. */
-export type CrumbedDoc = { feature_id?: string | null; pillar: string; title: string };
+export type CrumbedDoc = { track_id?: string | null; pillar: string; title: string };
 
 /**
  * The slim bar over a viewer: the doc's breadcrumb, scope › pillar › title, and
@@ -42,9 +42,9 @@ export function ViewerToolbar({
   children?: ReactNode;
 }) {
   const { home } = useHome(workspaceId, projectId);
-  const featureId = doc?.feature_id ?? null;
+  const featureId = doc?.track_id ?? null;
   const scopeName = featureId
-    ? (home?.features?.find((summary) => summary.feature.id === featureId)?.feature.name ?? "Feature")
+    ? (home?.tracks?.find((summary) => summary.track.id === featureId)?.track.name ?? "Feature")
     : "App";
   const scope = featureId
     ? {

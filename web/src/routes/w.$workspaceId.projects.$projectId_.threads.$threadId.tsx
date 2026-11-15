@@ -30,10 +30,10 @@ const crumbClass =
 /** Where the thread lives: its scope, the Threads page of that scope and the question. */
 function ThreadTrail({ workspaceId, projectId, thread }: { workspaceId: string; projectId: string; thread: ThreadBody }) {
   const { home } = useHome(workspaceId, projectId);
-  const featureId = thread.feature_id ?? null;
+  const featureId = thread.track_id ?? null;
   const params = { workspaceId, projectId };
   const scopeName = featureId
-    ? (home?.features?.find((summary) => summary.feature.id === featureId)?.feature.name ?? "Feature")
+    ? (home?.tracks?.find((summary) => summary.track.id === featureId)?.track.name ?? "Feature")
     : "App";
   return (
     <nav aria-label="Breadcrumb">
@@ -81,7 +81,7 @@ function ThreadView() {
   const loaded = useReloading(useCallback(() => loadThread(workspaceId, projectId, threadId), [workspaceId, projectId, threadId]));
   const { value: thread, failed, reload } = loaded;
   const known = thread?.id === threadId ? thread : null;
-  useVisit(projectId, known ? (known.feature_id ?? "app") : undefined, undefined, known ? threadId : undefined);
+  useVisit(projectId, known ? (known.track_id ?? "app") : undefined, undefined, known ? threadId : undefined);
   useProjectEvents(projectId, reload);
 
   const wanted = hash.startsWith("post-") ? hash.slice("post-".length) : null;

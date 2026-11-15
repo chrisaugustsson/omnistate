@@ -34,7 +34,7 @@ pub(crate) fn behaviour_path(args: &Args, agent: &Agent) -> Result<String> {
         bail!("no feature: pass --feature <name or id>, or put feature = \"name\" in .omni.toml");
     };
     Ok(format!(
-        "/api/v1/w/{}/projects/{project}/features/{feature}/behaviour",
+        "/api/v1/w/{}/projects/{project}/tracks/{feature}/behaviour",
         agent.workspace_id
     ))
 }
@@ -669,6 +669,11 @@ pub fn question(args: &Args, question: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The API calls a rule's feature scope `track`; the command still says `feature`.
+fn api_scope(scope: &str) -> &str {
+    if scope == "feature" { "track" } else { scope }
+}
+
 const RULE_ADD_USAGE: &str = "omni behaviour rule add <node> <text> [--scope node|story|feature]";
 const RULE_EDIT_USAGE: &str =
     "omni behaviour rule edit <rule id> [--text <t>] [--scope <s>] [--withdraw]";
@@ -683,7 +688,7 @@ pub fn rule_add(args: &Args, node: Option<&str>, text: Option<&str>) -> Result<(
     let (id, _) = node_ref(&agent, &base, given)?;
     let mut body = format!("{{\"text\":{}", quote(text));
     if let Some(scope) = &args.scope {
-        body.push_str(&format!(",\"scope\":{}", quote(scope)));
+        body.push_str(&format!(",\"scope\":{}", quote(api_scope(scope))));
     }
     body.push('}');
     let response = agent.request(
@@ -734,7 +739,7 @@ pub fn rule_edit(args: &Args, rule: Option<&str>) -> Result<()> {
         body.push_str(&format!(",\"text\":{}", quote(text)));
     }
     if let Some(scope) = &args.scope {
-        body.push_str(&format!(",\"scope\":{}", quote(scope)));
+        body.push_str(&format!(",\"scope\":{}", quote(api_scope(scope))));
     }
     if args.withdraw {
         body.push_str(",\"withdrawn\":true");
@@ -757,7 +762,7 @@ pub fn rules(args: &Args, node: Option<&str>) -> Result<()> {
     let base = behaviour_path(args, &agent)?;
     let mut query = Vec::new();
     if let Some(scope) = &args.scope {
-        query.push(format!("scope={scope}"));
+        query.push(format!("scope={}", api_scope(scope)));
     }
     if let Some(given) = node {
         query.push(format!("under={}", node_ref(&agent, &base, given)?.0));

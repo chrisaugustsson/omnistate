@@ -1,5 +1,5 @@
-//! The behaviour tree. A feature has one tree of nodes: the root stands for
-//! the feature, its children are user stories and the nodes below them are
+//! The behaviour tree. A track has one tree of nodes: the root stands for
+//! the track, its children are user stories and the nodes below them are
 //! situations. The level and the path of a node are worked out from the
 //! parents and the slugs, never stored. Every write stores who made it and adds
 //! 1 to the node's `version`. Adding a node emits `behaviour.node_created`, changing one
@@ -50,7 +50,7 @@ fn nullable<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Stri
     Option::<String>::deserialize(d).map(Some)
 }
 
-/// A node as the list of a feature's nodes gives it: no text.
+/// A node as the list of a track's nodes gives it: no text.
 #[derive(Serialize, ToSchema)]
 pub struct NodeSummaryBody {
     pub id: String,
@@ -151,7 +151,7 @@ pub struct NodeReadResponse {
     pub siblings: Vec<NodeChildBody>,
     /// The node's own questions, oldest first.
     pub questions: Vec<QuestionBody>,
-    /// Every rule in force that reaches the node: `feature` rules first, then `story`, then `node` rules from the root down.
+    /// Every rule in force that reaches the node: `track` rules first, then `story`, then `node` rules from the root down.
     pub rules: Vec<ReachRuleBody>,
 }
 
@@ -160,7 +160,7 @@ pub struct NodeReadResponse {
 pub struct ReachRuleBody {
     pub id: String,
     pub text: String,
-    /// `node`, `story` or `feature`.
+    /// `node`, `story` or `track`.
     pub scope: String,
     pub node_id: String,
     /// The path of the imposing node; `""` for the root.
@@ -321,16 +321,16 @@ impl QuestionRow {
     }
 }
 
-/// The questions of a feature, oldest first.
+/// The questions of a track, oldest first.
 async fn load_questions(
     tx: &mut Transaction<'static, Postgres>,
-    feature_id: &str,
+    track_id: &str,
 ) -> Result<Vec<QuestionRow>, ApiError> {
     sqlx::query_as::<_, QuestionRow>(&format!(
-        "SELECT {QUESTION_COLUMNS} FROM behaviour_questions WHERE feature_id = $1::uuid \
+        "SELECT {QUESTION_COLUMNS} FROM behaviour_questions WHERE track_id = $1::uuid \
          ORDER BY created_at, id"
     ))
-    .bind(feature_id)
+    .bind(track_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)
@@ -344,7 +344,7 @@ pub struct ListQuery {
 
 #[derive(Serialize, ToSchema)]
 pub struct NodeListResponse {
-    /// Every node of the feature in tree order: depth first, siblings by position.
+    /// Every node of the track in tree order: depth first, siblings by position.
     pub nodes: Vec<NodeSummaryBody>,
 }
 
@@ -359,9 +359,9 @@ pub struct CreateNodeRequest {
     pub summary: Option<String>,
     /// The node's parent. A child of the root when left out.
     pub parent_id: Option<String>,
-    /// A node of the feature that describes the same situation.
+    /// A node of the track that describes the same situation.
     pub same_as: Option<String>,
-    /// A node of the feature, a story or one in a story, that the user carries on in.
+    /// A node of the track, a story or one in a story, that the user carries on in.
     pub handoff: Option<String>,
 }
 
@@ -378,11 +378,11 @@ pub struct PatchNodeRequest {
     pub behaviour: Option<String>,
     /// `open`, `done` or `out_of_scope`.
     pub status: Option<String>,
-    /// A node of the feature; `null` clears it.
+    /// A node of the track; `null` clears it.
     #[serde(default, deserialize_with = "nullable")]
     #[schema(value_type = Option<String>)]
     pub same_as: Option<Option<String>>,
-    /// A node of the feature; `null` clears it.
+    /// A node of the track; `null` clears it.
     #[serde(default, deserialize_with = "nullable")]
     #[schema(value_type = Option<String>)]
     pub handoff: Option<Option<String>>,
@@ -428,7 +428,7 @@ const NODE_COLUMNS: &str = concat!(
     "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS updated_at"
 );
 
-/// The nodes of a feature with their paths and levels.
+/// The nodes of a track with their paths and levels.
 struct Tree {
     rows: Vec<NodeRow>,
     /// Index into `rows` by node id.
@@ -438,13 +438,13 @@ struct Tree {
 impl Tree {
     async fn load(
         tx: &mut Transaction<'static, Postgres>,
-        feature_id: &str,
+        track_id: &str,
     ) -> Result<Self, ApiError> {
         let rows = sqlx::query_as::<_, NodeRow>(&format!(
-            "SELECT {NODE_COLUMNS} FROM behaviour_nodes WHERE feature_id = $1::uuid \
+            "SELECT {NODE_COLUMNS} FROM behaviour_nodes WHERE track_id = $1::uuid \
              ORDER BY position, id"
         ))
-        .bind(feature_id)
+        .bind(track_id)
         .fetch_all(&mut **tx)
         .await
         .map_err(ApiError::database)?;
@@ -567,7 +567,7 @@ impl Tree {
         }
     }
 
-    /// The id a pointer in a request names: a node of the feature other than `from`.
+    /// The id a pointer in a request names: a node of the track other than `from`.
     fn target(&self, given: &str, from: Option<&str>) -> Result<String, ApiError> {
         let id = parse_uuid(given).filter(|id| self.find(id).is_some());
         match id {
@@ -624,7 +624,7 @@ async fn mark(
     tx: &mut Transaction<'static, Postgres>,
     workspace_id: &str,
     project_id: &str,
-    feature_id: &str,
+    track_id: &str,
     node_id: &str,
     itself: bool,
     below: bool,
@@ -633,11 +633,11 @@ async fn mark(
         "WITH RECURSIVE sub AS (SELECT id FROM behaviour_nodes WHERE parent_id = $1::uuid \
          UNION ALL SELECT n.id FROM behaviour_nodes n JOIN sub ON n.parent_id = sub.id) \
          UPDATE behaviour_nodes SET needs_pass_since = clock_timestamp() \
-         WHERE feature_id = $2::uuid AND needs_pass_since IS NULL \
+         WHERE track_id = $2::uuid AND needs_pass_since IS NULL \
          AND (($3 AND id = $1::uuid) OR ($4 AND id IN (SELECT id FROM sub)))",
     )
     .bind(node_id)
-    .bind(feature_id)
+    .bind(track_id)
     .bind(itself)
     .bind(below)
     .execute(&mut **tx)
@@ -648,7 +648,7 @@ async fn mark(
         workspace_id,
         project_id,
         "behaviour.marked",
-        &json!({ "feature_id": feature_id, "node_id": node_id, "below": below }),
+        &json!({ "track_id": track_id, "node_id": node_id, "below": below }),
     )
     .await?;
     Ok(())
@@ -682,18 +682,18 @@ fn slug_from(title: &str) -> String {
     if slug.is_empty() { "node" } else { slug }.to_string()
 }
 
-/// The feature's name, with its row locked so that two first writes do not
-/// make two roots. 404 when the feature is not one of the project.
-async fn lock_feature(
+/// The track's name, with its row locked so that two first writes do not
+/// make two roots. 404 when the track is not one of the project.
+async fn lock_track(
     tx: &mut Transaction<'static, Postgres>,
     project_id: &str,
-    feature_id: &str,
+    track_id: &str,
 ) -> Result<String, ApiError> {
     let found: Option<(String,)> = sqlx::query_as(
-        "SELECT name FROM features \
+        "SELECT name FROM tracks \
          WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR UPDATE",
     )
-    .bind(feature_id)
+    .bind(track_id)
     .bind(project_id)
     .fetch_optional(&mut **tx)
     .await
@@ -701,17 +701,17 @@ async fn lock_feature(
     found.map(|(name,)| name).ok_or(ApiError::NotFound)
 }
 
-/// A feature of the project that is not deleted, 404 when there is none.
-async fn require_feature(
+/// A track of the project that is not deleted, 404 when there is none.
+async fn require_track(
     tx: &mut Transaction<'static, Postgres>,
     project_id: &str,
-    feature_id: &str,
+    track_id: &str,
 ) -> Result<(), ApiError> {
     let found: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM features \
+        "SELECT id::text FROM tracks \
          WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR SHARE",
     )
-    .bind(feature_id)
+    .bind(track_id)
     .bind(project_id)
     .fetch_optional(&mut **tx)
     .await
@@ -722,7 +722,7 @@ async fn require_feature(
 struct NewNode<'a> {
     workspace_id: &'a str,
     project_id: &'a str,
-    feature_id: &'a str,
+    track_id: &'a str,
     parent_id: Option<&'a str>,
     slug: Option<&'a str>,
     title: &'a str,
@@ -738,16 +738,16 @@ async fn insert_node(
     new: NewNode<'_>,
 ) -> Result<String, ApiError> {
     sqlx::query_scalar(
-        "INSERT INTO behaviour_nodes (workspace_id, project_id, feature_id, parent_id, slug, \
+        "INSERT INTO behaviour_nodes (workspace_id, project_id, track_id, parent_id, slug, \
          position, title, summary, created_by, same_as_id, handoff_id) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, \
          (SELECT coalesce(max(position) + 1, 0) FROM behaviour_nodes \
-          WHERE feature_id = $3::uuid AND parent_id IS NOT DISTINCT FROM $4::uuid), \
+          WHERE track_id = $3::uuid AND parent_id IS NOT DISTINCT FROM $4::uuid), \
          $6, $7, $8::text::jsonb, $9::uuid, $10::uuid) RETURNING id::text",
     )
     .bind(new.workspace_id)
     .bind(new.project_id)
-    .bind(new.feature_id)
+    .bind(new.track_id)
     .bind(new.parent_id)
     .bind(new.slug)
     .bind(new.title)
@@ -760,40 +760,40 @@ async fn insert_node(
     .map_err(ApiError::database)
 }
 
-/// Adds a node to a feature's behaviour tree.
+/// Adds a node to a track's behaviour tree.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
     ),
     request_body = CreateNodeRequest,
     responses(
-        (status = 201, description = "The new node, the last child of its parent. The first node of a feature also creates the root, titled with the feature's name", body = NodeResponse),
+        (status = 201, description = "The new node, the last child of its parent. The first node of a track also creates the root, titled with the track's name", body = NodeResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace, or no such parent in the feature", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or no such parent in the track", body = ErrorBody),
         (status = 409, description = "A sibling has the slug (`slug_taken`), or the parent has a pointer (`points_elsewhere`)", body = ErrorBody),
-        (status = 422, description = "A blank title (`invalid_title`), a slug that does not fit `^[a-z0-9]+(-[a-z0-9]+)*$` and 80 characters (`invalid_slug`), both pointers (`two_pointers`), or a pointer to a node that is not in the feature (`pointer_target_unknown`)", body = ErrorBody),
+        (status = 422, description = "A blank title (`invalid_title`), a slug that does not fit `^[a-z0-9]+(-[a-z0-9]+)*$` and 80 characters (`invalid_slug`), both pointers (`two_pointers`), or a pointer to a node that is not in the track (`pointer_target_unknown`)", body = ErrorBody),
     )
 )]
 pub async fn create_node(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<NodeResponse>), ApiError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<CreateNodeRequest>(&body);
     let author = author_of(&request.actor, &identity);
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
-    let feature_name = lock_feature(&mut tx, &project_id, &feature_id).await?;
+    let track_name = lock_track(&mut tx, &project_id, &track_id).await?;
     let new = new?;
 
     let title = new.title.trim().to_string();
@@ -806,7 +806,7 @@ pub async fn create_node(
     if new.same_as.is_some() && new.handoff.is_some() {
         return Err(invalid_field("two_pointers"));
     }
-    let mut tree = Tree::load(&mut tx, &feature_id).await?;
+    let mut tree = Tree::load(&mut tx, &track_id).await?;
     let mut events = Vec::new();
     let root = match tree.rows.iter().position(|row| row.parent_id.is_none()) {
         Some(at) => tree.rows[at].id.clone(),
@@ -819,10 +819,10 @@ pub async fn create_node(
                 NewNode {
                     workspace_id,
                     project_id: &project_id,
-                    feature_id: &feature_id,
+                    track_id: &track_id,
                     parent_id: None,
                     slug: None,
-                    title: &feature_name,
+                    title: &track_name,
                     summary: "",
                     same_as_id: None,
                     handoff_id: None,
@@ -831,7 +831,7 @@ pub async fn create_node(
             )
             .await?;
             events.push(json!({
-                "feature_id": feature_id, "node_id": root_id, "parent_id": null, "path": "",
+                "track_id": track_id, "node_id": root_id, "parent_id": null, "path": "",
             }));
             root_id
         }
@@ -889,7 +889,7 @@ pub async fn create_node(
         NewNode {
             workspace_id,
             project_id: &project_id,
-            feature_id: &feature_id,
+            track_id: &track_id,
             parent_id: Some(&parent_id),
             slug: Some(&slug),
             title: &title,
@@ -900,11 +900,11 @@ pub async fn create_node(
         },
     )
     .await?;
-    tree = Tree::load(&mut tx, &feature_id).await?;
+    tree = Tree::load(&mut tx, &track_id).await?;
     let at = tree.find(&node_id).ok_or(ApiError::Unavailable)?;
     let node = tree.body(at);
     events.push(json!({
-        "feature_id": feature_id, "node_id": node.id, "parent_id": node.parent_id,
+        "track_id": track_id, "node_id": node.id, "parent_id": node.parent_id,
         "path": node.path,
     }));
     for data in &events {
@@ -922,40 +922,40 @@ pub async fn create_node(
     Ok((StatusCode::CREATED, Json(NodeResponse { node })))
 }
 
-/// The nodes of a feature's behaviour tree, without their text.
+/// The nodes of a track's behaviour tree, without their text.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("under" = Option<String>, Query, description = "Only this node and the nodes below it"),
         ("needs_pass" = Option<bool>, Query, description = "`true`: only the nodes marked for another grill pass"),
     ),
     responses(
-        (status = 200, description = "Every node of the feature in tree order; empty when the feature has no tree", body = NodeListResponse),
+        (status = 200, description = "Every node of the track in tree order; empty when the track has no tree", body = NodeListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace, or `under` is not a node of it", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or `under` is not a node of it", body = ErrorBody),
     )
 )]
 pub async fn list_nodes(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<NodeListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let under = match &query.under {
         Some(id) => Some(parse_uuid(id).ok_or(ApiError::NotFound)?),
         None => None,
     };
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
-    let open = load_questions(&mut tx, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
+    let open = load_questions(&mut tx, &track_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     let mut open_counts: HashMap<&str, i64> = HashMap::new();
     let mut default_counts: HashMap<&str, i64> = HashMap::new();
@@ -996,37 +996,37 @@ pub async fn list_nodes(
 /// One node with the nodes above it.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("node_id" = String, Path, description = "The node's UUID"),
     ),
     responses(
         (status = 200, description = "The node and the nodes above it, the root first", body = NodeReadResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such node in this track, project and workspace", body = ErrorBody),
     )
 )]
 pub async fn show_node(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, node_id)): Path<(String, String, String, String)>,
 ) -> Result<Json<NodeReadResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
-    let all = load_questions(&mut tx, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
+    let all = load_questions(&mut tx, &track_id).await?;
     let rule_rows = sqlx::query_as::<_, RuleRow>(&format!(
-        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE feature_id = $1::uuid \
+        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE track_id = $1::uuid \
          AND withdrawn_at IS NULL ORDER BY created_at, id"
     ))
-    .bind(&feature_id)
+    .bind(&track_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
@@ -1087,7 +1087,7 @@ pub async fn show_node(
             continue;
         };
         let rank = match row.scope.as_str() {
-            "feature" => 0,
+            "track" => 0,
             "story" => {
                 let holder_story = tree.story_of(holder);
                 if story.is_none() || holder_story.as_deref() != story {
@@ -1133,11 +1133,11 @@ pub async fn show_node(
 /// Rewrites a node's text or sets its status.
 #[utoipa::path(
     patch,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("node_id" = String, Path, description = "The node's UUID"),
     ),
     request_body = PatchNodeRequest,
@@ -1145,22 +1145,22 @@ pub async fn show_node(
         (status = 200, description = "The node with its new `version`", body = NodeResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such node in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `slug_taken`, `has_children` (a pointer set on a node that has children), or `open_questions` (status `done` while a question on the node is open)", body = StoryConflictBody),
         (status = 403, description = "A session sent `needs_pass`: only an API key clears a mark", body = ErrorBody),
-        (status = 422, description = "No field but `expected_version` (`no_changes`), `needs_pass: true` (`invalid_needs_pass`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the feature (`pointer_target_unknown`)", body = ErrorBody),
+        (status = 422, description = "No field but `expected_version` (`no_changes`), `needs_pass: true` (`invalid_needs_pass`), a blank title (`invalid_title`), a slug that does not fit or one on the root (`invalid_slug`), a status other than `open`, `done` and `out_of_scope` (`invalid_status`), both pointers set (`two_pointers`), a pointer to the node itself (`pointer_to_itself`) or to a node that is not in the track (`pointer_target_unknown`)", body = ErrorBody),
     )
 )]
 pub async fn patch_node(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, node_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<NodeResponse>, StoryError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
     let patch = parse_body::<PatchNodeRequest>(&body)?;
     let mut fields: Vec<&str> = Vec::new();
@@ -1207,14 +1207,14 @@ pub async fn patch_node(
     }
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
     let current: Option<(i32, bool, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT version, parent_id IS NULL, same_as_id::text, handoff_id::text \
          FROM behaviour_nodes \
-         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+         WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
     )
     .bind(&node_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
@@ -1253,7 +1253,7 @@ pub async fn patch_node(
             return Err(ApiError::conflict("slug_taken").into());
         }
     }
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let resolve = |given: &Option<Option<String>>, now: Option<String>| match given {
         None => Ok(now),
         Some(None) => Ok(None),
@@ -1295,7 +1295,7 @@ pub async fn patch_node(
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let at = tree.find(&node_id).ok_or(ApiError::Unavailable)?;
     let node = tree.body(at);
     live::emit(
@@ -1304,7 +1304,7 @@ pub async fn patch_node(
         &project_id,
         "behaviour.node_changed",
         &json!({
-            "feature_id": feature_id, "node_id": node.id, "path": node.path, "fields": fields,
+            "track_id": track_id, "node_id": node.id, "path": node.path, "fields": fields,
         }),
     )
     .await?;
@@ -1316,11 +1316,11 @@ pub async fn patch_node(
 /// Moves a node, with everything below it, to be the last child of another node.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/move",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("node_id" = String, Path, description = "The node's UUID"),
     ),
     request_body = MoveNodeRequest,
@@ -1328,7 +1328,7 @@ pub async fn patch_node(
         (status = 200, description = "The node with its new `path`, `position` and `version`", body = NodeResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such node, or no such parent, in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such node, or no such parent, in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `cycle` (the parent is the node or below it) `slug_taken` (the parent has a child with the node's slug) or `points_elsewhere` (the parent has a pointer)", body = StoryConflictBody),
         (status = 422, description = "The node is the root (`root_cannot_move`)", body = ErrorBody),
     )
@@ -1337,24 +1337,24 @@ pub async fn move_node(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, node_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<NodeResponse>, StoryError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
     let step = parse_body::<MoveNodeRequest>(&body)?;
     let parent_id = parse_uuid(&step.parent_id).ok_or(ApiError::NotFound)?;
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
     let current: Option<(i32, bool, Option<String>)> = sqlx::query_as(
         "SELECT version, parent_id IS NULL, slug FROM behaviour_nodes \
-         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+         WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
     )
     .bind(&node_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
@@ -1366,7 +1366,7 @@ pub async fn move_node(
     if is_root {
         return Err(invalid_field("root_cannot_move").into());
     }
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     if tree.find(&parent_id).is_none() {
         return Err(ApiError::NotFound.into());
     }
@@ -1409,7 +1409,7 @@ pub async fn move_node(
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let at = tree.find(&node_id).ok_or(ApiError::Unavailable)?;
     let node = tree.body(at);
     live::emit(
@@ -1418,7 +1418,7 @@ pub async fn move_node(
         &project_id,
         "behaviour.node_changed",
         &json!({
-            "feature_id": feature_id, "node_id": node.id, "path": node.path,
+            "track_id": track_id, "node_id": node.id, "path": node.path,
             "fields": ["parent_id", "position"],
         }),
     )
@@ -1431,11 +1431,11 @@ pub async fn move_node(
 /// Asks a question, or leaves a remark, on a node.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/questions",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("node_id" = String, Path, description = "The node's UUID"),
     ),
     request_body = AskRequest,
@@ -1443,7 +1443,7 @@ pub async fn move_node(
         (status = 201, description = "The new question: open (a node that was `done` is `open` again), or answered when the body has `answer` (the node's status is left alone)", body = QuestionResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such node in this track, project and workspace", body = ErrorBody),
         (status = 422, description = "A blank question (`invalid_question`), a blank recommendation (`invalid_recommendation`), a recommendation together with `answer` (`recommendation_with_answer`), a blank answer (`invalid_answer`), `by` without `answer`, a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)", body = ErrorBody),
     )
 )]
@@ -1451,24 +1451,24 @@ pub async fn ask_question(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, node_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<QuestionResponse>), ApiError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
     let ask = parse_body::<AskRequest>(&body);
     let author = author_of(&request.actor, &identity);
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
     let node: Option<(String,)> = sqlx::query_as(
         "SELECT status FROM behaviour_nodes \
-         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+         WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
     )
     .bind(&node_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
@@ -1493,14 +1493,14 @@ pub async fn ask_question(
     };
     let given_by = answer.as_ref().map(|(_, by)| *by);
     let question_id: String = sqlx::query_scalar(
-        "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, \
+        "INSERT INTO behaviour_questions (workspace_id, project_id, track_id, node_id, \
          question, asked_by, state, answered_by, recommendation) VALUES ($1::uuid, $2::uuid, $3::uuid, \
          $4::uuid, $5, $6::text::jsonb, CASE WHEN $7::text IS NULL THEN 'open' ELSE 'answered' END, $7, $8) \
          RETURNING id::text",
     )
     .bind(workspace_id)
     .bind(&project_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&node_id)
     .bind(text)
     .bind(author.to_string())
@@ -1513,7 +1513,7 @@ pub async fn ask_question(
         insert_answer(
             &mut tx,
             workspace_id,
-            &feature_id,
+            &track_id,
             &question_id,
             text,
             by,
@@ -1521,7 +1521,7 @@ pub async fn ask_question(
         )
         .await?;
     }
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     if status == "done" && answer.is_none() {
         sqlx::query(
             "UPDATE behaviour_nodes SET status = 'open', version = version + 1, \
@@ -1538,7 +1538,7 @@ pub async fn ask_question(
             &project_id,
             "behaviour.node_changed",
             &json!({
-                "feature_id": feature_id, "node_id": node_id, "path": path,
+                "track_id": track_id, "node_id": node_id, "path": path,
                 "fields": ["status"],
             }),
         )
@@ -1557,7 +1557,7 @@ pub async fn ask_question(
         &project_id,
         "behaviour.question_changed",
         &json!({
-            "feature_id": feature_id, "node_id": node_id, "question_id": question_id,
+            "track_id": track_id, "node_id": node_id, "question_id": question_id,
             "state": if answer.is_some() { "answered" } else { "open" },
         }),
     )
@@ -1567,7 +1567,7 @@ pub async fn ask_question(
             &mut tx,
             workspace_id,
             &project_id,
-            &feature_id,
+            &track_id,
             &node_id,
             true,
             false,
@@ -1610,18 +1610,18 @@ fn checked_answer<'a>(
 async fn insert_answer(
     tx: &mut Transaction<'static, Postgres>,
     workspace_id: &str,
-    feature_id: &str,
+    track_id: &str,
     question_id: &str,
     answer: &str,
     given_by: &str,
     author: &Value,
 ) -> Result<(), ApiError> {
     sqlx::query(
-        "INSERT INTO behaviour_answers (workspace_id, feature_id, question_id, answer, \
+        "INSERT INTO behaviour_answers (workspace_id, track_id, question_id, answer, \
          given_by, author) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::text::jsonb)",
     )
     .bind(workspace_id)
-    .bind(feature_id)
+    .bind(track_id)
     .bind(question_id)
     .bind(answer)
     .bind(given_by)
@@ -1635,11 +1635,11 @@ async fn insert_answer(
 /// Answers an open question, or with `change` an answered one.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}/answers",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("question_id" = String, Path, description = "The question's UUID"),
     ),
     request_body = AnswerRequest,
@@ -1647,7 +1647,7 @@ async fn insert_answer(
         (status = 201, description = "The question, answered, with its new `version`", body = QuestionResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such question in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such question in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`already_answered` (an answer without `change` on an answered question), `not_answered` (`change` on an open one), `conflict` with `current_version` when `expected_version` is stale, else `answered_by_human` (an agent's own answer on a question a person answered)", body = StoryConflictBody),
         (status = 422, description = "A blank answer (`invalid_answer`), a `by` other than `human` and `agent`, or `agent` from a session (`invalid_by`)", body = ErrorBody),
     )
@@ -1656,24 +1656,24 @@ pub async fn answer_question(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id, question_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, question_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<QuestionResponse>), StoryError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let question_id = parse_uuid(&question_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<AnswerRequest>(&body);
     let author = author_of(&request.actor, &identity);
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
     let locked: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
         "SELECT node_id::text, state, version, answered_by FROM behaviour_questions \
-         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+         WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
     )
     .bind(&question_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
@@ -1696,7 +1696,7 @@ pub async fn answer_question(
     insert_answer(
         &mut tx,
         workspace_id,
-        &feature_id,
+        &track_id,
         &question_id,
         text,
         by,
@@ -1712,7 +1712,7 @@ pub async fn answer_question(
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let row = sqlx::query_as::<_, QuestionRow>(&format!(
         "SELECT {QUESTION_COLUMNS} FROM behaviour_questions WHERE id = $1::uuid"
     ))
@@ -1726,7 +1726,7 @@ pub async fn answer_question(
         &project_id,
         "behaviour.question_changed",
         &json!({
-            "feature_id": feature_id, "node_id": node_id, "question_id": question_id,
+            "track_id": track_id, "node_id": node_id, "question_id": question_id,
             "state": "answered",
         }),
     )
@@ -1737,7 +1737,7 @@ pub async fn answer_question(
             &mut tx,
             workspace_id,
             &project_id,
-            &feature_id,
+            &track_id,
             &node_id,
             by_person,
             write.change,
@@ -1754,40 +1754,40 @@ pub async fn answer_question(
     ))
 }
 
-/// One question of a feature's behaviour tree with every answer it has had.
+/// One question of a track's behaviour tree with every answer it has had.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("question_id" = String, Path, description = "The question's UUID"),
     ),
     responses(
         (status = 200, description = "The question, with `answers` oldest first", body = QuestionResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such question in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such question in this track, project and workspace", body = ErrorBody),
     )
 )]
 pub async fn show_question(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id, question_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, question_id)): Path<(String, String, String, String)>,
 ) -> Result<Json<QuestionResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let question_id = parse_uuid(&question_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let row = sqlx::query_as::<_, QuestionRow>(&format!(
         "SELECT {QUESTION_COLUMNS} FROM behaviour_questions \
-         WHERE id = $1::uuid AND feature_id = $2::uuid"
+         WHERE id = $1::uuid AND track_id = $2::uuid"
     ))
     .bind(&question_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(ApiError::database)?
@@ -1798,14 +1798,14 @@ pub async fn show_question(
     }))
 }
 
-/// The questions of a feature's behaviour tree.
+/// The questions of a track's behaviour tree.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("state" = Option<String>, Query, description = "`open` or `answered`; both when left out"),
         ("by" = Option<String>, Query, description = "`agent` or `human`: only the answered questions whose current answer was given that way"),
         ("under" = Option<String>, Query, description = "Only the questions on this node and the nodes below it"),
@@ -1813,18 +1813,18 @@ pub async fn show_question(
     responses(
         (status = 200, description = "The questions in tree order of their nodes, then oldest first", body = QuestionListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace, or `under` is not a node of it", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or `under` is not a node of it", body = ErrorBody),
         (status = 422, description = "A `state` other than `open` and `answered` (`invalid_state`), or a `by` other than `agent` and `human` (`invalid_by`)", body = ErrorBody),
     )
 )]
 pub async fn list_questions(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     Query(query): Query<QuestionQuery>,
 ) -> Result<Json<QuestionListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     if query
         .state
         .as_deref()
@@ -1845,9 +1845,9 @@ pub async fn list_questions(
     };
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
-    let rows = load_questions(&mut tx, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
+    let rows = load_questions(&mut tx, &track_id).await?;
     tx.commit().await.map_err(ApiError::database)?;
     let mut order = tree.in_order();
     if let Some(under) = under {
@@ -1892,7 +1892,7 @@ pub struct RuleBody {
     /// The path of that node; `""` for the root.
     pub node_path: String,
     pub text: String,
-    /// `node` (the node and below), `story` (every node of its story) or `feature`.
+    /// `node` (the node and below), `story` (every node of its story) or `track`.
     pub scope: String,
     /// `true` for a rule that is no longer in force; it stays readable.
     pub withdrawn: bool,
@@ -1925,7 +1925,7 @@ pub struct RuleQuery {
 pub struct CreateRuleRequest {
     /// Not blank.
     pub text: String,
-    /// `node` (the default), `story` or `feature`. `story` on the root is 422 `no_story`.
+    /// `node` (the default), `story` or `track`. `story` on the root is 422 `no_story`.
     pub scope: Option<String>,
 }
 
@@ -1935,7 +1935,7 @@ pub struct PatchRuleRequest {
     pub expected_version: i64,
     /// Not blank.
     pub text: Option<String>,
-    /// `node`, `story` or `feature`. `story` on a rule of the root is 422 `no_story`.
+    /// `node`, `story` or `track`. `story` on a rule of the root is 422 `no_story`.
     pub scope: Option<String>,
     /// `true` withdraws the rule, `false` puts it back in force.
     pub withdrawn: Option<bool>,
@@ -1979,17 +1979,17 @@ impl RuleRow {
 }
 
 fn scope_known(scope: &str) -> bool {
-    ["node", "story", "feature"].contains(&scope)
+    ["node", "story", "track"].contains(&scope)
 }
 
 /// Adds a rule on a node.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/rules",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("node_id" = String, Path, description = "The node's UUID"),
     ),
     request_body = CreateRuleRequest,
@@ -1997,32 +1997,32 @@ fn scope_known(scope: &str) -> bool {
         (status = 201, description = "The rule, at version 1", body = RuleResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such node in this feature, project and workspace", body = ErrorBody),
-        (status = 422, description = "A blank text (`invalid_text`), a scope other than `node`, `story` and `feature` (`invalid_scope`), or `story` on the root (`no_story`)", body = ErrorBody),
+        (status = 404, description = "No such node in this track, project and workspace", body = ErrorBody),
+        (status = 422, description = "A blank text (`invalid_text`), a scope other than `node`, `story` and `track` (`invalid_scope`), or `story` on the root (`no_story`)", body = ErrorBody),
     )
 )]
 pub async fn create_rule(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id, node_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, node_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<RuleResponse>), ApiError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let node_id = parse_uuid(&node_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<CreateRuleRequest>(&body);
     let author = author_of(&request.actor, &identity);
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
     let node: Option<(bool,)> = sqlx::query_as(
         "SELECT parent_id IS NULL FROM behaviour_nodes \
-         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
+         WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
     )
     .bind(&node_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
@@ -2041,13 +2041,13 @@ pub async fn create_rule(
         return Err(invalid_field("no_story"));
     }
     let rule_id: String = sqlx::query_scalar(
-        "INSERT INTO behaviour_rules (workspace_id, project_id, feature_id, node_id, text, \
+        "INSERT INTO behaviour_rules (workspace_id, project_id, track_id, node_id, text, \
          scope, author) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb) \
          RETURNING id::text",
     )
     .bind(workspace_id)
     .bind(&project_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&node_id)
     .bind(text)
     .bind(scope)
@@ -2055,7 +2055,7 @@ pub async fn create_rule(
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let row = sqlx::query_as::<_, RuleRow>(&format!(
         "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE id = $1::uuid"
     ))
@@ -2068,7 +2068,7 @@ pub async fn create_rule(
         workspace_id,
         &project_id,
         "behaviour.rule_changed",
-        &json!({ "feature_id": feature_id, "node_id": node_id, "rule_id": rule_id }),
+        &json!({ "track_id": track_id, "node_id": node_id, "rule_id": rule_id }),
     )
     .await?;
     tx.commit().await.map_err(ApiError::database)?;
@@ -2084,11 +2084,11 @@ pub async fn create_rule(
 /// Rewrites a rule, changes its scope, or withdraws it. A rule is never deleted.
 #[utoipa::path(
     patch,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules/{rule_id}",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("rule_id" = String, Path, description = "The rule's UUID"),
     ),
     request_body = PatchRuleRequest,
@@ -2096,7 +2096,7 @@ pub async fn create_rule(
         (status = 200, description = "The rule with its new `version`", body = RuleResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such rule in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such rule in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
         (status = 422, description = "Nothing to change (`no_changes`), a blank text (`invalid_text`), an unknown scope (`invalid_scope`), or `story` on a rule of the root (`no_story`)", body = ErrorBody),
     )
@@ -2105,12 +2105,12 @@ pub async fn patch_rule(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id, rule_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, rule_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<RuleResponse>, StoryError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let rule_id = parse_uuid(&rule_id).ok_or(ApiError::NotFound)?;
     let patch = parse_body::<PatchRuleRequest>(&body)?;
     if patch.text.is_none() && patch.scope.is_none() && patch.withdrawn.is_none() {
@@ -2129,15 +2129,15 @@ pub async fn patch_rule(
     }
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
     let current: Option<(String, i32, bool, String)> = sqlx::query_as(
         "SELECT r.node_id::text, r.version, n.parent_id IS NULL, r.scope \
          FROM behaviour_rules r JOIN behaviour_nodes n ON n.id = r.node_id \
-         WHERE r.id = $1::uuid AND r.feature_id = $2::uuid AND r.project_id = $3::uuid \
+         WHERE r.id = $1::uuid AND r.track_id = $2::uuid AND r.project_id = $3::uuid \
          FOR UPDATE OF r",
     )
     .bind(&rule_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
@@ -2163,7 +2163,7 @@ pub async fn patch_rule(
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let row = sqlx::query_as::<_, RuleRow>(&format!(
         "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE id = $1::uuid"
     ))
@@ -2176,7 +2176,7 @@ pub async fn patch_rule(
         workspace_id,
         &project_id,
         "behaviour.rule_changed",
-        &json!({ "feature_id": feature_id, "node_id": node_id, "rule_id": rule_id }),
+        &json!({ "track_id": track_id, "node_id": node_id, "rule_id": rule_id }),
     )
     .await?;
     tx.commit().await.map_err(ApiError::database)?;
@@ -2186,32 +2186,32 @@ pub async fn patch_rule(
     }))
 }
 
-/// The rules of a feature's behaviour tree.
+/// The rules of a track's behaviour tree.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
-        ("scope" = Option<String>, Query, description = "`node`, `story` or `feature`; every scope when left out"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+        ("scope" = Option<String>, Query, description = "`node`, `story` or `track`; every scope when left out"),
         ("under" = Option<String>, Query, description = "Only the rules imposed on this node and the nodes below it"),
     ),
     responses(
         (status = 200, description = "The rules in tree order of their nodes, then oldest first, withdrawn ones included and flagged", body = RuleListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace, or `under` is not a node of it", body = ErrorBody),
-        (status = 422, description = "A `scope` other than `node`, `story` and `feature` (`invalid_scope`)", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or `under` is not a node of it", body = ErrorBody),
+        (status = 422, description = "A `scope` other than `node`, `story` and `track` (`invalid_scope`)", body = ErrorBody),
     )
 )]
 pub async fn list_rules(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     Query(query): Query<RuleQuery>,
 ) -> Result<Json<RuleListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     if query
         .scope
         .as_deref()
@@ -2225,13 +2225,13 @@ pub async fn list_rules(
     };
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
-    let tree = Tree::load(&mut tx, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
+    let tree = Tree::load(&mut tx, &track_id).await?;
     let rows = sqlx::query_as::<_, RuleRow>(&format!(
-        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE feature_id = $1::uuid \
+        "SELECT {RULE_COLUMNS} FROM behaviour_rules WHERE track_id = $1::uuid \
          AND ($2::text IS NULL OR scope = $2) ORDER BY created_at, id"
     ))
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&query.scope)
     .fetch_all(&mut *tx)
     .await
@@ -2282,7 +2282,7 @@ pub struct ImportQuestion {
 #[derive(Deserialize, ToSchema)]
 pub struct ImportRule {
     pub text: String,
-    /// `node`, `story` or `feature`.
+    /// `node`, `story` or `track`.
     pub scope: String,
 }
 
@@ -2524,10 +2524,7 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
                 say(
                     place,
                     key,
-                    format!(
-                        "rule scope \"{}\" is not node, story or feature",
-                        rule.scope
-                    ),
+                    format!("rule scope \"{}\" is not node, story or track", rule.scope),
                 );
             } else if is_root && rule.scope == "story" {
                 say(
@@ -2569,22 +2566,22 @@ fn import_problems(nodes: &[ImportNode]) -> Vec<ImportProblem> {
     problems.into_iter().map(|(_, problem)| problem).collect()
 }
 
-/// Reads a whole tree into a feature that has none, all or nothing.
+/// Reads a whole tree into a track that has none, all or nothing.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/import",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
     ),
     request_body = ImportRequest,
     responses(
         (status = 201, description = "The tree is stored; one `behaviour.imported` event is emitted", body = ImportResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`), or an API key without `X-Omni-Run` and `X-Omni-Role` (`identity_required`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
-        (status = 409, description = "The feature already has a node (`tree_not_empty`)", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace", body = ErrorBody),
+        (status = 409, description = "The track already has a node (`tree_not_empty`)", body = ErrorBody),
         (status = 422, description = "`invalid_import` with every problem found, by node key; nothing is written", body = ImportInvalidBody),
     )
 )]
@@ -2592,22 +2589,22 @@ pub async fn import_tree(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     identity: AgentIdentity,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<ImportResponse>), ImportError> {
     require_identity(&request.actor, &identity)?;
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let import = parse_body::<ImportRequest>(&body);
     let author = author_of(&request.actor, &identity);
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
-    lock_feature(&mut tx, &project_id, &feature_id).await?;
+    lock_track(&mut tx, &project_id, &track_id).await?;
     let import = import?;
     let started: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM behaviour_nodes WHERE feature_id = $1::uuid)",
+        "SELECT EXISTS (SELECT 1 FROM behaviour_nodes WHERE track_id = $1::uuid)",
     )
-    .bind(&feature_id)
+    .bind(&track_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
@@ -2637,14 +2634,14 @@ pub async fn import_tree(
         let node = &nodes[i];
         let parent_id = parent.map(|p| ids[nodes[p].key.as_str()].clone());
         let id: String = sqlx::query_scalar(
-            "INSERT INTO behaviour_nodes (workspace_id, project_id, feature_id, parent_id, slug, \
+            "INSERT INTO behaviour_nodes (workspace_id, project_id, track_id, parent_id, slug, \
              position, title, summary, situation, behaviour, status, created_by) \
              VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10, $11, \
              $12::text::jsonb) RETURNING id::text",
         )
         .bind(workspace_id)
         .bind(&project_id)
-        .bind(&feature_id)
+        .bind(&track_id)
         .bind(&parent_id)
         .bind(parent.map(|_| node.slug.as_str()))
         .bind(position)
@@ -2660,7 +2657,7 @@ pub async fn import_tree(
         for question in &node.questions {
             let given_by = question.answers.last().map(|a| a.by.as_str());
             let question_id: String = sqlx::query_scalar(
-                "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, \
+                "INSERT INTO behaviour_questions (workspace_id, project_id, track_id, node_id, \
                  question, asked_by, state, answered_by) VALUES ($1::uuid, $2::uuid, $3::uuid, \
                  $4::uuid, $5, $6::text::jsonb, \
                  CASE WHEN $7::text IS NULL THEN 'open' ELSE 'answered' END, $7) \
@@ -2668,7 +2665,7 @@ pub async fn import_tree(
             )
             .bind(workspace_id)
             .bind(&project_id)
-            .bind(&feature_id)
+            .bind(&track_id)
             .bind(&id)
             .bind(question.question.trim())
             .bind(author.to_string())
@@ -2681,7 +2678,7 @@ pub async fn import_tree(
                 insert_answer(
                     &mut tx,
                     workspace_id,
-                    &feature_id,
+                    &track_id,
                     &question_id,
                     answer.answer.trim(),
                     &answer.by,
@@ -2693,13 +2690,13 @@ pub async fn import_tree(
         }
         for rule in &node.rules {
             sqlx::query(
-                "INSERT INTO behaviour_rules (workspace_id, project_id, feature_id, node_id, \
+                "INSERT INTO behaviour_rules (workspace_id, project_id, track_id, node_id, \
                  text, scope, author) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, \
                  $7::text::jsonb)",
             )
             .bind(workspace_id)
             .bind(&project_id)
-            .bind(&feature_id)
+            .bind(&track_id)
             .bind(&id)
             .bind(rule.text.trim())
             .bind(&rule.scope)
@@ -2740,7 +2737,7 @@ pub async fn import_tree(
         &project_id,
         "behaviour.imported",
         &json!({
-            "feature_id": feature_id, "nodes": nodes.len(), "questions": questions,
+            "track_id": track_id, "nodes": nodes.len(), "questions": questions,
             "rules": rules,
         }),
     )

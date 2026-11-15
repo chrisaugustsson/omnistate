@@ -24,7 +24,7 @@ fn stories_path(args: &Args, agent: &Agent) -> Result<String> {
         bail!("no feature: pass --feature <name or id>, or put feature = \"name\" in .omni.toml");
     };
     Ok(format!(
-        "/api/v1/w/{}/projects/{project}/features/{feature}/stories",
+        "/api/v1/w/{}/projects/{project}/tracks/{feature}/stories",
         agent.workspace_id
     ))
 }

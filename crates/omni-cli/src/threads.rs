@@ -47,7 +47,7 @@ pub fn create(args: &Args, question: Option<&str>) -> Result<()> {
     let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
     let (path, not_found) = match feature {
         Some(feature) => (
-            format!("{base}/features/{feature}/threads"),
+            format!("{base}/tracks/{feature}/threads"),
             format!(
                 "not_found: no feature {feature} in this project; `omni feature list` shows them"
             ),

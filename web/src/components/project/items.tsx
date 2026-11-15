@@ -10,18 +10,18 @@ import { cn } from "@/lib/utils";
 
 type ProjectParams = { workspaceId: string; projectId: string };
 
-type Scoped = { feature_id?: string | null };
+type Scoped = { track_id?: string | null };
 
 /** The names of the project's features by ID, for tagging the items that belong to one. */
 export type FeatureNames = ReadonlyMap<string, string>;
 
 export function featureNames(home: HomeResponse): FeatureNames {
-  return new Map((home.features ?? []).map(({ feature }) => [feature.id, feature.name]));
+  return new Map((home.tracks ?? []).map(({ track: feature }) => [feature.id, feature.name]));
 }
 
 /** The name of the feature that `item` belongs to, when it belongs to one and `names` is given. */
 function tagOf(item: Scoped, names?: FeatureNames): string | undefined {
-  return item.feature_id ? names?.get(item.feature_id) : undefined;
+  return item.track_id ? names?.get(item.track_id) : undefined;
 }
 
 /** A small tag with the name of the feature that an item belongs to. */

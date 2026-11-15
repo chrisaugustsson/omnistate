@@ -210,11 +210,11 @@ fn linked_project(agent: &Agent) -> Result<String> {
 
 /// The features of a project, as the API lists them.
 pub(crate) fn project_features(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
-    let path = format!("{}/{project_id}/features", projects_path(agent));
+    let path = format!("{}/{project_id}/tracks", projects_path(agent));
     let response = agent.request("GET", &path, None)?;
     let body = parsed(&response.text(), "the features")?;
     Ok(body
-        .get("features")
+        .get("tracks")
         .and_then(Value::as_array)
         .unwrap_or_default()
         .to_vec())

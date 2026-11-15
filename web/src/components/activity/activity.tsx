@@ -45,7 +45,7 @@ function agentLabel(agent: ActivityAgent): string {
 function DocShell({ workspaceId, projectId, docId, children }: Params & { children: (doc: DocBody) => ReactNode }) {
   const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
   const loaded = doc.value?.id === docId ? doc.value : null;
-  useVisit(projectId, loaded ? (loaded.feature_id ?? "app") : undefined, loaded ? docId : undefined);
+  useVisit(projectId, loaded ? (loaded.track_id ?? "app") : undefined, loaded ? docId : undefined);
   return (
     <main className="flex min-h-full flex-col">
       <ViewerToolbar

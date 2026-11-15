@@ -203,7 +203,7 @@ fn read_folder(
     let mut rules = Vec::new();
     let at = shown(path);
     let scope = if path.is_empty() {
-        "feature"
+        "track"
     } else if !path.contains('/') {
         "story"
     } else {

@@ -70,7 +70,7 @@ pub fn run(args: &Args) -> Result<()> {
     let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
 
     let docs_of = |scope: &str| -> Result<Vec<Value>> {
-        let answer = get(&agent, &format!("{base}/docs?feature={scope}"), "the docs")?;
+        let answer = get(&agent, &format!("{base}/docs?track={scope}"), "the docs")?;
         Ok(answer
             .get("docs")
             .and_then(Value::as_array)

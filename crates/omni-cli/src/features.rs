@@ -23,7 +23,7 @@ fn parsed(text: &str, what: &str) -> Result<Value> {
 }
 
 fn features_path(agent: &Agent, project_id: &str) -> String {
-    format!("{}/{project_id}/features", projects_path(agent))
+    format!("{}/{project_id}/tracks", projects_path(agent))
 }
 
 /// One line: ID and name.
@@ -55,7 +55,7 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
         return Ok(());
     }
     let body = parsed(&text, "the new feature")?;
-    let feature = body.get("feature").unwrap_or(&body);
+    let feature = body.get("track").unwrap_or(&body);
     say(&format!(
         "{}  {}",
         feature.str_at("id").unwrap_or("?"),
@@ -75,7 +75,7 @@ pub fn list(args: &Args) -> Result<()> {
     }
     let body = parsed(&text, "the features")?;
     let features = body
-        .get("features")
+        .get("tracks")
         .and_then(Value::as_array)
         .unwrap_or_default();
     if features.is_empty() {
@@ -105,7 +105,7 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
         let response = agent.request("GET", &path, None)?;
         let listed = parsed(&response.text(), "the features")?;
         let found = listed
-            .get("features")
+            .get("tracks")
             .and_then(Value::as_array)
             .unwrap_or_default()
             .iter()
@@ -126,7 +126,7 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
         return Ok(());
     }
     let body = parsed(&text, "the feature")?;
-    let feature = body.get("feature").unwrap_or(&body);
+    let feature = body.get("track").unwrap_or(&body);
     say(&summary(feature));
     say(&format!(
         "project: {}",
@@ -165,7 +165,7 @@ pub fn rename(args: &Args, feature: Option<&str>, name: Option<&str>) -> Result<
         return Ok(());
     }
     let body = parsed(&text, "the renamed feature")?;
-    let feature = body.get("feature").unwrap_or(&body);
+    let feature = body.get("track").unwrap_or(&body);
     say(&format!(
         "{}  {}",
         feature.str_at("id").unwrap_or(&id),

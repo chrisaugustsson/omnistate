@@ -121,10 +121,10 @@ export function ScopeTree({
   home: HomeResponse;
 }) {
   const params = { workspaceId, projectId };
-  const own = (item: { feature_id?: string | null }) => (item.feature_id ?? "app") === scope;
+  const own = (item: { track_id?: string | null }) => (item.track_id ?? "app") === scope;
   const docs = home.docs.filter(own);
   const threads = home.threads.filter(own).length;
-  const openStories = home.features?.find((summary) => summary.feature.id === scope)?.stories?.open ?? 0;
+  const openStories = home.tracks?.find((summary) => summary.track.id === scope)?.stories?.open ?? 0;
   const name = scope === "app" ? "App" : (featureNames(home).get(scope) ?? "");
   const headClass = cn(rowClass, "h-[30px] text-[13px] font-semibold text-foreground");
   return (

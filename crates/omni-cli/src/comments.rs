@@ -70,7 +70,7 @@ pub fn list(args: &Args) -> Result<()> {
         query.push(format!("doc={doc}"));
     }
     if let Some(feature) = feature {
-        query.push(format!("feature={feature}"));
+        query.push(format!("track={feature}"));
     }
     let mut path = format!(
         "/api/v1/w/{}/projects/{project}/comments",

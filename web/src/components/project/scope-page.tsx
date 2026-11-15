@@ -154,7 +154,7 @@ function Skeleton() {
 
 /** The scope's docs and threads out of `home`: a feature's, or the app level's when `featureId` is null. */
 function inScope(home: HomeResponse, featureId: string | null) {
-  const own = (item: { feature_id?: string | null }) => (item.feature_id ?? null) === featureId;
+  const own = (item: { track_id?: string | null }) => (item.track_id ?? null) === featureId;
   return {
     docs: home.docs.filter(own),
     threads: home.threads
@@ -176,14 +176,14 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
   const params = { workspaceId, projectId };
   const { home, failed } = useHome(workspaceId, projectId);
   const projectName = useProjectName(workspaceId, projectId);
-  const summary = featureId ? home?.features?.find((candidate) => candidate.feature.id === featureId) : undefined;
+  const summary = featureId ? home?.tracks?.find((candidate) => candidate.track.id === featureId) : undefined;
   const missing = home !== null && featureId !== null && !summary;
   const ready = home !== null && !missing;
   useScrollToHash(ready);
   useVisit(projectId, ready ? (featureId ?? "app") : undefined);
 
-  const title = featureId ? (summary?.feature.name ?? "") : (projectName ?? "");
-  const description = featureId ? summary?.feature.description : undefined;
+  const title = featureId ? (summary?.track.name ?? "") : (projectName ?? "");
+  const description = featureId ? summary?.track.description : undefined;
   const lastActivity = featureId ? summary?.last_activity : home?.app?.last_activity;
   const { docs, threads } = home && ready ? inScope(home, featureId) : { docs: [], threads: [] };
 

@@ -34,7 +34,7 @@ function groupsOf(home: HomeResponse): Group[] {
   for (const comment of home.waiting.comments) {
     const reply = comment.replies.at(-1);
     if (!reply) continue;
-    const feature = comment.feature_id ?? null;
+    const feature = comment.track_id ?? null;
     const entry: Entry = { comment, reply, at: new Date(reply.created_at).getTime(), doc: docs.get(comment.doc_id) };
     const group = groups.get(feature) ?? {
       feature,
