@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// US-138: the board of a feature, .../projects/<project>/features/<feature>/board.
-// It reads GET .../tracks/<feature>/stories and shows a column per status and
+// US-138: the board of a track, .../projects/<project>/tracks/<track>/board.
+// It reads GET .../tracks/<track>/stories and shows a column per status and
 // a card per story, filtered by priority and, unless Show cancelled is on,
 // without the cancelled stories. The app is rendered with its own router on a
 // memory history, the browser's fetch is replaced by a fake of the API, and the
@@ -12,10 +12,10 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
-const FEATURE_ID = "0192d7a0-4444-7000-8000-000000000001";
+const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
-const BOARD_PATH = `${PROJECT_PATH}/features/${FEATURE_ID}/board`;
+const BOARD_PATH = `${PROJECT_PATH}/tracks/${TRACK_ID}/board`;
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const AT = "2026-10-21T09:00:00Z";
 const FIVE_COLUMNS = ["Backlog", "Implementing", "Review", "Testing", "Done"];
@@ -23,7 +23,7 @@ const FIVE_COLUMNS = ["Backlog", "Implementing", "Review", "Testing", "Done"];
 type Criterion = { text: string; ticked: boolean; pending: boolean; human_check: boolean };
 type Finding = { stage: string; text: string; files: string[]; resolved: boolean };
 
-/** Story US-<number> of the feature; the ID is derived from the number. */
+/** Story US-<number> of the track; the ID is derived from the number. */
 function story(
   number: number,
   fields: {
@@ -41,7 +41,7 @@ function story(
   return {
     id: storyId(number),
     project_id: PROJECT_ID,
-    track_id: FEATURE_ID,
+    track_id: TRACK_ID,
     number,
     key: `US-${number}`,
     title: fields.title ?? `Story ${number}`,
@@ -124,7 +124,7 @@ function fakeApi(stories: Story[]) {
           });
         case `${API}/comments`:
           return json(200, { project_id: PROJECT_ID, comments: [] });
-        case `${API}/tracks/${FEATURE_ID}/stories`:
+        case `${API}/tracks/${TRACK_ID}/stories`:
           return json(200, { stories: api.stories });
         default:
           return json(404, { error: "not_found" });
@@ -447,7 +447,7 @@ describe("the board", () => {
 
 describe("steering from the board", () => {
   const CONFLICT = "Someone changed this story; it has been reloaded";
-  const storyPath = (number: number) => `${API}/tracks/${FEATURE_ID}/stories/${storyId(number)}`;
+  const storyPath = (number: number) => `${API}/tracks/${TRACK_ID}/stories/${storyId(number)}`;
 
   test("a 409 on a card whose story a run has moved to Implementing shows the message on its card there, with the server's values", async () => {
     const api = fakeApi([story(1, { priority: 3 })]);
@@ -577,7 +577,7 @@ describe("steering from the board", () => {
     expect(api.writes).toEqual([
       {
         method: "POST",
-        path: `${API}/tracks/${FEATURE_ID}/stories`,
+        path: `${API}/tracks/${TRACK_ID}/stories`,
         body: {
           title: "Pay with a saved card",
           text: "",

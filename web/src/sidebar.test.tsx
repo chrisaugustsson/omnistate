@@ -33,7 +33,7 @@ const AT = "2026-10-21T09:00:00Z";
 const AGENT = { kind: "agent", run: "run-1", role: "writer", model: "test-model", harness: "test-harness" };
 const HUMAN = { kind: "human", user_id: USER.id };
 
-function feature(id: string, name: string, stories = { total: 0, open: 0, done: 0 }) {
+function track(id: string, name: string, stories = { total: 0, open: 0, done: 0 }) {
   return {
     track: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
     docs: 0,
@@ -43,11 +43,11 @@ function feature(id: string, name: string, stories = { total: 0, open: 0, done: 
   };
 }
 
-function doc(id: string, featureId: string | null, title: string, fields: { pillar?: string; kind?: string; waiting?: number } = {}) {
+function doc(id: string, trackId: string | null, title: string, fields: { pillar?: string; kind?: string; waiting?: number } = {}) {
   return {
     id,
     project_id: PROJECT_ID,
-    track_id: featureId,
+    track_id: trackId,
     kind: fields.kind ?? "html",
     pillar: fields.pillar ?? "spec",
     waiting: fields.waiting ?? 0,
@@ -58,11 +58,11 @@ function doc(id: string, featureId: string | null, title: string, fields: { pill
   };
 }
 
-function thread(id: string, featureId: string | null, question: string) {
+function thread(id: string, trackId: string | null, question: string) {
   return {
     id,
     project_id: PROJECT_ID,
-    track_id: featureId,
+    track_id: trackId,
     question,
     sealed: false,
     conclusion: null,
@@ -95,7 +95,7 @@ const threads = [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")];
 
 function home(
   fields: {
-    features?: ReturnType<typeof feature>[];
+    tracks?: ReturnType<typeof track>[];
     waiting?: ReturnType<typeof waiting>[];
     docs?: ReturnType<typeof doc>[];
     threads?: ReturnType<typeof thread>[];
@@ -104,7 +104,7 @@ function home(
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    tracks: fields.features ?? [feature(CHECKOUT, "Checkout")],
+    tracks: fields.tracks ?? [track(CHECKOUT, "Checkout")],
     docs: fields.docs ?? docs,
     threads: fields.threads ?? threads,
     waiting: { comments: fields.waiting ?? [] },
@@ -299,35 +299,35 @@ describe("the project sidebar", () => {
   });
 
   describe("its places", () => {
-    test("Inbox with what waits, App, Features with their number, and every scope's Threads, and no feature", async () => {
+    test("Inbox with what waits, App, Tracks with their number, and every scope's Threads, and no track", async () => {
       fakeApi({
         home: home({
-          features: [feature(CHECKOUT, "Checkout"), feature(WALLETS, "Wallets"), feature(SEARCH, "Search")],
+          tracks: [track(CHECKOUT, "Checkout"), track(WALLETS, "Wallets"), track(SEARCH, "Search")],
           waiting: [waiting(SAY_WEEK, "Say which week."), waiting(INDEX_DATE, "Index the order date.")],
         }),
       });
       renderAt(`${PROJECT_PATH}/app`);
       const nav = await projectNav();
-      await waitFor(() => expect(links(nav)[2]?.text).toBe("Features3"));
+      await waitFor(() => expect(links(nav)[2]?.text).toBe("Tracks3"));
       expect(links(places(nav))).toEqual([
         { text: "Inbox2", href: `${PROJECT_PATH}/inbox` },
         { text: "App", href: `${PROJECT_PATH}/app` },
-        { text: "Features3", href: `${PROJECT_PATH}/features` },
+        { text: "Tracks3", href: `${PROJECT_PATH}/tracks` },
         { text: "Threads", href: `${PROJECT_PATH}/threads` },
       ]);
     });
 
-    test("with nothing waiting and no features, the Inbox has no count and Features says 0", async () => {
-      fakeApi({ home: home({ features: [], waiting: [] }) });
+    test("with nothing waiting and no tracks, the Inbox has no count and Tracks says 0", async () => {
+      fakeApi({ home: home({ tracks: [], waiting: [] }) });
       renderAt(`${PROJECT_PATH}/app`);
       const nav = await projectNav();
-      await waitFor(() => expect(links(nav)[2]?.text).toBe("Features0"));
-      expect(links(places(nav)).map((link) => link.text)).toEqual(["Inbox", "App", "Features0", "Threads"]);
+      await waitFor(() => expect(links(nav)[2]?.text).toBe("Tracks0"));
+      expect(links(places(nav)).map((link) => link.text)).toEqual(["Inbox", "App", "Tracks0", "Threads"]);
     });
 
     test("the Inbox count follows the comments as their events come in", async () => {
       const api = fakeApi({ home: home({ waiting: [waiting(SAY_WEEK, "Say which week."), waiting(INDEX_DATE, "Index the order date.")] }) });
-      renderAt(`${PROJECT_PATH}/features`);
+      renderAt(`${PROJECT_PATH}/tracks`);
       const nav = await projectNav();
       await waitFor(() => expect(links(nav)[0]?.text).toBe("Inbox2"));
 
@@ -501,7 +501,7 @@ describe("the visit history", () => {
     const router = renderAt(`${PROJECT_PATH}/inbox`);
     await screen.findByRole("heading", { level: 1, name: "Inbox" });
     await visit(router, `${PROJECT_PATH}/app`, "2026-10-21T10:01:00Z", shows("Returns PRD"));
-    await visit(router, `${PROJECT_PATH}/features/${CHECKOUT}`, "2026-10-21T10:02:00Z", shows("Pay in one step"));
+    await visit(router, `${PROJECT_PATH}/tracks/${CHECKOUT}`, "2026-10-21T10:02:00Z", shows("Pay in one step"));
     await visit(router, `${PROJECT_PATH}/docs/${APP_DOC}`, "2026-10-21T10:03:00Z", docShown);
     await visit(router, `${PROJECT_PATH}/docs/${CHECKOUT_DOC}`, "2026-10-21T10:04:00Z", docShown);
     await visit(router, `${PROJECT_PATH}/threads/${CHECKOUT_THREAD}`, "2026-10-21T10:05:00Z", threadShown("Which wallets?"));
@@ -531,11 +531,11 @@ describe("the visit history", () => {
     ]);
   });
 
-  test("the Inbox, the Features page and the Threads page add no place", async () => {
+  test("the Inbox, the Tracks page and the Threads page add no place", async () => {
     fakeApi();
     const router = renderAt(`${PROJECT_PATH}/inbox`);
     await screen.findByRole("heading", { level: 1, name: "Inbox" });
-    await visit(router, `${PROJECT_PATH}/features`, "2026-10-21T10:01:00Z", shows("Features"));
+    await visit(router, `${PROJECT_PATH}/tracks`, "2026-10-21T10:01:00Z", shows("Tracks"));
     await visit(router, `${PROJECT_PATH}/threads?scope=${CHECKOUT}`, "2026-10-21T10:02:00Z", shows("Which wallets?"));
     await visit(router, `${PROJECT_PATH}/threads?scope=app`, "2026-10-21T10:03:00Z", shows("No threads here yet."));
     await visit(router, `${PROJECT_PATH}/threads`, "2026-10-21T10:04:00Z", shows("Which wallets?"));
@@ -544,12 +544,12 @@ describe("the visit history", () => {
     expect(localStorage.getItem(VISITS_KEY)).toBeNull();
   });
 
-  test("a doc, thread or feature that cannot be loaded adds no place", async () => {
+  test("a doc, thread or track that cannot be loaded adds no place", async () => {
     fakeApi();
     const router = renderAt(`${PROJECT_PATH}/docs/${MISSING}`);
     await screen.findByText("The doc could not be loaded. Try again in a moment.");
     await visit(router, `${PROJECT_PATH}/threads/${MISSING}`, "2026-10-21T10:01:00Z", shows("The thread could not be loaded. Try again in a moment."));
-    await visit(router, `${PROJECT_PATH}/features/${MISSING}`, "2026-10-21T10:02:00Z", shows("Feature not found"));
+    await visit(router, `${PROJECT_PATH}/tracks/${MISSING}`, "2026-10-21T10:02:00Z", shows("Track not found"));
 
     await settled();
     expect(localStorage.getItem(VISITS_KEY)).toBeNull();
@@ -563,7 +563,7 @@ describe("the visit history", () => {
     }));
     localStorage.setItem(VISITS_KEY, JSON.stringify(earlier));
     fakeApi();
-    renderAt(`${PROJECT_PATH}/features/${CHECKOUT}`);
+    renderAt(`${PROJECT_PATH}/tracks/${CHECKOUT}`);
     await waitFor(() => expect(storedVisits()[0]).toEqual({ scope: CHECKOUT, at: Date.parse("2026-10-21T10:00:00Z") }));
     expect(storedVisits()).toEqual([{ scope: CHECKOUT, at: Date.parse("2026-10-21T10:00:00Z") }, ...earlier.slice(0, 49)]);
   });
@@ -610,13 +610,13 @@ async function treeHead() {
 }
 
 describe("the sidebar's Recent", () => {
-  const sixFeatures = [
-    feature(CHECKOUT, "Checkout"),
-    feature(WALLETS, "Wallets"),
-    feature(SEARCH, "Search"),
-    feature(RETURNS, "Returns"),
-    feature(GIFT_CARDS, "Gift cards"),
-    feature(LOYALTY, "Loyalty"),
+  const sixTracks = [
+    track(CHECKOUT, "Checkout"),
+    track(WALLETS, "Wallets"),
+    track(SEARCH, "Search"),
+    track(RETURNS, "Returns"),
+    track(GIFT_CARDS, "Gift cards"),
+    track(LOYALTY, "Loyalty"),
   ];
 
   beforeEach(() => {
@@ -632,8 +632,8 @@ describe("the sidebar's Recent", () => {
     localStorage.clear();
   });
 
-  test("lists the last 5 features visited, newest first and each once, by name, each opening its page", async () => {
-    fakeApi({ home: home({ features: sixFeatures }) });
+  test("lists the last 5 tracks visited, newest first and each once, by name, each opening its page", async () => {
+    fakeApi({ home: home({ tracks: sixTracks }) });
     seedVisits(
       { scope: CHECKOUT, thread: CHECKOUT_THREAD },
       { scope: "app", doc: APP_DOC },
@@ -649,16 +649,16 @@ describe("the sidebar's Recent", () => {
     const list = await recent();
     await waitFor(() => expect(links(list)).toHaveLength(5));
     expect(links(list)).toEqual([
-      { text: "Checkout", href: `${PROJECT_PATH}/features/${CHECKOUT}` },
-      { text: "Wallets", href: `${PROJECT_PATH}/features/${WALLETS}` },
-      { text: "Search", href: `${PROJECT_PATH}/features/${SEARCH}` },
-      { text: "Returns", href: `${PROJECT_PATH}/features/${RETURNS}` },
-      { text: "Gift cards", href: `${PROJECT_PATH}/features/${GIFT_CARDS}` },
+      { text: "Checkout", href: `${PROJECT_PATH}/tracks/${CHECKOUT}` },
+      { text: "Wallets", href: `${PROJECT_PATH}/tracks/${WALLETS}` },
+      { text: "Search", href: `${PROJECT_PATH}/tracks/${SEARCH}` },
+      { text: "Returns", href: `${PROJECT_PATH}/tracks/${RETURNS}` },
+      { text: "Gift cards", href: `${PROJECT_PATH}/tracks/${GIFT_CARDS}` },
     ]);
   });
 
-  test("a visited feature that is gone is skipped, and an older one takes its place", async () => {
-    fakeApi({ home: home({ features: sixFeatures }) });
+  test("a visited track that is gone is skipped, and an older one takes its place", async () => {
+    fakeApi({ home: home({ tracks: sixTracks }) });
     seedVisits({ scope: GONE }, { scope: CHECKOUT }, { scope: WALLETS }, { scope: SEARCH }, { scope: RETURNS }, { scope: GIFT_CARDS });
     renderAt(`${PROJECT_PATH}/inbox`);
     const list = await recent();
@@ -666,17 +666,17 @@ describe("the sidebar's Recent", () => {
     expect(links(list).map((link) => link.text)).toEqual(["Checkout", "Wallets", "Search", "Returns", "Gift cards"]);
   });
 
-  test("with no feature visited it says No recent features, until one is visited", async () => {
+  test("with no track visited it says No recent tracks, until one is visited", async () => {
     fakeApi();
     seedVisits({ scope: "app", doc: APP_DOC });
     const router = renderAt(`${PROJECT_PATH}/app`);
     const list = await recent();
-    await within(list).findByText("No recent features");
+    await within(list).findByText("No recent tracks");
     expect(links(list)).toEqual([]);
 
-    await router.navigate({ href: `${PROJECT_PATH}/features/${CHECKOUT}` });
+    await router.navigate({ href: `${PROJECT_PATH}/tracks/${CHECKOUT}` });
     await waitFor(async () =>
-      expect(links(await recent())).toEqual([{ text: "Checkout", href: `${PROJECT_PATH}/features/${CHECKOUT}` }]),
+      expect(links(await recent())).toEqual([{ text: "Checkout", href: `${PROJECT_PATH}/tracks/${CHECKOUT}` }]),
     );
   });
 
@@ -758,31 +758,31 @@ describe("the sidebar's scope tree", () => {
     ]);
   });
 
-  test("on a feature's thread or doc page it shows that feature, its Threads row filtered to it, its Board row with the open stories, then its Behaviour row", async () => {
-    fakeApi({ home: { ...appTree, tracks: [feature(CHECKOUT, "Checkout", { total: 3, open: 2, done: 1 })] } });
+  test("on a track's thread or doc page it shows that track, its Threads row filtered to it, its Board row with the open stories, then its Behaviour row", async () => {
+    fakeApi({ home: { ...appTree, tracks: [track(CHECKOUT, "Checkout", { total: 3, open: 2, done: 1 })] } });
     const router = renderAt(`${PROJECT_PATH}/threads/${CHECKOUT_THREAD}`);
-    await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`));
+    await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/tracks/${CHECKOUT}`));
     expect((await treeHead()).text).toMatch(/^Checkout/);
     expect((await treeRows()).slice(-3)).toEqual([
       { text: "Threads (1)", href: `${PROJECT_PATH}/threads?scope=${CHECKOUT}` },
-      { text: "Board (2)", href: `${PROJECT_PATH}/features/${CHECKOUT}/board` },
-      { text: "Behaviour", href: `${PROJECT_PATH}/features/${CHECKOUT}/behaviour` },
+      { text: "Board (2)", href: `${PROJECT_PATH}/tracks/${CHECKOUT}/board` },
+      { text: "Behaviour", href: `${PROJECT_PATH}/tracks/${CHECKOUT}/behaviour` },
     ]);
 
     await router.navigate({ href: `${PROJECT_PATH}/docs/${CHECKOUT_DOC}` });
     await waitFor(docShown);
     expect((await treeRows()).filter((row) => row.href?.includes("/docs/"))).toEqual([docRow(CHECKOUT_DOC, "Pay in one step")]);
-    expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`);
+    expect((await treeHead()).href).toBe(`${PROJECT_PATH}/tracks/${CHECKOUT}`);
   });
 
-  test("on the Features page it shows the scope visited last", async () => {
+  test("on the Tracks page it shows the scope visited last", async () => {
     fakeApi({ home: appTree });
     seedVisits({ scope: CHECKOUT, doc: CHECKOUT_DOC }, { scope: "app" });
-    renderAt(`${PROJECT_PATH}/features`);
-    await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`));
+    renderAt(`${PROJECT_PATH}/tracks`);
+    await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/tracks/${CHECKOUT}`));
   });
 
-  test("with no visit, or with a last visited feature that is gone, it shows App", async () => {
+  test("with no visit, or with a last visited track that is gone, it shows App", async () => {
     fakeApi({ home: appTree });
     renderAt(`${PROJECT_PATH}/inbox`);
     expect(await treeHead()).toEqual({ text: "App", href: `${PROJECT_PATH}/app` });
@@ -809,7 +809,7 @@ describe("the sidebar's scope tree", () => {
     expect(within(reloaded).queryByRole("link", { name: "Alpha plan" }), "Spec is still folded").toBeNull();
     expect(within(reloaded).getByRole("button", { name: /^Spec/ }).getAttribute("aria-expanded")).toBe("false");
 
-    await router.navigate({ href: `${PROJECT_PATH}/features/${CHECKOUT}` });
+    await router.navigate({ href: `${PROJECT_PATH}/tracks/${CHECKOUT}` });
     await within(await projectNav()).findByRole("link", { name: "Pay in one step" });
   });
 });

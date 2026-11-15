@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 // Where an item lives. The doc and design viewers show the doc's breadcrumb
 // (US-112): scope › pillar › title, the scope ("App" at the app level, else the
-// feature's name) linking to its page and the pillar to its section there. The
+// track's name) linking to its page and the pillar to its section there. The
 // app is rendered with its own router on a memory history, the browser's fetch
 // is replaced by a fake of the API, and the browser's WebSocket by a fake socket
 // that never opens, so a page shows what it loads itself.
 //
-// The fake serves the project's home, the features and every doc (GET .../docs
+// The fake serves the project's home, the tracks and every doc (GET .../docs
 // and GET .../docs/<doc>, each DocBody with its `track_id`).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -71,25 +71,25 @@ function newId() {
   return `0192d7a0-9999-7000-8000-${counter.toString(16).padStart(12, "0")}`;
 }
 
-function featurePath(featureId: string, section = "") {
-  return `${PROJECT_PATH}/features/${featureId}${section ? `/${section}` : ""}`;
+function trackPath(trackId: string, section = "") {
+  return `${PROJECT_PATH}/tracks/${trackId}${section ? `/${section}` : ""}`;
 }
 
 /**
- * A feature as the API sends it. `legacyStatus` is the `status` field that
+ * A track as the API sends it. `legacyStatus` is the `status` field that
  * features had before US-110: the fixtures keep it so that they parse against
  * the API schema before and after the field goes, and so that the tests also
  * show that the app pays no heed to it.
  */
-function feature(id: string, name: string, description: string, legacyStatus: string) {
+function track(id: string, name: string, description: string, legacyStatus: string) {
   return { id, project_id: PROJECT_ID, name, description, status: legacyStatus, created_at: AT };
 }
 
-function doc(featureId: string | null, kind: string, pillar: string, title: string) {
+function doc(trackId: string | null, kind: string, pillar: string, title: string) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    track_id: featureId,
+    track_id: trackId,
     kind,
     pillar,
     title,
@@ -104,13 +104,13 @@ const HTML = '<section data-omni-id="s0000001"><p data-omni-id="p0000001">Saved 
 
 /**
  * A project with two global docs (an HTML doc and the design system), a
- * feature (Wishlist) with an HTML doc and a design, and another feature
+ * track (Wishlist) with an HTML doc and a design, and another track
  * (Loyalty points, whose legacy status says done). No doc's title holds the
- * project's or a feature's name.
+ * project's or a track's name.
  */
 function seeded() {
-  const wishlist = feature(WISHLIST, "Wishlist", "Shoppers save products for later.", "active");
-  const loyalty = feature(LOYALTY, "Loyalty points", "Earn points on every order.", "done");
+  const wishlist = track(WISHLIST, "Wishlist", "Shoppers save products for later.", "active");
+  const loyalty = track(LOYALTY, "Loyalty points", "Earn points on every order.", "done");
 
   const shopPrd = doc(null, "html", "spec", "Shop PRD");
   const designSystem = doc(null, "design-system", "ui", "Design system");
@@ -130,7 +130,7 @@ function seeded() {
   };
   return {
     home,
-    features: [wishlist, loyalty],
+    tracks: [wishlist, loyalty],
     docs: { savedPrd, savedScreens, shopPrd },
   };
 }
@@ -162,7 +162,7 @@ function fakeApi(seed: Seeded) {
       case `GET ${API}/home`:
         return json(200, home);
       case `GET ${API}/tracks`:
-        return json(200, { tracks: seed.features });
+        return json(200, { tracks: seed.tracks });
       case `GET ${API}/docs`:
         return json(200, { docs: home.docs });
       case `GET ${API}/comments`:
@@ -170,7 +170,7 @@ function fakeApi(seed: Seeded) {
       default:
         break;
     }
-    for (const f of seed.features) {
+    for (const f of seed.tracks) {
       if (method === "GET" && path === `${API}/tracks/${f.id}`) return json(200, { track: f });
     }
     if (method !== "GET") return json(404, { error: "not_found" });
@@ -237,7 +237,7 @@ async function expectDocTrail(crumbs: string[], hrefs: string[]) {
   ]);
 }
 
-describe("feature scope", () => {
+describe("track scope", () => {
   beforeEach(() => {
     vi.stubGlobal("scrollTo", () => {});
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -248,37 +248,37 @@ describe("feature scope", () => {
     vi.unstubAllGlobals();
   });
 
-  test("a feature's header has a chip with its open of total stories that opens its board", async () => {
+  test("a track's header has a chip with its open of total stories that opens its board", async () => {
     fakeApi(seeded());
-    renderAt(featurePath(WISHLIST));
+    renderAt(trackPath(WISHLIST));
     const chips = await screen.findByRole("navigation", { name: /^pillars$/i });
     const chip = await within(chips).findByRole("link", { name: "Stories 2/3" });
-    expect(chip.getAttribute("href")).toBe(featurePath(WISHLIST, "board"));
+    expect(chip.getAttribute("href")).toBe(trackPath(WISHLIST, "board"));
   });
 
-  test("a feature's header has a Behaviour link beside its stories chip that opens its behaviour screen", async () => {
+  test("a track's header has a Behaviour link beside its stories chip that opens its behaviour screen", async () => {
     fakeApi(seeded());
-    renderAt(featurePath(WISHLIST));
+    renderAt(trackPath(WISHLIST));
     const chips = await screen.findByRole("navigation", { name: /^pillars$/i });
     const link = await within(chips).findByRole("link", { name: "Behaviour" });
-    expect(link.getAttribute("href")).toBe(featurePath(WISHLIST, "behaviour"));
+    expect(link.getAttribute("href")).toBe(trackPath(WISHLIST, "behaviour"));
   });
 
   describe("where an item lives", () => {
-    test("a feature's doc in the doc viewer: feature › pillar › title, linking the feature's page and the pillar on it", async () => {
+    test("a track's doc in the doc viewer: track › pillar › title, linking the track's page and the pillar on it", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.savedPrd.id}`);
       await screen.findByRole("heading", { level: 1, name: "Saved items PRD" });
-      await expectDocTrail(["Wishlist", "Spec", "Saved items PRD"], [featurePath(WISHLIST), `${featurePath(WISHLIST)}#spec`]);
+      await expectDocTrail(["Wishlist", "Spec", "Saved items PRD"], [trackPath(WISHLIST), `${trackPath(WISHLIST)}#spec`]);
     });
 
-    test("a feature's design in the design viewer: feature › UI › title", async () => {
+    test("a track's design in the design viewer: track › UI › title", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.savedScreens.id}`);
       await screen.findByRole("heading", { level: 1, name: "Saved items screens" });
-      await expectDocTrail(["Wishlist", "UI", "Saved items screens"], [featurePath(WISHLIST), `${featurePath(WISHLIST)}#ui`]);
+      await expectDocTrail(["Wishlist", "UI", "Saved items screens"], [trackPath(WISHLIST), `${trackPath(WISHLIST)}#ui`]);
     });
 
     test("an app-level doc: App › pillar › title, linking the App page", async () => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // US-114: the thread page (/…/threads/<thread>) and the Threads page
-// (/…/threads?scope=app|<feature>). The app is rendered with its own router on
+// (/…/threads?scope=app|<track>). The app is rendered with its own router on
 // a memory history, fetch is replaced by a fake of the API and WebSocket by a
 // fake socket that the test drives.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
@@ -49,7 +49,7 @@ type Post = ReturnType<typeof post>;
 function thread(
   question: string,
   fields: {
-    feature?: string;
+    track?: string;
     createdAt?: string;
     posts?: number;
     lastPostAt?: string | null;
@@ -60,7 +60,7 @@ function thread(
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    track_id: fields.feature ?? null,
+    track_id: fields.track ?? null,
     question,
     sealed: fields.sealed ?? false,
     conclusion: fields.conclusion ?? null,
@@ -74,7 +74,7 @@ function thread(
 type HomeThread = ReturnType<typeof thread>;
 type Opened = HomeThread & { posts: Post[] };
 
-function feature(id: string, name: string) {
+function track(id: string, name: string) {
   return {
     track: { id, project_id: PROJECT_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
     docs: 0,
@@ -87,7 +87,7 @@ function home(threads: HomeThread[]) {
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    tracks: [feature(CHECKOUT_ID, "Checkout"), feature(SEARCH_ID, "Search")],
+    tracks: [track(CHECKOUT_ID, "Checkout"), track(SEARCH_ID, "Search")],
     docs: [],
     threads,
     waiting: { comments: [] },
@@ -281,7 +281,7 @@ describe("threads in the web app", () => {
   describe("the thread page", () => {
     /** A thread of Checkout with an agent's post and then one of yours. */
     function openedThread(fields: Partial<Opened> = {}): Opened {
-      const listed = thread("Which wallets do we take?", { feature: CHECKOUT_ID });
+      const listed = thread("Which wallets do we take?", { track: CHECKOUT_ID });
       const posts = [
         post(listed.id, agent("critic", "claude-opus-4"), "Apple Pay covers most phones", "<p>Seven of ten visits are <strong>iPhones</strong>.</p>", "2026-10-21T12:00:00.000Z"),
         post(listed.id, HUMAN, "Add Swish too", "<p>Most Swedish shoppers use it.</p>", "2026-10-21T14:00:00.000Z"),
@@ -418,7 +418,7 @@ describe("threads in the web app", () => {
       expect(postItems(main)).toHaveLength(2);
     });
 
-    test("a feature's thread: Checkout › Threads › question, linking the feature's page and its threads", async () => {
+    test("a track's thread: Checkout › Threads › question, linking the track's page and its threads", async () => {
       const opened = openedThread();
       fakeApi([opened], opened);
       renderAt(`${THREADS_PATH}/${opened.id}`);
@@ -431,7 +431,7 @@ describe("threads in the web app", () => {
         "Which wallets do we take?",
       ]);
       expect(within(trail).getByRole("link", { name: "Checkout" }).getAttribute("href")).toBe(
-        `${PROJECT_PATH}/features/${CHECKOUT_ID}`,
+        `${PROJECT_PATH}/tracks/${CHECKOUT_ID}`,
       );
       expect(within(trail).getByRole("link", { name: "Threads" }).getAttribute("href")).toBe(
         `${THREADS_PATH}?scope=${CHECKOUT_ID}`,
@@ -471,7 +471,7 @@ describe("threads in the web app", () => {
   describe("the Threads page", () => {
     test("a sealed thread with a conclusion shows both Sealed and Concluded", async () => {
       const both = thread("Sealed and concluded?", {
-        feature: CHECKOUT_ID,
+        track: CHECKOUT_ID,
         posts: 1,
         lastPostAt: "2026-10-21T14:57:00.000Z",
         sealed: true,
@@ -488,10 +488,10 @@ describe("threads in the web app", () => {
 
     test("the threads of every scope come newest post first, a thread without posts at its start, each with its scope and post count", async () => {
       const fonts = thread("Which fonts?", { posts: 3, lastPostAt: "2026-10-21T11:00:00.000Z" });
-      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
       const footer = thread("What goes in the footer?", { createdAt: "2026-10-21T12:00:00.000Z" });
       const ranking = thread("How do we rank results?", {
-        feature: SEARCH_ID,
+        track: SEARCH_ID,
         createdAt: "2026-10-21T07:00:00.000Z",
         posts: 2,
         lastPostAt: "2026-10-21T10:00:00.000Z",
@@ -514,7 +514,7 @@ describe("threads in the web app", () => {
 
     test("?scope=app lists the app's threads only", async () => {
       const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
-      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
       fakeApi([fonts, wallets]);
       renderAt(`${THREADS_PATH}?scope=app`);
       const main = await screen.findByRole("main");
@@ -523,10 +523,10 @@ describe("threads in the web app", () => {
       expect(within(main).getByRole("button", { name: "Scope" }).textContent).toBe("App");
     });
 
-    test("choosing a feature in the scope filter narrows the list and keeps it in ?scope=, All scopes takes it out", async () => {
+    test("choosing a track in the scope filter narrows the list and keeps it in ?scope=, All scopes takes it out", async () => {
       const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
-      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
-      const ranking = thread("How do we rank results?", { feature: SEARCH_ID, posts: 1, lastPostAt: "2026-10-21T10:00:00.000Z" });
+      const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      const ranking = thread("How do we rank results?", { track: SEARCH_ID, posts: 1, lastPostAt: "2026-10-21T10:00:00.000Z" });
       fakeApi([fonts, wallets, ranking]);
       const router = renderAt(THREADS_PATH);
       const main = await screen.findByRole("main");
@@ -549,7 +549,7 @@ describe("threads in the web app", () => {
 
     test("a new post moves its thread to the top and counts it", async () => {
       const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
-      const wallets = thread("Which wallets?", { feature: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
+      const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
       const api = fakeApi([fonts, wallets]);
       renderAt(THREADS_PATH);
       const main = await screen.findByRole("main");

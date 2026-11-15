@@ -179,3 +179,35 @@ describe("login, logout and the workspace in the URL", () => {
     await expectPath(router, atLogin, "the login page again, the session being over");
   });
 });
+
+// US-303: a track's pages moved from .../features/... to .../tracks/... with no
+// redirect, so an old URL is one the app does not know: it shows the plain
+// not-found screen, not the workspace with an empty page or an error.
+describe("an old /features URL after the rename to tracks", () => {
+  const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+  const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
+  const OLD = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features`;
+
+  beforeEach(() => {
+    vi.stubGlobal("scrollTo", () => {});
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  test.each([
+    ["the list", OLD],
+    ["a track's page", `${OLD}/${TRACK_ID}`],
+    ["a track's board", `${OLD}/${TRACK_ID}/board`],
+    ["a track's behaviour screen", `${OLD}/${TRACK_ID}/behaviour`],
+  ])("the old URL of %s shows the not-found screen without the workspace around it", async (_, path) => {
+    fakeApi({ loggedIn: true });
+    renderAt(path);
+
+    expect(await screen.findByText("Not Found")).toBeTruthy();
+    expect(screen.queryByText("Something went wrong!")).toBeNull();
+    expect(screen.queryByRole("button", { name: /log ?out|sign ?out/i })).toBeNull();
+  });
+});

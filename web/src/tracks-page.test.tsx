@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// US-125: the Features page, .../projects/<project>/features, and the palette
+// US-125: the Tracks page, .../projects/<project>/tracks, and the palette
 // that the sidebar's Search item or ⌘K (Ctrl+K off macOS) opens. Both read the
 // project home, GET .../projects/<project>/home. The app is rendered into the
 // document, as in the browser: the palette's portal on the body then sees the
@@ -28,7 +28,7 @@ const AT = "2026-10-21T08:00:00Z";
 
 type Stories = { total: number; open: number; done: number };
 
-function feature(
+function track(
   id: string,
   name: string,
   fields: { description?: string; waiting?: number; lastActivity?: string | null; createdAt?: string; stories?: Stories } = {},
@@ -42,15 +42,15 @@ function feature(
   };
 }
 
-function doc(id: string, featureId: string | null, title: string) {
-  return { id, project_id: PROJECT_ID, track_id: featureId, kind: "html", pillar: "spec", waiting: 0, title, created_at: AT, drafts: [], claims: [] };
+function doc(id: string, trackId: string | null, title: string) {
+  return { id, project_id: PROJECT_ID, track_id: trackId, kind: "html", pillar: "spec", waiting: 0, title, created_at: AT, drafts: [], claims: [] };
 }
 
-function thread(id: string, featureId: string | null, question: string) {
+function thread(id: string, trackId: string | null, question: string) {
   return {
     id,
     project_id: PROJECT_ID,
-    track_id: featureId,
+    track_id: trackId,
     question,
     sealed: false,
     conclusion: null,
@@ -61,11 +61,11 @@ function thread(id: string, featureId: string | null, question: string) {
   };
 }
 
-function home(fields: { features?: ReturnType<typeof feature>[]; docs?: ReturnType<typeof doc>[]; threads?: ReturnType<typeof thread>[] }) {
+function home(fields: { tracks?: ReturnType<typeof track>[]; docs?: ReturnType<typeof doc>[]; threads?: ReturnType<typeof thread>[] }) {
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    tracks: fields.features ?? [],
+    tracks: fields.tracks ?? [],
     docs: fields.docs ?? [],
     threads: fields.threads ?? [],
     waiting: { comments: [] },
@@ -155,18 +155,18 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("the Features page", () => {
-  const features = [
-    feature(RETURNS, "Returns", { lastActivity: "2026-10-21T11:00:00Z" }),
-    feature(WALLETS, "Wallets", { description: "Apple Pay and Google Pay.", lastActivity: null, createdAt: "2026-10-21T12:00:00Z" }),
-    feature(GIFT_CARDS, "Gift cards", { lastActivity: "2026-10-21T11:00:00Z" }),
-    feature(CHECKOUT, "Checkout", {
+describe("the Tracks page", () => {
+  const tracks = [
+    track(RETURNS, "Returns", { lastActivity: "2026-10-21T11:00:00Z" }),
+    track(WALLETS, "Wallets", { description: "Apple Pay and Google Pay.", lastActivity: null, createdAt: "2026-10-21T12:00:00Z" }),
+    track(GIFT_CARDS, "Gift cards", { lastActivity: "2026-10-21T11:00:00Z" }),
+    track(CHECKOUT, "Checkout", {
       description: "Pay in one step.\nWorks with saved wallets.",
       waiting: 2,
       lastActivity: "2026-10-21T13:00:00Z",
       stories: { total: 3, open: 2, done: 1 },
     }),
-    feature(APPLE_PAY, "apple pay", { lastActivity: "2026-10-21T11:00:00Z" }),
+    track(APPLE_PAY, "apple pay", { lastActivity: "2026-10-21T11:00:00Z" }),
   ];
 
   beforeEach(() => {
@@ -177,28 +177,28 @@ describe("the Features page", () => {
   const main = () => screen.getByRole("main");
   const rows = () => within(within(main()).getByRole("list")).getAllByRole("link");
   const rowNames = () => rows().map((row) => row.querySelector("span span")?.textContent);
-  const filter = (query: string) => fireEvent.change(within(main()).getByRole("textbox", { name: "Filter features" }), { target: { value: query } });
+  const filter = (query: string) => fireEvent.change(within(main()).getByRole("textbox", { name: "Filter tracks" }), { target: { value: query } });
 
-  test("lists every feature, the most recent activity first, one without activity at its creation, ties by name", async () => {
-    fakeApi(home({ features }));
-    renderAt(`${PROJECT_PATH}/features`);
+  test("lists every track, the most recent activity first, one without activity at its creation, ties by name", async () => {
+    fakeApi(home({ tracks }));
+    renderAt(`${PROJECT_PATH}/tracks`);
     await waitFor(() => expect(rows()).toHaveLength(5));
     expect(rowNames()).toEqual(["Checkout", "Wallets", "apple pay", "Gift cards", "Returns"]);
-    expect(within(main()).getByText("5 features")).toBeTruthy();
+    expect(within(main()).getByText("5 tracks")).toBeTruthy();
   });
 
-  test("a row shows the name, the first line of the description, done of total stories, what waits and the last activity, and opens the feature", async () => {
-    fakeApi(home({ features }));
-    renderAt(`${PROJECT_PATH}/features`);
+  test("a row shows the name, the first line of the description, done of total stories, what waits and the last activity, and opens the track", async () => {
+    fakeApi(home({ tracks }));
+    renderAt(`${PROJECT_PATH}/tracks`);
     await waitFor(() => expect(rows()).toHaveLength(5));
     expect(shownText(rows()[0])).toBe("CheckoutPay in one step.1/3 stories22 h ago");
-    expect(rows()[0].getAttribute("href")).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`);
+    expect(rows()[0].getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${CHECKOUT}`);
     expect(shownText(rows()[1])).toBe("WalletsApple Pay and Google Pay.0/0 storiesNo activity yet");
   });
 
   test("the filter narrows the list as you type to the names and full descriptions holding the trimmed query, in the same order, and says N of M", async () => {
-    fakeApi(home({ features }));
-    renderAt(`${PROJECT_PATH}/features`);
+    fakeApi(home({ tracks }));
+    renderAt(`${PROJECT_PATH}/tracks`);
     await waitFor(() => expect(rows()).toHaveLength(5));
 
     filter("  WALLET ");
@@ -211,24 +211,24 @@ describe("the Features page", () => {
 
     filter("");
     expect(rows()).toHaveLength(5);
-    expect(within(main()).getByText("5 features")).toBeTruthy();
+    expect(within(main()).getByText("5 tracks")).toBeTruthy();
   });
 });
 
 describe("the palette", () => {
   const payHome = home({
-    features: [feature(PAYMENTS, "Payments"), feature(PAY_LATER, "Pay later"), feature(CHECKOUT, "Checkout")],
+    tracks: [track(PAYMENTS, "Payments"), track(PAY_LATER, "Pay later"), track(CHECKOUT, "Checkout")],
     docs: [1, 2, 3, 4, 5, 6, 7].map((n) => doc(`0192d7a0-5555-7000-8000-00000000002${n}`, null, `Pay note ${n}`)),
     threads: [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")],
   });
 
-  /** Renders the Features page on `platform`, and waits until the sidebar has the project home. */
+  /** Renders the Tracks page on `platform`, and waits until the sidebar has the project home. */
   async function renderOn(platform: string, projectHome: Home) {
     Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
     fakeApi(projectHome);
-    const router = renderAt(`${PROJECT_PATH}/features`);
+    const router = renderAt(`${PROJECT_PATH}/tracks`);
     const nav = await screen.findByRole("navigation", { name: "Project" });
-    await within(nav).findByRole("link", { name: /^Features\d/ });
+    await within(nav).findByRole("link", { name: /^Tracks\d/ });
     return router;
   }
 
@@ -262,20 +262,20 @@ describe("the palette", () => {
   test("the Search item opens it on the places visited last, a doc with its scope and pillar, a thread with its scope", async () => {
     const visits = [{ scope: CHECKOUT, doc: CHECKOUT_DOC }, { scope: CHECKOUT, thread: CHECKOUT_THREAD }, { scope: "app" }];
     localStorage.setItem(VISITS_KEY, JSON.stringify(visits.map((visit, n) => ({ ...visit, at: Date.parse(AT) - n * 60_000 }))));
-    await renderOn("MacIntel", home({ features: [feature(CHECKOUT, "Checkout")], docs: [doc(CHECKOUT_DOC, CHECKOUT, "Pay in one step")], threads: [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")] }));
+    await renderOn("MacIntel", home({ tracks: [track(CHECKOUT, "Checkout")], docs: [doc(CHECKOUT_DOC, CHECKOUT, "Pay in one step")], threads: [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")] }));
 
     fireEvent.click(within(screen.getByRole("navigation", { name: "Project" })).getByRole("button", { name: /^Search/ }));
 
     expect(options().map(shownText)).toEqual(["Pay in one stepCheckout · Spec", "Which wallets?Checkout", "App"]);
   });
 
-  test("typing groups the matches as Features and Docs, says how many a full group shows of how many, and leaves out an empty group", async () => {
+  test("typing groups the matches as Tracks and Docs, says how many a full group shows of how many, and leaves out an empty group", async () => {
     await renderOn("MacIntel", payHome);
     press("k", { metaKey: true });
     type("pay");
 
     const groups = within(palette()!).getAllByRole("group");
-    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Features", "Docs"]);
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Tracks", "Docs"]);
     expect(within(groups[0]).queryByText(/ of /)).toBeNull();
     expect(within(groups[1]).getByText("6 of 7")).toBeTruthy();
     expect(options().map(shownText)).toEqual([
@@ -313,7 +313,7 @@ describe("the palette", () => {
     expect(selected()).toEqual(["Payments"]);
 
     fireEvent.keyDown(input(), { key: "Enter" });
-    await waitFor(() => expect(router.state.location.pathname).toBe(`${PROJECT_PATH}/features/${PAYMENTS}`));
+    await waitFor(() => expect(router.state.location.pathname).toBe(`${PROJECT_PATH}/tracks/${PAYMENTS}`));
     expect(palette()).toBeNull();
   });
 });

@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 // US-112: the scope pages. A project opens at its App page,
-// /w/<workspace id>/projects/<project id>/app, and each feature has its page at
-// .../features/<feature id>; both share one layout. The app is rendered with
+// /w/<workspace id>/projects/<project id>/app, and each track has its page at
+// .../tracks/<track id>; both share one layout. The app is rendered with
 // its own router on a memory history, the browser's fetch is replaced by a fake
 // of the API, and the browser's WebSocket by a fake socket that the test drives.
 //
 // The pages load GET .../projects/<project>/home (crates/omni-api/tests/
-// project_home.rs): its `app.last_activity`, its `features` with each one's
+// project_home.rs): its `app.last_activity`, its `tracks` with each one's
 // `last_activity`, its `docs` with each one's `updated_at`, `last_writer_role`
 // and `waiting`, and its `threads` with each one's `post_count` and
 // `last_post_at`. A section is named by its heading, so it has the role region.
@@ -17,11 +17,11 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
-const FEATURE_ID = "0192d7a0-4444-7000-8000-000000000001";
+const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const APP_PATH = `${PROJECT_PATH}/app`;
-const FEATURE_PATH = `${PROJECT_PATH}/features/${FEATURE_ID}`;
+const TRACK_PATH = `${PROJECT_PATH}/tracks/${TRACK_ID}`;
 const AT = "2026-10-21T10:00:00.000000Z";
 
 let counter = 0;
@@ -31,11 +31,11 @@ function newId() {
   return `0192d7a0-3333-7000-8000-${counter.toString(16).padStart(12, "0")}`;
 }
 
-function doc(pillar: string, kind: string, title: string, fields: { feature?: string; role?: string; waiting?: number } = {}) {
+function doc(pillar: string, kind: string, title: string, fields: { track?: string; role?: string; waiting?: number } = {}) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    track_id: fields.feature ?? null,
+    track_id: fields.track ?? null,
     kind,
     pillar,
     title,
@@ -50,12 +50,12 @@ function doc(pillar: string, kind: string, title: string, fields: { feature?: st
 
 function thread(
   question: string,
-  fields: { feature?: string; createdAt?: string; posts?: number; lastPostAt?: string | null; sealed?: boolean; conclusion?: string | null },
+  fields: { track?: string; createdAt?: string; posts?: number; lastPostAt?: string | null; sealed?: boolean; conclusion?: string | null },
 ) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    track_id: fields.feature ?? null,
+    track_id: fields.track ?? null,
     question,
     sealed: fields.sealed ?? false,
     conclusion: fields.conclusion ?? null,
@@ -68,7 +68,7 @@ function thread(
 
 /**
  * A project whose app level has docs in four pillars (none in Architecture)
- * and four threads, and one feature, Checkout, with a doc and a thread of its
+ * and four threads, and one track, Checkout, with a doc and a thread of its
  * own. Nothing at the app level has been written yet that counts as activity.
  */
 function seededHome() {
@@ -80,7 +80,7 @@ function seededHome() {
     system: doc("ui", "design-system", "Tokens", { role: "designer" }),
     schema: doc("db", "html", "Orders schema"),
     interviews: doc("research", "html", "Shopper interviews"),
-    pay: doc("spec", "html", "Pay in one step", { feature: FEATURE_ID }),
+    pay: doc("spec", "html", "Pay in one step", { track: TRACK_ID }),
   };
   const threads = {
     // Concluded wins over sealed; its newest post is the newest of all.
@@ -104,7 +104,7 @@ function seededHome() {
       posts: 2,
       lastPostAt: "2026-10-21T10:00:00.000000Z",
     }),
-    wallets: thread("Which wallets?", { feature: FEATURE_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000000Z" }),
+    wallets: thread("Which wallets?", { track: TRACK_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000000Z" }),
   };
   const home = {
     project_id: PROJECT_ID,
@@ -112,7 +112,7 @@ function seededHome() {
     tracks: [
       {
         track: {
-          id: FEATURE_ID,
+          id: TRACK_ID,
           project_id: PROJECT_ID,
           name: "Checkout",
           description: "Pay in one step.\nNo account needed.",
@@ -325,7 +325,7 @@ describe("the scope pages", () => {
     const main = await page();
     const spec = await section(main, /^spec\b/i);
     await within(spec).findByText("Returns PRD");
-    expect(rowTitles(spec), "the feature's doc is not the app's").toEqual(["Checkout PRD", "Returns PRD"]);
+    expect(rowTitles(spec), "the track's doc is not the app's").toEqual(["Checkout PRD", "Returns PRD"]);
     expect(rowTitles(await section(main, /^ui\b/i))).toEqual(["Tokens", "account screens", "Cart screens"]);
   });
 
@@ -357,7 +357,7 @@ describe("the scope pages", () => {
     const main = await page();
     const listed = await section(main, /^threads\b/i);
     await within(listed).findByText("Which hero layout?");
-    expect(rowTitles(listed), "the feature's thread is not the app's").toEqual([
+    expect(rowTitles(listed), "the track's thread is not the app's").toEqual([
       "Which hero layout?",
       "Do we need search?",
       "What goes in the footer?",
@@ -376,11 +376,11 @@ describe("the scope pages", () => {
     expect(rowLink(listed, "Which hero layout?").getAttribute("href")).toBe(`${PROJECT_PATH}/threads/${threads.hero.id}`);
   });
 
-  test("a feature's page has the feature's name and description, and only its own docs and threads", async () => {
+  test("a track's page has the track's name and description, and only its own docs and threads", async () => {
     const { home } = seededHome();
     home.threads = home.threads.filter((listed) => listed.track_id === null);
     fakeApi(home);
-    renderAt(FEATURE_PATH);
+    renderAt(TRACK_PATH);
     const main = await page();
     const heading = await within(main).findByRole("heading", { level: 1, name: "Checkout" });
     const header = heading.closest("header") ?? heading.parentElement!;
