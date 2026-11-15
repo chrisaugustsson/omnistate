@@ -62,7 +62,7 @@ pub(crate) const TRACK_COLUMNS: &str = concat!(
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
 );
 
-/// Creates a track in a project.
+/// Creates a track in a project, with an API key or a session.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
@@ -75,7 +75,6 @@ pub(crate) const TRACK_COLUMNS: &str = concat!(
         (status = 201, description = "The new track", body = TrackResponse),
         (status = 400, description = "The name is missing or blank", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
         (status = 409, description = "The project has a track of this name, ignoring case", body = ErrorBody),
         (status = 422, description = "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project", body = ErrorBody),
@@ -83,7 +82,7 @@ pub(crate) const TRACK_COLUMNS: &str = concat!(
 )]
 pub async fn create_track(
     State(state): State<AppState>,
-    request: AgentRequest,
+    request: WorkspaceRequest,
     Path((_, project_id)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<TrackResponse>), ApiError> {

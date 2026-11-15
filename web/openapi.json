@@ -4075,6 +4075,14 @@
               "null"
             ]
           },
+          "part_deleted": {
+            "description": "Whether that part was deleted; the track stays on it. The API always\nsends it.",
+            "type": "boolean"
+          },
+          "part_name": {
+            "description": "The name of the part the track is on. The API always sends it.",
+            "type": "string"
+          },
           "stories": {
             "$ref": "#/components/schemas/StoryCounts",
             "description": "The track's stories by count. The API always sends it."
@@ -8771,16 +8779,6 @@
             },
             "description": "No valid API key or session"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with a session; agents only"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -8812,11 +8810,11 @@
             "description": "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project"
           }
         },
-        "summary": "Creates a track in a project.",
+        "summary": "Creates a track in a project, with an API key or a session.",
         "tags": [
           "crate::tracks"
         ],
-        "x-omni-access": "agent"
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}": {

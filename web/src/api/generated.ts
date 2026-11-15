@@ -575,6 +575,8 @@ export type TrackBody = z.infer<typeof TrackBodySchema>;
 export const TrackSummarySchema = z.object({
   docs: z.number().int(),
   last_activity: z.string().nullable().optional(),
+  part_deleted: z.boolean().optional(),
+  part_name: z.string().optional(),
   stories: StoryCountsSchema.optional(),
   track: TrackBodySchema,
   waiting: z.number().int(),
@@ -1735,7 +1737,6 @@ export const operations = {
       "201": TrackResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
       "422": ErrorBodySchema,

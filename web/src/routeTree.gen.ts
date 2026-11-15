@@ -19,6 +19,7 @@ import { Route as WWorkspaceIdProjectsProjectIdRouteImport } from './routes/w.$w
 import { Route as WWorkspaceIdProjectsProjectIdAppRouteImport } from './routes/w.$workspaceId.projects.$projectId_.app'
 import { Route as WWorkspaceIdProjectsProjectIdInboxRouteImport } from './routes/w.$workspaceId.projects.$projectId_.inbox'
 import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.docs.$docId'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.parts.$partId'
 import { Route as WWorkspaceIdProjectsProjectIdThreadsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.threads.index'
 import { Route as WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.threads.$threadId'
 import { Route as WWorkspaceIdProjectsProjectIdTracksIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.tracks.index'
@@ -82,6 +83,12 @@ const WWorkspaceIdProjectsProjectIdDocsDocIdRoute =
     path: '/projects/$projectId/docs/$docId',
     getParentRoute: () => WWorkspaceIdRoute,
   } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdRouteImport.update({
+    id: '/projects/$projectId_/parts/$partId',
+    path: '/projects/$projectId/parts/$partId',
+    getParentRoute: () => WWorkspaceIdRoute,
+  } as any)
 const WWorkspaceIdProjectsProjectIdThreadsIndexRoute =
   WWorkspaceIdProjectsProjectIdThreadsIndexRouteImport.update({
     id: '/projects/$projectId_/threads/',
@@ -142,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
   '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId/threads/': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   '/w/$workspaceId/projects/$projectId/tracks/': typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
@@ -161,6 +169,7 @@ export interface FileRoutesByTo {
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
   '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId/threads': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   '/w/$workspaceId/projects/$projectId/tracks': typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
@@ -182,6 +191,7 @@ export interface FileRoutesById {
   '/w/$workspaceId/projects/$projectId_/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId_/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
   '/w/$workspaceId/projects/$projectId_/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId_/parts/$partId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
   '/w/$workspaceId/projects/$projectId_/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId_/threads/': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   '/w/$workspaceId/projects/$projectId_/tracks/': typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
@@ -204,6 +214,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/projects/$projectId/app'
     | '/w/$workspaceId/projects/$projectId/inbox'
     | '/w/$workspaceId/projects/$projectId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId'
     | '/w/$workspaceId/projects/$projectId/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId/threads/'
     | '/w/$workspaceId/projects/$projectId/tracks/'
@@ -223,6 +234,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/projects/$projectId/app'
     | '/w/$workspaceId/projects/$projectId/inbox'
     | '/w/$workspaceId/projects/$projectId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId'
     | '/w/$workspaceId/projects/$projectId/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId/threads'
     | '/w/$workspaceId/projects/$projectId/tracks'
@@ -243,6 +255,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/projects/$projectId_/app'
     | '/w/$workspaceId/projects/$projectId_/inbox'
     | '/w/$workspaceId/projects/$projectId_/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId_/parts/$partId'
     | '/w/$workspaceId/projects/$projectId_/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId_/threads/'
     | '/w/$workspaceId/projects/$projectId_/tracks/'
@@ -332,6 +345,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
+    '/w/$workspaceId/projects/$projectId_/parts/$partId': {
+      id: '/w/$workspaceId/projects/$projectId_/parts/$partId'
+      path: '/projects/$projectId/parts/$partId'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRouteImport
+      parentRoute: typeof WWorkspaceIdRoute
+    }
     '/w/$workspaceId/projects/$projectId_/threads/': {
       id: '/w/$workspaceId/projects/$projectId_/threads/'
       path: '/projects/$projectId/threads'
@@ -398,6 +418,7 @@ interface WWorkspaceIdRouteChildren {
   WWorkspaceIdProjectsProjectIdAppRoute: typeof WWorkspaceIdProjectsProjectIdAppRoute
   WWorkspaceIdProjectsProjectIdInboxRoute: typeof WWorkspaceIdProjectsProjectIdInboxRoute
   WWorkspaceIdProjectsProjectIdDocsDocIdRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
   WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute: typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
   WWorkspaceIdProjectsProjectIdThreadsIndexRoute: typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
   WWorkspaceIdProjectsProjectIdTracksIndexRoute: typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
@@ -417,6 +438,8 @@ const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
     WWorkspaceIdProjectsProjectIdInboxRoute,
   WWorkspaceIdProjectsProjectIdDocsDocIdRoute:
     WWorkspaceIdProjectsProjectIdDocsDocIdRoute,
+  WWorkspaceIdProjectsProjectIdPartsPartIdRoute:
+    WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
   WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute:
     WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute,
   WWorkspaceIdProjectsProjectIdThreadsIndexRoute:

@@ -67,6 +67,13 @@ pub struct TrackSummary {
     /// count. `null` while there is none. The API always sends it.
     #[schema(required = false)]
     pub last_activity: Option<String>,
+    /// The name of the part the track is on. The API always sends it.
+    #[schema(required = false)]
+    pub part_name: String,
+    /// Whether that part was deleted; the track stays on it. The API always
+    /// sends it.
+    #[schema(required = false)]
+    pub part_deleted: bool,
 }
 
 /// The app level of the project.
@@ -158,6 +165,13 @@ pub async fn show(
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
+    let part_rows: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT id::text, name, deleted_at IS NOT NULL FROM parts WHERE project_id = $1::uuid",
+    )
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     let docs = docs_of_project(&mut tx, &project_id, Scope::Project, None).await?;
     let threads = threads_of_project(&mut tx, &project_id).await?;
     let waiting_comments = waiting_of_project(&mut tx, &project_id).await?;
@@ -199,6 +213,14 @@ pub async fn show(
                     },
                 ),
                 last_activity: activity.get(Some(track.id.as_str())),
+                part_name: part_rows
+                    .iter()
+                    .find(|(id, _, _)| *id == track.part_id)
+                    .map(|(_, name, _)| name.clone())
+                    .unwrap_or_default(),
+                part_deleted: part_rows
+                    .iter()
+                    .any(|(id, _, deleted)| *id == track.part_id && *deleted),
                 track,
             }
         })

@@ -87,7 +87,7 @@ pub fn registry() -> Vec<RouteEntry> {
         (
             "POST",
             "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
-            Access::Agent,
+            Access::Both,
         ),
         (
             "GET",

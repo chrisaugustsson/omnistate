@@ -1,17 +1,21 @@
 import { useMemo, useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { Search } from "lucide-react";
-import type { TrackSummary as TrackSummary } from "@/api/generated";
+import type { TrackSummary } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
 import { matches } from "@/components/palette/search";
 import { Empty, List } from "@/components/project/items";
+import { NewTrack, StateLabel } from "@/components/project/new-track";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { timeAgo } from "@/lib/format";
 import { useHome } from "@/lib/use-home";
+import { useParts } from "@/lib/use-parts";
 
 // The Tracks page: every track of the project in one flat list, the most
-// recently worked on first, with a filter on name and description.
+// recently worked on first, with a filter on name and description. Each row
+// shows the track's part and state; a track on a deleted part shows the
+// part's name marked as deleted. Creating a track asks for its part.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/tracks/")({
   component: Tracks,
 });
@@ -44,6 +48,11 @@ function TrackRow({ summary, params }: { summary: TrackSummary; params: { worksp
           <span className="block truncate font-medium">{track.name}</span>
           {track.description && <span className="mt-0.5 block truncate text-[13px] text-muted-foreground">{firstLine(track.description)}</span>}
         </span>
+        <span className="hidden max-w-40 shrink-0 truncate text-xs text-muted-foreground sm:inline">
+          {summary.part_name}
+          {summary.part_deleted && " (deleted)"}
+        </span>
+        <StateLabel state={track.state} />
         <span className="hidden shrink-0 text-xs text-muted-foreground tabular-nums sm:inline">
           {stories.done}/{stories.total} stories
         </span>
@@ -70,7 +79,8 @@ function TrackRow({ summary, params }: { summary: TrackSummary; params: { worksp
 
 function Tracks() {
   const { workspaceId, projectId } = Route.useParams();
-  const { home, failed } = useHome(workspaceId, projectId);
+  const { home, failed, reload } = useHome(workspaceId, projectId);
+  const { parts } = useParts(workspaceId, projectId);
   const [query, setQuery] = useState("");
   const all = useMemo(() => inOrder(home?.tracks ?? []), [home]);
   const shown = useMemo(
@@ -104,6 +114,7 @@ function Tracks() {
               {query.trim() ? `${shown.length} of ${all.length}` : `${all.length} ${all.length === 1 ? "track" : "tracks"}`}
             </span>
           </div>
+          {parts && <NewTrack workspaceId={workspaceId} projectId={projectId} parts={parts} onCreated={reload} />}
           {all.length === 0 ? (
             <Empty>No tracks yet</Empty>
           ) : shown.length === 0 ? (
@@ -111,7 +122,11 @@ function Tracks() {
           ) : (
             <List>
               {shown.map((summary) => (
-                <TrackRow key={summary.track.id} summary={summary} params={{ workspaceId, projectId }} />
+                <TrackRow
+                  key={summary.track.id}
+                  summary={summary}
+                  params={{ workspaceId, projectId }}
+                />
               ))}
             </List>
           )}
