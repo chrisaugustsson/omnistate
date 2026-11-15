@@ -10,6 +10,8 @@ import {
   LayoutGrid,
   LogOut,
   MessagesSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Search,
 } from "lucide-react";
 import { logOut } from "@/api/auth";
@@ -293,7 +295,7 @@ function Switcher({
   }, [open, onClose]);
 
   return (
-    <div ref={root} className="relative pb-3">
+    <div ref={root} className="min-w-0 flex-1 pb-3">
       <button
         type="button"
         aria-haspopup="menu"
@@ -373,6 +375,9 @@ function ReloadOnRename({ projectId, reload }: { projectId: string; reload: () =
   return null;
 }
 
+const sidebarToggleClass =
+  "size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none";
+
 /** The left column of every workspace page: the header, the project's places and the account. */
 export function AppSidebar({
   workspace,
@@ -380,6 +385,8 @@ export function AppSidebar({
   user,
   open,
   onClose,
+  shown,
+  onShown,
 }: {
   workspace: Workspace;
   /** Every workspace of the account; the menu lists them when there is more than one. */
@@ -388,12 +395,16 @@ export function AppSidebar({
   /** On small screens the sidebar is a drawer, shown while `open`. */
   open: boolean;
   onClose: () => void;
+  /** On wider screens the reader can fold the sidebar to a rail; `shown` is false while it is folded. */
+  shown: boolean;
+  onShown: (shown: boolean) => void;
 }) {
   const { projectId } = useParams({ strict: false }) as { projectId?: string };
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const sidebarKeys = isMac() ? "⌘B" : "Ctrl+B";
   const load = useCallback(() => loadProjects(workspace.id), [workspace.id]);
   const { value: projects, reload } = useReloading(load);
 
@@ -424,27 +435,57 @@ export function AppSidebar({
       {open && (
         <div aria-hidden className="fixed inset-0 z-30 bg-foreground/20 backdrop-blur-[1px] md:hidden" onClick={onClose} />
       )}
+      {!shown && (
+        <div className="hidden w-10 shrink-0 flex-col items-center py-3 md:flex">
+          <button
+            type="button"
+            aria-label="Show the sidebar"
+            aria-expanded={false}
+            aria-controls="app-sidebar"
+            title={`Show the sidebar (${sidebarKeys})`}
+            className={cn(sidebarToggleClass, "mt-1 flex")}
+            onClick={() => onShown(true)}
+          >
+            <PanelLeftOpen aria-hidden className="size-4" />
+          </button>
+        </div>
+      )}
       <aside
+        id="app-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-64 shrink-0 flex-col bg-sidebar px-3 py-3 shadow-xl md:static md:z-auto md:flex md:w-60 md:shadow-none",
+          "fixed inset-y-0 left-0 z-40 w-64 shrink-0 flex-col bg-sidebar px-3 py-3 shadow-xl md:static md:z-auto md:w-60 md:shadow-none",
           open ? "flex" : "hidden",
+          shown ? "md:flex" : "md:hidden",
         )}
         onClick={(event) => {
           if ((event.target as HTMLElement).closest("a")) onClose();
         }}
       >
-        <Switcher
-          workspace={workspace}
-          workspaces={workspaces}
-          projectId={projectId}
-          projects={projects ?? []}
-          open={menuOpen}
-          onOpen={() => {
-            reload();
-            setMenuOpen(true);
-          }}
-          onClose={closeMenu}
-        />
+        <div className="relative flex items-start gap-1">
+          <Switcher
+            workspace={workspace}
+            workspaces={workspaces}
+            projectId={projectId}
+            projects={projects ?? []}
+            open={menuOpen}
+            onOpen={() => {
+              reload();
+              setMenuOpen(true);
+            }}
+            onClose={closeMenu}
+          />
+          <button
+            type="button"
+            aria-label="Hide the sidebar"
+            aria-expanded
+            aria-controls="app-sidebar"
+            title={`Hide the sidebar (${sidebarKeys})`}
+            className={cn(sidebarToggleClass, "mt-1 hidden md:flex")}
+            onClick={() => onShown(false)}
+          >
+            <PanelLeftClose aria-hidden className="size-4" />
+          </button>
+        </div>
 
         <nav aria-label="Project" className="min-h-0 flex-1 overflow-y-auto">
           {projectId && <ProjectSection workspaceId={workspace.id} projectId={projectId} onCloseDrawer={onClose} />}

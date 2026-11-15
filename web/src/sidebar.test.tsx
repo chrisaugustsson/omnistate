@@ -813,3 +813,75 @@ describe("the sidebar's scope tree", () => {
     await within(await projectNav()).findByRole("link", { name: "Pay in one step" });
   });
 });
+
+// Hiding the sidebar -----------------------------------------------------------------------
+//
+// On a small screen the sidebar takes room the page needs. Hide the sidebar, at
+// its top, folds it to a narrow rail that holds Show the sidebar; ⌘B (Ctrl+B off
+// macOS) does the same from the keyboard. The choice is kept in localStorage,
+// under omni:pane:sidebar. Only screens from the md width up fold it: below
+// that the sidebar is the drawer it was, so what hides it is the class md:hidden.
+describe("hiding the sidebar", () => {
+  beforeEach(() => {
+    vi.stubGlobal("scrollTo", () => {});
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  async function sidebar() {
+    return (await projectNav()).closest("aside") as HTMLElement;
+  }
+  const hiddenOnWideScreens = (aside: HTMLElement) => aside.classList.contains("md:hidden");
+  const showButton = () => screen.queryByRole("button", { name: "Show the sidebar" });
+
+  test("Hide the sidebar folds it to a rail with Show the sidebar, which brings it back", async () => {
+    fakeApi();
+    renderAt(`${PROJECT_PATH}/app`);
+    const aside = await sidebar();
+    expect(hiddenOnWideScreens(aside)).toBe(false);
+    expect(showButton(), "nothing to show while the sidebar is there").toBeNull();
+
+    fireEvent.click(within(aside).getByRole("button", { name: "Hide the sidebar" }));
+    expect(hiddenOnWideScreens(aside)).toBe(true);
+    expect(aside.contains(showButton()), "the button that shows it is outside what was hidden").toBe(false);
+
+    fireEvent.click(showButton()!);
+    expect(hiddenOnWideScreens(aside)).toBe(false);
+    expect(showButton()).toBeNull();
+  });
+
+  test("Ctrl+B hides and shows it, and on a Mac ⌘B does", async () => {
+    Object.defineProperty(navigator, "platform", { value: "Linux x86_64", configurable: true });
+    fakeApi();
+    renderAt(`${PROJECT_PATH}/app`);
+    const aside = await sidebar();
+    fireEvent.keyDown(document.body, { key: "b", metaKey: true });
+    expect(hiddenOnWideScreens(aside), "⌘B is not the shortcut off macOS").toBe(false);
+    fireEvent.keyDown(document.body, { key: "b", ctrlKey: true });
+    expect(hiddenOnWideScreens(aside)).toBe(true);
+    fireEvent.keyDown(document.body, { key: "b", ctrlKey: true });
+    expect(hiddenOnWideScreens(aside)).toBe(false);
+
+    Object.defineProperty(navigator, "platform", { value: "MacIntel", configurable: true });
+    fireEvent.keyDown(document.body, { key: "b", metaKey: true });
+    expect(hiddenOnWideScreens(aside)).toBe(true);
+  });
+
+  test("a hidden sidebar is still hidden on the next visit", async () => {
+    fakeApi();
+    renderAt(`${PROJECT_PATH}/app`);
+    fireEvent.click(within(await sidebar()).getByRole("button", { name: "Hide the sidebar" }));
+    cleanup();
+
+    renderAt(`${PROJECT_PATH}/app`);
+    expect(hiddenOnWideScreens(await sidebar())).toBe(true);
+    expect(showButton()).toBeTruthy();
+  });
+});

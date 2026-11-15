@@ -75,6 +75,9 @@ export function ViewerFrame({
       sandbox="allow-scripts"
       srcDoc={srcDoc}
       className={className}
+      // The frame's `prefers-color-scheme` follows this element's color scheme.
+      // The app is light, so a doc's dark styles must not match on a dark system.
+      style={{ colorScheme: "light" }}
     />
   );
 }

@@ -565,6 +565,90 @@ describe("the doc viewer", () => {
     expect(viewerPolicyProblems(srcdoc, { workspaceId: WORKSPACE_ID, origin: window.location.origin })).toEqual([]);
   });
 
+  // A frame takes `prefers-color-scheme` from the color scheme of the element
+  // that holds it. The app is light, so a doc's own dark styles must not match
+  // when the reader's system is dark.
+  test("the frame tells the doc the color scheme is light, whatever the reader's system says", async () => {
+    fakeApi();
+    renderAt(DOC_PATH);
+    const frame = await findFrame();
+    expect(frame.style.getPropertyValue("color-scheme")).toBe("light");
+  });
+
+  // The review pane -----------------------------------------------------------------------
+  //
+  // The pane beside the doc holds its comments. On a small screen it takes room the
+  // doc needs, so the toolbar's Hide the review pane hides it and Show the review
+  // pane brings it back; the choice is kept in localStorage, under omni:pane:review.
+  // A reader who asks for a discussion gets the pane back without the button: by
+  // selecting a block that has comments, or by following a link to a comment.
+  describe("the review pane", () => {
+    beforeEach(() => localStorage.removeItem("omni:pane:review"));
+    afterEach(() => localStorage.removeItem("omni:pane:review"));
+
+    const pane = () => screen.queryByRole("complementary", { name: "Review" });
+    const hide = () => fireEvent.click(screen.getByRole("button", { name: "Hide the review pane" }));
+
+    test("Hide the review pane hides it, Show the review pane brings it back, and a draft is kept", async () => {
+      fakeApi();
+      renderAt(DOC_PATH);
+      await findFrame();
+      await select("p0000002");
+      const comments = await section(COMMENTS);
+      const field = await within(comments).findByRole("textbox", { name: /comment/i });
+      fireEvent.change(field, { target: { value: "Half written" } });
+
+      hide();
+      expect(pane(), "the pane is out of the page").toBeNull();
+      expect(screen.queryByRole("button", { name: "Hide the review pane" })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Show the review pane" }));
+      expect(pane()).toBeTruthy();
+      expect((within(pane()!).getByRole("textbox", { name: /comment/i }) as HTMLTextAreaElement).value).toBe("Half written");
+    });
+
+    test("a hidden pane is still hidden on the next visit", async () => {
+      fakeApi();
+      renderAt(DOC_PATH);
+      await findFrame();
+      hide();
+      cleanup();
+      watchFrames();
+
+      renderAt(DOC_PATH);
+      await findFrame();
+      expect(pane()).toBeNull();
+      expect(screen.getByRole("button", { name: "Show the review pane" })).toBeTruthy();
+    });
+
+    test("selecting a block that has comments shows a hidden pane; a block without comments leaves it hidden", async () => {
+      fakeApi();
+      renderAt(DOC_PATH);
+      await findFrame();
+      await shown((s) => expect(s.pins).not.toEqual([]));
+      hide();
+
+      await select("h0000001");
+      await shown((s) => expect(s.selected).toBe("h0000001"));
+      expect(pane(), "nobody commented on the heading").toBeNull();
+
+      await select("p0000002");
+      await waitFor(() => expect(pane()).toBeTruthy());
+      expect(within(pane()!).getByText("Say which week.")).toBeTruthy();
+    });
+
+    test("a link to a comment shows a hidden pane, also when the comment's block was removed", async () => {
+      localStorage.setItem("omni:pane:review", "closed");
+      const api = fakeApi();
+      const gone = orphan("p0000009", "Shorten this note.", '<p data-omni-id="p0000009">Prices include VAT.</p>');
+      api.comments = [...api.comments, gone];
+      renderAt(`${DOC_PATH}?comment=${gone.id}`);
+      await findFrame();
+      await waitFor(() => expect(pane()).toBeTruthy());
+      expect(await within(pane()!).findByText("Shorten this note.")).toBeTruthy();
+    });
+  });
+
   test("the frame is shown the doc's head, and there is no version picker", async () => {
     const api = fakeApi();
     renderAt(DOC_PATH);

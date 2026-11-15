@@ -880,6 +880,24 @@ describe("comment pins", () => {
     expect(within(comments).queryByText(ON_TOTAL), "only the selected node's comments").toBeNull();
   });
 
+  test("Hide the review pane hides the design's pane, and clicking a pin shows it again with the node's comments", async () => {
+    localStorage.removeItem("omni:pane:review");
+    try {
+      renderAt(DOC_PATH);
+      await findRenderer();
+      const pane = () => screen.queryByRole("complementary", { name: "Review" });
+      await waitFor(() => expect(pane()).toBeTruthy());
+      fireEvent.click(screen.getByRole("button", { name: "Hide the review pane" }));
+      expect(pane()).toBeNull();
+
+      fireEvent.click(await findPin("Label"));
+      await waitFor(() => expect(pane()).toBeTruthy());
+      await waitFor(() => expect(within(pane()!).getByText(ON_LABEL)).toBeTruthy());
+    } finally {
+      localStorage.removeItem("omni:pane:review");
+    }
+  });
+
   test("clicking a node on the canvas opens its comments", async () => {
     renderAt(DOC_PATH);
     await findShown((shown) => expect(pageId(shown)).toBe(MOBILE));

@@ -35,19 +35,24 @@ export function isMac(): boolean {
   return typeof navigator !== "undefined" && /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
 }
 
-/** Calls `toggle` for ⌘K (Ctrl+K off macOS), anywhere on the page. */
-export function useSearchShortcut(toggle: () => void) {
+/** Calls `run` for ⌘ with `key` (Ctrl with `key` off macOS), anywhere on the page. */
+export function useShortcut(key: string, run: () => void) {
   useEffect(() => {
     function onKey(event: globalThis.KeyboardEvent) {
       const modifier = isMac() ? event.metaKey : event.ctrlKey;
-      if (modifier && event.key.toLowerCase() === "k") {
+      if (modifier && event.key.toLowerCase() === key) {
         event.preventDefault();
-        toggle();
+        run();
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [toggle]);
+  }, [key, run]);
+}
+
+/** Calls `toggle` for ⌘K (Ctrl+K off macOS), anywhere on the page. */
+export function useSearchShortcut(toggle: () => void) {
+  useShortcut("k", toggle);
 }
 
 type Group = { label: string; places: Place[]; count?: string };
