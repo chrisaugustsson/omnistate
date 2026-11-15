@@ -12,6 +12,8 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
 const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
@@ -71,7 +73,7 @@ function waiting(on: Doc, text: string, replies: ReturnType<typeof reply>[]) {
 
 function feature(id: string, name: string) {
   return {
-    track: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: AT },
     docs: 1,
     waiting: 1,
     last_activity: null,

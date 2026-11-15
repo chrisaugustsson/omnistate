@@ -55,6 +55,8 @@ vi.mock("@/design/renderer", () => ({
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const PROJECT_NAME = "Storefront";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
@@ -82,7 +84,7 @@ function trackPath(trackId: string, section = "") {
  * show that the app pays no heed to it.
  */
 function track(id: string, name: string, description: string, legacyStatus: string) {
-  return { id, project_id: PROJECT_ID, name, description, status: legacyStatus, created_at: AT };
+  return { id, project_id: PROJECT_ID, part_id: PART_ID, name, description, status: legacyStatus, created_at: AT };
 }
 
 function doc(trackId: string | null, kind: string, pillar: string, title: string) {

@@ -10,6 +10,8 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const CHECKOUT_ID = "0192d7a0-4444-7000-8000-000000000001";
 const SEARCH_ID = "0192d7a0-4444-7000-8000-000000000002";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
@@ -76,7 +78,7 @@ type Opened = HomeThread & { posts: Post[] };
 
 function track(id: string, name: string) {
   return {
-    track: { id, project_id: PROJECT_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
     docs: 0,
     waiting: 0,
     last_activity: null,

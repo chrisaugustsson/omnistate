@@ -18,7 +18,8 @@
 //!   placeholders of a path with the IDs of the seeded records; a path with
 //!   another placeholder, or a registry route without a case, fails the suite.
 //!   A body may hold `<comment_node>`, the paragraph of `{doc_id}` that the
-//!   seeded comment is pinned to, and `<node>`, the `{node_id}` behaviour node.
+//!   seeded comment is pinned to, `<node>`, the `{node_id}` behaviour node,
+//!   and `<part>`, the `{part_id}` part.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -553,7 +554,7 @@ const CASES: &[Case] = &[
     case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
-        Some(r#"{"name":"intruder","description":"intruder"}"#),
+        Some(r#"{"name":"intruder","description":"intruder","part_id":"<part>"}"#),
         Kind::Workspace,
     ),
     case(
@@ -578,6 +579,12 @@ const CASES: &[Case] = &[
         "DELETE",
         "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
         None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move",
+        Some(r#"{"part_id":"<part>"}"#),
         Kind::Workspace,
     ),
     case(
@@ -1168,10 +1175,10 @@ fn fixture() -> &'static Fixture {
                 "create a part",
             );
             let part_id = created["part"]["id"].as_str().expect("an id").to_string();
-            // A track of the project with a doc in it, so the tracks table
+            // A track on the part with a doc in it, so the tracks table
             // and the docs of a track have rows of the workspace.
             let track_name = unique(&format!("{name}-track"));
-            let body = json!({ "name": track_name }).to_string();
+            let body = json!({ "name": track_name, "part_id": part_id }).to_string();
             let created = must(
                 call(
                     client,
@@ -1499,12 +1506,13 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
 }
 
 /// The body of `case` for calls about the records of `record`: its
-/// `<comment_node>` is the node of `record`'s seeded comment, and its
-/// `<node>` is `record`'s behaviour node.
+/// `<comment_node>` is the node of `record`'s seeded comment, its `<node>`
+/// is `record`'s behaviour node and its `<part>` is `record`'s part.
 fn body_of(case: &Case, record: &Side) -> Option<String> {
     case.body.map(|body| {
         body.replace("<comment_node>", &record.comment_node)
             .replace("<node>", &record.node_id)
+            .replace("<part>", &record.part_id)
     })
 }
 
@@ -2664,8 +2672,7 @@ fn the_track_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records()
     let path = |template: &str| fill(template, &f.a, &f.a);
 
     let (method, template, _) = TRACK_ROUTES[0];
-    let body = case_named(method, template)
-        .body
+    let body = body_of(case_named(method, template), &f.a)
         .map(|b| b.replace("intruder", &unique("owner")));
     let created = must(
         call(client, method, &path(template), &key, body.as_deref()),
@@ -3107,7 +3114,7 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
         "POST",
         &format!("/api/v1/w/{}/projects/{}/tracks", f.b.id, f.b.project_id),
         &Auth::Key(&f.b.key),
-        Some(&json!({ "name": unique("b-only") }).to_string()),
+        Some(&json!({ "name": unique("b-only"), "part_id": f.b.part_id }).to_string()),
     );
     must(created, 201, "B's agent creates a track");
     let heard = ws.drain();
@@ -3122,7 +3129,7 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
         "POST",
         &format!("/api/v1/w/{}/projects/{}/tracks", f.a.id, f.a.project_id),
         &Auth::Key(&f.a.key),
-        Some(&json!({ "name": unique("a-only") }).to_string()),
+        Some(&json!({ "name": unique("a-only"), "part_id": f.a.part_id }).to_string()),
     );
     must(created, 201, "A's agent creates a track");
     let event = ws.next(PATIENCE).expect("A hears its own event");

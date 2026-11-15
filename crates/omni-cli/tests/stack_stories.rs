@@ -181,10 +181,32 @@ fn a_story_added_claimed_ticked_and_moved_to_done_reads_back_as_done() {
     let project = unique("board");
     let created = run_as(&home, AGENT, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let part = run_as(
+        &home,
+        AGENT,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
     let feature = run_as(
         &home,
         AGENT,
-        &["track", "create", "stories", "--project", &project],
+        &[
+            "track",
+            "create",
+            "stories",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
     );
     assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
     let file = home.join("story.md");

@@ -5,6 +5,8 @@ import type { HomeResponse } from "@/api/generated";
 import { buildIndex, recentPlaces, search } from "@/components/palette/search";
 
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
 const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
 const GONE = "0192d7a0-4444-7000-8000-000000000009";
@@ -23,6 +25,7 @@ function track(name: string, fields: { id?: string; description?: string; lastAc
     track: {
       id: fields.id ?? newId(),
       project_id: PROJECT_ID,
+      part_id: PART_ID,
       name,
       description: fields.description ?? "",
       created_at: fields.createdAt ?? AT,

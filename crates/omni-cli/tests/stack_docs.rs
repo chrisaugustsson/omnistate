@@ -215,9 +215,18 @@ fn an_agent_creates_docs_and_reads_them_at_once() {
     let created = run(&home, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
     let p = ["--project", project.as_str()];
+    let part = run(
+        &home,
+        &[&["part", "create", "Wision", "--kind", "app"][..], &p].concat(),
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
     let feature = run(
         &home,
-        &[&["track", "create", "Checkout", "--json"][..], &p].concat(),
+        &[
+            &["track", "create", "Checkout", "--part", "Wision", "--json"][..],
+            &p,
+        ]
+        .concat(),
     );
     assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
     let checkout = feature.json()["track"]["id"]

@@ -366,6 +366,23 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(f: &Fixture, client: &Client, project: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/parts", project_base(f, project)),
+                &agent(f),
+                Some(&json!({ "name": unique("part"), "kind": "app" })),
+            ),
+            201,
+            "create a part",
+        )["part"],
+    )
+}
+
 fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
         &must(
@@ -374,7 +391,9 @@ fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
                 "POST",
                 &format!("{}/tracks", project_base(f, project)),
                 &agent(f),
-                Some(&json!({ "name": unique("Checkout") })),
+                Some(
+                    &json!({ "name": unique("Checkout"), "part_id": new_part(f, client, project) }),
+                ),
             ),
             201,
             "create a track",

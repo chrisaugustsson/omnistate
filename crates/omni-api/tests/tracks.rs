@@ -36,6 +36,16 @@
 //!   `(workspace_id, project_id, lower(name))` over the tracks that are not
 //!   deleted, so a deleted track's name can be taken again.
 //!   tests/workspace_delete.rs and the isolation suite seed it.
+//! - US-305: a track sits on one part of its project. `POST /tracks` takes
+//!   `part_id`: missing or null is 422 `{"error": "part_required"}`, and any
+//!   value that names no undeleted part of the project (a deleted part, a
+//!   part of another project, an unknown ID, a value that is not a UUID) is
+//!   422 `{"error": "invalid_part"}`; both create nothing. A Track carries its
+//!   `part_id`. `POST /tracks/{track_id}/move` (agent) takes `{"part_id"}`
+//!   under the same rules and answers 200 `{"track": Track}` on the new part;
+//!   moving to the part it is on changes nothing, and a refused move leaves
+//!   the track on its part. `tracks.part_id` is NOT NULL, and the database
+//!   refuses a part of another project.
 
 mod common;
 
@@ -292,6 +302,35 @@ fn new_project(f: &Fixture, client: &Client) -> String {
         .to_string()
 }
 
+/// Creates a part of the project as the agent; returns its ID.
+fn new_part(f: &Fixture, client: &Client, project: &str, name: &str) -> String {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/parts", f.workspace),
+            &agent(f),
+            Some(&json!({ "name": name, "kind": "app" })),
+        ),
+        201,
+        "create a part",
+    )["part"]["id"]
+        .as_str()
+        .expect("the part has an id")
+        .to_string()
+}
+
+fn delete_part(f: &Fixture, client: &Client, project: &str, part: &str) {
+    let response = call(
+        client,
+        "DELETE",
+        &format!("/api/v1/w/{}/projects/{project}/parts/{part}", f.workspace),
+        &agent(f),
+        None,
+    );
+    assert_eq!(response.status, 204, "delete a part: {}", response.text());
+}
+
 fn create_track_response(f: &Fixture, client: &Client, project: &str, body: &Value) -> Response {
     call(
         client,
@@ -302,13 +341,52 @@ fn create_track_response(f: &Fixture, client: &Client, project: &str, body: &Val
     )
 }
 
-/// Creates a track as the agent; returns the `track` of the answer.
+/// Creates a track as the agent, on a new part of the project; returns the
+/// `track` of the answer.
 fn create_track(f: &Fixture, client: &Client, project: &str, name: &str) -> Value {
+    let part = new_part(f, client, project, &unique("part"));
     must(
-        create_track_response(f, client, project, &json!({ "name": name })),
+        create_track_response(
+            f,
+            client,
+            project,
+            &json!({ "name": name, "part_id": part }),
+        ),
         201,
         "create a track",
     )["track"]
+        .clone()
+}
+
+fn move_track_response(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    track: &str,
+    body: &Value,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/move", track_path(f, project, track)),
+        &agent(f),
+        Some(body),
+    )
+}
+
+/// The `part_id` of a track, as the API shows it.
+fn part_of(f: &Fixture, client: &Client, project: &str, track: &str) -> Value {
+    must(
+        call(
+            client,
+            "GET",
+            &track_path(f, project, track),
+            &agent(f),
+            None,
+        ),
+        200,
+        "show the track",
+    )["track"]["part_id"]
         .clone()
 }
 
@@ -377,12 +455,17 @@ fn accepted(sql: &str, binds: &[&str]) -> bool {
 fn creating_a_track_records_its_name_and_description_and_no_status() {
     let (f, client) = ready();
     let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
     let created = must(
         create_track_response(
             f,
             client,
             &project,
-            &json!({ "name": "Checkout", "description": "Pay for the basket in one step." }),
+            &json!({
+                "name": "Checkout",
+                "description": "Pay for the basket in one step.",
+                "part_id": part
+            }),
         ),
         201,
         "create a track",
@@ -395,6 +478,7 @@ fn creating_a_track_records_its_name_and_description_and_no_status() {
         track["description"], "Pay for the basket in one step.",
         "{track}"
     );
+    assert_eq!(track["part_id"], part.as_str(), "{track}");
     assert!(
         track.get("status").is_none(),
         "a track has no status (V7, US-110): {track}"
@@ -420,13 +504,14 @@ fn creating_a_track_records_its_name_and_description_and_no_status() {
 fn a_track_needs_a_name() {
     let (f, client) = ready();
     let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
     for body in [
-        json!({}),
-        json!({ "description": "No name." }),
-        json!({ "name": "" }),
-        json!({ "name": "   \n\t" }),
-        json!({ "name": null }),
-        json!({ "name": 7 }),
+        json!({ "part_id": part }),
+        json!({ "description": "No name.", "part_id": part }),
+        json!({ "name": "", "part_id": part }),
+        json!({ "name": "   \n\t", "part_id": part }),
+        json!({ "name": null, "part_id": part }),
+        json!({ "name": 7, "part_id": part }),
     ] {
         let response = create_track_response(f, client, &project, &body);
         assert_error(&response, 400, "invalid_request");
@@ -448,8 +533,14 @@ fn track_names_are_unique_in_a_project_ignoring_case() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let first = create_track(f, client, &project, "Checkout");
+    let part = new_part(f, client, &project, "Wision");
     for name in ["checkout", "CHECKOUT", "Checkout"] {
-        let response = create_track_response(f, client, &project, &json!({ "name": name }));
+        let response = create_track_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": name, "part_id": part }),
+        );
         assert_error(&response, 409, "name_taken");
     }
     let listed = list_tracks(f, client, &agent(f), &project);
@@ -470,15 +561,187 @@ fn track_names_are_unique_in_a_project_ignoring_case() {
 fn only_an_agent_creates_a_track() {
     let (f, client) = ready();
     let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
     let response = call(
         client,
         "POST",
         &tracks_path(f, &project),
         &human(f),
-        Some(&json!({ "name": "Checkout" })),
+        Some(&json!({ "name": "Checkout", "part_id": part })),
     );
     assert_error(&response, 403, "forbidden");
     assert_eq!(track_rows(&project), 0, "a refused request creates nothing");
+}
+
+// ---------------------------------------------------------------------------
+// The part of a track (US-305)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_track_without_a_part_is_422_part_required_and_nothing_is_created() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    for body in [
+        json!({ "name": "Long windows" }),
+        json!({ "name": "Long windows", "part_id": null }),
+    ] {
+        let response = create_track_response(f, client, &project, &body);
+        assert_error(&response, 422, "part_required");
+    }
+    assert_eq!(track_rows(&project), 0, "a refused request creates nothing");
+}
+
+#[test]
+fn a_track_on_a_deleted_part_or_a_part_of_another_project_is_422_invalid_part() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let deleted = new_part(f, client, &project, "Old app");
+    delete_part(f, client, &project, &deleted);
+    let other_project = new_project(f, client);
+    let theirs = new_part(f, client, &other_project, "Wision");
+    for part in [deleted, theirs] {
+        let response = create_track_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": "Long windows", "part_id": part }),
+        );
+        assert_error(&response, 422, "invalid_part");
+    }
+    assert_eq!(track_rows(&project), 0, "a refused request creates nothing");
+}
+
+#[test]
+fn a_part_id_that_names_no_part_is_422_invalid_part() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    for part in [json!(UNKNOWN_ID), json!("not-a-uuid"), json!(7)] {
+        let response = create_track_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": "Long windows", "part_id": part }),
+        );
+        assert_error(&response, 422, "invalid_part");
+    }
+    assert_eq!(track_rows(&project), 0, "a refused request creates nothing");
+}
+
+#[test]
+fn moving_a_track_puts_it_on_the_other_part() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = new_part(f, client, &project, "Wision");
+    let iot = new_part(f, client, &project, "iot-service");
+    let track = must(
+        create_track_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": "Long windows", "part_id": wision }),
+        ),
+        201,
+        "create a track",
+    )["track"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+
+    let moved = must(
+        move_track_response(f, client, &project, &track, &json!({ "part_id": iot })),
+        200,
+        "move the track",
+    );
+    assert_eq!(moved["track"]["id"], track.as_str(), "{moved}");
+    assert_eq!(moved["track"]["part_id"], iot.as_str(), "{moved}");
+    assert_eq!(part_of(f, client, &project, &track), iot.as_str());
+}
+
+#[test]
+fn moving_a_track_to_a_deleted_part_or_a_part_of_another_project_is_422_and_keeps_its_part() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = new_part(f, client, &project, "Wision");
+    let deleted = new_part(f, client, &project, "Old app");
+    delete_part(f, client, &project, &deleted);
+    let other_project = new_project(f, client);
+    let theirs = new_part(f, client, &other_project, "iot-service");
+    let track = must(
+        create_track_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": "Long windows", "part_id": wision }),
+        ),
+        201,
+        "create a track",
+    )["track"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+
+    for part in [deleted, theirs] {
+        let response =
+            move_track_response(f, client, &project, &track, &json!({ "part_id": part }));
+        assert_error(&response, 422, "invalid_part");
+        assert_eq!(
+            part_of(f, client, &project, &track),
+            wision.as_str(),
+            "a refused move leaves the track on its part"
+        );
+    }
+}
+
+#[test]
+fn moving_a_track_to_the_part_it_is_on_changes_nothing() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = new_part(f, client, &project, "Wision");
+    let created = must(
+        create_track_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": "Long windows", "part_id": wision }),
+        ),
+        201,
+        "create a track",
+    )["track"]
+        .clone();
+    let track = created["id"].as_str().expect("an id");
+
+    let moved = must(
+        move_track_response(f, client, &project, track, &json!({ "part_id": wision })),
+        200,
+        "move the track to its own part",
+    );
+    assert_eq!(moved["track"], created, "{moved}");
+}
+
+#[test]
+fn a_move_without_a_part_is_422_part_required_and_keeps_its_part() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = new_part(f, client, &project, "Wision");
+    let track = must(
+        create_track_response(
+            f,
+            client,
+            &project,
+            &json!({ "name": "Long windows", "part_id": wision }),
+        ),
+        201,
+        "create a track",
+    )["track"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+
+    for body in [json!({}), json!({ "part_id": null })] {
+        let response = move_track_response(f, client, &project, &track, &body);
+        assert_error(&response, 422, "part_required");
+    }
+    assert_eq!(part_of(f, client, &project, &track), wision.as_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -545,22 +808,37 @@ fn an_unknown_project_or_track_is_not_found() {
 fn the_tracks_table_keeps_its_rules_in_the_database() {
     let (f, client) = ready();
     let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
     let workspace = f.workspace.as_str();
 
-    let insert = "insert into tracks (workspace_id, project_id, name) \
-                  values ($1::uuid, $2::uuid, $3)";
+    let insert = "insert into tracks (workspace_id, project_id, name, part_id) \
+                  values ($1::uuid, $2::uuid, $3, $4::uuid)";
     assert!(
-        accepted(insert, &[workspace, &project, "Checkout"]),
-        "a named track of the row's own project is accepted"
+        accepted(insert, &[workspace, &project, "Checkout", &part]),
+        "a named track on a part of the row's own project is accepted"
     );
     for blank in ["", "   "] {
         assert!(
-            !accepted(insert, &[workspace, &project, blank]),
+            !accepted(insert, &[workspace, &project, blank, &part]),
             "the blank name {blank:?} is refused"
         );
     }
     assert!(
-        !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere"]),
+        !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere", &part]),
         "a track needs a project"
+    );
+    assert!(
+        !accepted(
+            "insert into tracks (workspace_id, project_id, name) \
+             values ($1::uuid, $2::uuid, $3)",
+            &[workspace, &project, "Partless"],
+        ),
+        "a track needs a part"
+    );
+    let other_project = new_project(f, client);
+    let theirs = new_part(f, client, &other_project, "Wision");
+    assert!(
+        !accepted(insert, &[workspace, &project, "Elsewhere", &theirs]),
+        "a track's part is a part of its own project"
     );
 }

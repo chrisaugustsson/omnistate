@@ -301,7 +301,29 @@ fn an_agent_starts_threads_at_the_app_level_and_in_a_feature() {
     let out = run_as(
         &home,
         MODERATOR,
-        &["track", "create", "Checkout", "--project", &project],
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "part create: {}", out.stderr);
+    let out = run_as(
+        &home,
+        MODERATOR,
+        &[
+            "track",
+            "create",
+            "Checkout",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
     );
     assert_eq!(out.code, 0, "feature create: {}", out.stderr);
 

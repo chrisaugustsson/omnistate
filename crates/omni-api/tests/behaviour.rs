@@ -370,13 +370,29 @@ fn new_track(f: &Fixture, track_name: &str) -> (String, String) {
             "POST",
             &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
             Auth::Agent,
-            Some(&json!({ "name": track_name })),
+            Some(&json!({ "name": track_name, "part_id": new_part(f, &project) })),
         ),
         201,
         "create a track",
     );
     let track = created["track"]["id"].as_str().expect("an id").to_string();
     (project, track)
+}
+
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(f: &Fixture, project: &str) -> String {
+    let created = must(
+        call(
+            f,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/parts", f.workspace),
+            Auth::Agent,
+            Some(&json!({ "name": unique("behaviour-part"), "kind": "app" })),
+        ),
+        201,
+        "create a part",
+    );
+    created["part"]["id"].as_str().expect("an id").to_string()
 }
 
 fn tree_path(f: &Fixture, project: &str, track: &str) -> String {
@@ -2436,7 +2452,7 @@ fn a_node_of_another_track_is_404_to_ask_on_and_nothing_is_asked() {
             "POST",
             &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
             Auth::Agent,
-            Some(&json!({ "name": unique("Returns") })),
+            Some(&json!({ "name": unique("Returns"), "part_id": new_part(f, &project) })),
         ),
         201,
         "create a second track",
@@ -3128,7 +3144,7 @@ fn a_question_of_another_track_is_404_to_answer_and_answers_nothing() {
             "POST",
             &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
             Auth::Agent,
-            Some(&json!({ "name": unique("Returns") })),
+            Some(&json!({ "name": unique("Returns"), "part_id": new_part(f, &project) })),
         ),
         201,
         "create a second track",
@@ -4186,7 +4202,7 @@ fn a_node_or_rule_of_another_track_is_404_and_nothing_is_written() {
             "POST",
             &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
             Auth::Agent,
-            Some(&json!({ "name": unique("Returns") })),
+            Some(&json!({ "name": unique("Returns"), "part_id": new_part(f, &project) })),
         ),
         201,
         "create a second track",

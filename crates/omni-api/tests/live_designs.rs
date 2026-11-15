@@ -364,6 +364,25 @@ fn new_project(ws: &Ws, client: &Client) -> String {
     .to_string()
 }
 
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(ws: &Ws, client: &Client, project: &str) -> String {
+    str_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/parts", project_base(ws, project)),
+                &agent(ws),
+                Some(&json!({ "name": unique("part"), "kind": "app" })),
+            ),
+            201,
+            "create a part",
+        )["part"],
+        "id",
+    )
+    .to_string()
+}
+
 fn new_track(ws: &Ws, client: &Client, project: &str) -> String {
     str_of(
         &must(
@@ -372,7 +391,7 @@ fn new_track(ws: &Ws, client: &Client, project: &str) -> String {
                 "POST",
                 &format!("{}/tracks", project_base(ws, project)),
                 &agent(ws),
-                Some(&json!({ "name": unique("Checkout") })),
+                Some(&json!({ "name": unique("Checkout"), "part_id": new_part(ws, client, project) })),
             ),
             201,
             "create a track",

@@ -11,6 +11,8 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
 const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
 const RETURNS = "0192d7a0-4444-7000-8000-000000000003";
@@ -34,7 +36,14 @@ function track(
   fields: { description?: string; waiting?: number; lastActivity?: string | null; createdAt?: string; stories?: Stories } = {},
 ) {
   return {
-    track: { id, project_id: PROJECT_ID, name, description: fields.description ?? "", created_at: fields.createdAt ?? AT },
+    track: {
+      id,
+      project_id: PROJECT_ID,
+      part_id: PART_ID,
+      name,
+      description: fields.description ?? "",
+      created_at: fields.createdAt ?? AT,
+    },
     docs: 0,
     waiting: fields.waiting ?? 0,
     stories: fields.stories ?? { total: 0, open: 0, done: 0 },

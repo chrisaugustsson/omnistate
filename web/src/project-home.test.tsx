@@ -17,6 +17,8 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
@@ -114,6 +116,7 @@ function seededHome() {
         track: {
           id: TRACK_ID,
           project_id: PROJECT_ID,
+          part_id: PART_ID,
           name: "Checkout",
           description: "Pay in one step.\nNo account needed.",
           created_at: AT,

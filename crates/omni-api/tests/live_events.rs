@@ -279,6 +279,25 @@ fn tracks_path(workspace: &str, project: &str) -> String {
     format!("/api/v1/w/{workspace}/projects/{project}/tracks")
 }
 
+/// Inserts a part in a project of workspace A at the database, for a track to
+/// sit on (US-305); returns its ID. It emits no event, so the tests here
+/// count only the events of tracks.
+fn new_part(f: &Fixture, project: &str) -> String {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar::<_, String>(
+            "insert into parts (workspace_id, project_id, name, kind) \
+             values ($1::uuid, $2::uuid, $3, 'app') returning id::text",
+        )
+        .bind(&f.a)
+        .bind(project)
+        .bind(unique("part"))
+        .fetch_one(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("insert a part: {e}"))
+    })
+}
+
 /// Creates a track in a project of workspace A as its agent; returns its ID.
 /// This emits `track.created`.
 fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
@@ -287,7 +306,7 @@ fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
         "POST",
         &tracks_path(&f.a, project),
         &Auth::Key(&f.key_a),
-        Some(&json!({ "name": unique("track") })),
+        Some(&json!({ "name": unique("track"), "part_id": new_part(f, project) })),
     );
     assert_eq!(response.status, 201, "create a track: {}", response.text());
     response.json()["track"]["id"]
@@ -917,7 +936,7 @@ fn a_new_track_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
         "POST",
         &tracks_path(&f.a, &project),
         &Auth::Key(&f.key_a),
-        Some(&json!({ "name": name })),
+        Some(&json!({ "name": name, "part_id": new_part(f, &project) })),
     );
     assert_eq!(response.status, 201, "create a track: {}", response.text());
     let track = response.json()["track"]["id"]

@@ -339,13 +339,27 @@ fn renaming_a_project_trims_the_name_and_keeps_its_id_and_contents() {
     let old = unique("Shop");
     let project = new_project(f, client, &old);
     let id = project["id"].as_str().unwrap().to_string();
+    let part = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{id}/parts", f.workspace),
+            &agent(f),
+            Some(&json!({ "name": "Shop app", "kind": "app" })),
+        ),
+        201,
+        "create a part",
+    )["part"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let track = must(
         call(
             client,
             "POST",
             &format!("/api/v1/w/{}/projects/{id}/tracks", f.workspace),
             &agent(f),
-            Some(&json!({ "name": "Checkout", "description": "Pay" })),
+            Some(&json!({ "name": "Checkout", "description": "Pay", "part_id": part })),
         ),
         201,
         "create a track",

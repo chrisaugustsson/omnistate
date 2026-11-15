@@ -10,6 +10,8 @@ import { getRouter } from "./router";
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const OTHER_WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000b";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const OTHER_PROJECT_ID = "0192d7a0-2222-7000-8000-000000000002";
 const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
 const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
@@ -35,7 +37,7 @@ const HUMAN = { kind: "human", user_id: USER.id };
 
 function track(id: string, name: string, stories = { total: 0, open: 0, done: 0 }) {
   return {
-    track: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
     stories,

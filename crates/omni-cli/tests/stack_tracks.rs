@@ -205,6 +205,19 @@ fn a_track_is_created_listed_and_shown_from_the_command_line() {
     let project = unique("shop");
     let created = run(&home, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let part = run(
+        &home,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
 
     let out = run(
         &home,
@@ -214,6 +227,8 @@ fn a_track_is_created_listed_and_shown_from_the_command_line() {
             "Checkout",
             "--description",
             "Pay for the basket in one step.",
+            "--part",
+            "Wision",
             "--project",
             &project,
         ],
@@ -233,6 +248,8 @@ fn a_track_is_created_listed_and_shown_from_the_command_line() {
             "track",
             "create",
             "Wish list",
+            "--part",
+            "Wision",
             "--project",
             &project,
             "--json",
@@ -250,7 +267,15 @@ fn a_track_is_created_listed_and_shown_from_the_command_line() {
     // Names are unique in the project, ignoring case.
     let taken = run(
         &home,
-        &["track", "create", "checkout", "--project", &project],
+        &[
+            "track",
+            "create",
+            "checkout",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
     );
     assert_ne!(taken.code, 0, "{:?}", taken.stdout);
     assert!(
@@ -264,10 +289,10 @@ fn a_track_is_created_listed_and_shown_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{checkout}  Checkout"),
-            format!("{wish_list}  Wish list"),
+            format!("{checkout}  Checkout  Wision"),
+            format!("{wish_list}  Wish list  Wision"),
         ],
-        "the tracks in creation order, `<id>  <name>`"
+        "the tracks in creation order, `<id>  <name>  <part>`"
     );
 
     for which in [checkout.as_str(), "Checkout"] {
@@ -313,7 +338,28 @@ fn doc_list_prints_the_scope_of_each_doc_from_the_command_line() {
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
     let created = run(
         &home,
-        &["track", "create", "Checkout", "--project", &project],
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(created.code, 0, "part create: {}", created.stderr);
+    let created = run(
+        &home,
+        &[
+            "track",
+            "create",
+            "Checkout",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
     );
     assert_eq!(created.code, 0, "track create: {}", created.stderr);
 
@@ -390,8 +436,32 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     let project = unique("shop");
     let created = run(&home, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let part = run(
+        &home,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
     let create = |name: &str| -> String {
-        let out = run(&home, &["track", "create", name, "--project", &project]);
+        let out = run(
+            &home,
+            &[
+                "track",
+                "create",
+                name,
+                "--part",
+                "Wision",
+                "--project",
+                &project,
+            ],
+        );
         assert_eq!(out.code, 0, "track create: {}", out.stderr);
         non_empty_lines(&out.stdout)[0]
             .split_once("  ")
@@ -418,8 +488,8 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{checkout}  Express checkout"),
-            format!("{search}  Search"),
+            format!("{checkout}  Express checkout  Wision"),
+            format!("{search}  Search  Wision"),
         ],
         "the renamed track keeps its ID"
     );
@@ -451,7 +521,7 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
         non_empty_lines(&listed.stdout),
-        [format!("{search}  Search")],
+        [format!("{search}  Search  Wision")],
         "the deleted track is in no list"
     );
     let shown = run(&home, &["track", "show", &checkout, "--project", &project]);

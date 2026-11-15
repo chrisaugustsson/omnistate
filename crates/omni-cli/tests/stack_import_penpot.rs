@@ -1375,10 +1375,32 @@ fn with_feature_the_design_lands_in_the_feature_and_the_design_system_at_the_app
     let home = agent_home(f);
     let project = new_project(&home);
     let name = unique("Kassaflöde");
+    let part = run(
+        &home,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
     let created = json_of(
         &run(
             &home,
-            &["track", "create", &name, "--project", &project, "--json"],
+            &[
+                "track",
+                "create",
+                &name,
+                "--part",
+                "Wision",
+                "--project",
+                &project,
+                "--json",
+            ],
         ),
         "feature create",
     );

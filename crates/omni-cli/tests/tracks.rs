@@ -39,6 +39,15 @@
 //!   `OMNI_FEATURE` picks no track, and omni says it was renamed in one line
 //!   on standard error, leaving standard output as it is without it. An
 //!   empty `OMNI_FEATURE`, `--help` and `--version` print no notice.
+//! - US-305: every track sits on one part. `omni track create <name> --part
+//!   <name|id>` sends the part's ID as `part_id`; without `--part` it fails
+//!   with `part_required` and sends nothing. `omni track list` prints
+//!   `<id>  <name>  <part name>`, and `--part` keeps it to that part's
+//!   tracks. `omni track move <name|id> --part <name|id>` sends `POST
+//!   .../tracks/{id}/move` with `{"part_id"}`. A `--part` name is looked up
+//!   among the project's parts that are not deleted (`GET .../parts`); one
+//!   that is not there is `unknown_part` and sends nothing. A `--part` that
+//!   is an ID is sent as it is, and the API's 422 `invalid_part` is shown.
 
 mod common;
 
@@ -50,6 +59,11 @@ const OTHER_PROJECT: &str = "01900000-0000-7000-8000-0000000000b2";
 const TRACK: &str = "01900000-0000-7000-8000-0000000000f1";
 const WISH_LIST: &str = "01900000-0000-7000-8000-0000000000f2";
 const NEW_TRACK: &str = "01900000-0000-7000-8000-0000000000f3";
+const WISION: &str = "01900000-0000-7000-8000-0000000000a1";
+const IOT_SERVICE: &str = "01900000-0000-7000-8000-0000000000a2";
+/// A part ID that the API refuses with 422 `invalid_part`, as it does for a
+/// deleted part or a part of another project.
+const GONE_PART: &str = "01900000-0000-7000-8000-0000000000a9";
 
 fn projects_path() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects")
@@ -59,16 +73,21 @@ fn tracks_path(project: &str) -> String {
     format!("{}/{project}/tracks", projects_path())
 }
 
+fn parts_path(project: &str) -> String {
+    format!("{}/{project}/parts", projects_path())
+}
+
 fn project_json(id: &str, name: &str) -> Value {
     json!({ "id": id, "name": name, "created_at": "2026-10-23T10:00:00.000000Z" })
 }
 
-fn track_json(id: &str, project: &str, name: &str, description: &str) -> Value {
+fn track_json(id: &str, project: &str, name: &str, description: &str, part: &str) -> Value {
     json!({
         "id": id,
         "project_id": project,
         "name": name,
         "description": description,
+        "part_id": part,
         "created_at": "2026-10-23T10:00:00.000000Z"
     })
 }
@@ -79,17 +98,31 @@ fn checkout(project: &str) -> Value {
         project,
         "Checkout",
         "Pay for the basket in one step.",
+        WISION,
     )
 }
 
 fn wish_list(project: &str) -> Value {
-    track_json(WISH_LIST, project, "Wish list", "Keep products for later.")
+    track_json(
+        WISH_LIST,
+        project,
+        "Wish list",
+        "Keep products for later.",
+        IOT_SERVICE,
+    )
+}
+
+fn part_json(id: &str, name: &str, kind: &str) -> Value {
+    json!({ "id": id, "name": name, "kind": kind, "description": "" })
 }
 
 /// An API that knows two projects, `brand-site` and `other`, each with the
-/// tracks "Checkout" and "Wish list", in that order. A new track named
-/// "checkout" in any case is refused as taken, and so is a rename to it. A
-/// rename answers the track with its new name, and a delete answers 204.
+/// parts "Wision" and "iot-service" and the tracks "Checkout" (on Wision) and
+/// "Wish list" (on iot-service), in that order. A new track named "checkout"
+/// in any case is refused as taken, and so is a rename to it. A track created
+/// or moved to `GONE_PART` is 422 `invalid_part`. A rename answers the track
+/// with its new name, a move answers it on its new part, and a delete answers
+/// 204.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -105,9 +138,24 @@ fn mock() -> MockServer {
             );
         }
         for project in [PROJECT, OTHER_PROJECT] {
+            if path == parts_path(project) && method == "GET" {
+                return Reply::json(
+                    200,
+                    &json!({ "parts": [
+                        part_json(WISION, "Wision", "app"),
+                        part_json(IOT_SERVICE, "iot-service", "service")
+                    ] }),
+                );
+            }
+        }
+        for project in [PROJECT, OTHER_PROJECT] {
             let Some(rest) = path.strip_prefix(&tracks_path(project)) else {
                 continue;
             };
+            let part = body["part_id"].as_str().unwrap_or("");
+            if method == "POST" && part == GONE_PART {
+                return Reply::json(422, &json!({ "error": "invalid_part" }));
+            }
             return match (method, rest) {
                 ("POST", "") => {
                     let name = body["name"].as_str().unwrap_or("");
@@ -117,8 +165,13 @@ fn mock() -> MockServer {
                     let description = body["description"].as_str().unwrap_or("");
                     Reply::json(
                         201,
-                        &json!({ "track": track_json(NEW_TRACK, project, name, description) }),
+                        &json!({ "track": track_json(NEW_TRACK, project, name, description, part) }),
                     )
+                }
+                ("POST", rest) if rest == format!("/{TRACK}/move") => {
+                    let mut moved = checkout(project);
+                    moved["part_id"] = json!(part);
+                    Reply::json(200, &json!({ "track": moved }))
                 }
                 ("GET", "") => Reply::json(
                     200,
@@ -138,7 +191,11 @@ fn mock() -> MockServer {
                         return Reply::json(409, &json!({ "error": "name_taken" }));
                     }
                     let id = &rest[1..];
-                    Reply::json(200, &json!({ "track": track_json(id, project, name, "") }))
+                    let part = if id == TRACK { WISION } else { IOT_SERVICE };
+                    Reply::json(
+                        200,
+                        &json!({ "track": track_json(id, project, name, "", part) }),
+                    )
                 }
                 ("DELETE", rest)
                     if rest == format!("/{TRACK}") || rest == format!("/{WISH_LIST}") =>
@@ -235,6 +292,8 @@ fn track_create_sends_the_name_and_description_and_prints_the_id_and_name() {
             "Search",
             "--description",
             "Find products by name.",
+            "--part",
+            "Wision",
             "--project",
             PROJECT,
         ],
@@ -246,6 +305,10 @@ fn track_create_sends_the_name_and_description_and_prints_the_id_and_name() {
     let body = body_of(&posts[0]);
     assert_eq!(body["name"], "Search", "{body}");
     assert_eq!(body["description"], "Find products by name.", "{body}");
+    assert_eq!(
+        body["part_id"], WISION,
+        "the part's name is sent as its ID: {body}"
+    );
     assert_eq!(
         posts[0].header("authorization"),
         Some(format!("Bearer {API_KEY}").as_str())
@@ -261,12 +324,21 @@ fn track_create_sends_the_name_and_description_and_prints_the_id_and_name() {
 
     let json = run(
         &home,
-        &["track", "create", "Search", "--project", PROJECT, "--json"],
+        &[
+            "track",
+            "create",
+            "Search",
+            "--part",
+            "Wision",
+            "--project",
+            PROJECT,
+            "--json",
+        ],
     );
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "track": track_json(NEW_TRACK, PROJECT, "Search", "") }),
+        json!({ "track": track_json(NEW_TRACK, PROJECT, "Search", "", WISION) }),
         "--json prints the whole response"
     );
 }
@@ -278,6 +350,61 @@ fn track_create_without_a_name_is_one_line_and_sends_nothing() {
     let out = run(&home, &["track", "create", "--project", PROJECT]);
     assert_one_line_error(&out, &["name"]);
     assert_nothing_posted(&server);
+}
+
+#[test]
+fn track_create_without_a_part_is_part_required_and_sends_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["track", "create", "Search", "--project", PROJECT]);
+    assert_one_line_error(&out, &["part_required"]);
+    assert!(
+        server.requests().is_empty(),
+        "nothing is sent: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn track_create_on_a_part_name_the_project_does_not_have_is_unknown_part_and_sends_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "track",
+            "create",
+            "Search",
+            "--part",
+            "Wison",
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_one_line_error(&out, &["unknown_part"]);
+    assert_nothing_posted(&server);
+}
+
+#[test]
+fn track_create_on_a_part_id_sends_the_id_and_shows_the_apis_invalid_part() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "track",
+            "create",
+            "Search",
+            "--part",
+            GONE_PART,
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_one_line_error(&out, &["invalid_part"]);
+    let posts = requests_to(&server, "POST", &tracks_path(PROJECT));
+    assert_eq!(posts.len(), 1, "{:?}", server.requests());
+    assert_eq!(body_of(&posts[0])["part_id"], GONE_PART);
 }
 
 // ---------------------------------------------------------------------------
@@ -299,10 +426,10 @@ fn track_list_prints_one_line_per_track_without_a_status() {
     assert_eq!(
         non_empty_lines(&out.stdout),
         [
-            format!("{TRACK}  Checkout"),
-            format!("{WISH_LIST}  Wish list"),
+            format!("{TRACK}  Checkout  Wision"),
+            format!("{WISH_LIST}  Wish list  iot-service"),
         ],
-        "one `<id>  <name>` line per track, in the API's order"
+        "one `<id>  <name>  <part name>` line per track, in the API's order"
     );
 
     let json = run(&home, &["track", "list", "--project", PROJECT, "--json"]);
@@ -312,6 +439,93 @@ fn track_list_prints_one_line_per_track_without_a_status() {
         json!({ "tracks": [checkout(PROJECT), wish_list(PROJECT)] }),
         "--json prints the whole response"
     );
+}
+
+#[test]
+fn track_list_with_a_part_lists_only_that_parts_tracks() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "track",
+            "list",
+            "--part",
+            "iot-service",
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        non_empty_lines(&out.stdout),
+        [format!("{WISH_LIST}  Wish list  iot-service")]
+    );
+}
+
+#[test]
+fn track_list_with_a_part_name_the_project_does_not_have_is_unknown_part() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &["track", "list", "--part", "Wison", "--project", PROJECT],
+    );
+    assert_one_line_error(&out, &["unknown_part"]);
+}
+
+// ---------------------------------------------------------------------------
+// omni track move (US-305)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn track_move_sends_the_parts_id_and_prints_the_track_on_its_new_part() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "track",
+            "move",
+            "Checkout",
+            "--part",
+            "iot-service",
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let moves = requests_to(
+        &server,
+        "POST",
+        &format!("{}/{TRACK}/move", tracks_path(PROJECT)),
+    );
+    assert_eq!(moves.len(), 1, "{:?}", server.requests());
+    assert_eq!(body_of(&moves[0]), json!({ "part_id": IOT_SERVICE }));
+    assert_eq!(
+        non_empty_lines(&out.stdout),
+        [format!("{TRACK}  Checkout  iot-service")]
+    );
+}
+
+#[test]
+fn track_move_to_a_part_name_the_project_does_not_have_is_unknown_part_and_sends_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "track",
+            "move",
+            "Checkout",
+            "--part",
+            "Wison",
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_one_line_error(&out, &["unknown_part"]);
+    assert_nothing_posted(&server);
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +623,7 @@ fn the_project_flag_takes_a_name_or_an_id() {
     };
 
     for args in [
-        &["track", "create", "Search"][..],
+        &["track", "create", "Search", "--part", "Wision"][..],
         &["track", "list"][..],
         &["track", "show", TRACK][..],
     ] {
@@ -437,7 +651,15 @@ fn the_project_flag_takes_a_name_or_an_id() {
 
     // --project takes a name as well as an ID.
     for project in ["other", OTHER_PROJECT] {
-        let out = in_project(&["track", "create", "Search", "--project", project]);
+        let out = in_project(&[
+            "track",
+            "create",
+            "Search",
+            "--part",
+            "Wision",
+            "--project",
+            project,
+        ]);
         assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);
         let out = in_project(&["track", "list", "--project", project]);
         assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);
@@ -462,7 +684,15 @@ fn an_unknown_or_missing_project_is_one_line_and_sends_nothing() {
     let home = logged_in(&server.url);
     let unknown = run(
         &home,
-        &["track", "create", "Search", "--project", "no-such-project"],
+        &[
+            "track",
+            "create",
+            "Search",
+            "--part",
+            "Wision",
+            "--project",
+            "no-such-project",
+        ],
     );
     assert_one_line_error(&unknown, &["no-such-project"]);
 
@@ -578,7 +808,7 @@ fn track_rename_sends_the_new_name_and_prints_the_id_and_name() {
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "track": track_json(WISH_LIST, PROJECT, "Saved items", "") }),
+        json!({ "track": track_json(WISH_LIST, PROJECT, "Saved items", "", IOT_SERVICE) }),
         "--json prints the whole response"
     );
 }

@@ -659,6 +659,23 @@ fn comments_wait_for_the_human_while_an_agent_replied_last() {
 // Tracks
 // ---------------------------------------------------------------------------
 
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(f: &Fixture, client: &Client, project: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/parts", project_base(f, project)),
+                &author(f),
+                Some(&json!({ "name": unique("part"), "kind": "app" })),
+            ),
+            201,
+            "create a part",
+        )["part"],
+    )
+}
+
 /// Creates a track as the author; returns its ID.
 fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
@@ -668,7 +685,9 @@ fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
                 "POST",
                 &format!("{}/tracks", project_base(f, project)),
                 &author(f),
-                Some(&json!({ "name": unique("track"), "description": "A slice of work" })),
+                Some(
+                    &json!({ "name": unique("track"), "description": "A slice of work", "part_id": new_part(f, client, project) }),
+                ),
             ),
             201,
             "create a track",

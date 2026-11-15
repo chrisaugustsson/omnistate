@@ -305,6 +305,25 @@ fn new_project(f: &Fixture, client: &Client) -> String {
         .to_string()
 }
 
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(f: &Fixture, client: &Client, project: &str) -> String {
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/parts", f.workspace),
+            &agent(f),
+            Some(&json!({ "name": unique("story-part"), "kind": "app" })),
+        ),
+        201,
+        "create a part",
+    );
+    created["part"]["id"]
+        .as_str()
+        .expect("the part has an id")
+        .to_string()
+}
+
 fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
     let created = must(
         call(
@@ -312,7 +331,9 @@ fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
             "POST",
             &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
             &agent(f),
-            Some(&json!({ "name": unique("story-track") })),
+            Some(
+                &json!({ "name": unique("story-track"), "part_id": new_part(f, client, project) }),
+            ),
         ),
         201,
         "create a track",

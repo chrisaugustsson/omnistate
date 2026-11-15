@@ -13,6 +13,8 @@ import { testTree } from "./testing/behaviour-test-tree";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
@@ -71,7 +73,7 @@ type Behaviour = { status: number; body: unknown };
 /** A track of the project's home data. */
 function track(id: string, name: string) {
   return {
-    track: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
     stories: { total: 0, open: 0, done: 0 },

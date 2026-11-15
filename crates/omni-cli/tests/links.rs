@@ -28,6 +28,12 @@ fn mock() -> MockServer {
             return Reply::json(200, &json!({ "tracks": [] }));
         }
         if request.method == "GET"
+            && (request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/parts")
+                || request.path == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/parts"))
+        {
+            return Reply::json(200, &json!({ "parts": [] }));
+        }
+        if request.method == "GET"
             && request
                 .path
                 .starts_with(&format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs"))
@@ -316,10 +322,14 @@ fn feature_list_in(home: &Scratch, folder: &std::path::Path, extra: &[&str]) -> 
         .run()
 }
 
+/// The requests the server got, leaving out the reads of a project's parts
+/// that `omni track list` makes to name each track's part (US-305): the
+/// project of the tracks is what these tests are about.
 fn feature_requests(server: &MockServer) -> Vec<String> {
     server
         .requests()
         .iter()
+        .filter(|r| !r.path.ends_with("/parts"))
         .map(|r| format!("{} {}", r.method, r.path))
         .collect()
 }
