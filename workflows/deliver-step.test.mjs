@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fnv1a, TEST_OBLIGATION, testQuestion, waitSeconds } from "./deliver-step.mjs";
+import { fnv1a, prBody, TEST_OBLIGATION, testQuestion, waitSeconds, WRITE_BACK, writeBackQuestion } from "./deliver-step.mjs";
 
 const helper = fileURLToPath(new URL("./deliver-step.mjs", import.meta.url));
 const fakeOmni = fileURLToPath(new URL("./fixtures/fake-omni.mjs", import.meta.url));
@@ -826,7 +826,7 @@ test("start names the run by the local time of its start", (t) => {
   assert.match(body.run, new RegExp(`^run-${local}-\\d+$`));
 });
 
-test("a lock whose session lives and whose heartbeat is under 2 hours old refuses the run, naming it and its feature, and nothing is touched", (t) => {
+test("a lock whose session lives and whose heartbeat is under 2 hours old refuses the run, naming it and its feature, and nothing is touched: the board is only read", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })]);
   const held = { run: "run-20261107-090000-1", feature: "billing", pid: liveProcess(t), op: "start-1", started: ago(3 * 3600000), heartbeat: ago(90 * 60000) };
   writeLock(dirs, held);
@@ -836,7 +836,8 @@ test("a lock whose session lives and whose heartbeat is under 2 hours old refuse
   assert.equal(body.ok, false);
   assert.match(body.error, /^the tree is held by run run-20261107-090000-1 for feature billing, .*start with force if that run is dead$/);
   assert.deepEqual(readLock(dirs), held);
-  assert.deepEqual(dirs.state().calls, []);
+  // The only call is the read of the board that tells a setup run from another.
+  assert.deepEqual(dirs.state().calls.map((c) => c.argv.slice(0, 2).join(" ")), ["story list"]);
   assert.equal(git(dirs.repo, "branch", "--list", "deliver/*"), "");
 });
 
@@ -1025,7 +1026,7 @@ test("start keeps deliver/<slug> where it is when it is ahead of the checkout's 
   assert.ok(body.log.includes(`deliver/board kept at ${landed.slice(0, 7)}, ahead of the checkout's HEAD ${head.slice(0, 7)}`), body.log.join("\n"));
 });
 
-test("start stops with 'merge first' when deliver/<slug> and the checkout's HEAD have diverged, before any work: no lock left, nothing asked of the board, the branch untouched and no lane", (t) => {
+test("start stops with 'merge first' when deliver/<slug> and the checkout's HEAD have diverged, before any work: no lock left, nothing asked of the board but its tasks, the branch untouched and no lane", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })]);
   const landed = landOn(dirs, "deliver/board", "landed.rs");
   commit(dirs.repo, "main.rs");
@@ -1035,7 +1036,8 @@ test("start stops with 'merge first' when deliver/<slug> and the checkout's HEAD
   assert.equal(body.ok, false);
   assert.equal(body.error, "deliver/board and HEAD have diverged: merge first (git merge deliver/board), then start again");
   assert.equal(existsSync(dirs.lock), false);
-  assert.deepEqual(dirs.state().calls, []);
+  // The only call is the read of the board that tells a setup run from another.
+  assert.deepEqual(dirs.state().calls.map((c) => c.argv.slice(0, 2).join(" ")), ["story list"]);
   assert.equal(sha(dirs, "refs/heads/deliver/board"), landed);
   assert.equal(existsSync(dirs.lane), false);
 });
@@ -1046,6 +1048,52 @@ test("start gives the checks fast, stack_up, stack, stack_reset, seed and lint a
   const body = start(dirs);
 
   assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x", lint: "" });
+});
+
+test("start gives as setup the first project-level architecture doc titled Setup in any letter case that the project's doc list gives, read with --global; a feature's doc, another pillar or another title is not it, and with none setup is null", (t) => {
+  const docList = [
+    { id: "d-feature", kind: "html", pillar: "architecture", title: "Setup", feature_id: "f-1" },
+    { id: "d-spec", kind: "html", pillar: "spec", title: "Setup" },
+    { id: "d-notes", kind: "html", pillar: "architecture", title: "Setup notes" },
+    { id: "d-setup", kind: "html", pillar: "architecture", title: "SETUP" },
+    { id: "d-second", kind: "html", pillar: "architecture", title: "setup" },
+  ];
+  const dirs = scratch(t, [], [], { docList });
+  const bare = scratch(t, [], [], { docList: docList.slice(0, 3) });
+
+  const body = start(dirs);
+
+  assert.equal(body.setup, "d-setup");
+  assert.equal(start(bare).setup, null);
+  assert.ok(dirs.state().calls.some((c) => c.argv.join(" ") === "doc list --global --json"), JSON.stringify(dirs.state().calls.map((c) => c.argv)));
+});
+
+test("start gives as how the IDs of the feature's docs titled Operations with pillar architecture and Tables with pillar db, or null for one it lacks, and null for both when the docs cannot be listed, which it logs", (t) => {
+  const docList = [
+    { id: "d-ops-spec", kind: "html", pillar: "spec", title: "Operations" },
+    { id: "d-ops", kind: "html", pillar: "architecture", title: "Operations" },
+    { id: "d-map", kind: "html", pillar: "architecture", title: "Map" },
+  ];
+  const one = scratch(t, [], [], { docList });
+  const both = scratch(t, [], [], { docList: [...docList, { id: "d-tables", kind: "html", pillar: "db", title: "Tables" }] });
+  const failing = scratch(t, [], [], { docList });
+  writeFileSync(join(failing.root, "bin", "omni"), `#!/bin/sh\nif [ "$1" = doc ] && [ "$2" = list ]; then echo "doc list is down" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);
+
+  const [a, b, down] = [start(one), start(both), start(failing)];
+
+  assert.deepEqual([a.how, b.how, down.ok, down.how], [{ operations: "d-ops", tables: null }, { operations: "d-ops", tables: "d-tables" }, true, { operations: null, tables: null }]);
+  assert.ok(down.log.some((l) => l.includes("doc list is down")), down.log.join("\n"));
+});
+
+test("a start whose behaviour list fails goes on with tree false, so questions go to threads, and logs the list's error; a tree with a node gives tree true", (t) => {
+  const failing = scratch(t, [], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
+  writeFileSync(join(failing.root, "bin", "omni"), `#!/bin/sh\nif [ "$1" = behaviour ] && [ "$2" = list ]; then echo "behaviour list is down" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);
+  const listed = scratch(t, [], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
+
+  const [down, up] = [start(failing), start(listed)];
+
+  assert.deepEqual([down.ok, down.tree, up.ok, up.tree], [true, false, true, true]);
+  assert.ok(down.log.some((l) => l.includes("behaviour list is down")), down.log.join("\n"));
 });
 
 test("a start whose checks cannot be read stops before any work and leaves no lock, and is not tried again: a repeat would read the same configuration", (t) => {
@@ -1163,6 +1211,199 @@ test("start releases the stories another run holds, and the working ones nobody 
   assert.equal(readFileSync(join(wt, "work.rs"), "utf8"), "work.rs\n");
 });
 
+// ---- start: a folder without a repository ---------------------------------------------
+
+// The scratch checkout without its repository: a folder of a new project.
+function noRepo(dirs) {
+  rmSync(join(dirs.repo, ".git"), { recursive: true, force: true });
+  rmSync(join(dirs.repo, ".gitignore"), { force: true });
+  return dirs;
+}
+const setupStory = (key, fields = {}) => story(key, { title: "Set up the project", ...fields });
+// start run in another folder than the checkout's top.
+function startIn(dirs, cwd) {
+  const r = spawnSync(process.execPath, [helper, ...startArgv()], { cwd, env: dirs.env, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout).body;
+}
+
+test("start in a folder that is no git repository, with a backlog task Set up the project, takes the lock, creates the Run thread and the stories folder, and does nothing with git: branch, tip and lane null, six empty checks", (t) => {
+  const dirs = noRepo(scratch(t, [setupStory("US-1"), story("US-2", { blocked_by: ["US-1"] })]));
+
+  const body = start(dirs);
+
+  assert.equal(body.ok, true, body.error);
+  assert.deepEqual([body.root, body.setupTask, body.branch, body.tip, body.lane, body.base], [dirs.repo, "US-1", null, null, null, null]);
+  assert.deepEqual(body.checks, { fast: "", stack_up: "", stack: "", stack_reset: "", seed: "", lint: "" });
+  assert.equal(readLock(dirs).run, body.run);
+  assert.ok(dirs.state().threads.some((th) => th.id === body.thread && th.title === `Run ${body.run}`));
+  assert.ok(existsSync(join(dirs.root, "app-stories")));
+  assert.equal(existsSync(join(dirs.repo, ".git")), false);
+  assert.equal(existsSync(dirs.lane), false);
+  assert.equal(dirs.state().calls.some((c) => c.argv[0] === "checks"), false);
+});
+
+test("start in a folder without a repository refuses when the feature has no task Set up the project, or only one that is done or cancelled, before the lock: nothing is left behind", (t) => {
+  for (const stories of [[story("US-1")], [setupStory("US-1", { status: "done" })], [setupStory("US-1", { status: "cancelled" })]]) {
+    const dirs = noRepo(scratch(t, stories));
+
+    const body = start(dirs);
+
+    assert.deepEqual([body.ok, body.retry], [false, false]);
+    assert.equal(body.error, `${dirs.repo} has no git repository, and the feature has no task "Set up the project" to make one: split the feature with omni-stories first`);
+    assert.equal(existsSync(dirs.lock), false);
+    assert.equal(existsSync(join(dirs.root, "app-stories")), false);
+    assert.equal(dirs.state().threads.length, 0);
+  }
+});
+
+test("start in a repository whose task set up the project, in any letter case, is not done gives its key as setupTask, and creates no deliver/<slug>, no lane worktree and reads no checks; without that task setupTask is null and base the branch checked out", (t) => {
+  const setup = scratch(t, [story("US-1", { title: "SET UP the Project", status: "implementing" }), story("US-2")]);
+  const plain = scratch(t, [setupStory("US-1", { status: "done" })]);
+
+  const [s, p] = [start(setup), start(plain)];
+
+  assert.deepEqual([s.ok, s.setupTask, s.branch, s.lane, s.base], [true, "US-1", null, null, "main"]);
+  assert.equal(git(setup.repo, "branch", "--list", "deliver/*"), "");
+  assert.equal(existsSync(setup.lane), false);
+  assert.equal(setup.state().calls.some((c) => c.argv[0] === "checks"), false);
+  assert.deepEqual([p.ok, p.setupTask, p.branch, p.lane, p.base], [true, null, "deliver/board", plain.lane, "main"]);
+});
+
+test("a setup run whose omni link matches a folder inside the checkout, not its top, works in that folder: the lock and the stories folder go there; started elsewhere it is refused; a run that is no setup run keeps the checkout's top", (t) => {
+  const dirs = scratch(t, [setupStory("US-1")]);
+  const sub = join(dirs.repo, "web");
+  mkdirSync(sub);
+  dirs.edit((s) => { s.link = { project_id: "p1", matched: sub }; });
+
+  const elsewhere = startIn(dirs, dirs.repo);
+  assert.deepEqual([elsewhere.ok, elsewhere.retry, elsewhere.error], [false, false, `start the build from ${sub}, the folder linked to the project`]);
+  assert.equal(existsSync(dirs.lock), false);
+
+  const body = startIn(dirs, sub);
+  assert.deepEqual([body.ok, body.root, body.base], [true, sub, null]);
+  assert.ok(existsSync(join(sub, ".omni", "run.lock")));
+  assert.ok(existsSync(join(dirs.repo, "web-stories")));
+
+  const plain = scratch(t, [story("US-1")]);
+  mkdirSync(join(plain.repo, "web"));
+  plain.edit((s) => { s.link = { project_id: "p1", matched: join(plain.repo, "web") }; });
+  const kept = startIn(plain, join(plain.repo, "web"));
+  assert.deepEqual([kept.ok, kept.root], [true, plain.repo]);
+});
+
+// ---- the setup steps ------------------------------------------------------------------
+
+// A setup run in a folder without a repository, and what its setup task makes there.
+function setupRun(t, stories = [setupStory("US-1")], extra = {}) {
+  const dirs = noRepo(scratch(t, stories, [], { checks: null, ...extra }));
+  const body = start(dirs);
+  assert.equal(body.ok, true, body.error);
+  return { dirs, run: body.run };
+}
+function gitInit(dirs) {
+  git(dirs.repo, "init", "-q", "-b", "main");
+  git(dirs.repo, "config", "user.email", "test@example.com");
+  git(dirs.repo, "config", "user.name", "Test");
+}
+
+test("setup-check answers not_ready with the first reason that holds: no repository, no commit, uncommitted changes outside .omni/, no fast command; then ready with HEAD and the checks, which go into run.json, and .omni/ into .git/info/exclude", (t) => {
+  const { dirs, run } = setupRun(t);
+  const reason = () => step(dirs, run, "setup-check", { key: "US-1" }).reason;
+
+  assert.equal(reason(), `${dirs.repo} is not a git repository`);
+  gitInit(dirs);
+  assert.equal(reason(), "the repository has no commit");
+  commit(dirs.repo, "README");
+  for (const f of ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"]) writeFileSync(join(dirs.repo, f), "x\n");
+  writeFileSync(join(dirs.repo, "README"), "changed\n");
+  assert.equal(reason(), "uncommitted changes in 7 files (README, a.rs, b.rs, c.rs, d.rs)");
+  git(dirs.repo, "add", ".");
+  git(dirs.repo, "reset", "-q", ".omni");
+  git(dirs.repo, "commit", "-q", "-m", "app");
+  const noFast = "omni checks gives no fast command: add fast to the [checks] table of .omni.toml";
+  assert.equal(reason(), noFast);
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"\"\n");
+  git(dirs.repo, "add", ".omni.toml");
+  git(dirs.repo, "commit", "-q", "-m", "checks");
+  assert.equal(reason(), noFast);
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"make check\"\n");
+  git(dirs.repo, "commit", "-q", "-am", "fast");
+
+  const body = step(dirs, run, "setup-check", { key: "US-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", outcome: "ready", head: sha(dirs, "HEAD"), checks: { fast: "make check", stack_up: "", stack: "", stack_reset: "", seed: "", lint: "" } });
+  assert.match(readFileSync(join(dirs.repo, ".git", "info", "exclude"), "utf8"), /^\.omni\/$/m);
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).checks.fast, "make check");
+});
+
+test("setup-check keeps the checks checks-set gave the run on top of those omni checks gives", (t) => {
+  const { dirs, run } = setupRun(t);
+  gitInit(dirs);
+  writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
+  writeFileSync(join(dirs.repo, ".omni.toml"), "[checks]\nfast = \"make check\"\nstack = \"make stack\"\n");
+  git(dirs.repo, "add", ".gitignore", ".omni.toml", "README");
+  git(dirs.repo, "commit", "-q", "-m", "setup");
+  step(dirs, run, "checks-set", { checks: { stack: "make e2e" } });
+
+  const body = step(dirs, run, "setup-check", { key: "US-1" });
+
+  assert.equal(body.outcome, "ready", body.reason);
+  assert.deepEqual([body.checks.fast, body.checks.stack], ["make check", "make e2e"]);
+});
+
+test("setup-land records the paths git ls-files gives as the task's files, ticks every criterion, a human check as pending, resolves its open findings and moves it to done; a repeat writes nothing twice", (t) => {
+  const { dirs, run } = setupRun(t, [setupStory("US-1", { status: "implementing", criteria: ["It starts", { text: "It looks right", human_check: true }], findings: [{ stage: "testing", text: "[attempt 1] no commit", files: [], resolved: false }] })]);
+  gitInit(dirs);
+  commit(dirs.repo, "README");
+  commit(dirs.repo, "main.rs");
+
+  const fields = { opId: "setup-land-1", key: "US-1" };
+  const body = step(dirs, run, "setup-land", fields);
+  const calls = dirs.state().calls.length;
+  const again = step(dirs, run, "setup-land", fields);
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", head: sha(dirs, "HEAD"), files: 2 });
+  assert.deepEqual(pick(again), pick(body));
+  assert.equal(dirs.state().calls.length, calls);
+  const s = dirs.story("US-1");
+  assert.deepEqual(s.files_changed, ["README", "main.rs"]);
+  assert.deepEqual(s.criteria.map((c) => [c.ticked, c.pending === true]), [[true, false], [true, true]]);
+  assert.deepEqual([s.findings[0].resolved, s.status], [true, "done"]);
+});
+
+test("repo-open creates deliver/<slug> at HEAD and the lane worktree, and gives the checks, base as the branch checked out and setup as the project-level Setup doc of pillar architecture, else null", (t) => {
+  const docList = [{ id: "d0", kind: "html", pillar: "architecture", title: "Setup", feature_id: "f1" }, { id: "d1", kind: "html", pillar: "spec", title: "Setup" }, { id: "d2", kind: "html", pillar: "architecture", title: "SETUP" }, { id: "d3", kind: "html", pillar: "architecture", title: "setup" }];
+  const { dirs, run } = setupRun(t, [setupStory("US-1"), story("US-2")], { docList, checks: { fast: "make check" } });
+  dirs.edit((s) => { s.stories[0].status = "done"; });
+  gitInit(dirs);
+  writeFileSync(join(dirs.repo, ".gitignore"), ".omni/\n");
+  git(dirs.repo, "add", ".gitignore");
+  git(dirs.repo, "commit", "-q", "-m", "setup");
+
+  const body = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([body.ok, body.branch, body.tip, body.lane, body.base, body.setup], [true, "deliver/board", sha(dirs, "HEAD"), dirs.lane, "main", "d2"]);
+  assert.equal(body.checks.fast, "make check");
+  assert.equal(sha(dirs, "refs/heads/deliver/board"), sha(dirs, "HEAD"));
+  assert.equal(git(dirs.lane, "rev-parse", "HEAD").trim(), sha(dirs, "HEAD"));
+  assert.equal(JSON.parse(readFileSync(runFile(dirs, run, "run.json"), "utf8")).tip, sha(dirs, "HEAD"));
+  dirs.edit((s) => { s.docList = []; });
+  assert.equal(step(dirs, run, "repo-open", {}).setup, null);
+});
+
+test("repo-open refuses for good a root that is no repository, and one without a commit", (t) => {
+  const { dirs, run } = setupRun(t);
+
+  const none = step(dirs, run, "repo-open", {});
+  gitInit(dirs);
+  const empty = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([none.ok, none.retry, none.error], [false, false, `${dirs.repo} is not a git repository`]);
+  assert.deepEqual([empty.ok, empty.retry, empty.error], [false, false, `${dirs.repo} has no commit to start the feature's branch from`]);
+  assert.equal(existsSync(dirs.lane), false);
+});
+
 // ---- the board steps ------------------------------------------------------------------
 
 test("list gives, of the other stories, only those the script takes up where they wait, implemented or reviewed and not blocked, as key and status, since outputs stay small, and the keys the board calls pickable", (t) => {
@@ -1196,7 +1437,7 @@ test("list gives the pickable stories with a worktree from an earlier attempt fi
   assert.deepEqual(body.pickable, ["US-6", "US-2", "US-4", "US-1", "US-3"]);
 });
 
-test("context gives only the facts the script decides by, and no text of the story: the attempt, the status, blocked, clarified, how many criteria, which are test obligations by index, how many findings are open, used no attempt or came before the latest answer, and the fnv1a of each decision's question", (t) => {
+test("context gives only the facts the script decides by, and no text of the story: the attempt, the status, blocked, clarified, how many criteria, which are test obligations by index, how many findings are open, used no attempt or came before the latest answer, the node IDs of its Covers lines in order, and the fnv1a of each decision's question", (t) => {
   const docs = { "doc-spec": '<p data-omni-id="n1" data-rev="1">SPEC NODE ONE</p>' };
   const dirs = scratch(t, [
     story("US-1", { id: "id-1", status: "done" }),
@@ -1204,7 +1445,7 @@ test("context gives only the facts the script decides by, and no text of the sto
       id: "id-2",
       status: "implemented",
       blocked: true,
-      text: "STORY TEXT: show a badge.",
+      text: "STORY TEXT: show a badge.\nCovers, in the feature's behaviour tree (`omni behaviour read <id> --feature \"board\"`):\n- node-9 v2 `shows/red`\n- node-4 v1 `shows`",
       criteria: [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }, { text: "It looks right", human_check: true }],
       files_planned: ["src/badge.rs"],
       blocked_by: ["id-1"],
@@ -1233,10 +1474,71 @@ test("context gives only the facts the script decides by, and no text of the sto
     clarified: false,
     criteria: 3,
     obligations: [1],
+    writeBack: [],
     findings: { open: 3, uncounted: 1, earlier: 1 },
+    nodes: ["node-9", "node-4"],
+    boards: [],
     questions: [fnv1a("Which red?"), fnv1a("How big?")],
   });
-  assert.doesNotMatch(JSON.stringify(body), /NODE|STORY TEXT|badge|#c00|border|README|doc-spec|th-1/);
+  assert.doesNotMatch(JSON.stringify(body), /NODE|STORY TEXT|badge|#c00|border|README|doc-spec|th-1|shows/);
+});
+
+// ---- the design boards ---------------------------------------------------------
+
+test("context gives as boards each link to a board of a design doc, as {doc, board}, each pair once and the first 20 in link order; a link to an html doc or to a design doc without a node is not a board, and a task with no such link has none", (t) => {
+  const docList = [{ id: "d1", kind: "design", pillar: "ui", title: "Screens" }, { id: "d2", kind: "html", pillar: "spec", title: "Spec" }, { id: "d3", kind: "design", pillar: "ui", title: "More" }];
+  const many = Array.from({ length: 22 }, (_, i) => ({ doc_id: "d3", node_id: `m${i}`, label: "" }));
+  const dirs = scratch(t, [
+    story("US-1", { links: [{ doc_id: "d2", node_id: "n1", label: "spec" }, { doc_id: "d1", node_id: "b2", label: "" }, questionLink("th-1"), { doc_id: "d1", node_id: "b1", label: "" }, { doc_id: "d1", node_id: "b2", label: "again" }, { doc_id: "d1", label: "" }] }),
+    story("US-2", { links: [{ doc_id: "d2", node_id: "n1", label: "spec" }] }),
+    story("US-3", { links: many }),
+  ], [], { docList });
+  const { run } = start(dirs);
+
+  assert.deepEqual(step(dirs, run, "context", { key: "US-1" }).boards, [{ doc: "d1", board: "b2" }, { doc: "d1", board: "b1" }]);
+  assert.deepEqual(step(dirs, run, "context", { key: "US-2" }).boards, []);
+  assert.deepEqual(step(dirs, run, "context", { key: "US-3" }).boards, many.slice(0, 20).map((l) => ({ doc: "d3", board: l.node_id })));
+});
+
+const exportsOf = (dirs) => dirs.state().calls.filter((c) => c.argv[0] === "export").map((c) => c.argv);
+const designState = () => ({
+  link: { path: "/work/app", matched: "/work/app", workspace_id: "w-1", project_id: "p-1" },
+  docList: [{ id: "0190aaaa-d1d1d1d1", kind: "design", pillar: "ui", title: "Rename screens" }],
+  boards: [{ doc: "0190aaaa-d1d1d1d1", board: "b1", name: "Rename" }, { doc: "0190aaaa-d1d1d1d1", board: "b2", name: "Name taken" }],
+});
+
+test("design-export runs omni export for the linked project and the feature into the run's design folder and leaves the files where it puts them: the manifest gives each board's tags file, with its image beside it; a second design-export under a new opId exports nothing again and gives the same body", (t) => {
+  const dirs = scratch(t, [], [], designState());
+  const { run } = start(dirs);
+  const dir = join(dirs.repo, ".omni", "runs", run, "design");
+
+  const body = step(dirs, run, "design-export");
+  const again = step(dirs, run, "design-export");
+
+  assert.deepEqual(pick(body), { ok: true, dir, boards: 2 });
+  assert.deepEqual(pick(again), pick(body));
+  assert.deepEqual(exportsOf(dirs), [["export", "--project", "p-1", "--feature", "board", "--out", dir]]);
+  const entry = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).files.find((f) => f.doc_id === "0190aaaa-d1d1d1d1" && f.board_id === "b1");
+  assert.equal(entry.path, "ui/rename-screens-d1d1d1d1/rename-b1.tags");
+  assert.equal(existsSync(join(dir, entry.path)), true);
+  assert.equal(existsSync(join(dir, entry.path.replace(/\.tags$/, ".png"))), true);
+});
+
+test("design-export answers ok false and retry false with omni's message, trimmed, when omni link fails or omni export exits non-zero, and names a link without a project_id; only a success is remembered, so the next call exports again", (t) => {
+  const dirs = scratch(t, [], [], { ...designState(), link: undefined });
+  const { run } = start(dirs);
+
+  const unlinked = step(dirs, run, "design-export");
+  dirs.edit((s) => { s.link = { path: "/work/app", workspace_id: "w-1" }; });
+  const noProject = step(dirs, run, "design-export");
+  dirs.edit((s) => { s.link = designState().link; });
+  const failed = step(dirs, run, "design-export", {}, { FAKE_OMNI_FAIL: "export" });
+  const worked = step(dirs, run, "design-export");
+
+  assert.deepEqual(pick(unlinked), { ok: false, error: "the design could not be exported: this folder is not linked to a project: run omni link <project name|id> here, or pass --project", retry: false });
+  assert.deepEqual(pick(noProject), { ok: false, error: "the design could not be exported: omni link gives no project_id for this folder", retry: false });
+  assert.deepEqual(pick(failed), { ok: false, error: "the design could not be exported: export failed: the server could not render the boards", retry: false });
+  assert.deepEqual([worked.ok, worked.boards, exportsOf(dirs).length], [true, 2, 2]);
 });
 
 test("context gives as test obligations, once clarity has checked the story, only the criteria clarity's decisions name, with the question and choice the script writes; before, a criterion that delivers a test, never one with a bare test or suite in it", (t) => {
@@ -1283,64 +1585,60 @@ test("obligations writes one decision for two criteria with the same text, which
   assert.deepEqual(dirs.story("US-1").decisions, [{ question: testQuestion(criteria[0].text), choice: TEST_OBLIGATION, by: "agent" }]);
 });
 
-test("exhaust opens a thread named after the story's attempts, with every attempt's findings whole, those that used no attempt and those before the latest answer, read from the board, links it and blocks the story; its answer gives none of them", (t) => {
-  const long = `Seen:\n\`\`\`\n${"a".repeat(5000)}\nFINAL-ERROR\n\`\`\``;
-  const dirs = scratch(t, [story("US-1", { status: "backlog", findings: [
-    { stage: "review", text: "[attempt 1] Before the answer", files: [], resolved: true },
-    { stage: "review", text: "[attempt 1] The badge is blue", files: ["src/badge.rs"], resolved: false },
-    { stage: "testing", text: `[attempt 2] ${long}`, files: [], resolved: false },
-    { stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: false },
-    { stage: "review", text: "[attempt 3] Still blue", files: [], resolved: false },
-  ] })]);
+test("obligations with kind write-back writes the write-back decision of each criterion by index, which context then names as writeBack and not as a test obligation; another kind is refused for good, and nothing is written", (t) => {
+  const criteria = [{ text: "The badge is red" }, { text: "`Operations` and `Tables` say what the landed code does for every operation and table this task touched" }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
   const { run } = start(dirs);
+  mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
+  writeFileSync(join(dirs.repo, ".omni", "clarity.json"), JSON.stringify({ "US-1": "0123abcd" }));
 
-  const body = step(dirs, run, "exhaust", { key: "US-1", opId: "exhaust-US-1-1" });
-  const again = step(dirs, run, "exhaust", { key: "US-1", opId: "exhaust-US-1-1" });
+  const other = step(dirs, run, "obligations", { key: "US-1", indexes: [1], kind: "docs" });
+  const before = step(dirs, run, "context", { key: "US-1" });
+  const written = step(dirs, run, "obligations", { key: "US-1", indexes: [1], kind: "write-back" });
+  const again = step(dirs, run, "obligations", { key: "US-1", indexes: [1], kind: "write-back" });
+  const after = step(dirs, run, "context", { key: "US-1" });
 
-  const [th] = questions(dirs);
-  assert.deepEqual(pick(body), { ok: true, thread: th.id, key: "US-1", attempt: 3 });
-  assert.equal(th.title, "US-1: still failing after 3 attempts");
-  assert.deepEqual(th.posts.map((p) => p.body), [`The story failed 3 attempts since the human's latest answer. The findings of every attempt:
-
-Attempt 1:
-- [review] The badge is blue (src/badge.rs)
-
-Attempt 2:
-- [testing] ${long}
-
-Attempt 3:
-- [review] Still blue
-
-Open findings that used no attempt:
-- [testing] rebase conflict in README (README)
-
-Before the latest answer:
-
-Attempt 1:
-- [review] Before the answer
-`]);
-  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").links], [true, [questionLink(th.id)]]);
-  assert.deepEqual(again, body);
-  assert.ok(JSON.stringify(body).length < 300);
+  assert.deepEqual([other.ok, other.retry], [false, false]);
+  assert.deepEqual([before.writeBack, written.recorded, again.recorded], [[], 1, 0]);
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: writeBackQuestion(criteria[1].text), choice: WRITE_BACK, by: "agent" }]);
+  assert.deepEqual([after.obligations, after.writeBack], [[], [1]]);
 });
 
-test("an exhaust cut off after its post is carried on by its repeat from its pending marker: the attempt the first try fixed and its thread, with one post, linked from the story, which is blocked", async (t) => {
-  const findings = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still blue`, files: [], resolved: false }));
-  const dirs = scratch(t, [story("US-1", { findings })]);
+test("context gives as the write-back, for a story clarity has not checked, a criterion that contains `say what the landed code does`", (t) => {
+  const criteria = [{ text: "The docs say what the badge does" }, { text: "`Operations` and `Tables` say what the landed code does for every operation and table this task touched" }];
+  const dirs = scratch(t, [story("US-1", { criteria })]);
   const { run } = start(dirs);
-  const obj = { opId: "exhaust-US-1-cut", key: "US-1" };
 
-  await cutOff(t, dirs, run, "exhaust", obj, () => questions(dirs).some((th) => th.posts.length === 1), { FAKE_OMNI_HANG_AFTER: "post" });
-  const pending = appliedOf(dirs, run, "exhaust")[obj.opId];
-  // Another failed attempt reaches the board before the repeat.
-  dirs.edit((s) => { s.stories[0].findings.push({ stage: "testing", text: "[attempt 4] Blue again", files: [], resolved: false }); });
-  const again = step(dirs, run, "exhaust", obj);
+  assert.deepEqual(step(dirs, run, "context", { key: "US-1" }).writeBack, [1]);
+});
 
-  const [th, ...others] = questions(dirs);
-  assert.deepEqual([pending.pending, pending.attempt, pending.thread], [true, 3, th.id]);
-  assert.deepEqual(pick(again), { ok: true, thread: th.id, key: "US-1", attempt: 3 });
-  assert.deepEqual([th.title, th.posts.length, others], ["US-1: still failing after 3 attempts", 1, []]);
-  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").links], [true, [questionLink(th.id)]]);
+test("park leaves a task that failed its third try in the backlog, not blocked, with no holder, its findings open and no thread, and removes its worktree and branch; a task that never had them and a repeat say removed too", (t) => {
+  const findings = [1, 2, 3].map((n) => ({ stage: "review", text: `[attempt ${n}] Still blue`, files: [], resolved: false }));
+  const dirs = scratch(t, [story("US-1", { status: "implemented", findings }), story("US-2", { findings })]);
+  const { run } = start(dirs);
+  const wt = storyWork(dirs, run, "US-1");
+  step(dirs, run, "claim", { key: "US-1", stage: "review" });
+
+  const body = step(dirs, run, "park", { key: "US-1", opId: "park-US-1-1" });
+  const again = step(dirs, run, "park", { key: "US-1", opId: "park-US-1-1" });
+  const never = step(dirs, run, "park", { key: "US-2", opId: "park-US-2-1" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", attempt: 3, removed: true });
+  assert.deepEqual(pick(again), pick(body));
+  assert.deepEqual(pick(never), { ok: true, key: "US-2", attempt: 3, removed: true });
+  const parked = dirs.story("US-1");
+  assert.deepEqual([parked.status, parked.blocked, parked.holder, parked.findings.map((f) => [f.text, f.resolved])], ["backlog", false, null, findings.map((f) => [f.text, false])]);
+  assert.deepEqual([existsSync(wt), git(dirs.repo, "branch", "--list", "story/US-1"), questions(dirs)], [false, "", []]);
+});
+
+test("exhaust is no longer a step: the helper refuses it", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const { run } = start(dirs);
+
+  const body = helperRun(dirs, stepArgv(dirs, run, "exhaust", { opId: "exhaust-US-1-1", key: "US-1" }));
+
+  assert.equal(body.ok, false);
+  assert.match(body.error, /^no step exhaust/);
 });
 
 test("a story list past 1 MB is read whole", (t) => {
@@ -1449,6 +1747,120 @@ test("thread-open creates a thread on the feature with its body posted from a fi
   assert.equal(linked.key, "US-1");
 });
 
+// ---- question-ask ---------------------------------------------------------------------
+
+// The choice of the decision a question on the tree leaves on its task.
+const askedOn = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`;
+// The asks sent to the tree, as their arguments after `behaviour ask`, without the feature every call names.
+const asks = (dirs) => dirs.state().calls.filter((c) => c.argv[0] === "behaviour" && c.argv[1] === "ask").map((c) => c.argv.slice(2).filter((a, i, all) => a !== "--feature" && all[i - 1] !== "--feature"));
+const covers = (...lines) => `Show a badge.\nCovers, in the feature's behaviour tree (\`omni behaviour read <id> --feature "board"\`):\n${lines.map((l) => `${l}\n`).join("")}`;
+
+test("question-ask asks on the payload's node with the options numbered and who asks, and the recommendation; the task gets the question with the Asked wording as the agent's decision, and with block true it is blocked with no holder", (t) => {
+  const dirs = scratch(t, [story("US-1")], [], { behaviour: { nodes: [{ id: "root", path: "" }, { id: "n1", path: "a" }], questions: [] } });
+  const { run } = start(dirs);
+  dirs.edit((s) => Object.assign(s.stories[0], { status: "implementing", holder: { run, stage: "implementing" } }));
+
+  const body = step(dirs, run, "question-ask", { key: "US-1", node: "n1", question: "Which red?", recommendation: "#c00", options: ["#c00", "#f00"], asker: "the implementer", block: true });
+
+  const [q] = dirs.state().behaviour.questions;
+  assert.deepEqual(asks(dirs), [["n1", "Which red? Options: 1. #c00 2. #f00 (Asked by the build of US-1, the implementer.)", "--recommend", "#c00"]]);
+  assert.deepEqual(pick(body), { ok: true, key: "US-1", question: q.id, node: "n1" });
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: askedOn(q.id, "n1"), by: "agent" }]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-1").holder], [true, null]);
+});
+
+test("question-ask asks on the task's first Covers node when the tree lacks the payload's node, and on . when it lacks that one too, naming the node by its ID; without options or a recommendation the question has no Options part and no --recommend; with block false the task keeps its status and flag", (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { status: "implemented", text: covers("- n2 v1 `b`", "- n3 v2 `c`") }),
+    story("US-2", { status: "implemented", text: covers("- gone-too v1 `x`", "- n2 v1 `b`") }),
+    story("US-3", { status: "implemented", text: "Show a badge." }),
+  ], [], { behaviour: { nodes: [{ id: "root", path: "" }, { id: "n2", path: "b" }, { id: "n3", path: "c" }], questions: [] } });
+  const { run } = start(dirs);
+  const ask = (key) => step(dirs, run, "question-ask", { key, node: "gone", question: "How big?", recommendation: "", options: [], asker: "the reviewer", block: false });
+
+  const bodies = ["US-1", "US-2", "US-3"].map(ask);
+
+  const ids = dirs.state().behaviour.questions.map((q) => q.id);
+  assert.deepEqual(asks(dirs), [
+    ["n2", "How big? (Asked by the build of US-1, the reviewer.)"],
+    [".", "How big? (Asked by the build of US-2, the reviewer.)"],
+    [".", "How big? (Asked by the build of US-3, the reviewer.)"],
+  ]);
+  assert.deepEqual(bodies.map(pick), [
+    { ok: true, key: "US-1", question: ids[0], node: "n2" },
+    { ok: true, key: "US-2", question: ids[1], node: "root" },
+    { ok: true, key: "US-3", question: ids[2], node: "root" },
+  ]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => dirs.story(key).decisions), [
+    [{ question: "How big?", choice: askedOn(ids[0], "n2"), by: "agent" }],
+    [{ question: "How big?", choice: askedOn(ids[1], "root"), by: "agent" }],
+    [{ question: "How big?", choice: askedOn(ids[2], "root"), by: "agent" }],
+  ]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => [dirs.story(key).status, dirs.story(key).blocked]), [["implemented", false], ["implemented", false], ["implemented", false]]);
+});
+
+test("question-ask fails naming the last read's error when the tree has none of the payload's node, the first Covers node and .: nothing is asked, no decision is recorded and the task's status stays", (t) => {
+  const dirs = scratch(t, [story("US-1", { status: "implemented", text: covers("- gone-too v1 `x`") })], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "question-ask", { key: "US-1", node: "gone", question: "Which red?", recommendation: "#c00", options: [], asker: "the implementer", block: true });
+
+  assert.equal(body.ok, false);
+  assert.match(body.error, /not_found: no node \. in this feature/);
+  assert.deepEqual([asks(dirs), dirs.state().behaviour.questions], [[], []]);
+  assert.deepEqual([dirs.story("US-1").decisions, dirs.story("US-1").status, dirs.story("US-1").blocked], [[], "implemented", false]);
+});
+
+test("a question-ask cut off after its ask is carried on by its repeat without asking again: the tree holds one question, and the task one decision naming it", async (t) => {
+  const dirs = scratch(t, [story("US-1")], [], { behaviour: { nodes: [{ id: "root", path: "" }, { id: "n1", path: "a" }], questions: [] } });
+  const { run } = start(dirs);
+  const obj = { opId: "qa-1", key: "US-1", node: "n1", question: "Which red?", recommendation: "#c00", options: ["#c00", "#f00"], asker: "the implementer", block: true };
+
+  await cutOff(t, dirs, run, "question-ask", obj, () => dirs.state().behaviour.questions.length > 0, { FAKE_OMNI_HANG_AFTER: "behaviour ask" });
+  const again = step(dirs, run, "question-ask", obj);
+
+  const questions = dirs.state().behaviour.questions;
+  assert.equal(questions.length, 1);
+  assert.equal(asks(dirs).length, 1);
+  assert.deepEqual(pick(again), { ok: true, key: "US-1", question: questions[0].id, node: "n1" });
+  assert.deepEqual(dirs.story("US-1").decisions, [{ question: "Which red?", choice: askedOn(questions[0].id, "n1"), by: "agent" }]);
+  assert.equal(dirs.story("US-1").blocked, true);
+});
+
+// ---- retry-pass -----------------------------------------------------------------------
+
+test("retry-pass resolves every open finding of each task in the backlog, not blocked, with an open finding marked [attempt 3], and gives their keys; a blocked task, one out of the backlog, one short of 3 tries and one whose [attempt 3] is resolved keep theirs; a repeat gives the same keys", (t) => {
+  const tries = (n, resolved = false) => ({ stage: "review", text: `[attempt ${n}] Still blue`, files: [], resolved });
+  const conflict = { stage: "testing", text: "rebase conflict in README", files: ["README"], resolved: false };
+  const parked = [tries(1, true), tries(1), tries(2), tries(3), conflict];
+  const dirs = scratch(t, [
+    story("US-1", { findings: parked }),
+    story("US-2", { blocked: true, findings: parked }),
+    story("US-3", { status: "implemented", findings: parked }),
+    story("US-4", { findings: [tries(1), tries(2)] }),
+    story("US-5", { findings: [tries(3, true), tries(1)] }),
+    story("US-6", { findings: [tries(1), tries(2), tries(3)] }),
+  ]);
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "retry-pass", { opId: "retry-pass-1" });
+  const again = step(dirs, run, "retry-pass", { opId: "retry-pass-1" });
+
+  assert.deepEqual(body.retried, ["US-1", "US-6"]);
+  assert.deepEqual(pick(again), pick(body));
+  const resolved = (key) => dirs.story(key).findings.map((f) => f.resolved);
+  assert.deepEqual(["US-1", "US-2", "US-3", "US-4", "US-5", "US-6"].map(resolved), [
+    [true, true, true, true, true],
+    [true, false, false, false, false],
+    [true, false, false, false, false],
+    [false, false],
+    [true, false],
+    [true, true, true],
+  ]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => [dirs.story(key).status, dirs.story(key).blocked]), [["backlog", false], ["backlog", true], ["implemented", false]]);
+  assert.equal(step(dirs, run, "context", { key: "US-1" }).attempt, 0);
+});
+
 // ---- unblock-pass ---------------------------------------------------------------------
 
 test("unblock-pass records a concluded thread's conclusion as a human decision with the thread's question, unblocks the story, and gives its key", (t) => {
@@ -1527,6 +1939,98 @@ test("an answer restarts the attempt budget: unblock-pass resolves the story's o
     ["[attempt 2] Still not red", false],
     ["[attempt 3] Still not red", false],
   ]);
+});
+
+// A question on the tree as `omni behaviour question --json` shows it: open, or answered with `answer` by `by`.
+const treeQuestion = (id, answer = null, by = "human") => ({
+  id,
+  node_id: "n1",
+  node_path: "a",
+  question: "asked text",
+  recommendation: null,
+  state: answer === null ? "open" : "answered",
+  answered_by: answer === null ? null : by,
+  asked_by: { kind: "agent", run: null, role: null },
+  answer: answer === null ? null : { answer, given_by: by, author: "someone", at: "2026-11-01T00:00:00Z" },
+});
+// The decision question-ask leaves on a task for the question `id`.
+const asked = (question, id) => ({ question, choice: askedOn(id, "n1"), by: "agent" });
+
+test("unblock-pass records an answered tree question as a decision with the asked question and the answer's text, by human or agent as the answer was given, resolves the task's open findings and unblocks it", (t) => {
+  const findings = [{ stage: "review", text: "[attempt 1] Still blue", files: [], resolved: false }];
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, findings, decisions: [asked("Which red?", "q-1")] }),
+    story("US-2", { blocked: true, decisions: [asked("How big?", "q-2")] }),
+  ], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00", "human"), treeQuestion("q-2", "Large", "agent")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual([body.unblocked, body.log], [["US-1", "US-2"], []]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), { question: "Which red?", choice: "#c00", by: "human" }]);
+  assert.deepEqual(dirs.story("US-2").decisions, [asked("How big?", "q-2"), { question: "How big?", choice: "Large", by: "agent" }]);
+  assert.deepEqual(dirs.story("US-1").findings.map((f) => f.resolved), [true]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-2").blocked], [false, false]);
+});
+
+test("unblock-pass keeps a task with one of its two asked questions open blocked, records neither answer, and logs the open question", (t) => {
+  const dirs = scratch(t, [story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), asked("How big?", "q-2")] })], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00"), treeQuestion("q-2")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual([body.unblocked, body.log], [[], ["US-1 stays blocked: the question q-2 is open"]]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), asked("How big?", "q-2")]);
+  assert.equal(dirs.story("US-1").blocked, true);
+});
+
+test("unblock-pass keeps a task whose asked question cannot be read blocked, records not even its answered one, logs why, and goes on with the next task", (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), asked("How big?", "q-gone")] }),
+    story("US-2", { blocked: true, decisions: [asked("Which font?", "q-2")] }),
+  ], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00"), treeQuestion("q-2", "Inter")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual([body.ok, body.unblocked, body.log], [true, ["US-2"], ["US-1 stays blocked: the question q-gone could not be read: not_found: no question q-gone in this feature"]]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), asked("How big?", "q-gone")]);
+  assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-2").blocked], [true, false]);
+});
+
+test("unblock-pass unblocks a task with a linked thread and an asked question only once the thread is concluded and the question answered", (t) => {
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, links: [questionLink("th-1")], decisions: [asked("Which red?", "q-1")] }),
+    story("US-2", { blocked: true, links: [questionLink("th-2")], decisions: [asked("Which red?", "q-2")] }),
+    story("US-3", { blocked: true, links: [questionLink("th-3")], decisions: [asked("Which red?", "q-3")] }),
+  ], [
+    thread("th-1", "US-1: Which size?"),
+    thread("th-2", "US-2: Which size?", "Large"),
+    thread("th-3", "US-3: Which size?", "Small"),
+  ], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00"), treeQuestion("q-2"), treeQuestion("q-3", "#f00")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual(body.unblocked, ["US-3"]);
+  assert.deepEqual(["US-1", "US-2", "US-3"].map((key) => dirs.story(key).blocked), [true, true, false]);
+  assert.deepEqual(["US-1", "US-2"].map((key) => dirs.story(key).decisions.length), [1, 1]);
+  assert.deepEqual(dirs.story("US-3").decisions, [
+    asked("Which red?", "q-3"),
+    { question: "US-3: Which size?", choice: "Small", by: "human" },
+    { question: "Which red?", choice: "#f00", by: "human" },
+  ]);
+});
+
+test("unblock-pass does not record again an answer that is already a decision of the task", (t) => {
+  const earlier = { question: "Which red?", choice: "#c00", by: "human" };
+  const dirs = scratch(t, [story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), earlier] })], [], { behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [treeQuestion("q-1", "#c00")] } });
+  const { run } = start(dirs);
+
+  const body = step(dirs, run, "unblock-pass");
+
+  assert.deepEqual(body.unblocked, ["US-1"]);
+  assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), earlier]);
 });
 
 // ---- worktrees and waits ------------------------------------------------------------
@@ -2736,7 +3240,7 @@ test("finish stops the run's jobs that still run, posts the report on the run's 
 
   const body = step(dirs, run, "finish", { report });
 
-  assert.deepEqual(pick(body), { ok: true, thread: runThread, posted: true, report: runFile(dirs, run, "report.md"), stopped: [stack.id] });
+  assert.deepEqual(pick(body), { ok: true, thread: runThread, posted: true, report: runFile(dirs, run, "report.md"), stopped: [stack.id], pr: null, pushed: false, why: "the checkout has no remote" });
   assert.ok(await eventually(() => gone(-pgid)), "the running job was stopped");
   assert.equal(existsSync(dirs.lock), false);
   const posts = dirs.state().threads.find((th) => th.id === runThread).posts;
@@ -2745,28 +3249,37 @@ test("finish stops the run's jobs that still run, posts the report on the run's 
   const post = dirs.state().calls.find((c) => c.argv[0] === "post" && c.argv[1] === runThread);
   assert.equal(existsSync(post.argv[post.argv.indexOf("--body-file") + 1]), false, "the body file is gone once posted");
   const [top, timings] = text.split("## Timings\n");
-  assert.equal(top, `# Run ${run} on board
+  assert.equal(top, `# board: build report of ${run}
+No pull request: the checkout has no remote. The work is on the branch deliver/board.
 
 The lane stopped once: the stack did not start.
 
-## Landed on deliver/board
+## Built
 - US-1 Story US-1: ${feat} feat: badge.rs; ${tests} feat: badge.test
 
-Bring them into your branch with \`git merge --ff-only deliver/board\`.
-
-## Blocked
+## Waiting on a question
 - US-2 Story US-2: thread th-1
-- US-3 Story US-3: thread (none linked)
+- US-3 Story US-3: blocked
 
-## Outcomes
-- US-1 Story US-1: done
-- US-2 Story US-2: blocked: a question for the human
+Answer on the feature's Behaviour screen; the next build takes these tasks up.
 
-## Council
-- 2 questions settled by the council, 1 of them by a majority of 2, 1 sent to the human
+## Failed
+- none
+
+## Waiting for another task
+- none
+
+## Not started
+- none
+
+## Not compared with its board
+- none
 
 ## Pending human checks
 - US-1: It looks right
+
+## Council
+- 2 questions settled by the council, 1 of them by a majority of 2, 1 sent to the human
 
 ## Journeys
 - healthy: the badge flow works
@@ -2778,7 +3291,7 @@ Bring them into your branch with \`git merge --ff-only deliver/board\`.
 
 const noReport = { outcomes: [], council: { settled: 0, asked: 0 } };
 
-test("a finish that cannot read the board says so in the report's blocked stories and pending human checks, instead of none", (t) => {
+test("a finish that cannot read the board says so in the report's sections that come from it, instead of none", (t) => {
   const dirs = scratch(t, [story("US-1", { blocked: true, criteria: [{ text: "It looks right", human_check: true, pending: true }] })]);
   const { run, thread: runThread } = start(dirs);
   const down = join(dirs.root, "down");
@@ -2788,8 +3301,75 @@ test("a finish that cannot read the board says so in the report's blocked storie
 
   const text = readFileSync(body.report, "utf8");
   assert.deepEqual([body.ok, dirs.state().threads.find((th) => th.id === runThread).posts.length], [true, 1]);
-  assert.ok(text.includes("\n## Blocked\n- unknown: the board could not be read (Connection refused)\n\n"), text);
-  assert.ok(text.includes("\n## Pending human checks\n- unknown: the board could not be read (Connection refused)\n\n"), text);
+  for (const section of ["Waiting on a question", "Waiting for another task", "Not started", "Pending human checks"]) assert.ok(text.includes(`\n## ${section}\n- unknown: the board could not be read (Connection refused)\n\n`), text);
+});
+
+// The report's section with this heading, without it.
+const sectionOf = (text, heading) => text.split(`\n## ${heading}\n`)[1].split("\n\n## ")[0];
+
+test("the report lists each task once: waiting on an open question with its node path and recommendation, on an open thread, or blocked; parked with its last try's findings cut to 300 characters, or failed with its error's first line; waiting for another task through a chain with every key; else not started; and the boards not compared", (t) => {
+  const attempt3 = [
+    { stage: "review", text: "[attempt 1] Old one", files: [], resolved: true },
+    { stage: "review", text: "[attempt 2] Still blue", files: [], resolved: false },
+    { stage: "testing", text: `[attempt 3] ${"x".repeat(400)}`, files: [], resolved: false },
+    { stage: "testing", text: "[attempt 3] The badge\n\nis blue", files: [], resolved: false },
+  ];
+  const dirs = scratch(t, [
+    story("US-1", { blocked: true, decisions: [asked("Which red?", "q-1"), asked("How big?", "q-2"), asked("Done?", "q-3")] }),
+    story("US-2", { blocked: true, links: [questionLink("th-1"), questionLink("th-2")] }),
+    story("US-3", { blocked: true, decisions: [asked("Gone?", "q-9")] }),
+    story("US-4", { findings: attempt3 }),
+    story("US-5"),
+    story("US-6", { blocked_by: ["US-7"] }),
+    story("US-7", { blocked_by: ["US-4"] }),
+    story("US-8", { blocked_by: ["US-12"] }),
+    story("US-10", { findings: [{ stage: "review", text: "[attempt 3] Fixed since", files: [], resolved: true }] }),
+    story("US-11", { status: "done" }),
+    story("US-12", { status: "done" }),
+  ], [thread("th-1", "US-2: Which red?"), thread("th-2", "US-2: Which size?", "Large")], {
+    behaviour: { nodes: [{ id: "n1", path: "a" }], questions: [{ ...treeQuestion("q-1"), recommendation: "#c00" }, treeQuestion("q-2"), treeQuestion("q-3", "Yes")] },
+  });
+  const { run } = start(dirs);
+  const report = {
+    outcomes: [{ key: "US-5", outcome: "failed", detail: "\nthe courier returned nothing\nsecond line" }, { key: "US-4", outcome: "parked", detail: "failed 3 tries" }],
+    council: { settled: 0, majority: 0, asked: 0 },
+    uncompared: [{ key: "US-11", boards: ["b1", "b2"], reason: "The page did not open" }, { key: "US-12", boards: ["b3"], reason: "y".repeat(400) }],
+  };
+
+  const text = readFileSync(step(dirs, run, "finish", { report }).report, "utf8");
+
+  assert.equal(sectionOf(text, "Waiting on a question"), [
+    '- US-1 Story US-1: "Which red?" on a (recommended: #c00)',
+    '- US-1 Story US-1: "How big?" on a',
+    "- US-2 Story US-2: thread th-1",
+    "- US-3 Story US-3: blocked: the question q-9 could not be read: not_found: no question q-9 in this feature",
+    "",
+    "Answer on the feature's Behaviour screen; the next build takes these tasks up.",
+  ].join("\n"));
+  assert.equal(sectionOf(text, "Failed"), [
+    "- US-4 Story US-4: parked after 3 tries",
+    `  - ${"x".repeat(299)}…`,
+    "  - The badge is blue",
+    "- US-5 Story US-5: failed: the courier returned nothing",
+  ].join("\n"));
+  assert.equal(sectionOf(text, "Waiting for another task"), "- US-6 Story US-6: waits for US-7, US-4\n- US-7 Story US-7: waits for US-4");
+  assert.equal(sectionOf(text, "Not started"), "- US-8 Story US-8\n- US-10 Story US-10");
+  assert.equal(sectionOf(text, "Not compared with its board"), `- US-11 Story US-11: b1, b2: The page did not open\n- US-12 Story US-12: b3: ${"y".repeat(300)}`);
+  assert.equal(sectionOf(text, "Journeys"), "- none");
+  assert.deepEqual(text.split("\n").filter((l) => l.startsWith("## ")), ["## Built", "## Waiting on a question", "## Failed", "## Waiting for another task", "## Not started", "## Not compared with its board", "## Pending human checks", "## Council", "## Journeys", "## Timings"]);
+});
+
+test("the report lists a setup task that landed under Built, with the commits up to its head, and closes Waiting on a question with no line about answers when no task waits", (t) => {
+  const { dirs, run } = setupRun(t, [setupStory("US-1", { status: "implementing" })]);
+  gitInit(dirs);
+  const first = commit(dirs.repo, "README").slice(0, 7);
+  const second = commit(dirs.repo, "main.rs").slice(0, 7);
+  step(dirs, run, "setup-land", { key: "US-1" });
+
+  const text = readFileSync(step(dirs, run, "finish", { report: noReport }).report, "utf8");
+
+  assert.equal(sectionOf(text, "Built"), `- US-1 Set up the project: ${first} feat: README; ${second} feat: main.rs`);
+  assert.equal(sectionOf(text, "Waiting on a question"), "- none");
 });
 
 test("a finish whose post failed keeps the report as report.md, gives the lock up, and says it may be tried again; its repeat with the same opId goes on without the lock and posts the report once", (t) => {
@@ -2807,7 +3387,7 @@ test("a finish whose post failed keeps the report as report.md, gives the lock u
 
   assert.deepEqual([failed.ok, failed.posted, failed.retry, failed.report, lockAfter], [false, false, true, runFile(dirs, run, "report.md"), false]);
   assert.match(failed.error, /^the report could not be posted: /);
-  assert.deepEqual(pick(again), { ok: true, thread: runThread, posted: true, report: failed.report, stopped: [] });
+  assert.deepEqual(pick(again), { ok: true, thread: runThread, posted: true, report: failed.report, stopped: [], pr: null, pushed: false, why: "the checkout has no remote" });
   assert.deepEqual(dirs.state().threads.find((th) => th.id === runThread).posts.map((p) => [p.summary, p.body]), [[`Report of ${run}`, readFileSync(failed.report, "utf8")]]);
   assert.equal(existsSync(dirs.lock), false);
 });
@@ -2844,6 +3424,315 @@ test("the report's timings sort the job columns by name, show a time under a sec
   const timings = readFileSync(body.report, "utf8").split("## Timings\n")[1];
   const time = String.raw`(?:<1s|\d+s)`;
   assert.match(timings, new RegExp(String.raw`^The run took ${time}\.\n\n\| Story \| Total \| implementing \| review \| testing \| rebase \| alpha \| zeta \|\n\|---\|---\|---\|---\|---\|---\|---\|---\|\n\| US-1 \| ${time} \| - \| - \| [1-9]\d*s \| <1s \| - \| <1s \|\n\| US-2 \| ${time} \| - \| - \| - \| - \| <1s \| - \|\n\nA time with \(n\) after it adds up n of them: claims of the stage, rebases, or runs of the job\.\n$`), timings);
+});
+
+// ---- the pull request -------------------------------------------------------------------
+
+const fakeGh = fileURLToPath(new URL("./fixtures/fake-gh.mjs", import.meta.url));
+// The fake gh first on PATH, its state in the scratch folder; `script` puts
+// shell lines before it hands over to the fake.
+function withGh(dirs, state = null, script = "") {
+  const statePath = join(dirs.root, "gh-state.json");
+  if (state) writeFileSync(statePath, JSON.stringify({ prs: [], calls: [], fail: null, ...state }));
+  writeFileSync(join(dirs.root, "bin", "gh"), `#!/bin/sh\n${script}exec "${process.execPath}" "${fakeGh}" "$@"\n`);
+  chmodSync(join(dirs.root, "bin", "gh"), 0o755);
+  dirs.env.FAKE_GH_STATE = statePath;
+  const read = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : { prs: [], calls: [] });
+  return { read, calls: () => read().calls.map((c) => c.argv) };
+}
+// A bare repository in the scratch folder as the checkout's remote, with main pushed to it.
+function withRemote(dirs, name = "origin") {
+  const bare = join(dirs.root, `${name}.git`);
+  git(dirs.root, "init", "-q", "--bare", bare);
+  git(dirs.repo, "remote", "add", name, bare);
+  git(dirs.repo, "push", "-q", name, "main");
+  return { bare, at: (ref) => (spawnSync("git", ["-C", bare, "rev-parse", "--verify", "--quiet", ref], { encoding: "utf8" }).stdout || "").trim() };
+}
+const secondLine = (file) => readFileSync(file, "utf8").split("\n")[1];
+
+test("finish pushes deliver/<slug> to the remote of the base branch and opens one pull request into the base, titled with the feature, whose body is the report without its second line, which names the pull request on the Run thread and in report.md", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs, "upstream");
+  git(dirs.repo, "config", "branch.main.remote", "upstream");
+  const gh = withGh(dirs);
+  const { run, thread: runThread } = start(dirs);
+  const tip = landOn(dirs, "deliver/board", "badge.rs");
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.deepEqual([body.ok, body.pr, body.pushed, body.why], [true, { url: "https://example.com/pr/1", created: true }, true, null]);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  const text = readFileSync(body.report, "utf8");
+  const [title, second, ...rest] = text.split("\n");
+  assert.equal(second, "Pull request: https://example.com/pr/1");
+  const [pr] = gh.read().prs;
+  assert.deepEqual([pr.head, pr.base, pr.title, pr.body], ["deliver/board", "main", "board", [title, ...rest].join("\n")]);
+  assert.deepEqual(gh.calls().map((argv) => argv.slice(0, -1)), [["pr", "list", "--head", "deliver/board", "--state", "open", "--json"], ["pr", "create", "--base", "main", "--head", "deliver/board", "--title", "board", "--body-file"]]);
+  assert.equal(dirs.state().threads.find((th) => th.id === runThread).posts[0].body, text);
+  assert.equal(existsSync(dirs.lock), false);
+});
+
+test("finish pushes nothing and opens no pull request, and the report's second line says why and names the branch, with the first reason that holds: no branch checked out, no remote, the base not on the remote, no gh, gh that cannot list pull requests, a branch with nothing the base lacks; a setup run that never opened the repository says the feature has no branch yet", (t) => {
+  const cases = [
+    ["the checkout has no branch checked out", (dirs) => { withRemote(dirs); withGh(dirs); git(dirs.repo, "checkout", "-q", "--detach"); }],
+    ["the checkout has no remote", (dirs) => { withGh(dirs); }],
+    ["main is not on origin", (dirs) => { withGh(dirs); git(dirs.repo, "remote", "add", "origin", join(dirs.root, "nowhere.git")); }],
+    ["the gh command is not installed", (dirs) => {
+      withRemote(dirs);
+      // Only omni and git on PATH.
+      symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(dirs.root, "bin", "git"));
+      dirs.env.PATH = join(dirs.root, "bin");
+    }],
+    ["gh cannot list pull requests on origin: HTTP 502: Bad Gateway", (dirs) => { withRemote(dirs); withGh(dirs, { fail: "\nHTTP 502: Bad Gateway\nmore" }); }],
+    ["deliver/board holds nothing that main lacks", (dirs) => { withRemote(dirs); withGh(dirs); }, false],
+  ];
+  for (const [why, prepare, ahead = true] of cases) {
+    const dirs = scratch(t, [story("US-1")]);
+    prepare(dirs);
+    const { run } = start(dirs);
+    if (ahead) landOn(dirs, "deliver/board", "badge.rs");
+
+    const body = step(dirs, run, "finish", { report: noReport });
+
+    assert.deepEqual([body.ok, body.pr, body.pushed, body.why], [true, null, false, why], why);
+    assert.equal(secondLine(body.report), `No pull request: ${why}. The work is on the branch deliver/board.`);
+    const ghState = join(dirs.root, "gh-state.json");
+    const created = existsSync(ghState) ? JSON.parse(readFileSync(ghState, "utf8")).calls.filter((c) => c.argv[1] === "create") : [];
+    assert.deepEqual(created, [], why);
+    const bare = join(dirs.root, "origin.git");
+    if (existsSync(bare)) assert.equal(spawnSync("git", ["-C", bare, "rev-parse", "--verify", "--quiet", "refs/heads/deliver/board"]).status, 1, why);
+  }
+  const { dirs, run } = setupRun(t);
+  const body = step(dirs, run, "finish", { report: noReport });
+  assert.deepEqual([body.pr, body.pushed, body.why, secondLine(body.report)], [null, false, "the feature has no branch yet", "No pull request: the feature has no branch yet."]);
+});
+
+test("a push or a gh pr create that fails does not stop finish: the report is posted with the error's first line as why the pull request is missing, and the lock is given up", (t) => {
+  const pushing = scratch(t, [story("US-1")]);
+  withRemote(pushing);
+  withGh(pushing);
+  const first = start(pushing);
+  landOn(pushing, "deliver/board", "badge.rs");
+  git(pushing.repo, "remote", "set-url", "origin", join(pushing.root, "gone.git"));
+
+  const failedPush = step(pushing, first.run, "finish", { report: noReport });
+
+  assert.deepEqual([failedPush.ok, failedPush.posted, failedPush.pr, failedPush.pushed], [true, true, null, false]);
+  assert.match(failedPush.why, /gone\.git/);
+  assert.equal(secondLine(failedPush.report), `No pull request: ${failedPush.why}. The work is on the branch deliver/board.`);
+  assert.equal(existsSync(pushing.lock), false);
+
+  const creating = scratch(t, [story("US-1")]);
+  const remote = withRemote(creating);
+  withGh(creating, null, 'if [ "$2" = create ]; then printf "\\nGraphQL: the head is not on the remote\\n" >&2; exit 1; fi\n');
+  const second = start(creating);
+  const tip = landOn(creating, "deliver/board", "badge.rs");
+
+  const failedCreate = step(creating, second.run, "finish", { report: noReport });
+
+  assert.deepEqual([failedCreate.ok, failedCreate.posted, failedCreate.pr, failedCreate.pushed, failedCreate.why], [true, true, null, true, "GraphQL: the head is not on the remote"]);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  assert.equal(secondLine(failedCreate.report), "No pull request: GraphQL: the head is not on the remote. The work is on the branch deliver/board.");
+  assert.equal(existsSync(creating.lock), false);
+});
+
+test("a later run updates the open pull request of deliver/<slug>: it pushes, replaces its body with the new report and creates none; a gh pr edit that fails is a failed create", (t) => {
+  const open = { number: 4, url: "https://example.com/pr/4", head: "deliver/board", base: "main", state: "open", title: "board", headRefOid: null, body: "Old report\n" };
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  const gh = withGh(dirs, { prs: [open] });
+  const { run } = start(dirs);
+  const tip = landOn(dirs, "deliver/board", "badge.rs");
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.deepEqual([body.pr, body.pushed, body.why], [{ url: "https://example.com/pr/4", created: false }, true, null]);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  const [title, , ...rest] = readFileSync(body.report, "utf8").split("\n");
+  assert.deepEqual(gh.read().prs.map((pr) => [pr.number, pr.body]), [[4, [title, ...rest].join("\n")]]);
+  assert.deepEqual(gh.calls().map((argv) => argv.slice(0, 3)), [["pr", "list", "--head"], ["pr", "edit", "4"]]);
+  assert.equal(secondLine(body.report), "Pull request: https://example.com/pr/4");
+
+  const failing = scratch(t, [story("US-1")]);
+  withRemote(failing);
+  withGh(failing, { prs: [open] }, 'if [ "$2" = edit ]; then echo "GraphQL: could not edit" >&2; exit 1; fi\n');
+  const second = start(failing);
+  landOn(failing, "deliver/board", "badge.rs");
+
+  const failed = step(failing, second.run, "finish", { report: noReport });
+
+  assert.deepEqual([failed.ok, failed.pr, failed.pushed, failed.why], [true, null, true, "GraphQL: could not edit"]);
+  assert.equal(secondLine(failed.report), "No pull request: GraphQL: could not edit. The work is on the branch deliver/board.");
+});
+
+// deliver/<slug> at a tip X that HEAD does not hold, and HEAD at a commit X lacks.
+function divergedBranch(dirs) {
+  const old = landOn(dirs, "deliver/board", "badge.rs");
+  const head = commit(dirs.repo, "other.rs");
+  return { old, head };
+}
+const mergedPr = (oid) => ({ number: 2, url: "https://example.com/pr/2", head: "deliver/board", base: "main", state: "merged", title: "board", headRefOid: oid, body: "" });
+
+test("repo-open starts deliver/<slug> again at HEAD, by a compare-and-swap from its tip, when they have diverged and gh lists a merged pull request whose head was that tip: it logs so, and .omni/restarted-<slug> keeps the old tip; start does the same, and a later restart keeps the oldest tip there", (t) => {
+  const dirs = scratch(t, [setupStory("US-1"), story("US-2")]);
+  withRemote(dirs);
+  const { run } = start(dirs);
+  dirs.edit((s) => { s.stories[0].status = "done"; });
+  const { old, head } = divergedBranch(dirs);
+  const gh = withGh(dirs, { prs: [mergedPr(old)] });
+
+  const body = step(dirs, run, "repo-open", {});
+
+  assert.deepEqual([body.ok, body.tip, sha(dirs, "refs/heads/deliver/board")], [true, head, head]);
+  assert.ok(body.log.includes(`deliver/board starts again at ${head.slice(0, 7)}: its pull request was merged`), body.log.join("\n"));
+  const restartedFile = (d) => join(d.repo, ".omni", "restarted-board");
+  assert.equal(readFileSync(restartedFile(dirs), "utf8").trim(), old);
+  assert.deepEqual(gh.calls(), [["pr", "list", "--head", "deliver/board", "--state", "merged", "--json", "headRefOid"]]);
+
+  const normal = scratch(t, [story("US-1")]);
+  withRemote(normal);
+  const branch = divergedBranch(normal);
+  withGh(normal, { prs: [mergedPr(branch.old)] });
+
+  const started = start(normal);
+
+  assert.deepEqual([started.ok, started.tip, started.restarted], [true, branch.head, undefined]);
+  assert.ok(started.log.includes(`deliver/board starts again at ${branch.head.slice(0, 7)}: its pull request was merged`), started.log.join("\n"));
+  assert.equal(readFileSync(restartedFile(normal), "utf8").trim(), branch.old);
+  step(normal, started.run, "finish", { report: noReport });
+  const later = { old: landOn(normal, "deliver/board", "count.rs"), head: commit(normal.repo, "later.rs") };
+  withGh(normal, { prs: [mergedPr(later.old)] });
+
+  const again = start(normal, { op: "start-later" });
+
+  assert.deepEqual([again.ok, again.tip], [true, later.head], again.error);
+  assert.equal(readFileSync(restartedFile(normal), "utf8").trim(), branch.old);
+});
+
+test("repo-open and start refuse deliver/<slug> and HEAD that have diverged when no merged pull request has the branch's tip, or gh is missing: the branch stays", (t) => {
+  for (const [what, prepare] of [
+    ["another tip merged", (dirs) => withGh(dirs, { prs: [mergedPr("0".repeat(40)), { ...mergedPr(null), state: "open" }] })],
+    ["gh that fails", (dirs) => withGh(dirs, { fail: "HTTP 502" })],
+    ["no gh", (dirs) => {
+      symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(dirs.root, "bin", "git"));
+      dirs.env.PATH = join(dirs.root, "bin");
+    }],
+  ]) {
+    const dirs = scratch(t, [setupStory("US-1"), story("US-2")]);
+    withRemote(dirs);
+    const { run } = start(dirs);
+    dirs.edit((s) => { s.stories[0].status = "done"; });
+    const { old } = divergedBranch(dirs);
+    prepare(dirs);
+
+    const body = step(dirs, run, "repo-open", {});
+
+    assert.deepEqual([body.ok, body.retry], [false, false], what);
+    assert.match(body.error, /^deliver\/board and HEAD have diverged/, what);
+    assert.equal(sha(dirs, "refs/heads/deliver/board"), old, what);
+    dirs.edit((s) => { s.stories[0].status = "backlog"; });
+    step(dirs, run, "finish", { report: noReport });
+    dirs.edit((s) => { s.stories[0].status = "done"; });
+    const again = start(dirs, { op: "start-again" });
+    assert.deepEqual([again.ok, again.error], [false, body.error], what);
+  }
+});
+
+test("after a restart finish pushes with a lease on the merged tip: a remote branch still there moves; one deleted after the merge is made again; one that moved elsewhere is a failed push and stays", (t) => {
+  const cases = [
+    ["at the merged tip", () => {}, true],
+    ["deleted", (dirs) => git(dirs.repo, "push", "-q", "origin", ":refs/heads/deliver/board"), true],
+    ["moved", (dirs) => git(dirs.repo, "push", "-q", "-f", "origin", "main:refs/heads/deliver/board"), false],
+  ];
+  for (const [what, remoteChange, pushed] of cases) {
+    const dirs = scratch(t, [story("US-1")]);
+    const remote = withRemote(dirs);
+    const { old } = divergedBranch(dirs);
+    git(dirs.repo, "push", "-q", "origin", "deliver/board");
+    remoteChange(dirs);
+    const before = remote.at("refs/heads/deliver/board");
+    const gh = withGh(dirs, { prs: [mergedPr(old)] });
+    const { run } = start(dirs);
+    const tip = landOn(dirs, "deliver/board", "count.rs");
+
+    const body = step(dirs, run, "finish", { report: noReport });
+
+    assert.equal(body.pushed, pushed, `${what}: ${body.why}`);
+    if (pushed) {
+      assert.deepEqual([remote.at("refs/heads/deliver/board"), body.pr, gh.read().prs.filter((pr) => pr.state === "open").length], [tip, { url: "https://example.com/pr/3", created: true }, 1], what);
+    } else {
+      assert.deepEqual([remote.at("refs/heads/deliver/board"), body.pr], [before, null], what);
+      assert.equal(body.why, "! [rejected] deliver/board -> deliver/board (stale info)", what);
+    }
+  }
+});
+
+test("every gh call names the repository of the remote's URL when it has the shape of a hosted one: finish's list and create, and start's look for a merged pull request; a local path names none", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  git(dirs.repo, "remote", "set-url", "origin", "https://example.com/acme/app.git");
+  git(dirs.repo, "config", "remote.origin.pushurl", remote.bare);
+  const gh = withGh(dirs);
+  const { run } = start(dirs);
+  const tip = landOn(dirs, "deliver/board", "badge.rs");
+
+  const body = step(dirs, run, "finish", { report: noReport });
+
+  assert.deepEqual([body.pushed, body.why, remote.at("refs/heads/deliver/board")], [true, null, tip]);
+  assert.deepEqual(gh.calls().map((argv) => [argv[1], argv.slice(-2)]), [["list", ["--repo", "example.com/acme/app"]], ["create", ["--repo", "example.com/acme/app"]]]);
+
+  for (const [url, repo] of [["git@example.com:acme/app.git", ["--repo", "example.com/acme/app"]], ["ssh://git@example.com/acme/app", ["--repo", "example.com/acme/app"]], [null, []]]) {
+    const restarting = scratch(t, [story("US-1")]);
+    const bare = withRemote(restarting).bare;
+    if (url) {
+      git(restarting.repo, "remote", "set-url", "origin", url);
+      git(restarting.repo, "config", "remote.origin.pushurl", bare);
+    }
+    const { old } = divergedBranch(restarting);
+    const calls = withGh(restarting, { prs: [mergedPr(old)] });
+
+    const started = start(restarting);
+
+    assert.equal(started.ok, true, started.error);
+    assert.deepEqual(calls.calls(), [["pr", "list", "--head", "deliver/board", "--state", "merged", "--json", "headRefOid", ...repo]], url);
+  }
+});
+
+test("a restart's lease outlives the run that made it: run 1 starts deliver/<slug> again and lands nothing, run 2 lands a task and its push moves the remote branch from the merged tip and removes .omni/restarted-<slug>", (t) => {
+  const dirs = scratch(t, [story("US-1")]);
+  const remote = withRemote(dirs);
+  const { old } = divergedBranch(dirs);
+  git(dirs.repo, "push", "-q", "origin", "deliver/board");
+  withGh(dirs, { prs: [mergedPr(old)] });
+  const first = start(dirs);
+
+  const nothing = step(dirs, first.run, "finish", { report: noReport });
+
+  assert.deepEqual([nothing.pushed, remote.at("refs/heads/deliver/board")], [false, old], nothing.why);
+  const second = start(dirs, { op: "start-2" });
+  assert.equal(second.ok, true, second.error);
+  const tip = landOn(dirs, "deliver/board", "count.rs");
+
+  const body = step(dirs, second.run, "finish", { report: noReport });
+
+  assert.equal(body.pushed, true, body.why);
+  assert.equal(remote.at("refs/heads/deliver/board"), tip);
+  assert.equal(existsSync(join(dirs.repo, ".omni", "restarted-board")), false);
+});
+
+test("a pull request's body longer than 60,000 characters goes without its Timings; still longer, it is cut so that it and a last line naming the Run thread are 60,000 characters at most, and that line comes only when text was cut", () => {
+  const timings = `\n\n## Timings\n${"t".repeat(5000)}\n`;
+  const fits = `# f: build report of r\n\n${"a".repeat(58000)}${timings}`;
+  const without = `# f: build report of r\n\n${"a".repeat(58000)}\n`;
+  const long = `# f: build report of r\n\n${"a".repeat(70000)}${timings}`;
+
+  assert.equal(prBody(without, "r"), without);
+  assert.equal(prBody(fits, "r"), without);
+  const cutOne = prBody(long, "r");
+  assert.ok(cutOne.length <= 60000, String(cutOne.length));
+  assert.ok(cutOne.endsWith("\n\nThe full report is on the Run thread of r in OmniState.\n"), cutOne.slice(-100));
+  assert.ok(cutOne.startsWith("# f: build report of r\n\naaa"));
+  assert.ok(!cutOne.includes("## Timings"));
 });
 
 // ---- the size of what a courier carries back ----------------------------------------------
@@ -2912,7 +3801,7 @@ test("no output the script reads passes 2,000 characters, however long a story's
   go("rework", { key: "US-2" });
   go("release", { key: "US-2" });
   go("thread-open", { key: "US-2", title: huge("US-2: a question", 5), body: huge("the options", 200), job: id });
-  go("exhaust", { key: "US-2" });
+  go("park", { key: "US-2" });
   go("unblock", { key: "US-2" });
   // The batches the script sends carry several bodies in one answer.
   const together = (...list) => sized(stepArgv(dirs, run, "batch", { opId: `batch-${++ops}`, steps: list.map(([name, fields = {}]) => ({ name, fields })) }));

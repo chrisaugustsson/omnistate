@@ -75,22 +75,50 @@
 //   reports them.
 //
 // The steps, each with its payload and the fields its body has besides ok and
-// received:
-// - start, from flags: run, root, branch, tip, lane, thread, checks, stories
-//   ({keys, counts by status, blocked}), released, log
-// - checks-set {checks: {name: command}}: checks, all six
+// received, in the order STEPS gives them after start:
+// - start, from flags: run, root, branch, tip, lane, thread (the Run thread),
+//   tree (whether the feature has a behaviour tree), how ({operations,
+//   tables}: the IDs of the feature's docs Operations and Tables, or null),
+//   checks, base (the branch checked out in the root, or null), setupTask
+//   (the key of the task "Set up the project" while it is not done or
+//   cancelled, else null), stories ({keys, counts by status, blocked}),
+//   released, log and setup (the ID of the project-level architecture doc
+//   titled Setup, else null). deliver/<slug> is created at HEAD, moved
+//   forward to it, kept ahead of it, or started again at HEAD where the two
+//   have diverged and gh lists a merged pull request whose head was its tip;
+//   else start refuses. A setup run, one with a setupTask, does nothing with
+//   git: branch, tip and lane are null and the checks empty, and the root may
+//   be a folder with no repository. A folder without one and no setup task is
+//   refused, with the reason
 // - list {}: waiting (the implemented and reviewed stories not blocked,
-//   each with key and status), pickable (those with a
-//   worktree from an earlier attempt first, then in the board's order:
-//   priority, then how many stories each one unblocks, then number)
+//   each with key and status), pickable (those with a worktree from an
+//   earlier attempt first, then in the board's order: priority, then how
+//   many stories each one unblocks, then number)
 // - context {key}: key, status, blocked, attempt, clarified (whether the
 //   clarity cache has a hash of the story; a story version the old runner
 //   kept there is not a check of this workflow's), criteria (how many),
 //   obligations (the indexes of the criteria that are test obligations),
-//   findings ({open, uncounted, earlier}: how many open findings count an
-//   attempt, how many used none, how many came before the human's latest
-//   answer) and questions (the fnv1a of each decision's question). No text
-//   of the story: every agent reads it with omni story read
+//   writeBack (the indexes of those that are the write-back), findings
+//   ({open, uncounted, earlier}: how many open findings count an attempt,
+//   how many used none, how many came before the human's latest answer),
+//   nodes (the node IDs of the story's Covers lines), boards ([{doc, board}],
+//   the design boards the story links, at most 20) and questions (the fnv1a
+//   of each decision's question). No text of the story: every agent reads it
+//   with omni story read
+// - design-export {}: dir, boards (how many PNG files). Runs omni export once
+//   per run, into <root>/.omni/runs/<run>/design, whose manifest.json gives
+//   each board's files; a failure is not remembered, and is refused with
+//   retry false
+// - setup-check {key}: key, outcome: ready with head and checks (stored in
+//   run.json under those checks-set gave), or not_ready with reason; whether
+//   the setup task left a repository with a commit, nothing uncommitted
+//   outside .omni/ and a fast check
+// - setup-land {key}: key, head, files (how many paths of git ls-files it
+//   recorded, at most 200); the setup task's criteria ticked, its findings
+//   resolved, and done
+// - repo-open {}: branch, tip, lane, checks, base, setup (the ID of the
+//   project-level Setup doc, or null), log; what start does with git in a
+//   run without a setup task, once the setup task has landed
 // - claim {key, stage}, rework {key}, release {key}, move {key, to}, block
 //   {key} and unblock {key}: key, status, blocked, holder. rework moves a
 //   story sent back to the backlog and claims it for implementing, in one
@@ -99,16 +127,31 @@
 //   attempt. A finding that names a job gets the end of its log
 // - decision {key, question, choice, by}: key, recorded (false when the
 //   story has that question with that choice already)
-// - obligations {key, indexes}: key, recorded (how many it wrote); the test
-//   obligation decision of each criterion by index from 0, written with the
+// - obligations {key, indexes, kind?}: key, recorded (how many it wrote); the
+//   test obligation decision of each criterion by index from 0, or with kind
+//   write-back (test when left out) its write-back decision, written with the
 //   criterion's text from the board. An index the story has no criterion for
 //   is refused, and nothing is written
 // - files {key}: key, files (how many)
 // - thread-open {title, body, key?, job?}: thread, and key when given. A
-//   body that names a job gets the end of its log
-// - exhaust {key}: thread, key, attempt; the thread of a story that used its
-//   last attempt, with the findings of every attempt, from the board
-// - unblock-pass {}: unblocked, log (at most 20 lines, then a count)
+//   body that names a job gets the end of its log. Only a question in a
+//   feature without a behaviour tree opens one
+// - question-ask {key, question, node?, recommendation?, options?, asker,
+//   block?}: key, question (the question's ID), node (its node_id); asks on
+//   the payload's node, else the task's first Covers node, else `.`,
+//   whichever the tree has first, records the decision "Asked on the
+//   behaviour tree: question <id> on node <node>. The task waits for the
+//   answer.", and blocks the task when block is true
+// - park {key}: key, attempt, removed; the task that failed its third try
+//   goes to the backlog, not blocked, its findings open, and its worktree
+//   and branch are removed (removed: true when both are gone, also when it
+//   never had them); no thread
+// - unblock-pass {}: unblocked, log (at most 20 lines, then a count). A
+//   blocked task whose tree questions are all answered and whose linked
+//   threads all have a conclusion gets each answer as a decision, its open
+//   findings resolved, and is unblocked
+// - retry-pass {}: retried (the keys of the tasks in the backlog, not blocked,
+//   with an open finding marked [attempt 3], whose open findings it resolved)
 // - worktree {key}: key, path, branch, created (true when the story starts on
 //   a branch of its own just cut, false when its branch has earlier work);
 //   for a worktree found with another branch or a detached HEAD checked out,
@@ -119,6 +162,7 @@
 // - sleep {seconds}: seconds
 // - clarity-pending {}: keys
 // - clarity-record {key}: key, hash
+// - checks-set {checks: {name: command}}: checks, all six
 // - job-start {name, key?, cmd, cwd, limitMinutes?, waitSeconds?}: id, log.
 //   The command runs with OMNI_RUN set to the run, and OMNI_STORY to the key
 //   when given. With waitSeconds it then waits for the job as job-wait does,
@@ -155,8 +199,15 @@
 // - tests-drop {key}: key, removed; that worktree and its branch gone, with
 //   the tests in them
 // - finish {report: {outcomes: [{key, outcome, detail?}], council: {settled,
-//   majority, asked}, journeys?: [line], notes?: [line]}}: thread, posted, report,
-//   stopped. The blocked stories and their threads come from the board
+//   majority, asked}, journeys?: [line], notes?: [line], uncompared?: [{key,
+//   boards, reason}]}}: thread, posted, report, stopped, pr ({url, created}
+//   or null), pushed and why (why there is no pull request, else null). The
+//   only step that pushes: it pushes deliver/<slug> to the remote of the base
+//   branch and opens the pull request into the base, or updates the open
+//   one, with the report as its text, whose second line names it or says why
+//   there is none; it merges nothing. The tasks that wait, failed or were
+//   not started, and the questions and threads they wait on, come from the
+//   board
 // Outputs stay small, since a courier repeats every byte: whatever a story
 // holds, no output the script reads passes about 2,000 characters. No output
 // carries story content (text, criteria, decisions, findings), doc text or a
@@ -359,6 +410,11 @@ const recordedOp = (root, runId, step, opId) => {
 // run.json holds the run: its feature, root, thread, checks, the tip of
 // deliver/<slug> at its start, and the stories it landed.
 const runPathOf = (root, runId) => path.join(runDirOf(root, runId), 'run.json')
+// .omni/restarted-<slug> holds the old tip of a deliver/<slug> whose pull
+// request was merged and that a run started again at HEAD. finish's push takes
+// it as its lease, in whichever run pushes next, and removes it once a push of
+// the branch went through: until then the remote still has that tip.
+const restartedPathOf = (root, feature) => path.join(root, '.omni', `restarted-${slugOf(feature)}`)
 const updateRun = (root, runId, change) => withLock(runPathOf(root, runId), () => {
   const info = change(readJson(runPathOf(root, runId)) || {})
   writeJson(runPathOf(root, runId), info)
@@ -883,9 +939,32 @@ const findingsOf = (story) => {
 // A story implemented before clarity ran has none, so for it a test must be
 // the thing the criterion delivers.
 export const TEST_OBLIGATION = 'treated as a test obligation: the lane\'s test author owns it, and the verifier skips it'
+// A criterion that asks that Operations and Tables say what the landed code
+// does is the write-back, which the docs agent does once the task has landed:
+// recorded and read the same way, with this choice. A story clarity has not
+// checked has it where a criterion says so in the words omni-stories gives it.
+export const WRITE_BACK = 'treated as the write-back: the workflow\'s docs agent does it once the task has landed, and the reviewer and the verifier skip it'
+export const writeBackQuestion = (criterion) => `Is "${criterion}" the write-back?`
+const SAYS_WRITE_BACK = 'say what the landed code does'
+const ASKED_ID = /^Asked on the behaviour tree: question (\S+) on node /
+export const ASKED = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`
+// The design boards a story links: its links to a doc of kind design that
+// name a board, as {doc, board}, each pair once, the first 20 in link order.
+const boardsOf = (b, story) => {
+  const designs = new Set((JSON.parse(b.omni(['doc', 'list', '--json'])).docs || []).filter((d) => d.kind === 'design').map((d) => d.id))
+  const pairs = []
+  for (const l of story.links || []) {
+    if (!l.doc_id || !l.node_id || !designs.has(l.doc_id)) continue
+    if (!pairs.some((x) => x.doc === l.doc_id && x.board === l.node_id)) pairs.push({ doc: l.doc_id, board: l.node_id })
+  }
+  return pairs.slice(0, LISTED)
+}
+// The node IDs of a task's Covers lines, in order: `- <node id> v<version> \`<path>\``.
+const nodesOf = (story) => [...String(story.text || '').matchAll(/^\s*- (\S+) v\d+ `/gm)].map((m) => m[1])
 export const testQuestion = (criterion) => `Is "${criterion}" behaviour or a test?`
 const NAMES_TEST = /^(an?|the)\s+(unit|integration|e2e|regression)\s+tests?\b|^(an?|the)\s+tests?\s+(for|that|of)\b|\b(add|write)s?\b[^.]{0,30}\btests?\b|\btests?\s+(pass|cover)/i
 const obligationsOf = (story, clarified) => (story.criteria || []).map(criterionOf).flatMap((c, i) => ((story.decisions || []).some((d) => d.question === testQuestion(c.text) && d.choice === TEST_OBLIGATION) || (!clarified && NAMES_TEST.test(c.text)) ? [i] : []))
+const writeBackOf = (story, clarified) => (story.criteria || []).map(criterionOf).flatMap((c, i) => ((story.decisions || []).some((d) => d.question === writeBackQuestion(c.text) && d.choice === WRITE_BACK) || (!clarified && c.text.includes(SAYS_WRITE_BACK)) ? [i] : []))
 // A finding's text without the attempt numbers it starts with: an uncounted
 // finding must never count as an attempt, and a counted one gets only its own.
 const unnumbered = (text) => String(text).replace(/^(?:\[attempt \d+\] ?)+/, '')
@@ -1010,10 +1089,43 @@ const timingTable = (records, jobs) => {
   const head = ['Story', 'Total', ...STAGES, ...written, 'rebase', ...names]
   return [`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows, '', 'A time with (n) after it adds up n of them: claims of the stage, rebases, or runs of the job.'].join('\n')
 }
-// The report, modelled on the one omni-deliver.js posts: what the script knows
-// (the outcomes, the council's counts, the journeys, the notes) and what the
-// helper does (the commits landed, the blocked stories and their threads, the
-// human checks left, the timings), from the board.
+// A text cut to n characters at most, ending in … when it was cut.
+const cut = (text, n) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
+// What the report says of a blocked task, one line per open question asked
+// on the tree and per open linked thread; a task with neither says blocked,
+// and why when a question of it could not be read. A thread that cannot be
+// read counts as open.
+const waitsOf = (b, story) => {
+  const lines = []
+  let unreadable = null
+  for (const d of story.decisions || []) {
+    const m = String(d.choice).match(ASKED_ID)
+    if (!m) continue
+    let q
+    try {
+      q = JSON.parse(b.omni(['behaviour', 'question', m[1], '--json']))
+      q = q.question || q
+    } catch (e) {
+      unreadable = unreadable || `the question ${m[1]} could not be read: ${cut(failure(e).split('\n')[0], 300)}`
+      continue
+    }
+    if (q.state === 'answered' && q.answer) continue
+    lines.push(`"${d.question}" on ${q.node_path ?? q.node_id}${q.recommendation ? ` (recommended: ${q.recommendation})` : ''}`)
+  }
+  for (const l of story.links || []) {
+    if (!l.thread_id) continue
+    let open = true
+    try { open = !readThread(b, l.thread_id).conclusion } catch {}
+    if (open) lines.push(`thread ${l.thread_id}`)
+  }
+  return lines.length ? lines : [`blocked${unreadable ? `: ${unreadable}` : ''}`]
+}
+// The report, the text of the feature's pull request: what the script knows
+// (the outcomes, the council's counts, the journeys, the notes, the boards
+// not compared) and what the helper does (the commits landed, the tasks that
+// wait or failed, the human checks left, the timings), from the board. Each
+// task is in one of Built, Waiting on a question, Failed, Waiting for
+// another task and Not started at most, the first that holds.
 const reportText = (b, info, report) => {
   const list = (v) => (Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : [])
   const lines = (items) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- none')
@@ -1025,25 +1137,185 @@ const reportText = (b, info, report) => {
   const titles = new Map(stories.map((s) => [s.key, s.title]))
   const named = (key) => (titles.get(key) ? `${key} ${titles.get(key)}` : String(key))
   const landed = list(info.landed)
-  const commitsOf = (l) => (tryRun('git', ['-C', b.root, 'log', '--reverse', '--format=%h %s', `${l.base}..${l.final}`]) || '').split('\n').filter(Boolean)
+  // The setup task's entry has no base: its commits are those up to its head.
+  const commitsOf = (l) => (tryRun('git', ['-C', b.root, 'log', '--reverse', '--format=%h %s', l.base ? `${l.base}..${l.final}` : l.final]) || '').split('\n').filter(Boolean)
   const council = report.council && typeof report.council === 'object' ? report.council : {}
   const count = (n) => (Number.isInteger(n) && n > 0 ? n : 0)
   const settled = count(council.settled)
   const checks = stories.flatMap((s) => (s.criteria || []).filter((c) => c && c.pending).map((c) => `${s.key}: ${criterionOf(c).text}`))
   const jobs = jobsOf(b.root, b.runId).map((job) => ({ ...job, result: readJson(job.files.result) }))
   const began = Date.parse(info.started)
+  const open = (s) => s.status !== 'done' && s.status !== 'cancelled'
+  const listed = new Set(landed.map((l) => l.key))
+  const take = (s) => !listed.has(s.key) && listed.add(s.key)
+  const asking = stories.filter((s) => s.blocked && open(s) && take(s))
+  const waiting = asking.flatMap((s) => waitsOf(b, s).map((w) => `${named(s.key)}: ${w}`))
+  const parked = stories.filter((s) => s.status === 'backlog' && !s.blocked && !listed.has(s.key) && (s.findings || []).some((f) => !f.resolved && Number((String(f.text).match(ATTEMPT) || [])[1]) === 3) && take(s))
+  const failedLines = parked.map((s) => {
+    const { findings } = findingsOf(s)
+    const last = findings.length ? findings[findings.length - 1].findings : []
+    return [`${named(s.key)}: parked after 3 tries`, ...last.map((f) => `  - ${cut(f.text.replace(/\s+/g, ' ').trim(), 300)}`)].join('\n')
+  })
+  for (const o of list(report.outcomes)) {
+    if (!o.key || o.outcome !== 'failed' || listed.has(o.key)) continue
+    listed.add(o.key)
+    failedLines.push(`${named(o.key)}: failed: ${cut((String(o.detail || '').split('\n').find((l) => l.trim()) || 'no error given').trim(), 300)}`)
+  }
+  // A backlog task held by one that waits or failed, also through a chain:
+  // its line gives every key it waits for that way.
+  const stuck = new Set([...asking.map((s) => s.key), ...parked.map((s) => s.key), ...list(report.outcomes).filter((o) => o.outcome === 'failed').map((o) => o.key)])
+  const byKey = new Map(stories.map((s) => [s.key, s]))
+  const held = []
+  for (let grew = true; grew;) {
+    grew = false
+    for (const s of stories) {
+      if (s.status !== 'backlog' || listed.has(s.key) || !(s.blocked_by || []).some((k) => stuck.has(k))) continue
+      take(s)
+      stuck.add(s.key)
+      held.push(s)
+      grew = true
+    }
+  }
+  const heldLines = stories.filter((s) => held.includes(s)).map((s) => {
+    const keys = []
+    const walk = (k) => {
+      for (const d of (byKey.get(k) || {}).blocked_by || []) {
+        if (!stuck.has(d) || keys.includes(d) || d === s.key) continue
+        keys.push(d)
+        walk(d)
+      }
+    }
+    walk(s.key)
+    return `${named(s.key)}: waits for ${keys.join(', ')}`
+  })
+  const notStarted = stories.filter((s) => s.status === 'backlog' && take(s)).map((s) => named(s.key))
+  const uncompared = list(report.uncompared).filter((u) => u.key).map((u) => `${named(u.key)}: ${list(u.boards).join(', ')}${u.reason ? `: ${String(u.reason).slice(0, 300)}` : ''}`)
   return `${[
-    `# Run ${b.runId} on ${b.feature}`,
+    `# ${b.feature}: build report of ${b.runId}`,
     ...list(report.notes).map(String),
-    `## Landed on ${b.branch}\n${lines(landed.map((l) => `${named(l.key)}${l.tests ? ', its tests' : ''}: ${commitsOf(l).join('; ') || 'no commits'}`))}${landed.length ? `\n\nBring them into your branch with \`git merge --ff-only ${b.branch}\`.` : ''}`,
-    `## Blocked\n${unread || lines(stories.filter((s) => s.blocked && s.status !== 'done' && s.status !== 'cancelled').map((s) => `${named(s.key)}: thread ${(s.links || []).map((l) => l.thread_id).filter(Boolean).join(', ') || '(none linked)'}`))}`,
-    `## Outcomes\n${lines(list(report.outcomes).filter((o) => o.key).map((o) => `${named(o.key)}: ${o.outcome}${o.detail ? `: ${o.detail}` : ''}`))}`,
-    `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.majority)} of them by a majority of 2, ${count(council.asked)} sent to the human`,
+    `## Built\n${lines(landed.map((l) => `${named(l.key)}${l.tests ? ', its tests' : ''}: ${commitsOf(l).join('; ') || 'no commits'}`))}`,
+    `## Waiting on a question\n${unread || `${lines(waiting)}${waiting.length ? '\n\nAnswer on the feature\'s Behaviour screen; the next build takes these tasks up.' : ''}`}`,
+    `## Failed\n${unread ? [unread, ...failedLines.map((l) => `- ${l}`)].join('\n') : lines(failedLines)}`,
+    `## Waiting for another task\n${unread || lines(heldLines)}`,
+    `## Not started\n${unread || lines(notStarted)}`,
+    `## Not compared with its board\n${lines(uncompared)}`,
     `## Pending human checks\n${unread || lines(checks)}`,
-    ...(Array.isArray(report.journeys) ? [`## Journeys\n${lines(list(report.journeys).map(String))}`] : []),
+    `## Council\n- ${settled} question${settled === 1 ? '' : 's'} settled by the council, ${count(council.majority)} of them by a majority of 2, ${count(council.asked)} sent to the human`,
+    `## Journeys\n${lines(list(report.journeys).map(String))}`,
     `## Timings\n${Number.isFinite(began) ? `The run took ${took(Date.now() - began)}.\n\n` : ''}${timingTable(timingsOf(b.root, b.runId), jobs)}`,
   ].join('\n\n')}\n`
 }
+
+// ---- the pull request ------------------------------------------------------
+// finish is the only step that pushes: the feature's branch to the remote of
+// the base branch, the one checked out in the root, and one pull request from
+// it into the base, with the report as its text. It merges nothing.
+const PUSH_MS = 5 * 60000
+const PR_MAX = 60000
+// The first non-empty line a failed command printed on standard error, else
+// the first line of the error's message.
+const firstLine = (e) => {
+  const said = String((e && e.stderr) || '').split('\n').map((l) => l.trim()).find(Boolean)
+  return said || String((e && e.message) || e).split('\n')[0].trim()
+}
+// Why a push failed: the line in which git says a ref was rejected, else its
+// first fatal or error line, else the first line. A rejected push starts with
+// "To <remote>", which says nothing.
+const pushLine = (e) => {
+  const lines = String((e && e.stderr) || '').split('\n').map((l) => l.trim().replace(/\s+/g, ' ')).filter(Boolean)
+  return lines.find((l) => l.startsWith('! ')) || lines.find((l) => /^(fatal|error):/.test(l)) || firstLine(e)
+}
+// The pull request's body: the report, without its Timings when it is too
+// long, then cut, with a last line that says where the whole of it is.
+export const prBody = (text, runId) => {
+  if (text.length <= PR_MAX) return text
+  const short = `${text.split('\n\n## Timings\n')[0].replace(/\n*$/, '')}\n`
+  if (short.length <= PR_MAX) return short
+  const tail = `The full report is on the Run thread of ${runId} in OmniState.\n`
+  return `${short.slice(0, PR_MAX - tail.length - 2)}\n\n${tail}`
+}
+// The repository gh works on: --repo <host>/<owner>/<repo> when the URL of
+// the remote names a hosted repository, else nothing, and gh picks one
+// itself. In a checkout with more remotes gh could pick another repository
+// than the one the branch goes to.
+const ghRepo = (url) => {
+  const m = /^https:\/\/(?:[^@/]+@)?([^/@]+)\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url) ||
+    /^[^@/:]+@([^/:]+):([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url) ||
+    /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url)
+  return m ? ['--repo', `${m[1]}/${m[2]}/${m[3]}`] : []
+}
+const ghRepoOf = (root, remote) => ghRepo((tryRun('git', ['-C', root, 'remote', 'get-url', remote]) || '').trim())
+// Why there is no pull request to push for, the first reason that holds, or
+// the remote and base, with the open pull request when there is one. Only gh
+// pr list reaches the network: the other reasons come from local refs.
+const prPlan = (b, info) => {
+  if (!info.tip) return { why: 'the feature has no branch yet' }
+  const base = baseOf(b.root)
+  if (!base) return { why: 'the checkout has no branch checked out' }
+  const remote = (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim() || 'origin'
+  if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return { why: 'the checkout has no remote' }
+  if (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${base}`]) === null) return { why: `${base} is not on ${remote}` }
+  const repo = ghRepoOf(b.root, remote)
+  let open
+  try {
+    open = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'open', '--json', 'number,url', ...repo], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { why: 'the gh command is not installed' }
+    return { why: `gh cannot list pull requests on ${remote}: ${firstLine(e)}` }
+  }
+  const ahead = (tryRun('git', ['-C', b.root, 'rev-list', '--count', `refs/heads/${base}..refs/heads/${b.branch}`]) || '0').trim()
+  if (ahead === '0') return { why: `${b.branch} holds nothing that ${base} lacks` }
+  return { base, remote, repo, open: Array.isArray(open) && open.length ? open[0] : null }
+}
+// Pushes the feature's branch and opens its pull request, or says why not:
+// {pr: {url, created} | null, pushed, why}. A failure is the answer's why,
+// never a throw.
+const pullRequest = (b, info, body) => {
+  let plan
+  try {
+    plan = prPlan(b, info)
+  } catch (e) {
+    return { pr: null, pushed: false, why: firstLine(e) }
+  }
+  if (plan.why) return { pr: null, pushed: false, why: plan.why }
+  const ref = `refs/heads/${b.branch}`
+  // A branch started again after its pull request was merged moves the
+  // remote branch only while it is still at the merged tip; when the remote
+  // has no such branch any more, git rejects that lease as stale, and the
+  // push expects no branch there instead.
+  const leaseFile = restartedPathOf(b.root, b.feature)
+  const restarted = (readText(leaseFile) || '').trim()
+  // Never tags, whatever the user's push.followTags says.
+  const push = (lease) => run('git', ['-C', b.root, 'push', '--no-follow-tags', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+  const pushFailed = (e) => ({ pr: null, pushed: false, why: e && e.timedOut ? 'the push ran past 5 minutes' : pushLine(e) })
+  try {
+    push(restarted || undefined)
+  } catch (e) {
+    if (!(restarted && !e.timedOut && /\(stale info\)/.test(String(e.stderr || '')))) return pushFailed(e)
+    try {
+      push('')
+    } catch {
+      return pushFailed(e)
+    }
+  }
+  fs.rmSync(leaseFile, { force: true })
+  const file = path.join(runDirOf(b.root, b.runId), 'pull-request.md')
+  fs.writeFileSync(file, prBody(body, b.runId))
+  const env = { ...process.env, GH_PROMPT_DISABLED: '1' }
+  try {
+    if (plan.open) {
+      run('gh', ['pr', 'edit', String(plan.open.number), '--body-file', file, ...plan.repo], { cwd: b.root, env })
+      return { pr: { url: plan.open.url, created: false }, pushed: true, why: null }
+    }
+    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file, ...plan.repo], { cwd: b.root, env })
+    const url = out.trim().split('\n').pop().trim()
+    return { pr: { url, created: true }, pushed: true, why: null }
+  } catch (e) {
+    return { pr: null, pushed: true, why: firstLine(e) }
+  }
+}
+// The report's second line: the pull request, or why there is none.
+const prLine = (b, { pr, why }) => (pr ? `Pull request: ${pr.url}` : why === 'the feature has no branch yet' ? `No pull request: ${why}.` : `No pull request: ${why}. The work is on the branch ${b.branch}.`)
 
 // A thread on the feature with one post, linked from the story and blocking
 // it when a key is given. A repeat uses the thread the first try opened, and
@@ -1107,10 +1379,120 @@ const STEPS = {
       clarified,
       criteria: (story.criteria || []).length,
       obligations: obligationsOf(story, clarified),
+      writeBack: writeBackOf(story, clarified),
       findings: { open: count(findings), uncounted: uncounted.length, earlier: count(earlier) },
+      nodes: nodesOf(story),
+      boards: boardsOf(b, story),
       questions: [...new Set((story.decisions || []).map((d) => fnv1a(String(d.question))))],
     }
   })(),
+
+  // The feature's boards as images, once per run. The files stay where omni
+  // export puts them: each board as <dir>/ui/<doc title as a slug>-<last 8
+  // characters of the doc ID>/<board name as a slug>-<board ID>.tags, with
+  // its .png beside it when the server gave a picture, and every board listed
+  // in <dir>/manifest.json, an entry of files with path (the .tags file,
+  // relative to <dir>), doc_id, board_id and board. Only a success is
+  // remembered; a failure is exported again by the next call.
+  'design-export': (b) => {
+    const dir = path.join(runDirOf(b.root, b.runId), 'design')
+    const done = path.join(runDirOf(b.root, b.runId), 'design-export.json')
+    const had = readJson(done)
+    if (had && had.dir === dir) return had
+    const refuse = (what) => ({ ok: false, error: `the design could not be exported: ${what}`, retry: false })
+    const said = (e) => String((e && e.stderr) || '').trim() || String((e && e.stdout) || '').trim() || `omni exited with code ${e && e.status}`
+    let linked
+    try {
+      linked = run('omni', ['link', '--json'], { cwd: b.root })
+    } catch (e) {
+      return refuse(said(e).slice(0, 300))
+    }
+    let project
+    try {
+      project = JSON.parse(linked).project_id
+    } catch {
+      return refuse('omni link printed no JSON')
+    }
+    if (!project) return refuse('omni link gives no project_id for this folder')
+    fs.rmSync(dir, { recursive: true, force: true })
+    try {
+      run('omni', ['export', '--project', String(project), '--feature', b.feature, '--out', dir], { cwd: b.root, timeout: 5 * 60000 })
+    } catch (e) {
+      if (e && e.timedOut) return refuse('omni export ran past 5 minutes')
+      return refuse(said(e).slice(0, 300))
+    }
+    let boards = 0
+    const walk = (d) => {
+      for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+        if (f.isDirectory()) walk(path.join(d, f.name))
+        else if (f.name.endsWith('.png')) boards++
+      }
+    }
+    if (isDir(path.join(dir, 'ui'))) walk(path.join(dir, 'ui'))
+    const body = { dir, boards }
+    writeJson(done, body)
+    return body
+  },
+
+  // Whether the setup task, built straight in the root, left a repository
+  // the other tasks can build on: the first reason that holds, else ready
+  // with the HEAD commit and the checks, which go into the run's run.json
+  // under those checks-set gave the run. Nothing under .omni/ counts as a
+  // change: the run's own files are there.
+  'setup-check': (b, p) => missing(p, 'key') || (() => {
+    const not = (reason) => ({ key: p.key, outcome: 'not_ready', reason })
+    if (!ownTree(b.root)) return not(`${b.root} is not a git repository`)
+    const head = (tryRun('git', ['-C', b.root, 'rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim()
+    if (!head) return not('the repository has no commit')
+    const dirty = changedFiles(b.root).filter((f) => f !== '.omni' && !f.startsWith('.omni/'))
+    if (dirty.length) return not(`uncommitted changes in ${dirty.length} files (${dirty.slice(0, 5).join(', ')})`)
+    let fresh = null
+    try { fresh = JSON.parse(b.omni(['checks', '--json'])) } catch {}
+    if (!fresh || typeof fresh.fast !== 'string' || !fresh.fast.trim()) return not('omni checks gives no fast command: add fast to the [checks] table of .omni.toml')
+    excludeOmni(b)
+    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, checks: checksOf(fresh, info.set) }))
+    return { key: p.key, outcome: 'ready', head, checks }
+  })(),
+
+  // The setup task, checked, is done: what the repository holds becomes its
+  // files (the first 200 paths), its criteria are ticked, a human check as
+  // pending, and its open findings resolved. A repeat writes only what the
+  // first try did not.
+  'setup-land': (b, p) => missing(p, 'key') || (() => {
+    const head = b.git(['rev-parse', 'HEAD']).trim()
+    const files = b.git(['-c', 'core.quotePath=false', 'ls-files', '-z']).split('\0').filter(Boolean).slice(0, 200)
+    const story = b.readStory(p.key)
+    const had = story.files_changed || []
+    if (files.length && (had.length !== files.length || had.some((f, i) => f !== files[i]))) b.write('files', p.key, files)
+    ;(story.criteria || []).forEach((c, i) => { if (!c.ticked) b.write('tick', p.key, ['--criterion', String(i), ...(criterionOf(c).human_check ? ['--pending'] : [])]) })
+    ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', p.key, ['--finding', String(i)]) })
+    if (story.status !== 'done') b.write('move', p.key, ['--to', 'done'])
+    // The report lists it under Built, with the commits up to its head.
+    updateRun(b.root, b.runId, (info) => ({ ...info, landed: [...(info.landed || []).filter((l) => l.key !== p.key || l.base !== null), { key: p.key, base: null, final: head }] }))
+    return { key: p.key, head, files: files.length }
+  })(),
+
+  // What start does with git in a run without a setup task, once the setup
+  // task has landed: deliver/<slug> at HEAD, the checks, the lane worktree.
+  // The checks go into run.json under those checks-set gave the run.
+  'repo-open': (b) => {
+    if (!ownTree(b.root)) return { ok: false, error: `${b.root} is not a git repository`, retry: false }
+    if (!hasRepo(b.root)) return { ok: false, error: `${b.root} has no commit to start the feature's branch from`, retry: false }
+    const log = []
+    const plan = repoPlan(b)
+    if (plan.ok === false) return { ...plan, retry: plan.retry === true }
+    let tip
+    try {
+      tip = branchAt(b, plan, log)
+    } catch (e) {
+      if (e.refused) return { ok: false, error: e.message, retry: false }
+      throw e
+    }
+    laneAtStart(b, tip)
+    dropDoneWorktrees(b, b.listStories(), log)
+    const { checks } = updateRun(b.root, b.runId, (info) => ({ ...info, tip, checks: checksOf(plan.checks, info.set) }))
+    return { branch: b.branch, tip, lane: b.lane, checks, base: baseOf(b.root), setup: setupDocOf(b), log }
+  },
 
   claim: stateWrite('claim', ['stage'], (p) => ['--stage', p.stage], (s, p, b) => s.status === p.stage && !!s.holder && s.holder.run === b.runId),
   // A story sent back for its next attempt, held where it failed: to the
@@ -1170,24 +1552,28 @@ const STEPS = {
     return { key: p.key, recorded: true }
   })(),
 
-  // Clarity's test obligations, by index: the question carries the
-  // criterion's text as the board has it, which obligationsOf matches. Every
-  // index is checked before the first write; one the story already has is
-  // not written again.
+  // Clarity's test obligations, or with kind write-back its write-back
+  // criteria, by index: the question carries the criterion's text as the
+  // board has it, which obligationsOf and writeBackOf match. Every index is
+  // checked before the first write; one the story already has is not written
+  // again.
   obligations: (b, p) => missing(p, 'key') || (() => {
     if (!Array.isArray(p.indexes)) return { ok: false, error: 'the payload needs indexes: [criterion index, ...]' }
+    const kind = p.kind === undefined ? 'test' : p.kind
+    if (kind !== 'test' && kind !== 'write-back') return { ok: false, error: `the payload's kind is test or write-back, not ${JSON.stringify(kind)}`, retry: false }
+    const [ask, choice] = kind === 'test' ? [testQuestion, TEST_OBLIGATION] : [writeBackQuestion, WRITE_BACK]
     const story = b.readStory(p.key)
     const criteria = (story.criteria || []).map(criterionOf)
     const wrong = p.indexes.filter((i) => !Number.isInteger(i) || i < 0 || i >= criteria.length)
     if (wrong.length) return { ok: false, error: `${p.key} has ${criteria.length} criteria, numbered from 0, so ${wrong.map((i) => JSON.stringify(i)).join(', ')} names none of them` }
     // Two criteria with the same text have one question: it is written once.
-    const asked = new Set((story.decisions || []).filter((d) => d.choice === TEST_OBLIGATION).map((d) => d.question))
+    const asked = new Set((story.decisions || []).filter((d) => d.choice === choice).map((d) => d.question))
     let recorded = 0
     for (const i of [...new Set(p.indexes)]) {
-      const question = testQuestion(criteria[i].text)
+      const question = ask(criteria[i].text)
       if (asked.has(question)) continue
       asked.add(question)
-      b.write('decision', p.key, ['--question', question, '--choice', TEST_OBLIGATION, '--by', 'agent'])
+      b.write('decision', p.key, ['--question', question, '--choice', choice, '--by', 'agent'])
       recorded++
     }
     return { key: p.key, recorded }
@@ -1213,23 +1599,57 @@ const STEPS = {
     return openThread(b, { key: p.key, title: p.title, body: tail ? `${p.body.replace(/\n+$/, '')}\n\n${tail}\n` : p.body }, marker, mark)
   })(),
 
-  // A story that used its last attempt: a thread with the findings of every
-  // attempt, whole, which the helper writes from the board, blocks it. The
-  // script names only the story: no courier carries the findings.
-  exhaust: (b, p, { marker, mark }) => missing(p, 'key') || (() => {
+  // A question on a behaviour tree node, and the task waits for the answer.
+  // The node is the first of the payload's node, the task's first Covers node
+  // and `.` that the tree has. The decision records the question's ID, so that
+  // the answer is found again. A repeat asks nothing the first try asked: the
+  // chosen node is marked before the ask, and a try cut off after the ask
+  // left its question on that node, with the same text, asked by this run.
+  'question-ask': (b, p, { marker, mark }) => missing(p, 'key', 'question') || (() => {
+    let id = marker && marker.question
+    if (!id) {
+      const asked = `${p.question} ${Array.isArray(p.options) && p.options.length ? `Options: ${p.options.map((o, i) => `${i + 1}. ${o}`).join(' ')} ` : ''}(Asked by the build of ${p.key}, ${p.asker}.)`
+      let node = marker && marker.node
+      if (node) {
+        const read = JSON.parse(b.omni(['behaviour', 'read', node, '--json']))
+        const same = (read.questions || []).filter((q) => q.question === asked && (!q.asked_by || !q.asked_by.run || q.asked_by.run === b.runId))
+        if (same.length) id = same[same.length - 1].id
+      } else {
+        let last = null
+        for (const c of [p.node, nodesOf(b.readStory(p.key))[0], '.']) {
+          if (!c) continue
+          try {
+            b.omni(['behaviour', 'read', c, '--json'])
+            node = c
+            break
+          } catch (e) { last = e }
+        }
+        if (!node) return { ok: false, error: `no node of the tree can be read: ${failure(last)}` }
+        mark({ node })
+      }
+      if (!id) id = b.omni(['behaviour', 'ask', node, asked, ...(p.recommendation ? ['--recommend', p.recommendation] : [])]).trim().split(/\s+/).pop()
+      mark({ question: id })
+    }
+    const parsed = JSON.parse(b.omni(['behaviour', 'question', id, '--json']))
+    const nodeId = (parsed.question || parsed).node_id
+    const choice = ASKED(id, nodeId)
+    if (!(b.readStory(p.key).decisions || []).some((d) => d.question === p.question && d.choice === choice)) b.write('decision', p.key, ['--question', p.question, '--choice', choice, '--by', 'agent'])
+    if (p.block === true && !b.readStory(p.key).blocked) b.write('block', p.key)
+    return { key: p.key, question: id, node: nodeId }
+  })(),
+
+  // A task that failed its third try is left in the backlog, not blocked,
+  // with its findings open, and its worktree and branch are removed: no
+  // thread, the next run retries it. A repeat does only what the first try
+  // did not.
+  park: (b, p) => missing(p, 'key') || (() => {
     const story = b.readStory(p.key)
-    const attempt = marker && Number.isInteger(marker.attempt) ? marker.attempt : attemptOf(story)
-    if (!marker || !Number.isInteger(marker.attempt)) mark({ attempt })
-    const { findings, uncounted, earlier } = findingsOf(story)
-    const line = (f) => `- [${f.stage}] ${f.text}${f.files.length ? ` (${f.files.join(', ')})` : ''}`
-    const groups = (list) => list.map((g) => `Attempt ${g.attempt}:\n${g.findings.map(line).join('\n')}`).join('\n\n')
-    const body = [
-      `The story failed ${attempt} attempts since the human's latest answer. The findings of every attempt:`,
-      groups(findings) || '(none)',
-      ...(uncounted.length ? [`Open findings that used no attempt:\n${uncounted.map(line).join('\n')}`] : []),
-      ...(earlier.length ? [`Before the latest answer:\n\n${groups(earlier)}`] : []),
-    ].join('\n\n')
-    return { ...openThread(b, { key: p.key, title: `${p.key}: still failing after ${attempt} attempts`, body: `${body}\n` }, marker, mark), attempt }
+    const attempt = attemptOf(story)
+    if (story.status !== 'backlog') b.write('move', p.key, ['--to', 'backlog'])
+    if (story.blocked) b.write('unblock', p.key, [])
+    // A root that is no repository of its own, as a setup task can leave it,
+    // has no worktree to remove, and git there would work in one around it.
+    return { key: p.key, attempt, removed: ownTree(b.root) ? removeWorktree(b, p.key, true) : true }
   })(),
 
   // A blocked story whose linked threads all have a conclusion gets each
@@ -1248,17 +1668,43 @@ const STEPS = {
     try {
       for (const story of b.listStories()) {
         let threads
+        const waits = []
         try {
           threads = threadsOf(b, story)
+          if (story.blocked && story.status !== 'done' && story.status !== 'cancelled') {
+            for (const d of story.decisions || []) {
+              const m = String(d.choice).match(ASKED_ID)
+              if (!m) continue
+              let q
+              try {
+                q = JSON.parse(b.omni(['behaviour', 'question', m[1], '--json']))
+                q = q.question || q
+              } catch (e) {
+                throw new Error(`the question ${m[1]} could not be read: ${failure(e)}`)
+              }
+              waits.push({ id: m[1], asked: d.question, q })
+            }
+          }
         } catch (e) {
           lines.push(`${story.key} stays blocked: ${e.message}`)
           continue
         }
-        if (!threads || threads.some((t) => !t.conclusion)) continue
+        if (!threads && waits.length === 0) continue
+        if (threads && threads.some((t) => !t.conclusion)) continue
+        const openQ = waits.find((w) => w.q.state !== 'answered' || !w.q.answer)
+        if (openQ) {
+          lines.push(`${story.key} stays blocked: the question ${openQ.id} is open`)
+          continue
+        }
         const recorded = (story.decisions || []).filter((d) => d.by === 'human')
-        for (const t of threads) {
+        for (const t of threads || []) {
           if (recorded.some((d) => d.question === t.question && d.choice === t.conclusion)) continue
           b.write('decision', story.key, ['--question', t.question, '--choice', t.conclusion, '--by', 'human'])
+        }
+        for (const w of waits) {
+          const by = w.q.answered_by === 'human' ? 'human' : 'agent'
+          if ((story.decisions || []).some((d) => d.question === w.asked && d.choice === w.q.answer.answer && d.by === by)) continue
+          b.write('decision', story.key, ['--question', w.asked, '--choice', w.q.answer.answer, '--by', by])
         }
         ;(story.findings || []).forEach((f, i) => { if (!f.resolved) b.write('resolve', story.key, ['--finding', String(i)]) })
         b.write('unblock', story.key)
@@ -1268,6 +1714,26 @@ const STEPS = {
       return { ok: false, unblocked, log: log(), error: failure(e), retry: retryable(e) }
     }
     return { unblocked, log: log() }
+  },
+
+  // A task parked after its third failed try (in the backlog, not blocked,
+  // an open finding marked [attempt 3]) is taken up again by the next run:
+  // its open findings are resolved, so that attempts count from 0 (attemptOf).
+  // A repeat finds nothing left open on those it did.
+  'retry-pass': (b) => {
+    const retried = []
+    try {
+      for (const story of b.listStories()) {
+        if (story.status !== 'backlog' || story.blocked) continue
+        const open = (story.findings || []).map((f, i) => [f, i]).filter(([f]) => !f.resolved)
+        if (!open.some(([f]) => Number((String(f.text).match(ATTEMPT) || [])[1]) === 3)) continue
+        for (const [, i] of open) b.write('resolve', story.key, ['--finding', String(i)])
+        retried.push(story.key)
+      }
+    } catch (e) {
+      return { ok: false, retried, error: failure(e), retry: retryable(e) }
+    }
+    return { retried }
   },
 
   // A new worktree starts at the tip of deliver/<slug>, what the lane last
@@ -1355,7 +1821,7 @@ const STEPS = {
     if (unknown.length) return { ok: false, error: `no check ${unknown.join(', ')}; the checks are ${CHECKS.join(', ')}` }
     const odd = Object.keys(p.checks).filter((name) => typeof p.checks[name] !== 'string')
     if (odd.length) return { ok: false, error: `a check is a command, as a string: ${odd.join(', ')}` }
-    return { checks: updateRun(b.root, b.runId, (info) => ({ ...info, checks: { ...info.checks, ...p.checks } })).checks }
+    return { checks: updateRun(b.root, b.runId, (info) => ({ ...info, checks: { ...info.checks, ...p.checks }, set: { ...info.set, ...p.checks } })).checks }
   },
 
   // Starts a job and returns once its supervisor has started the command. A
@@ -1624,7 +2090,9 @@ const STEPS = {
   'tests-drop': (b, p) => missing(p, 'key') || { key: p.key, removed: removeWorktree(b, p.key, true) },
 
   // Posts the run's report on its thread, from a body file, after stopping
-  // the run's jobs that still run, and gives the lock up. The report is also
+  // the run's jobs that still run and pushing for the pull request
+  // (pullRequest), and gives the lock up. The marker keeps what the push and
+  // the pull request gave, so that a repeat does neither again. The report is also
   // kept at .omni/runs/<run>/report.md, which is all there is of it when the
   // post fails: the run ends and gives its lock up all the same, as
   // omni-deliver.js does, and a repeat of this finish goes on without the
@@ -1635,7 +2103,16 @@ const STEPS = {
     if (!p.report || typeof p.report !== 'object' || Array.isArray(p.report)) return { ok: false, error: 'the payload needs report: {outcomes, council}' }
     try {
       const stopped = stopJobs(runningJobs(b.root, [b.runId])).map(({ job }) => job.id)
-      const text = reportText(b, info, p.report)
+      const body = reportText(b, info, p.report)
+      // The pull request first, so that the report on the Run thread names
+      // it; a repeat goes on with what the first try did.
+      let pull = marker && marker.pull
+      if (!pull) {
+        pull = pullRequest(b, info, body)
+        mark({ pull })
+      }
+      const [title, ...rest] = body.split('\n')
+      const text = [title, prLine(b, pull), ...rest].join('\n')
       const report = path.join(runDirOf(b.root, b.runId), 'report.md')
       fs.writeFileSync(report, text)
       const summary = `Report of ${b.runId}`
@@ -1643,11 +2120,11 @@ const STEPS = {
         try {
           b.post(info.thread, summary, text)
         } catch (e) {
-          return { ok: false, thread: info.thread || null, posted: false, report, stopped, error: `the report could not be posted: ${failure(e)}`, retry: retryable(e) }
+          return { ok: false, thread: info.thread || null, posted: false, report, stopped, ...pull, error: `the report could not be posted: ${failure(e)}`, retry: retryable(e) }
         }
         mark({ posted: true })
       }
-      return { thread: info.thread, posted: true, report, stopped }
+      return { thread: info.thread, posted: true, report, stopped, ...pull }
     } finally {
       // Marked first, so that a repeat that finds no lock knows this finish
       // gave it up.
@@ -1658,7 +2135,7 @@ const STEPS = {
 }
 // The steps whose bodies are recorded under their opId, so that a repeat does
 // not write twice. The others only read, or wait: a repeat runs them again.
-const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'exhaust', 'unblock-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'finish'])
+const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock', 'finding', 'decision', 'obligations', 'files', 'thread-open', 'question-ask', 'park', 'unblock-pass', 'retry-pass', 'worktree', 'clarity-record', 'checks-set', 'job-start', 'job-kill', 'lane-prepare', 'lane-clean', 'lane-base', 'lane-reset', 'lane-candidate', 'lane-land', 'tests-prepare', 'tests-drop', 'design-export', 'setup-check', 'setup-land', 'repo-open', 'finish'])
 
 // ---- start: the lock, reconcile, the deliver branch, the checks ------------
 // A start repeated by a retried courier comes within minutes of the first.
@@ -1671,14 +2148,36 @@ const start = (flags) => {
   // Flags that do not hash to --hash came wrong from the courier.
   if (!opId || !feature || !flags.hash) return { ok: false, received, error: 'start needs --op <opId>, --feature <name> and --hash <fnv1a of {opId, feature, force}>', retry: true }
   if (flags.hash !== received) return { ok: false, received, error: `the flags hash to ${received}, not ${flags.hash}: run the command again exactly`, retry: true }
-  const top = tryRun('git', ['rev-parse', '--show-toplevel'])
-  if (top === null) return { ok: false, received, error: `${process.cwd()} is not in a git checkout`, retry: false }
-  const root = top.trim()
+  const now = new Date()
+  const runId = `run-${stamp(now)}-${process.pid}`
+  // The root is the top folder of the checkout the current folder is in, or
+  // the current folder where it is in none. The board decides the mode: a
+  // task "Set up the project" that is not done makes a setup run, which
+  // touches no git. Every refusal comes before the lock, so it leaves
+  // nothing behind.
+  const here = process.cwd()
+  const top = (tryRun('git', ['rev-parse', '--show-toplevel']) || '').trim() || null
+  let root = top || here
+  let setupTask
+  try {
+    setupTask = setupTaskOf(boardOf(root, runId, feature).listStories())
+  } catch (e) {
+    return { ok: false, received, error: `the feature's tasks could not be listed: ${failure(e)}`, retry: retryable(e) }
+  }
+  // A setup run in a folder that lies inside another checkout works in the
+  // folder linked to the project, which has no repository of its own yet.
+  if (setupTask && top) {
+    let matched = null
+    try { matched = JSON.parse(tryRun('omni', ['link', '--json'], { cwd: here })).matched } catch {}
+    if (typeof matched === 'string' && matched && real(matched).startsWith(`${real(top)}${path.sep}`)) {
+      if (real(here) !== real(matched)) return { ok: false, received, error: `start the build from ${matched}, the folder linked to the project`, retry: false }
+      root = here
+    }
+  }
+  if (!setupTask && !hasRepo(root)) return { ok: false, received, error: `${root} has no git repository, and the feature has no task "Set up the project" to make one: split the feature with omni-stories first`, retry: false }
   const session = sessionPid()
   const lockPath = lockPathOf(root)
   const log = []
-  const now = new Date()
-  const runId = `run-${stamp(now)}-${process.pid}`
   // The lock is read and taken in one step: of two starts at once, one waits
   // for the other and then finds its lock.
   const taken = withLock(lockPath, () => {
@@ -1706,7 +2205,7 @@ const start = (flags) => {
   if (taken.refused) return { ok: false, received, error: taken.refused, retry: false }
   let body
   try {
-    body = startRun(boardOf(root, runId, feature), log)
+    body = startRun(boardOf(root, runId, feature), log, setupTask)
   } catch (e) {
     body = { ok: false, error: failure(e), retry: retryable(e) }
   }
@@ -1723,39 +2222,34 @@ const start = (flags) => {
 }
 
 // Everything that can stop the run comes before anything that changes the
-// board or the branch.
-const startRun = (b, log) => {
-  const { root, git } = b
-  // .omni/ holds the lock, the runs and the clarity cache, none of which is
-  // committed.
-  if (tryRun('git', ['-C', root, 'check-ignore', '-q', '.omni/']) === null) {
-    const exclude = path.resolve(root, git(['rev-parse', '--git-path', 'info/exclude']).trim())
-    let text = ''
-    try { text = fs.readFileSync(exclude, 'utf8') } catch {}
-    fs.mkdirSync(path.dirname(exclude), { recursive: true })
-    fs.writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.omni/\n`)
-  }
-  // The integration branch, checked out nowhere: stories land on it, and the
-  // run never moves the checkout's own branch.
-  const head = git(['rev-parse', 'HEAD']).trim()
-  const was = (tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${b.branch}`]) || '').trim()
-  const isAncestor = (a, c) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, c]) !== null
-  const move = !was ? 'create' : was === head ? 'same' : isAncestor(was, head) ? 'fast-forward' : isAncestor(head, was) ? 'ahead' : 'diverged'
-  if (move === 'diverged') return { ok: false, error: `${b.branch} and HEAD have diverged: merge first (git merge ${b.branch}), then start again` }
-  let checks
-  // Not tried again: omni checks reads the project's .omni.toml, so what
-  // fails here is the project's configuration, which a repeat meets again.
+// board or the branch. A setup run does nothing with git: repo-open does it
+// once the setup task has landed.
+const startRun = (b, log, setupTask = null) => {
+  const { root } = b
+  const repo = setupTask ? null : repoPlan(b)
+  if (repo && repo.ok === false) return repo
+  // Whether the feature has a behaviour tree, which decides where a question
+  // for the human goes. A list that fails counts as no tree, with the error
+  // in the log.
+  let tree = false
   try {
-    checks = JSON.parse(b.omni(['checks', '--json']))
+    const listed = JSON.parse(b.omni(['behaviour', 'list', '--json']))
+    tree = Array.isArray(listed && listed.nodes) && listed.nodes.length > 0
   } catch (e) {
-    return { ok: false, error: `the checks could not be read: ${failure(e)}`, retry: false }
+    log.push(`The behaviour tree could not be listed, so questions go to threads: ${failure(e)}`)
   }
-  // Pruned first: a lane folder that lost its .git file is still listed until
-  // the prune, and would pass for the lane worktree. git there would work in
-  // whatever repository is around the folder, and the clean below would hit
-  // that one.
-  tryRun('git', ['-C', root, 'worktree', 'prune'])
-  if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
+  // The feature's how, which a landed task's docs agent writes back to: the
+  // IDs of its docs Operations (pillar architecture) and Tables (pillar db),
+  // or null. A list that fails counts as neither, with the error in the log.
+  const how = { operations: null, tables: null }
+  try {
+    const docs = JSON.parse(b.omni(['doc', 'list', '--json'])).docs || []
+    const idOf = (title, pillar) => (docs.find((d) => d.title === title && d.pillar === pillar) || {}).id || null
+    how.operations = idOf('Operations', 'architecture')
+    how.tables = idOf('Tables', 'db')
+  } catch (e) {
+    log.push(`The docs could not be listed, so no task writes back to Operations and Tables: ${failure(e)}`)
+  }
   // The stories folder lies beside the checkout, where a session's sandbox
   // lets nothing write unless the human added it: found here, not at the
   // first worktree.
@@ -1771,28 +2265,20 @@ const startRun = (b, log) => {
   // The run's thread, named as omni-deliver.js names it: finish posts the
   // report there.
   const thread = b.omni(['thread', 'create', `Run ${b.runId}`]).trim()
-  if (move === 'create') git(['update-ref', `refs/heads/${b.branch}`, head, ''])
-  if (move === 'fast-forward') git(['update-ref', `refs/heads/${b.branch}`, head, was])
-  const tip = move === 'create' || move === 'fast-forward' ? head : was
-  log.push({
-    create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
-    same: `${b.branch} is at ${short(was)}, the checkout's HEAD`,
-    'fast-forward': `${b.branch} fast-forwarded from ${short(was)} to ${short(head)}, the checkout's HEAD`,
-    ahead: `${b.branch} kept at ${short(was)}, ahead of the checkout's HEAD ${short(head)}`,
-  }[move])
+  let tip = null
+  try {
+    if (repo) tip = branchAt(b, repo, log)
+  } catch (e) {
+    if (e.refused) return { ok: false, error: e.message, retry: false }
+    throw e
+  }
 
   // The jobs of earlier runs that still run, such as a check in the lane
   // worktree: their supervisors are detached, so a workflow that stopped left
   // them going. This run holds the lock, so those runs are over.
   for (const { run, job } of stopJobs(runningJobs(root, runsIn(root)))) log.push(`Stopped the job ${job.id} of run ${run}, which had ended`)
 
-  // The lane worktree stays from run to run, detached.
-  if (fs.existsSync(b.lane)) {
-    cleanTree(b, b.lane)
-  } else {
-    fs.mkdirSync(b.storiesDir, { recursive: true })
-    git(['worktree', 'add', '-q', '--detach', b.lane, tip])
-  }
+  if (repo) laneAtStart(b, tip)
 
   // A story another run holds is released: this run holds the lock, so no
   // other run of this checkout is alive. A working story nobody holds (a claim
@@ -1806,28 +2292,154 @@ const startRun = (b, log) => {
   // The feature's stories as keys and counts: the script lists them itself
   // when it needs more.
   const stories = b.listStories()
-  // A story lands before its tests are written, and its worktree is kept for
-  // their author: a run that stopped before that author was done left the
-  // worktree of a story that is done, which goes, with the tests in it.
-  for (const story of stories) {
-    if (story.status !== 'done' || !(fs.existsSync(b.worktreeOf(story.key)) || hasBranch(root, `story/${story.key}`))) continue
-    log.push(removeWorktree(b, story.key, true)
-      ? `Removed the worktree of ${story.key}, which is done: a run that stopped left it for its test author, and its regression tests were not written`
-      : `${b.worktreeOf(story.key)}, the worktree a run that stopped left of ${story.key}, which is done, could not be removed: move it away`)
-  }
+  if (repo) dropDoneWorktrees(b, stories, log)
   const counts = {}
   for (const s of stories) counts[s.status] = (counts[s.status] || 0) + 1
   return {
     run: b.runId,
     root,
-    branch: b.branch,
+    branch: repo ? b.branch : null,
     tip,
-    lane: b.lane,
+    lane: repo ? b.lane : null,
     thread,
-    checks: Object.fromEntries(CHECKS.map((name) => [name, String((checks && checks[name]) || '')])),
+    tree,
+    how,
+    checks: repo ? repo.checks : checksOf({}),
+    base: baseOf(root),
+    setupTask,
     stories: { keys: stories.map((s) => s.key), counts, blocked: stories.filter((s) => s.blocked).length },
     released,
     log,
+    setup: setupDocOf(b),
+  }
+}
+
+// ---- the repository: the deliver branch, the checks, the lane --------------
+// The feature's task that sets the project up, by its title in any case,
+// while it is not done or cancelled; else null.
+const setupTaskOf = (stories) => (stories.find((s) => String(s.title || '').trim().toLowerCase() === 'set up the project' && s.status !== 'done' && s.status !== 'cancelled') || {}).key || null
+// A folder has a repository when it is itself the top folder of one with a
+// commit.
+const hasRepo = (dir) => ownTree(dir) && tryRun('git', ['-C', dir, 'rev-parse', '--verify', '--quiet', 'HEAD']) !== null
+// The branch checked out in the root, or null where the root is not itself
+// the top folder of a repository or has a detached HEAD.
+const baseOf = (root) => (ownTree(root) ? (tryRun('git', ['-C', root, 'symbolic-ref', '-q', '--short', 'HEAD']) || '').trim() || null : null)
+// The six checks as omni checks gives them, an empty string for each it
+// lacks, under those checks-set gave the run.
+const checksOf = (fresh, set = {}) => ({ ...Object.fromEntries(CHECKS.map((name) => [name, String((fresh && fresh[name]) || '')])), ...set })
+
+// .omni/, which holds the lock, the runs and the clarity cache, is never
+// committed: added to .git/info/exclude when git does not ignore it.
+const excludeOmni = (b) => {
+  if (tryRun('git', ['-C', b.root, 'check-ignore', '-q', '.omni/']) !== null) return
+  const exclude = path.resolve(b.root, b.git(['rev-parse', '--git-path', 'info/exclude']).trim())
+  let text = ''
+  try { text = fs.readFileSync(exclude, 'utf8') } catch {}
+  fs.mkdirSync(path.dirname(exclude), { recursive: true })
+  fs.writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.omni/\n`)
+}
+// The project-level doc of pillar architecture titled Setup, in any letter
+// case: the first omni doc list gives, or null when none is, or the list
+// fails.
+const setupDocOf = (b) => {
+  try {
+    const docs = JSON.parse(run('omni', ['doc', 'list', '--global', '--json'], { cwd: b.root })).docs || []
+    const doc = docs.find((d) => d && !d.feature_id && d.pillar === 'architecture' && String(d.title).toLowerCase() === 'setup')
+    return doc ? doc.id : null
+  } catch {
+    return null
+  }
+}
+// What the repository work needs, checked before anything changes the board
+// or the branch: how deliver/<slug> moves to HEAD, and the checks.
+const repoPlan = (b) => {
+  const { root, git } = b
+  excludeOmni(b)
+  // The integration branch, checked out nowhere: stories land on it, and the
+  // run never moves the checkout's own branch.
+  const head = git(['rev-parse', 'HEAD']).trim()
+  const was = (tryRun('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${b.branch}`]) || '').trim()
+  const isAncestor = (a, c) => tryRun('git', ['-C', root, 'merge-base', '--is-ancestor', a, c]) !== null
+  let move = !was ? 'create' : was === head ? 'same' : isAncestor(was, head) ? 'fast-forward' : isAncestor(head, was) ? 'ahead' : 'diverged'
+  // A branch whose pull request was merged at its tip starts again at HEAD.
+  if (move === 'diverged' && mergedAt(b, was)) move = 'restart'
+  if (move === 'diverged') return { ok: false, error: diverged(b) }
+  let checks
+  // Not tried again: omni checks reads the project's .omni.toml, so what
+  // fails here is the project's configuration, which a repeat meets again.
+  try {
+    checks = JSON.parse(b.omni(['checks', '--json']))
+  } catch (e) {
+    return { ok: false, error: `the checks could not be read: ${failure(e)}`, retry: false }
+  }
+  // Pruned first: a lane folder that lost its .git file is still listed until
+  // the prune, and would pass for the lane worktree. git there would work in
+  // whatever repository is around the folder, and the clean below would hit
+  // that one.
+  tryRun('git', ['-C', root, 'worktree', 'prune'])
+  if (fs.existsSync(b.lane) && (!isWorktree(root, b.lane) || !ownTree(b.lane))) return { ok: false, error: `${b.lane} is not a worktree of ${root}, so it cannot be the lane worktree; move it away` }
+  return { head, was, move, checks: checksOf(checks) }
+}
+// deliver/<slug> moved as the plan says, and its tip. A restart that finds
+// the branch moved since the plan is refused (refused set on the error).
+const branchAt = (b, { head, was, move }, log) => {
+  if (move === 'create') b.git(['update-ref', `refs/heads/${b.branch}`, head, ''])
+  if (move === 'fast-forward') b.git(['update-ref', `refs/heads/${b.branch}`, head, was])
+  if (move === 'restart') {
+    try {
+      b.git(['update-ref', `refs/heads/${b.branch}`, head, was])
+    } catch {
+      throw Object.assign(new Error(diverged(b)), { refused: true })
+    }
+    // The oldest tip not pushed over yet is the one the remote still has.
+    const file = restartedPathOf(b.root, b.feature)
+    if (!(readText(file) || '').trim()) {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, `${was}\n`)
+    }
+  }
+  log.push({
+    create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
+    same: `${b.branch} is at ${short(was)}, the checkout's HEAD`,
+    'fast-forward': `${b.branch} fast-forwarded from ${short(was)} to ${short(head)}, the checkout's HEAD`,
+    ahead: `${b.branch} kept at ${short(was)}, ahead of the checkout's HEAD ${short(head)}`,
+    restart: `${b.branch} starts again at ${short(head)}: its pull request was merged`,
+  }[move])
+  return move === 'ahead' || move === 'same' ? was : head
+}
+const diverged = (b) => `${b.branch} and HEAD have diverged: merge first (git merge ${b.branch}), then start again`
+// Whether gh lists a merged pull request of deliver/<slug> whose head was
+// this tip. No when the base branch's remote is missing, gh is, or its list
+// fails.
+const mergedAt = (b, tip) => {
+  const base = baseOf(b.root)
+  const remote = (base && (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim()) || 'origin'
+  if (!(tryRun('git', ['-C', b.root, 'remote']) || '').split('\n').map((l) => l.trim()).includes(remote)) return false
+  try {
+    const merged = JSON.parse(run('gh', ['pr', 'list', '--head', b.branch, '--state', 'merged', '--json', 'headRefOid', ...ghRepoOf(b.root, remote)], { cwd: b.root, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }))
+    return Array.isArray(merged) && merged.some((pr) => pr && pr.headRefOid === tip)
+  } catch {
+    return false
+  }
+}
+// The lane worktree stays from run to run, detached.
+const laneAtStart = (b, tip) => {
+  if (fs.existsSync(b.lane)) {
+    cleanTree(b, b.lane)
+  } else {
+    fs.mkdirSync(b.storiesDir, { recursive: true })
+    b.git(['worktree', 'add', '-q', '--detach', b.lane, tip])
+  }
+}
+// A story lands before its tests are written, and its worktree is kept for
+// their author: a run that stopped before that author was done left the
+// worktree of a story that is done, which goes, with the tests in it.
+const dropDoneWorktrees = (b, stories, log) => {
+  for (const story of stories) {
+    if (story.status !== 'done' || !(fs.existsSync(b.worktreeOf(story.key)) || hasBranch(b.root, `story/${story.key}`))) continue
+    log.push(removeWorktree(b, story.key, true)
+      ? `Removed the worktree of ${story.key}, which is done: a run that stopped left it for its test author, and its regression tests were not written`
+      : `${b.worktreeOf(story.key)}, the worktree a run that stopped left of ${story.key}, which is done, could not be removed: move it away`)
   }
 }
 
