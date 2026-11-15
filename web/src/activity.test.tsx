@@ -47,7 +47,7 @@ function doc(kind: string, title: string) {
   return {
     id: DOC_ID,
     project_id: PROJECT_ID,
-    feature_id: null,
+    track_id: null,
     kind,
     pillar: kind === "html" ? "spec" : "ui",
     title,
@@ -89,7 +89,7 @@ function fakeApi(shown: Doc, routes: Routes) {
         return json(200, {
           project_id: PROJECT_ID,
           app: { last_activity: null },
-          features: [],
+          tracks: [],
           docs: [shown],
           threads: [],
           waiting: { comments: [] },

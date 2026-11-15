@@ -442,69 +442,69 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .await
     .expect("insert a post");
 
-    // A feature of the project, a story in it and the root of its behaviour tree.
-    let feature_id: String = sqlx::query_scalar(
-        "INSERT INTO features (workspace_id, project_id, name) \
+    // A track of the project, a story in it and the root of its behaviour tree.
+    let track_id: String = sqlx::query_scalar(
+        "INSERT INTO tracks (workspace_id, project_id, name) \
          VALUES ($1::uuid, $2::uuid, 'deletion test') RETURNING id::text",
     )
     .bind(workspace)
     .bind(&project_id)
     .fetch_one(&mut *conn)
     .await
-    .expect("insert a feature");
+    .expect("insert a track");
     sqlx::query(
-        "INSERT INTO stories (workspace_id, project_id, feature_id, number, title, text, topic, criteria) \
+        "INSERT INTO stories (workspace_id, project_id, track_id, number, title, text, topic, criteria) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'deletion test', '', '', '[]'::jsonb)",
     )
     .bind(workspace)
     .bind(&project_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .execute(&mut *conn)
     .await
     .expect("insert a story");
 
-    // The root of the feature's behaviour tree, a question on it, its answer and
+    // The root of the track's behaviour tree, a question on it, its answer and
     // a rule on it.
     let node_id: String = sqlx::query_scalar(
-        "INSERT INTO behaviour_nodes (workspace_id, project_id, feature_id, title, created_by) \
+        "INSERT INTO behaviour_nodes (workspace_id, project_id, track_id, title, created_by) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', '{\"kind\":\"agent\"}'::jsonb) \
          RETURNING id::text",
     )
     .bind(workspace)
     .bind(&project_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .fetch_one(&mut *conn)
     .await
     .expect("insert a behaviour node");
     let question_id: String = sqlx::query_scalar(
-        "INSERT INTO behaviour_questions (workspace_id, project_id, feature_id, node_id, question, asked_by) \
+        "INSERT INTO behaviour_questions (workspace_id, project_id, track_id, node_id, question, asked_by) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'deletion test', '{\"kind\":\"agent\"}'::jsonb) \
          RETURNING id::text",
     )
     .bind(workspace)
     .bind(&project_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&node_id)
     .fetch_one(&mut *conn)
     .await
     .expect("insert a behaviour question");
     sqlx::query(
-        "INSERT INTO behaviour_answers (workspace_id, feature_id, question_id, answer, given_by, author) \
+        "INSERT INTO behaviour_answers (workspace_id, track_id, question_id, answer, given_by, author) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', 'agent', '{\"kind\":\"agent\"}'::jsonb)",
     )
     .bind(workspace)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&question_id)
     .execute(&mut *conn)
     .await
     .expect("insert a behaviour answer");
     sqlx::query(
-        "INSERT INTO behaviour_rules (workspace_id, project_id, feature_id, node_id, text, author) \
+        "INSERT INTO behaviour_rules (workspace_id, project_id, track_id, node_id, text, author) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'deletion test', '{\"kind\":\"agent\"}'::jsonb)",
     )
     .bind(workspace)
     .bind(&project_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&node_id)
     .execute(&mut *conn)
     .await

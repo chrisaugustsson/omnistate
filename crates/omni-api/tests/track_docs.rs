@@ -1,4 +1,4 @@
-//! US-061: docs in a feature (Q51). Run with `--features stack-tests` in the
+//! US-061: docs in a track (Q51). Run with `--features stack-tests` in the
 //! Compose test container, which reaches Postgres at `postgres:5432` and RustFS
 //! at `rustfs:9000`.
 //!
@@ -7,19 +7,19 @@
 //! scratch RustFS bucket and serve the API's router on a local port.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`; features are those of
-//! tests/features.rs, the doc routes those of tests/live_docs.rs):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}`; tracks are those of
+//! tests/tracks.rs, the doc routes those of tests/live_docs.rs):
 //!
-//! - `docs.feature_id` is nullable (null is a global doc of the project) with
-//!   the foreign key `(workspace_id, project_id, feature_id)` to `features
+//! - `docs.track_id` is nullable (null is a global doc of the project) with
+//!   the foreign key `(workspace_id, project_id, track_id)` to `tracks
 //!   (workspace_id, project_id, id)`.
-//! - A Doc (`DocBody`) carries `feature_id`, and so does the `data` of
+//! - A Doc (`DocBody`) carries `track_id`, and so does the `data` of
 //!   `doc.created`.
-//! - A design doc in a feature resolves its instances against the project's
+//! - A design doc in a track resolves its instances against the project's
 //!   design system.
 //! - `GET /docs` (both) answers `{"docs": [Doc, ...]}`, every doc of the
-//!   project oldest first; `?feature=<id>` lists that feature's docs only and
-//!   `?feature=global` the global ones only. Another value is 400, an unknown
+//!   project oldest first; `?track=<id>` lists that track's docs only and
+//!   `?track=global` the global ones only. Another value is 400, an unknown
 //!   project 404 `not_found`.
 
 mod common;
@@ -36,8 +36,8 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const TEST_DB: &str = "omni_us061_feature_docs";
-const TEST_BUCKET: &str = "omni-us061-feature-docs";
+const TEST_DB: &str = "omni_us061_track_docs";
+const TEST_BUCKET: &str = "omni-us061-track-docs";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 
@@ -287,16 +287,16 @@ fn parse(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
 }
 
-/// Asserts that `value` has the key `feature_id` and that it is `expected`
+/// Asserts that `value` has the key `track_id` and that it is `expected`
 /// (`Value::Null` for a global doc).
-fn assert_feature_id(value: &Value, expected: &Value, what: &str) {
+fn assert_track_id(value: &Value, expected: &Value, what: &str) {
     assert!(
         value
             .as_object()
-            .is_some_and(|o| o.contains_key("feature_id")),
-        "{what} carries `feature_id`: {value}"
+            .is_some_and(|o| o.contains_key("track_id")),
+        "{what} carries `track_id`: {value}"
     );
-    assert_eq!(&value["feature_id"], expected, "{what}: {value}");
+    assert_eq!(&value["track_id"], expected, "{what}: {value}");
 }
 
 fn project_base(f: &Fixture, project: &str) -> String {
@@ -315,7 +315,7 @@ fn new_project(f: &Fixture, client: &Client) -> String {
                 "POST",
                 &format!("/api/v1/w/{}/projects", f.workspace),
                 &agent(f),
-                Some(&json!({ "name": unique("feature-docs-project") })),
+                Some(&json!({ "name": unique("track-docs-project") })),
             ),
             201,
             "create a project",
@@ -323,36 +323,36 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-/// Creates a feature as the agent; returns its ID.
-fn new_feature(f: &Fixture, client: &Client, project: &str, name: &str) -> String {
+/// Creates a track as the agent; returns its ID.
+fn new_track(f: &Fixture, client: &Client, project: &str, name: &str) -> String {
     id_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/features", project_base(f, project)),
+                &format!("{}/tracks", project_base(f, project)),
                 &agent(f),
                 Some(&json!({ "name": name })),
             ),
             201,
-            "create a feature",
-        )["feature"],
+            "create a track",
+        )["track"],
     )
 }
 
-/// Creates a doc as the agent, in `feature` or at project level without one;
+/// Creates a doc as the agent, in `track` or at project level without one;
 /// returns the doc of the answer.
 fn create_live(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: Option<&str>,
+    track: Option<&str>,
     kind: &str,
     pillar: &str,
 ) -> Value {
-    let path = match feature {
+    let path = match track {
         None => docs_path(f, project),
-        Some(feature) => format!("{}/features/{feature}/docs", project_base(f, project)),
+        Some(track) => format!("{}/tracks/{track}/docs", project_base(f, project)),
     };
     must(
         call(
@@ -433,15 +433,12 @@ fn accepted(sql: &str, binds: &[&str]) -> bool {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_doc_takes_the_feature_it_is_created_in() {
+fn a_doc_takes_the_track_it_is_created_in() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project, "Checkout");
+    let track = new_track(f, client, &project, "Checkout");
 
-    for (scope, expected) in [
-        (Some(feature.as_str()), json!(feature)),
-        (None, Value::Null),
-    ] {
+    for (scope, expected) in [(Some(track.as_str()), json!(track)), (None, Value::Null)] {
         for (kind, pillar) in [
             ("html", "spec"),
             ("html", "architecture"),
@@ -449,42 +446,42 @@ fn a_doc_takes_the_feature_it_is_created_in() {
             ("design", "ui"),
         ] {
             let doc = create_live(f, client, &project, scope, kind, pillar);
-            assert_feature_id(&doc, &expected, &format!("a new {kind} {pillar} doc"));
+            assert_track_id(&doc, &expected, &format!("a new {kind} {pillar} doc"));
             let id = id_of(&doc);
             for auth in [agent(f), human(f)] {
                 let shown = show_doc(f, client, &auth, &project, &id);
-                assert_feature_id(&shown, &expected, "the shown doc");
+                assert_track_id(&shown, &expected, "the shown doc");
             }
             let event = events_of(&project, "doc.created")
                 .into_iter()
                 .find(|data| data["doc_id"] == id.as_str())
                 .unwrap_or_else(|| panic!("doc.created for {id}"));
-            assert_feature_id(&event, &expected, "the data of doc.created");
+            assert_track_id(&event, &expected, "the data of doc.created");
         }
     }
 }
 
 #[test]
-fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
+fn the_docs_table_ties_a_doc_to_a_track_of_its_own_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let other = new_project(f, client);
-    let own = new_feature(f, client, &project, "Checkout");
-    let foreign = new_feature(f, client, &other, "Checkout");
+    let own = new_track(f, client, &project, "Checkout");
+    let foreign = new_track(f, client, &other, "Checkout");
     let workspace = f.workspace.as_str();
-    let insert = "insert into docs (workspace_id, project_id, kind, pillar, title, feature_id) \
+    let insert = "insert into docs (workspace_id, project_id, kind, pillar, title, track_id) \
                   values ($1::uuid, $2::uuid, 'html', 'spec', 'Direct', $3::uuid)";
     assert!(
         accepted(insert, &[workspace, &project, &own]),
-        "a doc may belong to a feature of its project"
+        "a doc may belong to a track of its project"
     );
     assert!(
         !accepted(insert, &[workspace, &project, &foreign]),
-        "a doc cannot belong to a feature of another project"
+        "a doc cannot belong to a track of another project"
     );
     assert!(
         !accepted(insert, &[workspace, &project, UNKNOWN_ID]),
-        "a doc cannot belong to a feature that does not exist"
+        "a doc cannot belong to a track that does not exist"
     );
     assert!(
         accepted(
@@ -492,7 +489,7 @@ fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
              values ($1::uuid, $2::uuid, 'html', 'spec', 'Global')",
             &[workspace, &project]
         ),
-        "a doc without a feature is global"
+        "a doc without a track is global"
     );
 }
 
@@ -500,10 +497,10 @@ fn the_docs_table_ties_a_doc_to_a_feature_of_its_own_project() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_design_in_a_feature_resolves_its_instances_against_the_project_design_system() {
+fn a_design_in_a_track_resolves_its_instances_against_the_project_design_system() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project, "Checkout");
+    let track = new_track(f, client, &project, "Checkout");
     let base = project_base(f, &project);
 
     // The project's design system, with one component.
@@ -525,10 +522,10 @@ fn a_design_in_a_feature_resolves_its_instances_against_the_project_design_syste
     );
     let cart = id_of(&imported["components"][0]);
 
-    // A design doc of the feature draws an instance of the project's
+    // A design doc of the track draws an instance of the project's
     // component.
-    let design = create_live(f, client, &project, Some(&feature), "design", "ui");
-    assert_feature_id(&design, &json!(feature), "the feature's design");
+    let design = create_live(f, client, &project, Some(&track), "design", "ui");
+    assert_track_id(&design, &json!(track), "the track's design");
     let doc = format!("{base}/docs/{}", id_of(&design));
     let head = must(
         call(client, "GET", &format!("{doc}/html"), &agent(f), None),
@@ -598,11 +595,11 @@ fn a_design_in_a_feature_resolves_its_instances_against_the_project_design_syste
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_doc_list_has_every_doc_of_the_project_and_filters_by_feature_or_global() {
+fn the_doc_list_has_every_doc_of_the_project_and_filters_by_track_or_global() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let checkout = new_feature(f, client, &project, "Checkout");
-    let search = new_feature(f, client, &project, "Search");
+    let checkout = new_track(f, client, &project, "Checkout");
+    let search = new_track(f, client, &project, "Search");
     let first = id_of(&create_live(f, client, &project, None, "html", "spec"));
     let second = id_of(&create_live(
         f,
@@ -641,27 +638,27 @@ fn the_doc_list_has_every_doc_of_the_project_and_filters_by_feature_or_global() 
             all.iter()
                 .zip([Value::Null, json!(checkout), json!(search), Value::Null])
         {
-            assert_feature_id(listed, &expected, "a listed doc");
+            assert_track_id(listed, &expected, "a listed doc");
         }
 
-        let of_checkout = list_docs(client, &auth, &format!("{path}?feature={checkout}"));
+        let of_checkout = list_docs(client, &auth, &format!("{path}?track={checkout}"));
         assert_eq!(
             ids(&of_checkout),
             [second.clone()],
-            "?feature=<id> lists that feature's docs only"
+            "?track=<id> lists that track's docs only"
         );
-        let global_only = list_docs(client, &auth, &format!("{path}?feature=global"));
+        let global_only = list_docs(client, &auth, &format!("{path}?track=global"));
         assert_eq!(
             ids(&global_only),
             [first.clone(), fourth.clone()],
-            "?feature=global lists the global docs only"
+            "?track=global lists the global docs only"
         );
     }
 
     let response = call(
         client,
         "GET",
-        &format!("{path}?feature=not-a-feature"),
+        &format!("{path}?track=not-a-track"),
         &agent(f),
         None,
     );

@@ -35,7 +35,7 @@ function doc(pillar: string, kind: string, title: string, fields: { feature?: st
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    feature_id: fields.feature ?? null,
+    track_id: fields.feature ?? null,
     kind,
     pillar,
     title,
@@ -55,7 +55,7 @@ function thread(
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    feature_id: fields.feature ?? null,
+    track_id: fields.feature ?? null,
     question,
     sealed: fields.sealed ?? false,
     conclusion: fields.conclusion ?? null,
@@ -109,9 +109,9 @@ function seededHome() {
   const home = {
     project_id: PROJECT_ID,
     app: { last_activity: null as string | null },
-    features: [
+    tracks: [
       {
-        feature: {
+        track: {
           id: FEATURE_ID,
           project_id: PROJECT_ID,
           name: "Checkout",
@@ -378,7 +378,7 @@ describe("the scope pages", () => {
 
   test("a feature's page has the feature's name and description, and only its own docs and threads", async () => {
     const { home } = seededHome();
-    home.threads = home.threads.filter((listed) => listed.feature_id === null);
+    home.threads = home.threads.filter((listed) => listed.track_id === null);
     fakeApi(home);
     renderAt(FEATURE_PATH);
     const main = await page();

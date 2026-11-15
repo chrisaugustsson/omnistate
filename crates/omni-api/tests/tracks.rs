@@ -1,4 +1,4 @@
-//! US-059: features, the level below a project (Q51).
+//! US-059: tracks, the level below a project (Q51).
 //! Run with `--features stack-tests` in the Compose test container, which
 //! reaches Postgres at `postgres:5432`.
 //!
@@ -9,32 +9,32 @@
 //! The contract these tests pin down (all paths are under
 //! `/api/v1/w/{workspace_id}/projects/{project_id}`):
 //!
-//! - `POST /features` (agent) takes `{"name", "description"}` and answers 201
-//!   `{"feature": Feature}`. `name` is required: missing, blank or not a
+//! - `POST /tracks` (agent) takes `{"name", "description"}` and answers 201
+//!   `{"track": Track}`. `name` is required: missing, blank or not a
 //!   string is 400 `{"error": "invalid_request"}` and creates nothing.
 //!   `description` is optional and defaults to `""`. A session (the human) is
 //!   403 `{"error": "forbidden"}`.
-//! - A Feature (`FeatureBody`) is `{"id" (UUIDv7), "project_id", "name",
-//!   "description", "created_at"}` and nothing else: since US-110 a feature
+//! - A Track (`TrackBody`) is `{"id" (UUIDv7), "project_id", "name",
+//!   "description", "created_at"}` and nothing else: since US-110 a track
 //!   has no status.
-//! - Feature names are unique in their project, ignoring case: a second
-//!   feature named "checkout" next to "Checkout" is 409 `{"error":
+//! - Track names are unique in their project, ignoring case: a second
+//!   track named "checkout" next to "Checkout" is 409 `{"error":
 //!   "name_taken"}` and creates nothing. Another project may use the name.
-//! - `GET /features` (both) answers `{"features": [Feature, ...]}`, the
-//!   project's features in the order they were created. `GET
-//!   /features/{feature_id}` (both) answers `{"feature": Feature}`.
-//! - An unknown project, an unknown feature, a feature of another project and
+//! - `GET /tracks` (both) answers `{"tracks": [Track, ...]}`, the
+//!   project's tracks in the order they were created. `GET
+//!   /tracks/{track_id}` (both) answers `{"track": Track}`.
+//! - An unknown project, an unknown track, a track of another project and
 //!   an ID that is not a UUID are 404 `{"error": "not_found"}`.
-//! - Creating a feature emits `feature.created` on the project's live channel
-//!   with `data` that has at least `{"feature_id", "name"}`. A refused request
+//! - Creating a track emits `track.created` on the project's live channel
+//!   with `data` that has at least `{"track_id", "name"}`. A refused request
 //!   emits nothing.
-//! - Features live in the tenant table `features` (migrations/README.md):
+//! - Tracks live in the tenant table `tracks` (migrations/README.md):
 //!   `id`, `workspace_id`, `project_id`, `name` (not blank), `description`
 //!   (default `''`), `created_at` and `deleted_at` (US-110; null until an
 //!   agent deletes it), with no `status` column, a composite foreign key to
 //!   `projects`, `UNIQUE (workspace_id, project_id, id)` and a unique index on
-//!   `(workspace_id, project_id, lower(name))` over the features that are not
-//!   deleted, so a deleted feature's name can be taken again.
+//!   `(workspace_id, project_id, lower(name))` over the tracks that are not
+//!   deleted, so a deleted track's name can be taken again.
 //!   tests/workspace_delete.rs and the isolation suite seed it.
 
 mod common;
@@ -49,7 +49,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const TEST_DB: &str = "omni_us059_features";
+const TEST_DB: &str = "omni_us059_tracks";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 
@@ -94,7 +94,7 @@ fn config() -> Config {
         ),
         admin_database_url: format!("{server}/{TEST_DB}"),
         api_db_password: api_password(),
-        // Nothing here reaches RustFS: features only use Postgres.
+        // Nothing here reaches RustFS: tracks only use Postgres.
         s3_endpoint: "http://127.0.0.1:1".to_string(),
         s3_access_key: "none".to_string(),
         s3_secret_key: "none".to_string(),
@@ -266,12 +266,12 @@ fn parse(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
 }
 
-fn features_path(f: &Fixture, project: &str) -> String {
-    format!("/api/v1/w/{}/projects/{project}/features", f.workspace)
+fn tracks_path(f: &Fixture, project: &str) -> String {
+    format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace)
 }
 
-fn feature_path(f: &Fixture, project: &str, feature: &str) -> String {
-    format!("{}/{feature}", features_path(f, project))
+fn track_path(f: &Fixture, project: &str, track: &str) -> String {
+    format!("{}/{track}", tracks_path(f, project))
 }
 
 fn new_project(f: &Fixture, client: &Client) -> String {
@@ -281,7 +281,7 @@ fn new_project(f: &Fixture, client: &Client) -> String {
             "POST",
             &format!("/api/v1/w/{}/projects", f.workspace),
             &agent(f),
-            Some(&json!({ "name": unique("feature-project") })),
+            Some(&json!({ "name": unique("track-project") })),
         ),
         201,
         "create a project",
@@ -292,35 +292,35 @@ fn new_project(f: &Fixture, client: &Client) -> String {
         .to_string()
 }
 
-fn create_feature_response(f: &Fixture, client: &Client, project: &str, body: &Value) -> Response {
+fn create_track_response(f: &Fixture, client: &Client, project: &str, body: &Value) -> Response {
     call(
         client,
         "POST",
-        &features_path(f, project),
+        &tracks_path(f, project),
         &agent(f),
         Some(body),
     )
 }
 
-/// Creates a feature as the agent; returns the `feature` of the answer.
-fn create_feature(f: &Fixture, client: &Client, project: &str, name: &str) -> Value {
+/// Creates a track as the agent; returns the `track` of the answer.
+fn create_track(f: &Fixture, client: &Client, project: &str, name: &str) -> Value {
     must(
-        create_feature_response(f, client, project, &json!({ "name": name })),
+        create_track_response(f, client, project, &json!({ "name": name })),
         201,
-        "create a feature",
-    )["feature"]
+        "create a track",
+    )["track"]
         .clone()
 }
 
-fn list_features(f: &Fixture, client: &Client, auth: &Auth, project: &str) -> Vec<Value> {
+fn list_tracks(f: &Fixture, client: &Client, auth: &Auth, project: &str) -> Vec<Value> {
     let listed = must(
-        call(client, "GET", &features_path(f, project), auth, None),
+        call(client, "GET", &tracks_path(f, project), auth, None),
         200,
-        "list the features",
+        "list the tracks",
     );
-    listed["features"]
+    listed["tracks"]
         .as_array()
-        .unwrap_or_else(|| panic!("`features` is a list: {listed}"))
+        .unwrap_or_else(|| panic!("`tracks` is a list: {listed}"))
         .clone()
 }
 
@@ -341,15 +341,15 @@ fn events_of(project: &str, event: &str) -> Vec<Value> {
     })
 }
 
-/// How many rows the `features` table has for a project.
-fn feature_rows(project: &str) -> i64 {
+/// How many rows the `tracks` table has for a project.
+fn track_rows(project: &str) -> i64 {
     block(async {
         let mut conn = admin_connection().await;
-        sqlx::query_scalar("select count(*) from features where project_id = $1::uuid")
+        sqlx::query_scalar("select count(*) from tracks where project_id = $1::uuid")
             .bind(project)
             .fetch_one(&mut conn)
             .await
-            .unwrap_or_else(|e| panic!("count the features: {e}"))
+            .unwrap_or_else(|e| panic!("count the tracks: {e}"))
     })
 }
 
@@ -370,56 +370,54 @@ fn accepted(sql: &str, binds: &[&str]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Creating a feature
+// Creating a track
 // ---------------------------------------------------------------------------
 
 #[test]
-fn creating_a_feature_records_its_name_and_description_and_no_status() {
+fn creating_a_track_records_its_name_and_description_and_no_status() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let created = must(
-        create_feature_response(
+        create_track_response(
             f,
             client,
             &project,
             &json!({ "name": "Checkout", "description": "Pay for the basket in one step." }),
         ),
         201,
-        "create a feature",
+        "create a track",
     );
-    let feature = &created["feature"];
-    assert_uuid_v7(&feature["id"]);
-    assert_eq!(feature["project_id"], project.as_str(), "{feature}");
-    assert_eq!(feature["name"], "Checkout", "{feature}");
+    let track = &created["track"];
+    assert_uuid_v7(&track["id"]);
+    assert_eq!(track["project_id"], project.as_str(), "{track}");
+    assert_eq!(track["name"], "Checkout", "{track}");
     assert_eq!(
-        feature["description"], "Pay for the basket in one step.",
-        "{feature}"
+        track["description"], "Pay for the basket in one step.",
+        "{track}"
     );
     assert!(
-        feature.get("status").is_none(),
-        "a feature has no status (V7, US-110): {feature}"
+        track.get("status").is_none(),
+        "a track has no status (V7, US-110): {track}"
     );
     assert!(
-        feature["created_at"]
-            .as_str()
-            .is_some_and(|t| !t.is_empty()),
-        "created_at is a timestamp: {feature}"
+        track["created_at"].as_str().is_some_and(|t| !t.is_empty()),
+        "created_at is a timestamp: {track}"
     );
 
-    // The agent and the human read the same feature back.
-    let id = feature["id"].as_str().expect("an id");
+    // The agent and the human read the same track back.
+    let id = track["id"].as_str().expect("an id");
     for auth in [agent(f), human(f)] {
         let shown = must(
-            call(client, "GET", &feature_path(f, &project, id), &auth, None),
+            call(client, "GET", &track_path(f, &project, id), &auth, None),
             200,
-            "show the feature",
+            "show the track",
         );
-        assert_eq!(&shown["feature"], feature, "{shown}");
+        assert_eq!(&shown["track"], track, "{shown}");
     }
 }
 
 #[test]
-fn a_feature_needs_a_name() {
+fn a_track_needs_a_name() {
     let (f, client) = ready();
     let project = new_project(f, client);
     for body in [
@@ -430,112 +428,108 @@ fn a_feature_needs_a_name() {
         json!({ "name": null }),
         json!({ "name": 7 }),
     ] {
-        let response = create_feature_response(f, client, &project, &body);
+        let response = create_track_response(f, client, &project, &body);
         assert_error(&response, 400, "invalid_request");
     }
-    let response = call(client, "POST", &features_path(f, &project), &agent(f), None);
+    let response = call(client, "POST", &tracks_path(f, &project), &agent(f), None);
     assert_eq!(response.status, 400, "no body: {}", response.text());
     assert!(
-        list_features(f, client, &agent(f), &project).is_empty(),
+        list_tracks(f, client, &agent(f), &project).is_empty(),
         "a refused request creates nothing"
     );
     assert!(
-        events_of(&project, "feature.created").is_empty(),
+        events_of(&project, "track.created").is_empty(),
         "a refused request emits nothing"
     );
 }
 
 #[test]
-fn feature_names_are_unique_in_a_project_ignoring_case() {
+fn track_names_are_unique_in_a_project_ignoring_case() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let first = create_feature(f, client, &project, "Checkout");
+    let first = create_track(f, client, &project, "Checkout");
     for name in ["checkout", "CHECKOUT", "Checkout"] {
-        let response = create_feature_response(f, client, &project, &json!({ "name": name }));
+        let response = create_track_response(f, client, &project, &json!({ "name": name }));
         assert_error(&response, 409, "name_taken");
     }
-    let listed = list_features(f, client, &agent(f), &project);
+    let listed = list_tracks(f, client, &agent(f), &project);
     assert_eq!(listed, [first], "the refused names created nothing");
     assert_eq!(
-        events_of(&project, "feature.created").len(),
+        events_of(&project, "track.created").len(),
         1,
         "a refused request emits nothing"
     );
 
     // Another project of the workspace may use the name.
     let other = new_project(f, client);
-    let reused = create_feature(f, client, &other, "checkout");
+    let reused = create_track(f, client, &other, "checkout");
     assert_eq!(reused["project_id"], other.as_str(), "{reused}");
 }
 
 #[test]
-fn only_an_agent_creates_a_feature() {
+fn only_an_agent_creates_a_track() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let response = call(
         client,
         "POST",
-        &features_path(f, &project),
+        &tracks_path(f, &project),
         &human(f),
         Some(&json!({ "name": "Checkout" })),
     );
     assert_error(&response, 403, "forbidden");
-    assert_eq!(
-        feature_rows(&project),
-        0,
-        "a refused request creates nothing"
-    );
+    assert_eq!(track_rows(&project), 0, "a refused request creates nothing");
 }
 
 // ---------------------------------------------------------------------------
-// Reading features
+// Reading tracks
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_feature_list_is_in_creation_order_for_the_agent_and_the_human() {
+fn the_track_list_is_in_creation_order_for_the_agent_and_the_human() {
     let (f, client) = ready();
     let project = new_project(f, client);
     for auth in [agent(f), human(f)] {
         assert!(
-            list_features(f, client, &auth, &project).is_empty(),
-            "a new project has no features"
+            list_tracks(f, client, &auth, &project).is_empty(),
+            "a new project has no tracks"
         );
     }
     let created: Vec<Value> = ["Zebra crossing", "Apple pay", "Mango theme"]
         .into_iter()
-        .map(|name| create_feature(f, client, &project, name))
+        .map(|name| create_track(f, client, &project, name))
         .collect();
     let other = new_project(f, client);
-    create_feature(f, client, &other, "Elsewhere");
+    create_track(f, client, &other, "Elsewhere");
 
     for auth in [agent(f), human(f)] {
-        let listed = list_features(f, client, &auth, &project);
+        let listed = list_tracks(f, client, &auth, &project);
         assert_eq!(
             listed, created,
-            "the project's features, in the order they were created"
+            "the project's tracks, in the order they were created"
         );
     }
 }
 
 #[test]
-fn an_unknown_project_or_feature_is_not_found() {
+fn an_unknown_project_or_track_is_not_found() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = create_feature(f, client, &project, "Checkout");
-    let id = feature["id"].as_str().expect("an id");
+    let track = create_track(f, client, &project, "Checkout");
+    let id = track["id"].as_str().expect("an id");
     let other = new_project(f, client);
 
-    let response = create_feature_response(f, client, UNKNOWN_ID, &json!({ "name": "Lost" }));
+    let response = create_track_response(f, client, UNKNOWN_ID, &json!({ "name": "Lost" }));
     assert_error(&response, 404, "not_found");
     for auth in [agent(f), human(f)] {
         for path in [
-            features_path(f, UNKNOWN_ID),
-            features_path(f, "not-a-uuid"),
-            feature_path(f, &project, UNKNOWN_ID),
-            feature_path(f, &project, "not-a-uuid"),
-            feature_path(f, UNKNOWN_ID, id),
-            // A feature is read through its own project only.
-            feature_path(f, &other, id),
+            tracks_path(f, UNKNOWN_ID),
+            tracks_path(f, "not-a-uuid"),
+            track_path(f, &project, UNKNOWN_ID),
+            track_path(f, &project, "not-a-uuid"),
+            track_path(f, UNKNOWN_ID, id),
+            // A track is read through its own project only.
+            track_path(f, &other, id),
         ] {
             let response = call(client, "GET", &path, &auth, None);
             assert_error(&response, 404, "not_found");
@@ -548,16 +542,16 @@ fn an_unknown_project_or_feature_is_not_found() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_features_table_keeps_its_rules_in_the_database() {
+fn the_tracks_table_keeps_its_rules_in_the_database() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let workspace = f.workspace.as_str();
 
-    let insert = "insert into features (workspace_id, project_id, name) \
+    let insert = "insert into tracks (workspace_id, project_id, name) \
                   values ($1::uuid, $2::uuid, $3)";
     assert!(
         accepted(insert, &[workspace, &project, "Checkout"]),
-        "a named feature of the row's own project is accepted"
+        "a named track of the row's own project is accepted"
     );
     for blank in ["", "   "] {
         assert!(
@@ -567,6 +561,6 @@ fn the_features_table_keeps_its_rules_in_the_database() {
     }
     assert!(
         !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere"]),
-        "a feature needs a project"
+        "a track needs a project"
     );
 }

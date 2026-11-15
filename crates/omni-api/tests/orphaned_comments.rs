@@ -306,7 +306,7 @@ fn project_base(f: &Fixture, project: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Projects, features and live docs
+// Projects, tracks and live docs
 // ---------------------------------------------------------------------------
 
 fn new_project(f: &Fixture, client: &Client) -> String {
@@ -326,18 +326,18 @@ fn new_project(f: &Fixture, client: &Client) -> String {
 }
 
 /// Creates a doc (US-102), at the app level or in
-/// `feature`; returns its ID.
+/// `track`; returns its ID.
 fn new_doc(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: Option<&str>,
+    track: Option<&str>,
     kind: &str,
     pillar: &str,
 ) -> String {
-    let path = match feature {
+    let path = match track {
         None => format!("{}/docs", project_base(f, project)),
-        Some(feature) => format!("{}/features/{feature}/docs", project_base(f, project)),
+        Some(track) => format!("{}/tracks/{track}/docs", project_base(f, project)),
     };
     id_of(
         &must(
@@ -392,15 +392,10 @@ fn paragraph(f: &Fixture, client: &Client, project: &str, doc: &str, text: &str)
         .to_string()
 }
 
-/// An HTML doc at the app level of `project` (or in `feature`) with one
+/// An HTML doc at the app level of `project` (or in `track`) with one
 /// paragraph: (doc, the paragraph's node).
-fn paper_in(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    feature: Option<&str>,
-) -> (String, String) {
-    let doc = new_doc(f, client, project, feature, "html", "spec");
+fn paper_in(f: &Fixture, client: &Client, project: &str, track: Option<&str>) -> (String, String) {
+    let doc = new_doc(f, client, project, track, "html", "spec");
     let node = paragraph(f, client, project, &doc, "Orders ship in two days.");
     (doc, node)
 }

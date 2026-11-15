@@ -6,7 +6,7 @@
 //! agent) and a user with a live session (the human), and serve the API's
 //! router on a local port against that database. The built `omni` runs against
 //! that address with the key in its config file. The contract of the CLI is in
-//! tests/features.rs, that of the API in crates/omni-api/tests/features.rs.
+//! tests/tracks.rs, that of the API in crates/omni-api/tests/tracks.rs.
 
 mod common;
 
@@ -239,7 +239,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
         ],
     );
     assert_eq!(out.code, 0, "feature create --json: {}", out.stderr);
-    let wish_list = out.json()["feature"].clone();
+    let wish_list = out.json()["track"].clone();
     assert!(
         wish_list.get("status").is_none(),
         "a feature has no status (US-110): {wish_list}"
@@ -299,7 +299,7 @@ fn a_feature_is_created_listed_and_shown_from_the_command_line() {
         .args(&["--as", "run-7/planner"])
         .run();
     assert_eq!(shown.code, 0, "{}", shown.stderr);
-    assert_eq!(shown.json()["feature"]["id"], wish_list.as_str());
+    assert_eq!(shown.json()["track"]["id"], wish_list.as_str());
 }
 
 // US-061: `omni doc list` against the real API: a doc takes the scope it was

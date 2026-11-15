@@ -55,7 +55,7 @@ const COUNTS: &str =
     "10 nodes (3 stories), 1 same-as, 1 handoffs, 4 questions (1 by default, 1 open), 4 rules";
 
 fn import_path() -> String {
-    format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features/{FEATURE}/behaviour/import")
+    format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks/{FEATURE}/behaviour/import")
 }
 
 fn fixture() -> PathBuf {
@@ -496,7 +496,7 @@ fn a_constraint_is_scoped_by_the_level_it_stands_in_and_from_moves_it_to_that_no
     let nodes = sent_nodes(&server);
     assert_eq!(
         at(&nodes, "")["rules"],
-        json!([{ "text": "Scores are kept per player.", "scope": "feature" }])
+        json!([{ "text": "Scores are kept per player.", "scope": "track" }])
     );
     assert_eq!(
         at(&nodes, "player-runs-session")["rules"],
@@ -504,10 +504,7 @@ fn a_constraint_is_scoped_by_the_level_it_stands_in_and_from_moves_it_to_that_no
     );
     let drill = "player-runs-session/logs-last-drill";
     assert_eq!(at(&nodes, drill)["rules"].as_array().unwrap().len(), 2);
-    assert_eq!(
-        rule(&nodes, drill, "Prices include VAT.")["scope"],
-        "feature"
-    );
+    assert_eq!(rule(&nodes, drill, "Prices include VAT.")["scope"], "track");
     assert_eq!(
         rule(
             &nodes,

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // US-138: the board of a feature, .../projects/<project>/features/<feature>/board.
-// It reads GET .../features/<feature>/stories and shows a column per status and
+// It reads GET .../tracks/<feature>/stories and shows a column per status and
 // a card per story, filtered by priority and, unless Show cancelled is on,
 // without the cancelled stories. The app is rendered with its own router on a
 // memory history, the browser's fetch is replaced by a fake of the API, and the
@@ -41,7 +41,7 @@ function story(
   return {
     id: storyId(number),
     project_id: PROJECT_ID,
-    feature_id: FEATURE_ID,
+    track_id: FEATURE_ID,
     number,
     key: `US-${number}`,
     title: fields.title ?? `Story ${number}`,
@@ -117,14 +117,14 @@ function fakeApi(stories: Story[]) {
           return json(200, {
             project_id: PROJECT_ID,
             app: { last_activity: null },
-            features: [],
+            tracks: [],
             docs: [],
             threads: [],
             waiting: { comments: [] },
           });
         case `${API}/comments`:
           return json(200, { project_id: PROJECT_ID, comments: [] });
-        case `${API}/features/${FEATURE_ID}/stories`:
+        case `${API}/tracks/${FEATURE_ID}/stories`:
           return json(200, { stories: api.stories });
         default:
           return json(404, { error: "not_found" });
@@ -447,7 +447,7 @@ describe("the board", () => {
 
 describe("steering from the board", () => {
   const CONFLICT = "Someone changed this story; it has been reloaded";
-  const storyPath = (number: number) => `${API}/features/${FEATURE_ID}/stories/${storyId(number)}`;
+  const storyPath = (number: number) => `${API}/tracks/${FEATURE_ID}/stories/${storyId(number)}`;
 
   test("a 409 on a card whose story a run has moved to Implementing shows the message on its card there, with the server's values", async () => {
     const api = fakeApi([story(1, { priority: 3 })]);
@@ -577,7 +577,7 @@ describe("steering from the board", () => {
     expect(api.writes).toEqual([
       {
         method: "POST",
-        path: `${API}/features/${FEATURE_ID}/stories`,
+        path: `${API}/tracks/${FEATURE_ID}/stories`,
         body: {
           title: "Pay with a saved card",
           text: "",

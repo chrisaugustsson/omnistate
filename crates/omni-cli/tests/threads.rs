@@ -13,8 +13,8 @@
 //!   sends `POST /threads` with `{"question", "sealed"}` (`sealed` is `true`
 //!   with `--sealed`, else `false` or left out): a thread at the app level,
 //!   with no criteria. With `--feature` it sends `POST
-//!   /features/{feature_id}/threads` instead; a name is looked up in the
-//!   project's features (`GET /features`) ignoring case, and a name the
+//!   /tracks/{feature_id}/threads` instead; a name is looked up in the
+//!   project's features (`GET /tracks`) ignoring case, and a name the
 //!   project does not have is a one-line error that names it and starts
 //!   nothing. A missing question is a one-line error that sends nothing. It
 //!   prints the new thread's ID.
@@ -73,8 +73,8 @@ fn thread_json(
     json!({
         "id": id,
         "project_id": PROJECT,
-        "scope": if feature.is_some() { "feature" } else { "app" },
-        "feature_id": feature,
+        "scope": if feature.is_some() { "track" } else { "app" },
+        "track_id": feature,
         "question": question,
         "sealed": sealed,
         "conclusion": conclusion,
@@ -138,16 +138,16 @@ fn mock() -> MockServer {
             )
         };
         match (request.method.as_str(), rest) {
-            ("GET", "/features") => Reply::json(
+            ("GET", "/tracks") => Reply::json(
                 200,
-                &json!({ "features": [
+                &json!({ "tracks": [
                     feature_json(CHECKOUT, "Checkout"),
                     feature_json(SEARCH, "Search")
                 ] }),
             ),
             ("POST", "/threads") => created(None),
-            ("POST", r) if r == format!("/features/{CHECKOUT}/threads") => created(Some(CHECKOUT)),
-            ("POST", r) if r == format!("/features/{SEARCH}/threads") => created(Some(SEARCH)),
+            ("POST", r) if r == format!("/tracks/{CHECKOUT}/threads") => created(Some(CHECKOUT)),
+            ("POST", r) if r == format!("/tracks/{SEARCH}/threads") => created(Some(SEARCH)),
             ("GET", "/threads") => Reply::json(
                 200,
                 &json!({ "threads": [
@@ -284,12 +284,12 @@ fn thread_create_starts_a_thread_at_the_app_level_or_in_a_feature() {
         (vec![], "/threads".to_string(), false),
         (
             vec!["--feature", "checkout", "--sealed"],
-            format!("/features/{CHECKOUT}/threads"),
+            format!("/tracks/{CHECKOUT}/threads"),
             true,
         ),
         (
             vec!["--feature", CHECKOUT, "--sealed"],
-            format!("/features/{CHECKOUT}/threads"),
+            format!("/tracks/{CHECKOUT}/threads"),
             true,
         ),
     ] {

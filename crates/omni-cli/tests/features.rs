@@ -5,18 +5,19 @@
 //! The contract these tests pin down (the rest is the green step's choice):
 //!
 //! - `omni feature create <name> [--description <text>]` sends `POST
-//!   /api/v1/w/{workspace}/projects/{project_id}/features` with the JSON body
+//!   /api/v1/w/{workspace}/projects/{project_id}/tracks` with the JSON body
 //!   `{"name", "description"}` (`description` only when it was given) and
 //!   prints one line, `<id>  <name>` (two spaces). The API answers 201
-//!   `{"feature": Feature}`, where a Feature has `id`, `project_id`, `name`,
+//!   `{"track": Feature}`, where a Feature has `id`, `project_id`, `name`,
 //!   `description` and `created_at`, and no status (US-110).
-//! - `omni feature list` sends `GET .../features` (`{"features": [...]}`, in
+//! - `omni feature list` sends `GET .../tracks` (`{"tracks": [...]}`, in
 //!   creation order) and prints one line per feature, `<id>  <name>` (two
 //!   spaces between the fields), in the API's order.
-//! - `omni feature show <name or id>` prints the feature: its ID, name and
-//!   description, and no status. An ID (a UUID) is shown with `GET
-//!   .../features/{id}`; a name is looked up in the project's features. A
-//!   name that the project does not have is an error that names it.
+//! - `omni feature show <name or id>` prints the feature: its ID, name,
+//!   project and description, and no status. An ID (a UUID) is shown with
+//!   `GET .../tracks/{id}`; a name is looked up in the project's features,
+//!   and its `--json` is `{"track": Feature}` as for an ID (US-301). A name
+//!   that the project does not have is an error that names it.
 //! - All of them take the project from `--project`, as a UUID or a project name (US-016), print the
 //!   API's JSON with `--json`, and report errors as one line on standard
 //!   error (US-015, tests/common/mod.rs). `omni --help` lists them.
@@ -25,9 +26,9 @@
 //!   which names the feature commands (rename and delete among them), and
 //!   nothing is sent.
 //! - US-110: `omni feature rename <name or id> <new name>` sends `PATCH
-//!   .../features/{id}` with `{"name": <new name>}` and prints `<id>  <new
+//!   .../tracks/{id}` with `{"name": <new name>}` and prints `<id>  <new
 //!   name>`; `omni feature delete <name or id>` sends `DELETE
-//!   .../features/{id}` (204) and prints a line with the feature's ID. A name
+//!   .../tracks/{id}` (204) and prints a line with the feature's ID. A name
 //!   is looked up as for `show`, ignoring case. Without the feature (or the
 //!   new name) each is a one-line error that sends nothing; an API error is
 //!   one line with its code.
@@ -48,7 +49,7 @@ fn projects_path() -> String {
 }
 
 fn features_path(project: &str) -> String {
-    format!("{}/{project}/features", projects_path())
+    format!("{}/{project}/tracks", projects_path())
 }
 
 fn project_json(id: &str, name: &str) -> Value {
@@ -109,18 +110,18 @@ fn mock() -> MockServer {
                     let description = body["description"].as_str().unwrap_or("");
                     Reply::json(
                         201,
-                        &json!({ "feature": feature_json(NEW_FEATURE, project, name, description) }),
+                        &json!({ "track": feature_json(NEW_FEATURE, project, name, description) }),
                     )
                 }
                 ("GET", "") => Reply::json(
                     200,
-                    &json!({ "features": [checkout(project), wish_list(project)] }),
+                    &json!({ "tracks": [checkout(project), wish_list(project)] }),
                 ),
                 ("GET", rest) if rest == format!("/{FEATURE}") => {
-                    Reply::json(200, &json!({ "feature": checkout(project) }))
+                    Reply::json(200, &json!({ "track": checkout(project) }))
                 }
                 ("GET", rest) if rest == format!("/{WISH_LIST}") => {
-                    Reply::json(200, &json!({ "feature": wish_list(project) }))
+                    Reply::json(200, &json!({ "track": wish_list(project) }))
                 }
                 ("PATCH", rest)
                     if rest == format!("/{FEATURE}") || rest == format!("/{WISH_LIST}") =>
@@ -132,7 +133,7 @@ fn mock() -> MockServer {
                     let id = &rest[1..];
                     Reply::json(
                         200,
-                        &json!({ "feature": feature_json(id, project, name, "") }),
+                        &json!({ "track": feature_json(id, project, name, "") }),
                     )
                 }
                 ("DELETE", rest)
@@ -268,7 +269,7 @@ fn feature_create_sends_the_name_and_description_and_prints_the_id_and_name() {
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "feature": feature_json(NEW_FEATURE, PROJECT, "Search", "") }),
+        json!({ "track": feature_json(NEW_FEATURE, PROJECT, "Search", "") }),
         "--json prints the whole response"
     );
 }
@@ -311,7 +312,7 @@ fn feature_list_prints_one_line_per_feature_without_a_status() {
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "features": [checkout(PROJECT), wish_list(PROJECT)] }),
+        json!({ "tracks": [checkout(PROJECT), wish_list(PROJECT)] }),
         "--json prints the whole response"
     );
 }
@@ -334,7 +335,7 @@ fn feature_show_prints_the_feature_named_by_its_id() {
         )
         .len(),
         1,
-        "an ID is shown with GET .../features/{{id}}: {:?}",
+        "an ID is shown with GET .../tracks/{{id}}: {:?}",
         server.requests()
     );
     for needle in [FEATURE, "Checkout", "Pay for the basket in one step."] {
@@ -351,7 +352,7 @@ fn feature_show_prints_the_feature_named_by_its_id() {
         &["feature", "show", FEATURE, "--project", PROJECT, "--json"],
     );
     assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json(), json!({ "feature": checkout(PROJECT) }));
+    assert_eq!(json.json(), json!({ "track": checkout(PROJECT) }));
 }
 
 #[test]
@@ -370,6 +371,11 @@ fn feature_show_finds_a_feature_by_its_name() {
             out.stdout
         );
     }
+    assert!(
+        out.stdout.contains(&format!("project: {PROJECT}\n")),
+        "the text names the feature's project: {:?}",
+        out.stdout
+    );
     assert_no_status(&out.stdout);
     assert!(
         !out.stdout.contains(FEATURE),
@@ -389,7 +395,7 @@ fn feature_show_finds_a_feature_by_its_name() {
         ],
     );
     assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json(), json!({ "feature": wish_list(PROJECT) }));
+    assert_eq!(json.json(), json!({ "track": wish_list(PROJECT) }));
     assert_nothing_posted(&server);
 }
 
@@ -496,7 +502,7 @@ fn an_unknown_or_missing_project_is_one_line_and_sends_nothing() {
         server
             .requests()
             .iter()
-            .all(|r| !r.path.contains("/features")),
+            .all(|r| !r.path.contains("/tracks")),
         "no feature route is called without a project: {:?}",
         server.requests()
     );
@@ -601,7 +607,7 @@ fn feature_rename_sends_the_new_name_and_prints_the_id_and_name() {
     assert_eq!(json.code, 0, "{}", json.stderr);
     assert_eq!(
         json.json(),
-        json!({ "feature": feature_json(WISH_LIST, PROJECT, "Saved items", "") }),
+        json!({ "track": feature_json(WISH_LIST, PROJECT, "Saved items", "") }),
         "--json prints the whole response"
     );
 }

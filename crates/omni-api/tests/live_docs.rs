@@ -10,14 +10,14 @@
 //! `/api/v1/w/{workspace_id}/projects/{project_id}`):
 //!
 //! - `POST /docs` (agent) creates a doc at the app level and `POST
-//!   /features/{feature_id}/docs` (agent) one in that feature, with the body
+//!   /tracks/{track_id}/docs` (agent) one in that track, with the body
 //!   of US-101 (`{"kind", "pillar", "title"}`): 201 `{"doc": Doc}`, where the
-//!   Doc is the one `GET /docs/{doc_id}` answers, with `feature_id` `null` at
-//!   the app level and the feature's ID in a feature. The refusals are 400
+//!   Doc is the one `GET /docs/{doc_id}` answers, with `track_id` `null` at
+//!   the app level and the track's ID in a track. The refusals are 400
 //!   `invalid_request` for a missing or unknown kind, pillar or title, 422 `design_needs_ui_pillar` for a design kind
 //!   outside `ui`, 422 `design_system_is_global` for a design system in a
-//!   feature, 409 `design_system_exists` for a second design system, and 404
-//!   `not_found` for a project or feature that is not there. A refusal
+//!   track, 409 `design_system_exists` for a second design system, and 404
+//!   `not_found` for a project or track that is not there. A refusal
 //!   creates nothing. A session is 403 `forbidden`: the human never edits.
 //! - Both routes are in the route registry as `agent`.
 //! - Every doc has a head: the column `docs.head`, the name of a chunk (64
@@ -59,8 +59,8 @@ const TEST_BUCKET: &str = "omni-us102-live-docs";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 const PROJECT_DOCS_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/docs";
-const FEATURE_DOCS_ROUTE: &str =
-    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs";
+const TRACK_DOCS_ROUTE: &str =
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/docs";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -366,27 +366,27 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
+fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/features", project_base(f, project)),
+                &format!("{}/tracks", project_base(f, project)),
                 &agent(f),
                 Some(&json!({ "name": unique("Checkout") })),
             ),
             201,
-            "create a feature",
-        )["feature"],
+            "create a track",
+        )["track"],
     )
 }
 
-/// Where a live doc is created: the app level or a feature's.
-fn scope_docs_path(f: &Fixture, project: &str, feature: Option<&str>) -> String {
-    match feature {
+/// Where a live doc is created: the app level or a track's.
+fn scope_docs_path(f: &Fixture, project: &str, track: Option<&str>) -> String {
+    match track {
         None => format!("{}/docs", project_base(f, project)),
-        Some(feature) => format!("{}/features/{feature}/docs", project_base(f, project)),
+        Some(track) => format!("{}/tracks/{track}/docs", project_base(f, project)),
     }
 }
 
@@ -395,13 +395,13 @@ fn create_live_response(
     client: &Client,
     auth: &Auth,
     project: &str,
-    feature: Option<&str>,
+    track: Option<&str>,
     body: &Value,
 ) -> Response {
     call(
         client,
         "POST",
-        &scope_docs_path(f, project, feature),
+        &scope_docs_path(f, project, track),
         auth,
         Some(body),
     )
@@ -412,7 +412,7 @@ fn create_live(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: Option<&str>,
+    track: Option<&str>,
     kind: &str,
     pillar: &str,
     title: &str,
@@ -423,7 +423,7 @@ fn create_live(
             client,
             &agent(f),
             project,
-            feature,
+            track,
             &json!({ "kind": kind, "pillar": pillar, "title": title }),
         ),
         201,
@@ -611,7 +611,7 @@ fn listed_ids(f: &Fixture, client: &Client, project: &str, query: &str) -> Vec<S
 
 #[test]
 fn the_scope_level_create_routes_are_agent_routes_of_the_registry() {
-    for path in [PROJECT_DOCS_ROUTE, FEATURE_DOCS_ROUTE] {
+    for path in [PROJECT_DOCS_ROUTE, TRACK_DOCS_ROUTE] {
         let entry = registry()
             .into_iter()
             .find(|r| r.method == "POST" && r.path == path)
@@ -635,7 +635,7 @@ fn an_agent_creates_an_html_doc_at_the_app_level() {
     assert_eq!(doc["kind"], "html", "{doc}");
     assert_eq!(doc["pillar"], "spec", "{doc}");
     assert_eq!(doc["title"], title.as_str(), "{doc}");
-    assert_eq!(doc["feature_id"], Value::Null, "an app-level doc: {doc}");
+    assert_eq!(doc["track_id"], Value::Null, "an app-level doc: {doc}");
     let id = id_of(&doc);
 
     let shown = must(
@@ -645,7 +645,7 @@ fn an_agent_creates_an_html_doc_at_the_app_level() {
     );
     assert_eq!(shown["doc"]["id"], id.as_str(), "{shown}");
     assert_eq!(shown["doc"]["title"], title.as_str(), "{shown}");
-    assert_eq!(shown["doc"]["feature_id"], Value::Null, "{shown}");
+    assert_eq!(shown["doc"]["track_id"], Value::Null, "{shown}");
 
     for auth in [agent(f), human(f)] {
         let read = read_html(f, client, &auth, &project, &id);
@@ -654,27 +654,27 @@ fn an_agent_creates_an_html_doc_at_the_app_level() {
     }
 
     assert!(
-        listed_ids(f, client, &project, "?feature=global").contains(&id),
+        listed_ids(f, client, &project, "?track=global").contains(&id),
         "the doc is one of the app level's"
     );
 }
 
 #[test]
-fn an_agent_creates_a_doc_in_a_feature() {
+fn an_agent_creates_a_doc_in_a_track() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let doc = create_live(
         f,
         client,
         &project,
-        Some(&feature),
+        Some(&track),
         "html",
         "architecture",
         "Checkout architecture",
     );
     assert_uuid_v7(&doc["id"]);
-    assert_eq!(doc["feature_id"], feature.as_str(), "{doc}");
+    assert_eq!(doc["track_id"], track.as_str(), "{doc}");
     assert_eq!(doc["pillar"], "architecture", "{doc}");
     let id = id_of(&doc);
 
@@ -683,16 +683,16 @@ fn an_agent_creates_a_doc_in_a_feature() {
         200,
         "show the doc",
     );
-    assert_eq!(shown["doc"]["feature_id"], feature.as_str(), "{shown}");
+    assert_eq!(shown["doc"]["track_id"], track.as_str(), "{shown}");
     let read = read_html(f, client, &agent(f), &project, &id);
     assert_eq!(read["html"], "", "a new HTML doc is the empty doc: {read}");
 
     assert!(
-        listed_ids(f, client, &project, &format!("?feature={feature}")).contains(&id),
-        "the doc is one of the feature's"
+        listed_ids(f, client, &project, &format!("?track={track}")).contains(&id),
+        "the doc is one of the track's"
     );
     assert!(
-        !listed_ids(f, client, &project, "?feature=global").contains(&id),
+        !listed_ids(f, client, &project, "?track=global").contains(&id),
         "the doc is not one of the app level's"
     );
 }
@@ -701,8 +701,8 @@ fn an_agent_creates_a_doc_in_a_feature() {
 fn a_new_design_reads_as_an_empty_design_with_one_page() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    for scope in [None, Some(feature.as_str())] {
+    let track = new_track(f, client, &project);
+    for scope in [None, Some(track.as_str())] {
         let doc = create_live(
             f,
             client,
@@ -745,15 +745,15 @@ fn a_new_design_reads_as_an_empty_design_with_one_page() {
 fn the_creation_of_a_doc_is_its_first_row_of_doc_changes() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let app_doc = id_of(&create_live(
         f, client, &project, None, "html", "spec", "Plan",
     ));
-    let feature_doc = id_of(&create_live(
+    let track_doc = id_of(&create_live(
         f,
         client,
         &project,
-        Some(&feature),
+        Some(&track),
         "html",
         "research",
         "Interviews",
@@ -761,7 +761,7 @@ fn the_creation_of_a_doc_is_its_first_row_of_doc_changes() {
     let design = id_of(&create_live(
         f, client, &project, None, "design", "ui", "Screens",
     ));
-    for doc in [&app_doc, &feature_doc, &design] {
+    for doc in [&app_doc, &track_doc, &design] {
         assert_created_by_first_change(doc);
     }
 }
@@ -788,7 +788,7 @@ fn the_head_of_a_new_doc_is_a_stored_chunk_named_by_its_hash() {
 fn a_refused_create_makes_no_doc_and_no_change() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let docs_of_project = || {
         count(
             "SELECT count(*) FROM docs WHERE project_id = $1::uuid",
@@ -807,7 +807,7 @@ fn a_refused_create_makes_no_doc_and_no_change() {
     let docs_before = docs_of_project();
     let changes_before = changes_of_project();
 
-    for scope in [None, Some(feature.as_str())] {
+    for scope in [None, Some(track.as_str())] {
         for body in [
             json!({ "pillar": "spec", "title": "No kind" }),
             json!({ "kind": "pdf", "pillar": "spec", "title": "Bad kind" }),
@@ -841,8 +841,8 @@ fn a_refused_create_makes_no_doc_and_no_change() {
             client,
             &agent(f),
             &project,
-            Some(&feature),
-            &json!({ "kind": "design-system", "pillar": "ui", "title": "Feature tokens" }),
+            Some(&track),
+            &json!({ "kind": "design-system", "pillar": "ui", "title": "Track tokens" }),
         ),
         422,
         "design_system_is_global",
@@ -883,9 +883,9 @@ fn a_refused_create_makes_no_doc_and_no_change() {
 fn the_human_cannot_create_a_doc() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let body = json!({ "kind": "html", "pillar": "spec", "title": "By hand" });
-    for scope in [None, Some(feature.as_str())] {
+    for scope in [None, Some(track.as_str())] {
         assert_error(
             &create_live_response(f, client, &human(f), &project, scope, &body),
             403,

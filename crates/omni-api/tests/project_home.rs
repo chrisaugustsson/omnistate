@@ -14,7 +14,7 @@
 //! those of tests/comments.rs):
 //!
 //! - `GET /home` (human) answers the project's page in one call: 200
-//!   `{"project_id", "features", "app", "docs", "threads", "waiting"}`. An API
+//!   `{"project_id", "tracks", "app", "docs", "threads", "waiting"}`. An API
 //!   key is 403 `{"error": "forbidden"}` (the page is the human's, and an agent
 //!   must not read past a sealed thread through it); an unknown project is 404
 //!   `{"error": "not_found"}`.
@@ -22,7 +22,7 @@
 //!   `GET /docs/{doc_id}` answers (so with its `pillar`, `kind` and `title`).
 //!   The web app groups them by pillar.
 //! - `threads` lists every thread of the project, oldest first, each with at
-//!   least the `id`, `feature_id` and `question` of the Thread that `GET
+//!   least the `id`, `track_id` and `question` of the Thread that `GET
 //!   /threads/{thread_id}` answers.
 //! - `waiting.comments` is what waits for the human, oldest first: the comments
 //!   whose latest reply is an agent's, each the Comment that `GET
@@ -30,19 +30,19 @@
 //!   latest reply is the human's and one that the human deleted are not listed.
 //!
 //!   Nothing of another project is listed anywhere.
-//! - `features` lists every feature of the project in creation order, each a
-//!   FeatureSummary `{"feature", "docs", "waiting"}`: `feature` is the Feature
-//!   that `GET /features/{feature_id}` answers, `docs` the number of the
-//!   feature's own docs, and `waiting` the number of the items of `waiting`
+//! - `tracks` lists every track of the project in creation order, each a
+//!   TrackSummary `{"track", "docs", "waiting"}`: `track` is the Track
+//!   that `GET /tracks/{track_id}` answers, `docs` the number of the
+//!   track's own docs, and `waiting` the number of the items of `waiting`
 //!   that carry its ID.
-//! - Every item of `waiting` carries `feature_id`, that of its doc. `null` is
+//! - Every item of `waiting` carries `track_id`, that of its doc. `null` is
 //!   the app level.
-//! - `docs` and `threads` stay complete, app level and every feature, each item
-//!   with its `feature_id`.
+//! - `docs` and `threads` stay complete, app level and every track, each item
+//!   with its `track_id`.
 //!
 //! US-112 adds what the scope pages show:
 //!
-//! - `app.last_activity` and each feature's `last_activity`: the time of the
+//! - `app.last_activity` and each track's `last_activity`: the time of the
 //!   scope's latest write, a row of `doc_changes` (create, edit, rename or
 //!   delete) of one of its docs, or a thread's creation, post or conclusion;
 //!   comments and replies do not count. `null` while there is none.
@@ -52,7 +52,7 @@
 //! - each thread's `post_count`, and `last_post_at`, the time of its newest
 //!   post (`null` without posts).
 //!
-//! US-139 adds each feature's `stories: {"total", "open", "done"}`: `open`
+//! US-139 adds each track's `stories: {"total", "open", "done"}`: `open`
 //! counts the stories neither `done` nor `cancelled`, `done` those `done`, and
 //! `total` every story but the cancelled ones.
 
@@ -567,9 +567,9 @@ fn the_home_lists_every_doc_of_the_project_with_its_pillar() {
 fn the_home_lists_every_thread_of_the_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let first = id_of(&scope_thread(f, client, &project, None));
-    let second = id_of(&scope_thread(f, client, &project, Some(&feature)));
+    let second = id_of(&scope_thread(f, client, &project, Some(&track)));
     let third = id_of(&scope_thread(f, client, &project, None));
     let elsewhere = new_project(f, client);
     let foreign = id_of(&scope_thread(f, client, &elsewhere, None));
@@ -591,7 +591,7 @@ fn the_home_lists_every_thread_of_the_project() {
             &format!("/threads/{thread}"),
         )["thread"]
             .clone();
-        for field in ["id", "feature_id", "question"] {
+        for field in ["id", "track_id", "question"] {
             assert_eq!(listed[field], read[field], "{field} of {listed}");
         }
     }
@@ -656,172 +656,161 @@ fn comments_wait_for_the_human_while_an_agent_replied_last() {
 }
 
 // ---------------------------------------------------------------------------
-// Features
+// Tracks
 // ---------------------------------------------------------------------------
 
-/// Creates a feature as the author; returns its ID.
-fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
+/// Creates a track as the author; returns its ID.
+fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/features", project_base(f, project)),
+                &format!("{}/tracks", project_base(f, project)),
                 &author(f),
-                Some(&json!({ "name": unique("feature"), "description": "A slice of work" })),
+                Some(&json!({ "name": unique("track"), "description": "A slice of work" })),
             ),
             201,
-            "create a feature",
-        )["feature"],
+            "create a track",
+        )["track"],
     )
 }
 
-/// The FeatureSummary of `feature` in the home's `features`.
-fn summary_of(home: &Value, feature: &str) -> Value {
-    list_at(home, "/features")
+/// The TrackSummary of `track` in the home's `tracks`.
+fn summary_of(home: &Value, track: &str) -> Value {
+    list_at(home, "/tracks")
         .into_iter()
-        .find(|summary| summary["feature"]["id"] == feature)
-        .unwrap_or_else(|| panic!("`features` of the home lists {feature}: {home}"))
+        .find(|summary| summary["track"]["id"] == track)
+        .unwrap_or_else(|| panic!("`tracks` of the home lists {track}: {home}"))
 }
 
-/// The IDs of the features that the home's `features` lists, in order.
-fn feature_ids(home: &Value) -> Vec<String> {
-    list_at(home, "/features")
+/// The IDs of the tracks that the home's `tracks` lists, in order.
+fn track_ids(home: &Value) -> Vec<String> {
+    list_at(home, "/tracks")
         .iter()
-        .map(|summary| id_of(&summary["feature"]))
+        .map(|summary| id_of(&summary["track"]))
         .collect()
 }
 
-/// (docs, waiting) of a FeatureSummary.
+/// (docs, waiting) of a TrackSummary.
 fn counts(summary: &Value) -> (Value, Value) {
     (summary["docs"].clone(), summary["waiting"].clone())
 }
 
 /// Asserts that the item with `id` of the list at `pointer` carries
-/// `feature_id` (JSON `null` is project level).
-fn assert_feature_of(home: &Value, pointer: &str, id: &str, feature: &Value) {
+/// `track_id` (JSON `null` is project level).
+fn assert_track_of(home: &Value, pointer: &str, id: &str, track: &Value) {
     let item = item_at(home, pointer, id);
     assert!(
-        item.get("feature_id").is_some(),
-        "{pointer}: {id} carries `feature_id`: {item}"
+        item.get("track_id").is_some(),
+        "{pointer}: {id} carries `track_id`: {item}"
     );
-    assert_eq!(
-        &item["feature_id"], feature,
-        "{pointer}: feature_id of {id}"
-    );
+    assert_eq!(&item["track_id"], track, "{pointer}: track_id of {id}");
 }
 
 #[test]
-fn the_home_lists_the_features_in_creation_order_with_their_counts() {
+fn the_home_lists_the_tracks_in_creation_order_with_their_counts() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let first = new_feature(f, client, &project);
-    let second = new_feature(f, client, &project);
-    let quiet = new_feature(f, client, &project);
+    let first = new_track(f, client, &project);
+    let second = new_track(f, client, &project);
+    let quiet = new_track(f, client, &project);
 
-    // A doc at the app level, whose waiting comment counts for no feature.
+    // A doc at the app level, whose waiting comment counts for no track.
     let global = live_doc_in(f, client, &project, None);
     waiting_comment(f, client, &project, &global);
 
-    // The first feature: three docs, of which two have a comment that waits.
+    // The first track: three docs, of which two have a comment that waits.
     let with_comment = live_doc_in(f, client, &project, Some(&first));
     let with_comments = live_doc_in(f, client, &project, Some(&first));
     live_doc_in(f, client, &project, Some(&first));
     waiting_comment(f, client, &project, &with_comment);
     waiting_comment(f, client, &project, &with_comments);
 
-    // The second feature: one doc.
+    // The second track: one doc.
     live_doc_in(f, client, &project, Some(&second));
 
     // The third has nothing.
 
-    // Another project's feature is not this project's.
+    // Another project's track is not this project's.
     let elsewhere = new_project(f, client);
-    let foreign = new_feature(f, client, &elsewhere);
+    let foreign = new_track(f, client, &elsewhere);
 
     let home = home(f, client, &project);
     assert_eq!(
-        feature_ids(&home),
+        track_ids(&home),
         vec![first.clone(), second.clone(), quiet.clone()],
-        "every feature of the project, the empty one too, in creation order: {home}"
+        "every track of the project, the empty one too, in creation order: {home}"
     );
     assert!(!home.to_string().contains(&foreign), "{home}");
-    for feature in [&first, &second, &quiet] {
+    for track in [&first, &second, &quiet] {
         assert_eq!(
-            summary_of(&home, feature)["feature"],
-            read(
-                f,
-                client,
-                &human(f),
-                &project,
-                &format!("/features/{feature}")
-            )["feature"],
-            "the summary holds the feature as its read answers it"
+            summary_of(&home, track)["track"],
+            read(f, client, &human(f), &project, &format!("/tracks/{track}"))["track"],
+            "the summary holds the track as its read answers it"
         );
     }
-    for feature in [&first, &second, &quiet] {
+    for track in [&first, &second, &quiet] {
         assert!(
-            summary_of(&home, feature)["feature"]
-                .get("status")
-                .is_none(),
-            "a feature has no status (US-110): {home}"
+            summary_of(&home, track)["track"].get("status").is_none(),
+            "a track has no status (US-110): {home}"
         );
     }
     assert_eq!(
         counts(&summary_of(&home, &first)),
         (json!(3), json!(2)),
-        "the first feature: 3 docs of its own, and the 2 comments that wait on them: {home}"
+        "the first track: 3 docs of its own, and the 2 comments that wait on them: {home}"
     );
     assert_eq!(
         counts(&summary_of(&home, &second)),
         (json!(1), json!(0)),
-        "the second feature: {home}"
+        "the second track: {home}"
     );
     assert_eq!(
         counts(&summary_of(&home, &quiet)),
         (json!(0), json!(0)),
-        "the feature without docs: {home}"
+        "the track without docs: {home}"
     );
 }
 
 #[test]
-fn every_waiting_item_carries_its_feature_and_counts_for_it() {
+fn every_waiting_item_carries_its_track_and_counts_for_it() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let idle = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
+    let idle = new_track(f, client, &project);
     let app_doc = live_doc_in(f, client, &project, None);
-    let feature_doc = live_doc_in(f, client, &project, Some(&feature));
+    let track_doc = live_doc_in(f, client, &project, Some(&track));
     let at_app_level = waiting_comment(f, client, &project, &app_doc);
-    let in_feature = waiting_comment(f, client, &project, &feature_doc);
+    let in_track = waiting_comment(f, client, &project, &track_doc);
 
     let home = home(f, client, &project);
     let pointer = "/waiting/comments";
     assert_eq!(
         ids_at(&home, pointer),
-        vec![at_app_level.clone(), in_feature.clone()],
+        vec![at_app_level.clone(), in_track.clone()],
         "{pointer} lists both, oldest first: {home}"
     );
-    assert_feature_of(&home, pointer, &at_app_level, &Value::Null);
-    assert_feature_of(&home, pointer, &in_feature, &json!(feature));
+    assert_track_of(&home, pointer, &at_app_level, &Value::Null);
+    assert_track_of(&home, pointer, &in_track, &json!(track));
     assert_eq!(
-        summary_of(&home, &feature)["waiting"],
+        summary_of(&home, &track)["waiting"],
         json!(1),
-        "the comment of the feature waits for it: {home}"
+        "the comment of the track waits for it: {home}"
     );
     assert_eq!(
         summary_of(&home, &idle)["waiting"],
         json!(0),
-        "nothing waits for a feature that has nothing: {home}"
+        "nothing waits for a track that has nothing: {home}"
     );
 }
 
 #[test]
-fn the_home_lists_the_docs_and_threads_of_the_project_and_every_feature() {
+fn the_home_lists_the_docs_and_threads_of_the_project_and_every_track() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let first = new_feature(f, client, &project);
-    let second = new_feature(f, client, &project);
+    let first = new_track(f, client, &project);
+    let second = new_track(f, client, &project);
     let global = live_doc_in(f, client, &project, None);
     let global_thread = id_of(&scope_thread(f, client, &project, None));
     let first_doc = live_doc_in(f, client, &project, Some(&first));
@@ -859,16 +848,16 @@ fn the_home_lists_the_docs_and_threads_of_the_project_and_every_feature() {
                 .iter()
                 .map(|(id, _)| (*id).clone())
                 .collect::<Vec<_>>(),
-            "{pointer}: the app level and every feature, oldest first: {home}"
+            "{pointer}: the app level and every track, oldest first: {home}"
         );
-        for (id, feature) in items {
-            assert_feature_of(&home, pointer, id, feature);
+        for (id, track) in items {
+            assert_track_of(&home, pointer, id, track);
             let read = read(f, client, &human(f), &project, &format!("/{path}/{id}"));
             let singular = &path[..path.len() - 1];
             assert_eq!(
-                item_at(&home, pointer, id)["feature_id"],
-                read[singular]["feature_id"],
-                "{pointer}: {id} has the feature its read answers"
+                item_at(&home, pointer, id)["track_id"],
+                read[singular]["track_id"],
+                "{pointer}: {id} has the track its read answers"
             );
         }
     }
@@ -878,11 +867,11 @@ fn the_home_lists_the_docs_and_threads_of_the_project_and_every_feature() {
 // US-112: what the scope pages show
 // ---------------------------------------------------------------------------
 
-/// Creates an HTML doc at the app level or in `feature`; returns its ID.
-fn live_doc_in(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
-    let path = match feature {
+/// Creates an HTML doc at the app level or in `track`; returns its ID.
+fn live_doc_in(f: &Fixture, client: &Client, project: &str, track: Option<&str>) -> String {
+    let path = match track {
         None => format!("{}/docs", project_base(f, project)),
-        Some(feature) => format!("{}/features/{feature}/docs", project_base(f, project)),
+        Some(track) => format!("{}/tracks/{track}/docs", project_base(f, project)),
     };
     id_of(
         &must(
@@ -938,11 +927,11 @@ fn latest_write(f: &Fixture, client: &Client, project: &str, doc: &str) -> Strin
         .to_string()
 }
 
-/// The author starts a thread at the app level or in `feature`; returns the thread.
-fn scope_thread(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> Value {
-    let path = match feature {
+/// The author starts a thread at the app level or in `track`; returns the thread.
+fn scope_thread(f: &Fixture, client: &Client, project: &str, track: Option<&str>) -> Value {
+    let path = match track {
         None => format!("{}/threads", project_base(f, project)),
-        Some(feature) => format!("{}/features/{feature}/threads", project_base(f, project)),
+        Some(track) => format!("{}/tracks/{track}/threads", project_base(f, project)),
     };
     must(
         call(
@@ -1022,11 +1011,11 @@ fn app_activity(home: &Value) -> Value {
     home["app"]["last_activity"].clone()
 }
 
-fn feature_activity(home: &Value, feature: &str) -> Value {
-    list_at(home, "/features")
+fn track_activity(home: &Value, track: &str) -> Value {
+    list_at(home, "/tracks")
         .into_iter()
-        .find(|summary| summary["feature"]["id"] == feature)
-        .unwrap_or_else(|| panic!("the home lists the feature {feature}: {home}"))["last_activity"]
+        .find(|summary| summary["track"]["id"] == track)
+        .unwrap_or_else(|| panic!("the home lists the track {track}: {home}"))["last_activity"]
         .clone()
 }
 
@@ -1041,22 +1030,22 @@ fn at(value: &Value) -> String {
 fn each_scope_has_the_time_of_its_latest_doc_or_thread_write_as_its_last_activity() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let home_now = || home(f, client, &project);
     assert_eq!(
         app_activity(&home_now()),
         Value::Null,
         "nothing written yet"
     );
-    assert_eq!(feature_activity(&home_now(), &feature), Value::Null);
+    assert_eq!(track_activity(&home_now(), &track), Value::Null);
 
     let doc = live_doc_in(f, client, &project, None);
     let created = latest_write(f, client, &project, &doc);
     assert_eq!(at(&app_activity(&home_now())), created, "a doc's creation");
     assert_eq!(
-        feature_activity(&home_now(), &feature),
+        track_activity(&home_now(), &track),
         Value::Null,
-        "the app's doc is not the feature's"
+        "the app's doc is not the track's"
     );
 
     let thread = scope_thread(f, client, &project, None);
@@ -1079,22 +1068,22 @@ fn each_scope_has_the_time_of_its_latest_doc_or_thread_write_as_its_last_activit
     assert!(edited > concluded, "{edited}");
     assert_eq!(at(&app_activity(&home_now())), edited, "an edit");
 
-    let feature_doc = live_doc_in(f, client, &project, Some(&feature));
+    let track_doc = live_doc_in(f, client, &project, Some(&track));
     assert_eq!(
-        at(&feature_activity(&home_now(), &feature)),
-        latest_write(f, client, &project, &feature_doc),
-        "the feature's own doc"
+        at(&track_activity(&home_now(), &track)),
+        latest_write(f, client, &project, &track_doc),
+        "the track's own doc"
     );
-    let feature_thread = scope_thread(f, client, &project, Some(&feature));
+    let track_thread = scope_thread(f, client, &project, Some(&track));
     assert_eq!(
-        at(&feature_activity(&home_now(), &feature)),
-        at(&feature_thread["created_at"]),
-        "the feature's own thread"
+        at(&track_activity(&home_now(), &track)),
+        at(&track_thread["created_at"]),
+        "the track's own thread"
     );
     assert_eq!(
         at(&app_activity(&home_now())),
         edited,
-        "the feature's doc and thread are not the app's"
+        "the track's doc and thread are not the app's"
     );
 
     let response = call(
@@ -1191,15 +1180,15 @@ fn each_thread_has_its_post_count_and_the_time_of_its_newest_post() {
 // Stories
 // ---------------------------------------------------------------------------
 
-/// Creates a story in `feature` as the author and gives it `status` as the
+/// Creates a story in `track` as the author and gives it `status` as the
 /// admin role; returns its ID.
-fn story_in(f: &Fixture, client: &Client, project: &str, feature: &str, status: &str) -> String {
+fn story_in(f: &Fixture, client: &Client, project: &str, track: &str, status: &str) -> String {
     let story = id_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/features/{feature}/stories", project_base(f, project)),
+                &format!("{}/tracks/{track}/stories", project_base(f, project)),
                 &author(f),
                 Some(&json!({ "title": unique("story"), "text": "", "topic": "", "criteria": [] })),
             ),
@@ -1220,25 +1209,25 @@ fn story_in(f: &Fixture, client: &Client, project: &str, feature: &str, status: 
 }
 
 #[test]
-fn a_feature_counts_its_open_and_done_stories_and_leaves_the_cancelled_out_of_the_total() {
+fn a_track_counts_its_open_and_done_stories_and_leaves_the_cancelled_out_of_the_total() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let empty = new_feature(f, client, &project);
-    story_in(f, client, &project, &feature, "backlog");
-    story_in(f, client, &project, &feature, "implementing");
-    story_in(f, client, &project, &feature, "done");
-    story_in(f, client, &project, &feature, "cancelled");
+    let track = new_track(f, client, &project);
+    let empty = new_track(f, client, &project);
+    story_in(f, client, &project, &track, "backlog");
+    story_in(f, client, &project, &track, "implementing");
+    story_in(f, client, &project, &track, "done");
+    story_in(f, client, &project, &track, "cancelled");
 
     let home = home(f, client, &project);
     assert_eq!(
-        summary_of(&home, &feature)["stories"],
+        summary_of(&home, &track)["stories"],
         json!({ "total": 3, "open": 2, "done": 1 }),
         "4 stories, 1 done and 1 cancelled: {home}"
     );
     assert_eq!(
         summary_of(&home, &empty)["stories"],
         json!({ "total": 0, "open": 0, "done": 0 }),
-        "a feature with no stories: {home}"
+        "a track with no stories: {home}"
     );
 }

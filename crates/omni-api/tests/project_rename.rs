@@ -339,17 +339,17 @@ fn renaming_a_project_trims_the_name_and_keeps_its_id_and_contents() {
     let old = unique("Shop");
     let project = new_project(f, client, &old);
     let id = project["id"].as_str().unwrap().to_string();
-    let feature = must(
+    let track = must(
         call(
             client,
             "POST",
-            &format!("/api/v1/w/{}/projects/{id}/features", f.workspace),
+            &format!("/api/v1/w/{}/projects/{id}/tracks", f.workspace),
             &agent(f),
             Some(&json!({ "name": "Checkout", "description": "Pay" })),
         ),
         201,
-        "create a feature",
-    )["feature"]["id"]
+        "create a track",
+    )["track"]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -367,8 +367,8 @@ fn renaming_a_project_trims_the_name_and_keeps_its_id_and_contents() {
             } })
         );
         assert_eq!(name_in_list(f, client, &id), Some(new_name.clone()));
-        let shown = get_ok(f, client, &id, &format!("/features/{feature}"));
-        assert_eq!(shown["feature"]["name"], "Checkout");
+        let shown = get_ok(f, client, &id, &format!("/tracks/{track}"));
+        assert_eq!(shown["track"]["name"], "Checkout");
         // Renaming to the name it already has is a 200 that changes nothing.
         let again = must(rename(f, client, &auth, &id, &body), 200, "same name");
         assert_eq!(again, renamed);

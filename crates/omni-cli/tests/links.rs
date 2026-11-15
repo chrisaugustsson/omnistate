@@ -22,11 +22,10 @@ fn mock() -> MockServer {
             );
         }
         if request.method == "GET"
-            && (request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features")
-                || request.path
-                    == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features"))
+            && (request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks")
+                || request.path == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/tracks"))
         {
-            return Reply::json(200, &json!({ "features": [] }));
+            return Reply::json(200, &json!({ "tracks": [] }));
         }
         if request.method == "GET"
             && request
@@ -344,7 +343,7 @@ fn a_linked_folder_and_the_folders_under_it_find_their_project() {
         let out = feature_list_in(&home, &dir, &[]);
         assert_eq!(out.code, 0, "{}", out.stderr);
     }
-    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features");
+    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks");
     assert_eq!(feature_requests(&server), vec![want.clone(), want]);
 }
 
@@ -412,7 +411,7 @@ fn a_link_of_the_logged_in_workspace_beats_a_nearer_link_of_another() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }
@@ -437,7 +436,7 @@ fn project_flag_wins_over_the_folders_link() {
         feature_requests(&server),
         vec![
             format!("GET /api/v1/w/{WORKSPACE}/projects"),
-            format!("GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features")
+            format!("GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/tracks")
         ]
     );
 }
@@ -463,7 +462,7 @@ fn the_nearest_link_of_the_logged_in_workspace_wins() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }
@@ -487,7 +486,7 @@ fn a_path_linked_in_both_workspaces_finds_the_logged_in_project() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }
@@ -683,9 +682,9 @@ fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() 
         feature_requests(&server),
         vec![
             list.clone(),
-            format!("{list}/{PROJECT}/features"),
+            format!("{list}/{PROJECT}/tracks"),
             list.clone(),
-            format!("{list}/{OTHER_PROJECT}/features"),
+            format!("{list}/{OTHER_PROJECT}/tracks"),
         ]
     );
 
@@ -716,8 +715,8 @@ fn omni_feature_is_the_feature_flag_and_the_omni_toml_feature_is_not_read() {
     assert_eq!(
         feature_requests(&server),
         vec![
-            format!("{docs}?feature={FEATURE}"),
-            format!("{docs}?feature={FEATURE}"),
+            format!("{docs}?track={FEATURE}"),
+            format!("{docs}?track={FEATURE}"),
             docs,
         ]
     );
@@ -734,7 +733,7 @@ fn global_beats_omni_feature() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs?feature=global"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs?track=global"
         )]
     );
 }
@@ -857,7 +856,7 @@ fn a_git_worktree_of_a_linked_repository_finds_the_repositorys_project() {
         let out = feature_list_in(&home, &dir, &[]);
         assert_eq!(out.code, 0, "{}", out.stderr);
     }
-    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features");
+    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks");
     assert_eq!(feature_requests(&server), vec![want.clone(), want]);
 }
 
@@ -875,7 +874,7 @@ fn a_link_of_the_worktree_itself_beats_the_repositorys() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/tracks"
         )]
     );
 }
@@ -924,7 +923,7 @@ fn the_repositorys_link_in_the_logged_in_workspace_beats_the_worktrees_link_of_a
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }

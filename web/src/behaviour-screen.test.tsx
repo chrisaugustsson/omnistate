@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // US-221: a feature's Behaviour screen, .../features/<feature>/behaviour. It
-// reads GET .../features/<feature>/behaviour and lists the tree as folders: the
+// reads GET .../tracks/<feature>/behaviour and lists the tree as folders: the
 // feature first, then its stories, closed, by their short titles. An empty list
 // is a feature with no tree; any failed request, 404 included, is a failed load.
 // The app is rendered with its own router on a memory history and the
@@ -71,7 +71,7 @@ type Behaviour = { status: number; body: unknown };
 /** A feature of the project's home data. */
 function feature(id: string, name: string) {
   return {
-    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
     stories: { total: 0, open: 0, done: 0 },
@@ -113,20 +113,20 @@ function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], que
           return json(200, {
             project_id: PROJECT_ID,
             app: { last_activity: null },
-            features,
+            tracks: features,
             docs: [],
             threads: [],
             waiting: { comments: [] },
           });
         case `${API}/comments`:
           return json(200, { project_id: PROJECT_ID, comments: [] });
-        case `${API}/features/${FEATURE_ID}/behaviour`:
+        case `${API}/tracks/${FEATURE_ID}/behaviour`:
           return json(behaviour.status, behaviour.body);
-        case `${API}/features/${FEATURE_ID}/behaviour/questions`:
+        case `${API}/tracks/${FEATURE_ID}/behaviour/questions`:
           if (!questions) return json(404, { error: "not_found" });
           return json(200, { questions });
         default:
-          if (path.startsWith(`${API}/features/${FEATURE_ID}/behaviour/nodes/`)) {
+          if (path.startsWith(`${API}/tracks/${FEATURE_ID}/behaviour/nodes/`)) {
             const read = reads[decodeURIComponent(path.split("/").at(-1)!)];
             if (read) return json(200, read);
           }
@@ -936,9 +936,9 @@ describe("choosing a node in the Behaviour screen", () => {
         return new URL(url, "http://localhost:3000").pathname === path;
       }).length;
     }
-    const treeReads = () => requests(`${API}/features/${FEATURE_ID}/behaviour`);
-    const questionReads = () => requests(`${API}/features/${FEATURE_ID}/behaviour/questions`);
-    const nodeReads = (id: string) => requests(`${API}/features/${FEATURE_ID}/behaviour/nodes/${id}`);
+    const treeReads = () => requests(`${API}/tracks/${FEATURE_ID}/behaviour`);
+    const questionReads = () => requests(`${API}/tracks/${FEATURE_ID}/behaviour/questions`);
+    const nodeReads = (id: string) => requests(`${API}/tracks/${FEATURE_ID}/behaviour/nodes/${id}`);
 
     /** Opens the live socket and returns a way to send a project event on it. */
     async function liveSocket() {
@@ -975,19 +975,19 @@ describe("choosing a node in the Behaviour screen", () => {
       await waitFor(() => expect(questionReads()).toBe(1));
       expect(treeReads()).toBe(1);
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: PROGRAM_STORY });
+      send("behaviour.node_changed", { track_id: FEATURE_ID, node_id: PROGRAM_STORY });
       await waitFor(() => expect(treeReads()).toBe(2));
       expect(questionReads()).toBe(2);
       await still(450);
       expect(treeReads()).toBe(2);
       expect(questionReads()).toBe(2);
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: PROGRAM_STORY });
+      send("behaviour.node_changed", { track_id: FEATURE_ID, node_id: PROGRAM_STORY });
       await waitFor(() => expect(treeReads()).toBe(3));
       const STATS_STORY = "0192d7a0-8888-7000-8000-000000000007";
       list.body = { nodes: [...TREE, node(STATS_STORY, ROOT, "As a player, I want to see my putting stats, so that I know where I improve", { position: 2 })] };
-      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: STATS_STORY });
-      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: STATS_STORY, question_id: "q9", state: "open" });
+      send("behaviour.node_created", { track_id: FEATURE_ID, node_id: STATS_STORY });
+      send("behaviour.question_changed", { track_id: FEATURE_ID, node_id: STATS_STORY, question_id: "q9", state: "open" });
 
       await waitFor(() => expect(within(aside).queryByText("Player: see my putting stats")).not.toBeNull());
       expect(treeReads()).toBe(4);
@@ -1004,13 +1004,13 @@ describe("choosing a node in the Behaviour screen", () => {
       const send = await liveSocket();
       await waitFor(() => expect(questionReads()).toBe(1));
 
-      send("behaviour.node_created", { feature_id: OTHER_FEATURE, node_id: "0192d7a0-8888-7000-8000-000000000099" });
-      send("feature.renamed", { feature_id: FEATURE_ID, name: "Putting" });
+      send("behaviour.node_created", { track_id: OTHER_FEATURE, node_id: "0192d7a0-8888-7000-8000-000000000099" });
+      send("track.renamed", { track_id: FEATURE_ID, name: "Putting" });
       await still(450);
       expect(treeReads()).toBe(1);
       expect(questionReads()).toBe(1);
 
-      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: SIGNS_UP });
+      send("behaviour.node_created", { track_id: FEATURE_ID, node_id: SIGNS_UP });
       await waitFor(() => expect(treeReads()).toBe(2));
     }, 10_000);
 
@@ -1025,25 +1025,25 @@ describe("choosing a node in the Behaviour screen", () => {
       const remark = (await screen.findByRole("textbox", { name: "Add a question or remark" })) as HTMLTextAreaElement;
       fireEvent.change(remark, { target: { value: "The confirmation is easy to miss." } });
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: CONFIRMS });
+      send("behaviour.node_changed", { track_id: FEATURE_ID, node_id: CONFIRMS });
       await waitFor(() => expect(treeReads()).toBe(2));
       await still(450);
       expect(nodeReads(SIGNS_UP)).toBe(1);
 
-      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
+      send("behaviour.question_changed", { track_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(2));
       await still(450);
 
-      send("behaviour.marked", { feature_id: FEATURE_ID, node_id: CONFIRMS, below: false });
+      send("behaviour.marked", { track_id: FEATURE_ID, node_id: CONFIRMS, below: false });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(3));
       await still(450);
 
-      send("behaviour.imported", { feature_id: FEATURE_ID });
+      send("behaviour.imported", { track_id: FEATURE_ID });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(4));
       await still(450);
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: CONFIRMS });
-      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
+      send("behaviour.node_changed", { track_id: FEATURE_ID, node_id: CONFIRMS });
+      send("behaviour.question_changed", { track_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(5));
       await still(450);
       expect(nodeReads(SIGNS_UP)).toBe(5);
@@ -1090,7 +1090,7 @@ describe("choosing a node in the Behaviour screen", () => {
           added(PROGRAM_OFFLINE, PROGRAM, "Player opens a program offline", 9),
         ],
       };
-      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: OFFLINE });
+      send("behaviour.node_created", { track_id: FEATURE_ID, node_id: OFFLINE });
 
       await waitFor(() => expect(boxOf(OFFLINE)).not.toBeNull(), { timeout: 2000 });
       expect(rowOf(OFFLINE)!.textContent).toBe("Player is offline");
@@ -1150,7 +1150,7 @@ describe("the Behaviour screen's details", () => {
 // US-228: after a person's answer, accepted or turned away with a 409, the
 // screen reads the tree, the open questions and the chosen node again.
 describe("answering a waiting question in the Behaviour screen", () => {
-  const ANSWERS_PATH = `${API}/features/${FEATURE_ID}/behaviour/questions/q1/answers`;
+  const ANSWERS_PATH = `${API}/tracks/${FEATURE_ID}/behaviour/questions/q1/answers`;
   const STORY = "Player: create an account and get set up";
   const given = (text: string, userId: string) => ({ answer: text, at: AT, author: { kind: "human", user_id: userId }, given_by: "human" });
   const answered = (text: string, userId: string) => ({ ...openQuestion("q1", SIGNS_UP, BY_AGENT), state: "answered", answer: given(text, userId), answers: [given(text, userId)], version: 2 });
@@ -1238,7 +1238,7 @@ describe("answering a waiting question in the Behaviour screen", () => {
 // US-230: after a person's remark the screen reads the tree, the open questions
 // and the chosen node again, so the node shows the remark and needs another pass.
 describe("adding a remark in the Behaviour screen", () => {
-  const ASK_PATH = `${API}/features/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
+  const ASK_PATH = `${API}/tracks/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
   const REMARK = { ...openQuestion("q-remark", SIGNS_UP, BY_PERSON), question: "The confirmation is easy to miss." };
 
   function readOf(questions: unknown[]) {
@@ -1510,7 +1510,7 @@ describe("filtering the Behaviour screen", () => {
   });
 
   test("the grill-pass choice stays while it is on after the tree is read again with no node marked", async () => {
-    const ASK_PATH = `${API}/features/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
+    const ASK_PATH = `${API}/tracks/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
     const list = { status: 200, body: { nodes: FILTERED.map((one) => (one.id === SIGNS_UP ? { ...one, needs_pass: true, needs_pass_since: AT } : one)) } };
     const read = {
       node: { ...FILTERED[2], level: 2, situation: "", behaviour: "", created_at: AT, created_by: BY_AGENT, updated_at: AT },

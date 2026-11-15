@@ -7,7 +7,7 @@
 // that never opens, so a page shows what it loads itself.
 //
 // The fake serves the project's home, the features and every doc (GET .../docs
-// and GET .../docs/<doc>, each DocBody with its `feature_id`).
+// and GET .../docs/<doc>, each DocBody with its `track_id`).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -89,7 +89,7 @@ function doc(featureId: string | null, kind: string, pillar: string, title: stri
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    feature_id: featureId,
+    track_id: featureId,
     kind,
     pillar,
     title,
@@ -123,9 +123,9 @@ function seeded() {
     docs: [shopPrd, designSystem, savedPrd, savedScreens, pointsPrd],
     threads: [],
     waiting: { comments: [] },
-    features: [
-      { feature: wishlist, docs: 2, waiting: 0, stories: { total: 3, open: 2, done: 1 } },
-      { feature: loyalty, docs: 1, waiting: 0, stories: { total: 0, open: 0, done: 0 } },
+    tracks: [
+      { track: wishlist, docs: 2, waiting: 0, stories: { total: 3, open: 2, done: 1 } },
+      { track: loyalty, docs: 1, waiting: 0, stories: { total: 0, open: 0, done: 0 } },
     ],
   };
   return {
@@ -161,8 +161,8 @@ function fakeApi(seed: Seeded) {
         return json(200, { projects: [{ id: PROJECT_ID, name: PROJECT_NAME, created_at: AT }] });
       case `GET ${API}/home`:
         return json(200, home);
-      case `GET ${API}/features`:
-        return json(200, { features: seed.features });
+      case `GET ${API}/tracks`:
+        return json(200, { tracks: seed.features });
       case `GET ${API}/docs`:
         return json(200, { docs: home.docs });
       case `GET ${API}/comments`:
@@ -171,7 +171,7 @@ function fakeApi(seed: Seeded) {
         break;
     }
     for (const f of seed.features) {
-      if (method === "GET" && path === `${API}/features/${f.id}`) return json(200, { feature: f });
+      if (method === "GET" && path === `${API}/tracks/${f.id}`) return json(200, { track: f });
     }
     if (method !== "GET") return json(404, { error: "not_found" });
     for (const d of home.docs) {

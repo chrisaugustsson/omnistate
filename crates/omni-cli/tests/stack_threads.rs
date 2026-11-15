@@ -339,7 +339,7 @@ fn an_agent_starts_threads_at_the_app_level_and_in_a_feature() {
     );
     assert_eq!(shown.code, 0, "thread read: {}", shown.stderr);
     let thread = &shown.json()["thread"];
-    assert_eq!(thread["scope"], "feature", "{thread}");
+    assert_eq!(thread["scope"], "track", "{thread}");
     assert_eq!(thread["sealed"], true, "{thread}");
 }
 

@@ -107,10 +107,10 @@ fn answer(request: &Recorded, app: &[Value], feature: &[Value], tokens: &Value) 
         let Some(rest) = request.path.strip_prefix(&base()) else {
             return not_found();
         };
-        if rest == "/docs?feature=global" {
+        if rest == "/docs?track=global" {
             return Reply::json(200, &json!({"docs": app}));
         }
-        if rest == format!("/docs?feature={FEATURE}") {
+        if rest == format!("/docs?track={FEATURE}") {
             return Reply::json(200, &json!({"docs": feature}));
         }
         if rest == "/tokens" {

@@ -35,7 +35,7 @@ const HUMAN = { kind: "human", user_id: USER.id };
 
 function feature(id: string, name: string, stories = { total: 0, open: 0, done: 0 }) {
   return {
-    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
     stories,
@@ -47,7 +47,7 @@ function doc(id: string, featureId: string | null, title: string, fields: { pill
   return {
     id,
     project_id: PROJECT_ID,
-    feature_id: featureId,
+    track_id: featureId,
     kind: fields.kind ?? "html",
     pillar: fields.pillar ?? "spec",
     waiting: fields.waiting ?? 0,
@@ -62,7 +62,7 @@ function thread(id: string, featureId: string | null, question: string) {
   return {
     id,
     project_id: PROJECT_ID,
-    feature_id: featureId,
+    track_id: featureId,
     question,
     sealed: false,
     conclusion: null,
@@ -78,7 +78,7 @@ function waiting(id: string, text: string) {
   return {
     id,
     project_id: PROJECT_ID,
-    feature_id: null,
+    track_id: null,
     doc_id: APP_DOC,
     node: "p0000001",
     author: HUMAN,
@@ -104,7 +104,7 @@ function home(
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    features: fields.features ?? [feature(CHECKOUT, "Checkout")],
+    tracks: fields.features ?? [feature(CHECKOUT, "Checkout")],
     docs: fields.docs ?? docs,
     threads: fields.threads ?? threads,
     waiting: { comments: fields.waiting ?? [] },
@@ -759,7 +759,7 @@ describe("the sidebar's scope tree", () => {
   });
 
   test("on a feature's thread or doc page it shows that feature, its Threads row filtered to it, its Board row with the open stories, then its Behaviour row", async () => {
-    fakeApi({ home: { ...appTree, features: [feature(CHECKOUT, "Checkout", { total: 3, open: 2, done: 1 })] } });
+    fakeApi({ home: { ...appTree, tracks: [feature(CHECKOUT, "Checkout", { total: 3, open: 2, done: 1 })] } });
     const router = renderAt(`${PROJECT_PATH}/threads/${CHECKOUT_THREAD}`);
     await waitFor(async () => expect((await treeHead()).href).toBe(`${PROJECT_PATH}/features/${CHECKOUT}`));
     expect((await treeHead()).text).toMatch(/^Checkout/);

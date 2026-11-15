@@ -8,7 +8,7 @@
 //!
 //! - `omni doc create --kind <kind> --pillar <pillar> --title <text>` sends
 //!   `POST /docs` with `{"kind", "pillar", "title"}`: a doc at the app level.
-//!   With `--feature <name or id>` it sends `POST /features/{feature_id}/docs`
+//!   With `--feature <name or id>` it sends `POST /tracks/{feature_id}/docs`
 //!   (a name is looked up in the project's features, ignoring case, as for
 //!   `omni doc list`); a name the project does not have is a one-line error
 //!   that names it and creates nothing. Without `--feature` the doc is at the app
@@ -52,7 +52,7 @@ fn doc_json(id: &str, feature: Option<&str>, body: &Value) -> Value {
         "pillar": body["pillar"],
         "title": body["title"],
         "created_at": "2026-10-23T10:00:00.000000Z",
-        "feature_id": feature
+        "track_id": feature
     })
 }
 
@@ -77,17 +77,17 @@ fn mock() -> MockServer {
             Reply::json(201, &json!({ "doc": doc_json(id, feature, &body) }))
         };
         match (request.method.as_str(), rest) {
-            ("GET", "/features") => Reply::json(
+            ("GET", "/tracks") => Reply::json(
                 200,
-                &json!({ "features": [
+                &json!({ "tracks": [
                     feature_json(CHECKOUT, "Checkout"),
                     feature_json(SEARCH, "Search")
                 ] }),
             ),
             ("POST", "/docs") => created(None),
-            ("POST", r) if r == format!("/features/{CHECKOUT}/docs") => created(Some(CHECKOUT)),
-            ("POST", r) if r == format!("/features/{SEARCH}/docs") => created(Some(SEARCH)),
-            ("POST", r) if r.starts_with("/features/") => {
+            ("POST", r) if r == format!("/tracks/{CHECKOUT}/docs") => created(Some(CHECKOUT)),
+            ("POST", r) if r == format!("/tracks/{SEARCH}/docs") => created(Some(SEARCH)),
+            ("POST", r) if r.starts_with("/tracks/") => {
                 Reply::json(404, &json!({ "error": "not_found" }))
             }
             ("GET", r) if r == format!("/docs/{NEW_DOC}/html") => {
@@ -232,14 +232,14 @@ fn doc_create_with_a_feature_creates_the_doc_in_that_feature() {
             ],
         );
         assert_eq!(out.code, 0, "--feature {given}: {}", out.stderr);
-        assert_eq!(out.json()["doc"]["feature_id"], CHECKOUT, "{}", out.stdout);
+        assert_eq!(out.json()["doc"]["track_id"], CHECKOUT, "{}", out.stdout);
     }
     let sent = posts(&server);
     assert_eq!(sent.len(), 3, "{:?}", server.requests());
     for post in &sent {
         assert_eq!(
             post.path,
-            format!("{}/features/{CHECKOUT}/docs", base()),
+            format!("{}/tracks/{CHECKOUT}/docs", base()),
             "{post:?}"
         );
         assert_agent_request(post);
@@ -303,8 +303,8 @@ fn the_feature_flag_picks_the_feature_and_global_means_the_app_level() {
     assert_eq!(
         paths,
         [
-            format!("{}/features/{CHECKOUT}/docs", base()),
-            format!("{}/features/{SEARCH}/docs", base()),
+            format!("{}/tracks/{CHECKOUT}/docs", base()),
+            format!("{}/tracks/{SEARCH}/docs", base()),
             format!("{}/docs", base()),
         ],
         "--feature Checkout, then --feature Search, then --global"

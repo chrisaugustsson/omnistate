@@ -102,7 +102,7 @@ fn doc_json() -> Value {
         "pillar": "research",
         "title": "Checkout PRD",
         "created_at": "2026-10-15T10:00:00.000000Z",
-        "feature_id": null
+        "track_id": null
     })
 }
 

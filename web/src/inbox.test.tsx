@@ -31,7 +31,7 @@ function doc(pillar: string, kind: string, title: string, feature: string | null
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    feature_id: feature,
+    track_id: feature,
     kind,
     pillar,
     title,
@@ -56,7 +56,7 @@ function waiting(on: Doc, text: string, replies: ReturnType<typeof reply>[]) {
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    feature_id: on.feature_id,
+    track_id: on.track_id,
     doc_id: on.id,
     node: "p0000001",
     author: HUMAN,
@@ -71,7 +71,7 @@ function waiting(on: Doc, text: string, replies: ReturnType<typeof reply>[]) {
 
 function feature(id: string, name: string) {
   return {
-    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
     docs: 1,
     waiting: 1,
     last_activity: null,
@@ -109,7 +109,7 @@ function seeded() {
   const home = {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    features: [feature(CHECKOUT, "Checkout"), feature(WALLETS, "Wallets")],
+    tracks: [feature(CHECKOUT, "Checkout"), feature(WALLETS, "Wallets")],
     docs: Object.values(docs),
     threads: [],
     waiting: {

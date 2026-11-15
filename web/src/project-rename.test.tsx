@@ -43,7 +43,7 @@ function fakeApi(rename: () => Response | Promise<Response>) {
             docs: [],
             threads: [],
             waiting: { comments: [] },
-            features: [{ feature, docs: 0, waiting: 0, stories: { total: 0, open: 0, done: 0 } }],
+            tracks: [{ track: feature, docs: 0, waiting: 0, stories: { total: 0, open: 0, done: 0 } }],
           });
         case `PATCH ${API}`:
           patches.push({ method, path, body: JSON.parse(String(init?.body)) });

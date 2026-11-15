@@ -20,7 +20,7 @@ const newId = () => `0192d7a0-9999-7000-8000-${String(++ids).padStart(12, "0")}`
 
 function feature(name: string, fields: { id?: string; description?: string; lastActivity?: string | null; createdAt?: string } = {}) {
   return {
-    feature: {
+    track: {
       id: fields.id ?? newId(),
       project_id: PROJECT_ID,
       name,
@@ -37,7 +37,7 @@ function doc(title: string, fields: { id?: string; feature?: string; pillar?: st
   return {
     id: fields.id ?? newId(),
     project_id: PROJECT_ID,
-    feature_id: fields.feature ?? null,
+    track_id: fields.feature ?? null,
     kind: "html",
     pillar: fields.pillar ?? "spec",
     title,
@@ -53,7 +53,7 @@ function thread(question: string, fields: { id?: string; feature?: string; lastP
   return {
     id: fields.id ?? newId(),
     project_id: PROJECT_ID,
-    feature_id: fields.feature ?? null,
+    track_id: fields.feature ?? null,
     question,
     sealed: false,
     conclusion: null,
@@ -71,7 +71,7 @@ function home(fields: {
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    features: fields.features ?? [],
+    tracks: fields.features ?? [],
     docs: fields.docs ?? [],
     threads: fields.threads ?? [],
     waiting: { comments: [] },

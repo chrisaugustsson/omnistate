@@ -34,7 +34,7 @@ function feature(
   fields: { description?: string; waiting?: number; lastActivity?: string | null; createdAt?: string; stories?: Stories } = {},
 ) {
   return {
-    feature: { id, project_id: PROJECT_ID, name, description: fields.description ?? "", created_at: fields.createdAt ?? AT },
+    track: { id, project_id: PROJECT_ID, name, description: fields.description ?? "", created_at: fields.createdAt ?? AT },
     docs: 0,
     waiting: fields.waiting ?? 0,
     stories: fields.stories ?? { total: 0, open: 0, done: 0 },
@@ -43,14 +43,14 @@ function feature(
 }
 
 function doc(id: string, featureId: string | null, title: string) {
-  return { id, project_id: PROJECT_ID, feature_id: featureId, kind: "html", pillar: "spec", waiting: 0, title, created_at: AT, drafts: [], claims: [] };
+  return { id, project_id: PROJECT_ID, track_id: featureId, kind: "html", pillar: "spec", waiting: 0, title, created_at: AT, drafts: [], claims: [] };
 }
 
 function thread(id: string, featureId: string | null, question: string) {
   return {
     id,
     project_id: PROJECT_ID,
-    feature_id: featureId,
+    track_id: featureId,
     question,
     sealed: false,
     conclusion: null,
@@ -65,7 +65,7 @@ function home(fields: { features?: ReturnType<typeof feature>[]; docs?: ReturnTy
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    features: fields.features ?? [],
+    tracks: fields.features ?? [],
     docs: fields.docs ?? [],
     threads: fields.threads ?? [],
     waiting: { comments: [] },

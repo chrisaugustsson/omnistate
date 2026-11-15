@@ -15,7 +15,7 @@
 //! - `pillar` is one of the five pillars `spec`, `ui`, `architecture`, `db` and
 //!   `research` (US-101; the old `module` field and its value `prd` are gone).
 //!   An HTML doc goes in any pillar. Creating a doc emits `doc.created` with
-//!   `data` `{"doc_id", "feature_id", "kind", "pillar", "title"}`.
+//!   `data` `{"doc_id", "track_id", "kind", "pillar", "title"}`.
 //! - `GET /docs?pillar=<pillar>` (both) lists only that pillar's docs; a
 //!   pillar that is not one of the five is 400 `invalid_request`.
 //! - The migration of US-101 renames the `docs` column `module` to `pillar`,

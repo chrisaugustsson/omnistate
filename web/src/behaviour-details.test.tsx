@@ -12,7 +12,7 @@ import { Text } from "@/components/behaviour/text";
 const WORKSPACE_ID = "w1";
 const PROJECT_ID = "p1";
 const FEATURE_ID = "f1";
-const NODE_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/nodes/`;
+const NODE_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${FEATURE_ID}/behaviour/nodes/`;
 const ME = "user-me";
 const OTHER = "user-other";
 const TODAY = "2026-11-12T09:00:00Z";
@@ -326,7 +326,7 @@ describe("the details with nothing chosen", () => {
 // US-228: a person answers a waiting question in the details with
 // POST .../behaviour/questions/<question>/answers, then the node is read again.
 describe("answering a waiting question", () => {
-  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
   const WAITING = { ...question("q-wait", "What does a search result show?", { state: "open" }), version: 3 };
   const ANSWERED = question("q-wait", "What does a search result show?", { answers: [answer("Name and handicap", PERSON_ME, "human", TODAY)] });
 
@@ -564,7 +564,7 @@ describe("answering a waiting question", () => {
 // POST .../behaviour/questions/<question>/answers and `change: true`. A change
 // marks the node and every node below it for the next grill pass.
 describe("changing an answer", () => {
-  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-default/answers`;
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${FEATURE_ID}/behaviour/questions/q-default/answers`;
   const BY_DEFAULT = { ...question("q-default", "What does a search result show?", { answers: [answer("Name only", AGENT, "agent")] }), version: 4 };
   const CHANGED_BY_OTHER = question("q-default", "What does a search result show?", {
     answers: [answer("Name only", AGENT, "agent"), answer("Name and club", PERSON_OTHER, "human", TODAY)],
@@ -821,7 +821,7 @@ describe("adding a question or remark", () => {
 // `refresh` changes. Text a person is typing stays; when an agent answers the
 // question being typed to, the typed text stands in an open Change field.
 describe("a live update of the chosen node", () => {
-  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
   const WAITING = { ...question("q-wait", "What does a search result show?", { state: "open" }), version: 3 };
   const ANSWERED_BY_DEFAULT = { ...question("q-wait", "What does a search result show?", { answers: [answer("Guest cart.", AGENT, "agent", TODAY)] }), version: 4 };
   const CHANGED_BY_OTHER = {

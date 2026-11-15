@@ -60,7 +60,7 @@ function thread(
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    feature_id: fields.feature ?? null,
+    track_id: fields.feature ?? null,
     question,
     sealed: fields.sealed ?? false,
     conclusion: fields.conclusion ?? null,
@@ -76,7 +76,7 @@ type Opened = HomeThread & { posts: Post[] };
 
 function feature(id: string, name: string) {
   return {
-    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
+    track: { id, project_id: PROJECT_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
     docs: 0,
     waiting: 0,
     last_activity: null,
@@ -87,7 +87,7 @@ function home(threads: HomeThread[]) {
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    features: [feature(CHECKOUT_ID, "Checkout"), feature(SEARCH_ID, "Search")],
+    tracks: [feature(CHECKOUT_ID, "Checkout"), feature(SEARCH_ID, "Search")],
     docs: [],
     threads,
     waiting: { comments: [] },
