@@ -3720,6 +3720,39 @@ test("a restart's lease outlives the run that made it: run 1 starts deliver/<slu
   assert.equal(existsSync(join(dirs.repo, ".omni", "restarted-board")), false);
 });
 
+test("a task branch cut from deliver/<slug> before its pull request was squash-merged lands after the restart, also runs later: lane-prepare moves only the task's own commits onto the new tip", (t) => {
+  const dirs = scratch(t, [story("US-1"), story("US-2")]);
+  const remote = withRemote(dirs);
+  const { run } = start(dirs);
+  // US-1 landed in two commits; US-2 was cut after them and has work of its own.
+  landOn(dirs, "deliver/board", "badge.rs");
+  const edit = join(dirs.root, "land-edit");
+  git(dirs.repo, "worktree", "add", "-q", edit, "deliver/board");
+  writeFileSync(join(edit, "badge.rs"), "badge.rs, counted\n");
+  git(edit, "commit", "-q", "-am", "feat: count badges");
+  git(dirs.repo, "worktree", "remove", edit);
+  const old = sha(dirs, "refs/heads/deliver/board");
+  const wt = storyWork(dirs, run, "US-2", "count.rs");
+  step(dirs, run, "finish", { report: noReport });
+  // The pull request is merged by squash: one commit on main with US-1's end result.
+  writeFileSync(join(dirs.repo, "badge.rs"), "badge.rs, counted\n");
+  git(dirs.repo, "add", "badge.rs");
+  git(dirs.repo, "commit", "-q", "-m", "feat: board (#2)");
+  withGh(dirs, { prs: [mergedPr(old)] });
+  const second = start(dirs, { op: "start-2" });
+  assert.equal(second.ok, true, second.error);
+  // Another task lands and is pushed, so the restart's lease is used up.
+  const pushed = landOn(dirs, "deliver/board", "later.rs");
+  assert.equal(step(dirs, second.run, "finish", { report: noReport }).pushed, true);
+  assert.equal(remote.at("refs/heads/deliver/board"), pushed);
+  const third = start(dirs, { op: "start-3" });
+
+  const body = step(dirs, third.run, "lane-prepare", { key: "US-2" });
+
+  assert.deepEqual(pick(body), { ok: true, key: "US-2", outcome: "ready", base: pushed, candidate: sha(dirs, "refs/heads/story/US-2") });
+  assert.deepEqual(git(wt, "log", "--format=%s", `${pushed}..HEAD`).trim().split("\n"), ["feat: count.rs"]);
+});
+
 test("a pull request's body longer than 60,000 characters goes without its Timings; still longer, it is cut so that it and a last line naming the Run thread are 60,000 characters at most, and that line comes only when text was cut", () => {
   const timings = `\n\n## Timings\n${"t".repeat(5000)}\n`;
   const fits = `# f: build report of r\n\n${"a".repeat(58000)}${timings}`;

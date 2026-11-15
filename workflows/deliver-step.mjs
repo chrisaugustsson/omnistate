@@ -415,6 +415,11 @@ const runPathOf = (root, runId) => path.join(runDirOf(root, runId), 'run.json')
 // it as its lease, in whichever run pushes next, and removes it once a push of
 // the branch went through: until then the remote still has that tip.
 const restartedPathOf = (root, feature) => path.join(root, '.omni', `restarted-${slugOf(feature)}`)
+// .omni/replaced-<slug> lists every tip of deliver/<slug> that a restart
+// replaced, one per line, and is never emptied: a story branch cut before a
+// restart still holds commits that the merged pull request brought into the
+// new tip as other commits, in any later run.
+const replacedPathOf = (root, feature) => path.join(root, '.omni', `replaced-${slugOf(feature)}`)
 const updateRun = (root, runId, change) => withLock(runPathOf(root, runId), () => {
   const info = change(readJson(runPathOf(root, runId)) || {})
   writeJson(runPathOf(root, runId), info)
@@ -1949,12 +1954,20 @@ const STEPS = {
       return outcome('wrong_branch', { head: name, commits: commits.slice(0, LISTED), reason: `${wt} has ${what}, not ${branch}: only ${branch} lands${lost}. Commit on ${branch}` })
     }
     const base = tipOf(b)
+    // A story cut from deliver/<slug> before a restart forked from a line that
+    // the merged pull request brought into the tip as other commits: only the
+    // story's own commits, after that fork, are moved onto the tip. With
+    // several restarts, the newest fork the tip lacks.
+    const forks = (readText(replacedPathOf(b.root, b.feature)) || '').split('\n').map((l) => l.trim()).filter(Boolean)
+      .map((old) => (tryRun('git', ['-C', b.root, 'merge-base', ref, old]) || '').trim())
+      .filter((at) => at && !isAncestorIn(b.root, at, base))
+    const fork = forks.find((at) => forks.every((other) => isAncestorIn(b.root, other, at)))
     // The rebase is timed apart from the step, whose lane checkout can take
     // longer than the rebase itself.
     const began = new Date()
     let failed = null
     try {
-      b.git(['-C', wt, 'rebase', '-q', base], { timeout: rebaseMs() })
+      b.git(['-C', wt, 'rebase', '-q', ...(fork ? ['--onto', base, fork] : [base])], { timeout: rebaseMs() })
     } catch (e) {
       failed = e
     }
@@ -2393,10 +2406,9 @@ const branchAt = (b, { head, was, move }, log) => {
     }
     // The oldest tip not pushed over yet is the one the remote still has.
     const file = restartedPathOf(b.root, b.feature)
-    if (!(readText(file) || '').trim()) {
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, `${was}\n`)
-    }
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    if (!(readText(file) || '').trim()) fs.writeFileSync(file, `${was}\n`)
+    fs.appendFileSync(replacedPathOf(b.root, b.feature), `${was}\n`)
   }
   log.push({
     create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
