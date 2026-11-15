@@ -521,6 +521,36 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts",
+        Some(r#"{"name":"intruder","kind":"app"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+        Some(r#"{"name":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
         Some(r#"{"name":"intruder","description":"intruder"}"#),
@@ -899,6 +929,10 @@ struct Side {
     comment_id: String,
     comment_node: String,
     comment_text: String,
+    /// The part that the workspace's agent created in `project_id`, and its
+    /// name, which nothing else holds.
+    part_id: String,
+    part_name: String,
     /// The track that the workspace's agent created in `project_id`, and its
     /// name, which nothing else holds.
     track_id: String,
@@ -947,6 +981,8 @@ impl Side {
             comment_id: same(),
             comment_node: UNKNOWN_NODE.to_string(),
             comment_text: String::new(),
+            part_id: same(),
+            part_name: String::new(),
             track_id: same(),
             track_name: String::new(),
             story_id: same(),
@@ -982,6 +1018,8 @@ impl Side {
             &self.post_summary,
             &self.comment_id,
             &self.comment_text,
+            &self.part_id,
+            &self.part_name,
             &self.track_id,
             &self.track_name,
             &self.story_id,
@@ -1114,6 +1152,22 @@ fn fixture() -> &'static Fixture {
             let (project_id, project_name) = project("roadmap");
             let (other_project_id, _) = project("backlog");
             let base = format!("/api/v1/w/{workspace}/projects/{project_id}");
+            // A part of the project, so the parts table has rows of the
+            // workspace.
+            let part_name = unique(&format!("{name}-part"));
+            let body = json!({ "name": part_name, "kind": "service" }).to_string();
+            let created = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/parts"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "create a part",
+            );
+            let part_id = created["part"]["id"].as_str().expect("an id").to_string();
             // A track of the project with a doc in it, so the tracks table
             // and the docs of a track have rows of the workspace.
             let track_name = unique(&format!("{name}-track"));
@@ -1371,6 +1425,8 @@ fn fixture() -> &'static Fixture {
                 comment_id,
                 comment_node,
                 comment_text,
+                part_id,
+                part_name,
                 track_id,
                 track_name,
                 story_id,
@@ -1413,6 +1469,7 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "thread_id" => &record.thread_id,
             "post_id" => &record.post_id,
             "comment_id" => &record.comment_id,
+            "part_id" => &record.part_id,
             "track_id" => &record.track_id,
             // An attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no

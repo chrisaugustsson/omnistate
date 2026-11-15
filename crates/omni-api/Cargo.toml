@@ -101,6 +101,10 @@ name = "project_home"
 required-features = ["stack-tests"]
 
 [[test]]
+name = "parts"
+required-features = ["stack-tests"]
+
+[[test]]
 name = "tracks"
 required-features = ["stack-tests"]
 
