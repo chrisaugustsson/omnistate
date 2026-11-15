@@ -17,7 +17,6 @@ use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
 use crate::export;
-use crate::features;
 use crate::http::{self, Response, Server};
 use crate::identity::Identity;
 use crate::import;
@@ -29,6 +28,7 @@ use crate::stories;
 use crate::thread_wait;
 use crate::threads;
 use crate::tokens;
+use crate::tracks;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 
@@ -64,18 +64,18 @@ pub fn run(args: &Args) -> Result<()> {
         ["link"] => links::show(args),
         ["link", project] => links::link(args, Some(project)),
         ["unlink"] => links::unlink(args),
-        ["feature", "create"] => features::create(args, None),
-        ["feature", "create", name] => features::create(args, Some(name)),
-        ["feature", "list"] => features::list(args),
-        ["feature", "show"] => features::show(args, None),
-        ["feature", "show", feature] => features::show(args, Some(feature)),
-        ["feature", "rename"] => features::rename(args, None, None),
-        ["feature", "rename", feature] => features::rename(args, Some(feature), None),
-        ["feature", "rename", feature, name] => features::rename(args, Some(feature), Some(name)),
-        ["feature", "delete"] => features::delete(args, None),
-        ["feature", "delete", feature] => features::delete(args, Some(feature)),
-        ["feature", ..] => {
-            bail!("usage: omni feature create|list|show|rename|delete; see `omni --help`")
+        ["track", "create"] => tracks::create(args, None),
+        ["track", "create", name] => tracks::create(args, Some(name)),
+        ["track", "list"] => tracks::list(args),
+        ["track", "show"] => tracks::show(args, None),
+        ["track", "show", track] => tracks::show(args, Some(track)),
+        ["track", "rename"] => tracks::rename(args, None, None),
+        ["track", "rename", track] => tracks::rename(args, Some(track), None),
+        ["track", "rename", track, name] => tracks::rename(args, Some(track), Some(name)),
+        ["track", "delete"] => tracks::delete(args, None),
+        ["track", "delete", track] => tracks::delete(args, Some(track)),
+        ["track", ..] => {
+            bail!("usage: omni track create|list|show|rename|delete; see `omni --help`")
         }
         ["doc", "create"] => docs::create(args),
         ["doc", "list"] => docs::list(args),
@@ -119,7 +119,7 @@ pub fn run(args: &Args) -> Result<()> {
         ["import", "penpot"] => import::penpot(args, None),
         ["import", "penpot", file] => import::penpot(args, Some(file)),
         ["import", ..] => {
-            bail!("usage: omni import penpot <file.penpot> --project <id> [--feature <name>]")
+            bail!("usage: omni import penpot <file.penpot> --project <id> [--track <name>]")
         }
         ["behaviour" | "behavior", "add"] => behaviour::add(args),
         ["behaviour" | "behavior", "read"] => behaviour::read(args, None),

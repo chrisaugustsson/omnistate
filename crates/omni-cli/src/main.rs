@@ -17,7 +17,6 @@ mod design;
 mod docs;
 mod error;
 mod export;
-mod features;
 mod http;
 mod identity;
 mod import;
@@ -30,6 +29,7 @@ mod thread_wait;
 mod threads;
 mod tokens;
 mod toml;
+mod tracks;
 
 use std::process::ExitCode;
 
@@ -42,24 +42,24 @@ Usage:
   omni key revoke <key-id>            revoke an API key (asks for the password)
   omni project create <name>          create a project
   omni project list                   list the projects
-  omni project rename <name|id> <new name>   rename a project; its ID, features, docs and threads stay
+  omni project rename <name|id> <new name>   rename a project; its ID, tracks, docs and threads stay
   omni link <project name|id>         link the current folder to a project (stored per user in ~/.config/omni/links.toml)
   omni link                           show the link in effect for the current folder
   omni unlink                         remove the current folder's link
-  omni feature create <name>          create a feature in the project [--description <text>];
+  omni track create <name>            create a track in the project [--description <text>];
                                       prints its ID and name
-  omni feature list                   list the project's features: ID and name
-  omni feature show <name|id>         show a feature
-  omni feature rename <name|id> <new name>
-                                      rename a feature; its ID, docs and threads stay
-  omni feature delete <name|id>       delete a feature with its docs, threads and comments (they
+  omni track list                     list the project's tracks: ID and name
+  omni track show <name|id>           show a track
+  omni track rename <name|id> <new name>
+                                      rename a track; its ID, docs and threads stay
+  omni track delete <name|id>         delete a track with its docs, threads and comments (they
                                       are kept, hidden; the name can be used again)
-  omni doc create [--feature <name|id>] --kind html|design|design-system
+  omni doc create [--track <name|id>] --kind html|design|design-system
                 --pillar spec|ui|architecture|db|research --title <text>
-                                      create a doc at the app level, or in a feature; it is
+                                      create a doc at the app level, or in a track; it is
                                       readable at once
   omni doc list                       list the project's docs: ID, scope (project or the
-                                      feature's name), kind, pillar and title; --feature
+                                      track's name), kind, pillar and title; --track
                                       <name|id> or --global list one scope only; --pillar
                                       <pillar> lists one pillar only
   omni doc read <doc> [--node <id>]...
@@ -115,23 +115,23 @@ Usage:
                                       --type creates a token that does not exist, with its groups
   omni tokens remove <path>           remove one token (and the groups it leaves empty); refused
                                       while another token refers to it
-  omni export --project <name|id> [--feature <name|id>] --out <dir>
+  omni export --project <name|id> [--track <name|id>] --out <dir>
                                       write the scope's plan to a folder: manifest.json, the
                                       HTML docs by pillar, each design board in the tag format
                                       under ui/<doc>/, and the design system's tokens as
                                       tokens.json and tokens.css (variables per mode). The
-                                      app level without --feature
-  omni import penpot <file.penpot> --project <id> [--feature <name>]
+                                      app level without --track
+  omni import penpot <file.penpot> --project <id> [--track <name>]
                                       import a Penpot export (made with 'Export file + libraries')
-                                      straight into the project: the pages and boards as a design doc (in the feature's UI
-                                      pillar with --feature), the components, design tokens
+                                      straight into the project: the pages and boards as a design doc (in the track's UI
+                                      pillar with --track), the components, design tokens
                                       (themes become modes), colors and typographies as the
                                       app-level design system, added to the one the project
                                       has, the images as attachments; prints the docs and a
                                       report of what could not be imported
-  omni thread create <question> [--feature <name|id>] [--sealed]
+  omni thread create <question> [--track <name|id>] [--sealed]
                                       start a thread, a question that agents work out together,
-                                      at the app level or in a feature; with --sealed an
+                                      at the app level or in a track; with --sealed an
                                       agent reads no other agent's posts until it has posted
                                       itself; prints its ID
   omni thread list [--open]           list the project's threads, of every scope: ID, scope,
@@ -157,25 +157,25 @@ Usage:
   omni post show <post>               print one whole post: author role, summary, ID and the
                                       Markdown body; a post you may not read yet is reported
                                       as not found
-  omni comment list [--doc <id>] [--feature <name|id>]
+  omni comment list [--doc <id>] [--track <name|id>]
                                       list the project's comments, oldest first: ID, doc, node
                                       address, author, text and the replies. A comment whose
                                       latest reply is an agent's says `waiting on you`; one
                                       whose node left the doc says `orphaned` and shows what
                                       the node held; the human deletes a comment when
                                       satisfied, in the web app.
-                                      --doc narrows to one doc, --feature to the docs of one
-                                      feature
+                                      --doc narrows to one doc, --track to the docs of one
+                                      track
   omni comment reply <comment> <text>
                                       reply to a comment; without <text> it is read from
                                       --body-file or standard input
   omni story add <file> [--priority <0-3>] [--link <doc>:<node>[:<label>]]... [--number-from <n>]
                                       save a story written in the prd format (### US-<n>: title,
                                       Description, Topic, Interfaces, Files, Blocked by,
-                                      Acceptance Criteria) in the feature; the server numbers it;
+                                      Acceptance Criteria) in the track; the server numbers it;
                                       prints its key
   omni story list [--status <status>] [--pickable] [--summary]
-                                      list the feature's stories: key, priority, status and title;
+                                      list the track's stories: key, priority, status and title;
                                       --pickable lists those an implementer may take;
                                       --summary prints how many are in each status instead
   omni story read <key|id>            print a story: text, criteria, blockers, holder and the
@@ -210,9 +210,9 @@ Usage:
                                       stale one is a conflict (exit 3).
   omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>]
                      [--same-as <node>] [--handoff <node>]
-                                      add a node to the feature's behaviour tree, the last child
+                                      add a node to the track's behaviour tree, the last child
                                       of --parent (the root when left out; the first add also
-                                      creates the root, titled with the feature's name); prints
+                                      creates the root, titled with the track's name); prints
                                       the node's path. The slug is derived from the title when
                                       left out. `behavior` is the same word
   omni behaviour read <node>          print the nodes above it and the node as text blocks, then
@@ -220,7 +220,7 @@ Usage:
                                       --json the same as JSON. <node> is an
                                       ID, a path (slugs from the story down, joined by /) or . for
                                       the root
-  omni behaviour list [<node>]        print the summary line of every node of the feature, or of
+  omni behaviour list [<node>]        print the summary line of every node of the track, or of
                                       <node> and the nodes below it, in tree order, indented two
                                       spaces per level: `<slug> — <summary> (<status>)`; the title
                                       stands in for an empty summary and for the root's slug.
@@ -270,7 +270,7 @@ Usage:
                                       and when. With --json the API's question
   omni behaviour questions [<node>] [--open|--default]
                                       print `<node path>  <question ID>  <question>` for every
-                                      question of the feature, or of <node> and the nodes below
+                                      question of the track, or of <node> and the nodes below
                                       it, in tree order; --open only the open ones; --default
                                       only those an agent answered on its own, each line ending
                                       in ` → <answer>`. With --json the API's list
@@ -284,19 +284,19 @@ Usage:
                                       is never deleted)
   omni behaviour rules [<node>] [--scope <s>]
                                       print `<scope>  <node path>  <rule ID>  <text>` for every
-                                      rule in force in the feature, or on <node> and below,
+                                      rule in force in the track, or on <node> and below,
                                       in tree order. With --json the API's list, withdrawn
                                       rules included and flagged
   omni behaviour import <folder> [--check]
                                       read a grill-tree folder (a node.md in every node folder)
-                                      into the feature's empty tree with one request; prints
+                                      into the track's empty tree with one request; prints
                                       `imported <n> nodes (<n> stories), <n> same-as, <n> handoffs`.
                                       Sibling order follows the Children lines; status
                                       out-of-scope is stored as out_of_scope and stale as open.
                                       A folder problem (no node.md, a bad slug, no title, an
                                       unknown status, a pointer to a missing folder, two
                                       pointers, a pointer on a node with child folders) stops
-                                      it with one line each and nothing sent; a feature that
+                                      it with one line each and nothing sent; a track that
                                       has a tree refuses (tree_not_empty). --check reads and
                                       checks the folder only, prints `would import ...` and
                                       contacts no server
@@ -319,8 +319,8 @@ Options (before or after the command):
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address, http:// or https:// (fallback: OMNI_SERVER, then the config file)
   --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link)
-  --feature <name|id>   the feature that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_FEATURE)
-  --global              `omni doc create` creates an app-level doc, whatever OMNI_FEATURE says;
+  --track <name|id>   the track that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_TRACK)
+  --global              `omni doc create` creates an app-level doc, whatever OMNI_TRACK says;
                         `omni doc list` shows those only
   --body-file <path>    send this file as the request body (for `doc edit` and `design
                         edit`: the operations); - reads standard input
@@ -411,6 +411,9 @@ fn run() -> error::Result<()> {
     if args.help {
         commands::say(HELP);
         return Ok(());
+    }
+    if std::env::var_os("OMNI_FEATURE").is_some_and(|value| !value.is_empty()) {
+        eprintln!("OMNI_FEATURE was renamed to OMNI_TRACK; OMNI_FEATURE is ignored");
     }
     commands::run(&args)
 }

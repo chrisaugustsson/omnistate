@@ -1,12 +1,12 @@
-//! `omni story add`, `list` and `read`: stories, the work items of a feature.
+//! `omni story add`, `list` and `read`: stories, the work items of a track.
 //! `add` saves one story written in the prd format; the server numbers it.
-//! The project and the feature are found as for `omni thread create`.
+//! The project and the track are found as for `omni thread create`.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{creation_feature, is_uuid, project_id};
+use crate::projects::{creation_track, is_uuid, project_id};
 
 const ADD_USAGE: &str =
     "omni story add <file> [--priority <n>] [--link <doc>:<node>[:<label>]]... [--number-from <n>]";
@@ -17,14 +17,14 @@ fn unreadable() -> CliError {
     CliError::new("the server's answer about the stories is not readable; is it an OmniState API?")
 }
 
-/// The stories path of the feature the command works in.
+/// The stories path of the track the command works in.
 fn stories_path(args: &Args, agent: &Agent) -> Result<String> {
     let project = project_id(args, agent)?;
-    let Some(feature) = creation_feature(args, agent, &project)? else {
-        bail!("no feature: pass --feature <name or id>, or put feature = \"name\" in .omni.toml");
+    let Some(track) = creation_track(args, agent, &project)? else {
+        bail!("no track: pass --track <name or id>, or put track = \"name\" in .omni.toml");
     };
     Ok(format!(
-        "/api/v1/w/{}/projects/{project}/tracks/{feature}/stories",
+        "/api/v1/w/{}/projects/{project}/tracks/{track}/stories",
         agent.workspace_id
     ))
 }
@@ -262,9 +262,7 @@ pub fn add(args: &Args, file: Option<&str>) -> Result<()> {
                 .iter()
                 .find(|s| s.str_at("key") == Some(key.as_str()))
                 .and_then(|s| s.str_at("id"))
-                .ok_or_else(|| {
-                    CliError::new(format!("not_found: no story {key} in this feature"))
-                })?;
+                .ok_or_else(|| CliError::new(format!("not_found: no story {key} in this track")))?;
             blocked_by.push(quote(id));
         }
     }
@@ -415,7 +413,7 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
         None => s.str_at("id") == Some(given.to_ascii_lowercase().as_str()),
     });
     let Some(found) = found else {
-        bail!("not_found: no story {given} in this feature");
+        bail!("not_found: no story {given} in this track");
     };
     if args.json {
         say(&found.to_string());
@@ -634,7 +632,7 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
         None => s.str_at("id") == Some(given.to_ascii_lowercase().as_str()),
     });
     let Some(found) = found else {
-        bail!("not_found: no story {given} in this feature");
+        bail!("not_found: no story {given} in this track");
     };
     let (Some(id), Some(Value::Number(version))) = (found.str_at("id"), found.get("version"))
     else {
@@ -654,7 +652,7 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
                 .find(|s| s.str_at("key") == Some(wanted.as_str()))
                 .and_then(|s| s.str_at("id"))
                 .ok_or_else(|| {
-                    CliError::new(format!("not_found: no story {wanted} in this feature"))
+                    CliError::new(format!("not_found: no story {wanted} in this track"))
                 })?;
             ids.push(quote(id));
         }

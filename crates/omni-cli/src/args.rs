@@ -16,12 +16,12 @@ pub struct Args {
     /// `--project <name or id>`: the project a command works in, instead of
     /// `OMNI_PROJECT` or the one the folder is linked to.
     pub project: Option<String>,
-    /// `--feature <name or id>`: the feature a command works in, instead of
-    /// `OMNI_FEATURE`; `--global` works at the app level whatever
-    /// `OMNI_FEATURE` says.
-    pub feature: Option<String>,
+    /// `--track <name or id>`: the track a command works in, instead of
+    /// `OMNI_TRACK`; `--global` works at the app level whatever
+    /// `OMNI_TRACK` says.
+    pub track: Option<String>,
     pub global: bool,
-    /// `--title` and `--description` describe a doc or a feature.
+    /// `--title` and `--description` describe a doc or a track.
     pub title: Option<String>,
     pub description: Option<String>,
     /// `--kind` and `--pillar` say what kind of doc `omni doc create` starts
@@ -292,7 +292,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--server" => &mut parsed.server,
             "--body-file" => &mut parsed.body_file,
             "--project" => &mut parsed.project,
-            "--feature" => &mut parsed.feature,
+            "--track" => &mut parsed.track,
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--doc" => &mut parsed.doc,

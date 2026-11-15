@@ -1,5 +1,5 @@
 //! `omni project`: create, list and rename projects. The helpers that every other
-//! command uses to find its project and feature live here too.
+//! command uses to find its project and track live here too.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
@@ -174,18 +174,18 @@ fn warn_leftover_keys() {
             && !keys.is_empty()
         {
             eprintln!(
-                ".omni.toml sets {}, which omni no longer reads; link this folder with omni link <project> and pass --feature or OMNI_FEATURE",
+                ".omni.toml sets {}, which omni no longer reads; link this folder with omni link <project> and pass --track or OMNI_TRACK",
                 keys.join(", ")
             );
         }
     });
 }
 
-/// The feature a command works in: `--feature`, else `OMNI_FEATURE`, else
+/// The track a command works in: `--track`, else `OMNI_TRACK`, else
 /// none (the app level).
-pub(crate) fn current_feature(args: &Args) -> Option<String> {
+pub(crate) fn current_track(args: &Args) -> Option<String> {
     warn_leftover_keys();
-    args.feature.clone().or_else(|| env_value("OMNI_FEATURE"))
+    args.track.clone().or_else(|| env_value("OMNI_TRACK"))
 }
 
 /// The project the current folder or its nearest linked parent is linked to.
@@ -208,11 +208,11 @@ fn linked_project(agent: &Agent) -> Result<String> {
     }
 }
 
-/// The features of a project, as the API lists them.
-pub(crate) fn project_features(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
+/// The tracks of a project, as the API lists them.
+pub(crate) fn project_tracks(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
     let path = format!("{}/{project_id}/tracks", projects_path(agent));
     let response = agent.request("GET", &path, None)?;
-    let body = parsed(&response.text(), "the features")?;
+    let body = parsed(&response.text(), "the tracks")?;
     Ok(body
         .get("tracks")
         .and_then(Value::as_array)
@@ -220,43 +220,43 @@ pub(crate) fn project_features(agent: &Agent, project_id: &str) -> Result<Vec<Va
         .to_vec())
 }
 
-/// The ID of the feature a name or ID given by the user stands for: an ID is
-/// used as it is, a name is looked up (ignoring case) in the project's features.
-pub(crate) fn resolve_feature(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
+/// The ID of the track a name or ID given by the user stands for: an ID is
+/// used as it is, a name is looked up (ignoring case) in the project's tracks.
+pub(crate) fn resolve_track(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
     if is_uuid(given) {
         return Ok(given.to_ascii_lowercase());
     }
-    project_features(agent, project_id)?
+    project_tracks(agent, project_id)?
         .iter()
-        .find(|feature| {
-            feature
+        .find(|track| {
+            track
                 .str_at("name")
                 .is_some_and(|name| name.eq_ignore_ascii_case(given.trim()))
         })
-        .and_then(|feature| feature.str_at("id"))
+        .and_then(|track| track.str_at("id"))
         .map(str::to_string)
         .ok_or_else(|| {
             CliError::new(format!(
-                "no feature named {given:?}; `omni feature list` shows the features"
+                "no track named {given:?}; `omni track list` shows the tracks"
             ))
         })
 }
 
-/// The ID of the feature `omni doc create` works in: `--feature`, else
-/// `OMNI_FEATURE`, else none (app level). `--global` means none whatever
-/// `OMNI_FEATURE` says.
-pub(crate) fn creation_feature(
+/// The ID of the track `omni doc create` works in: `--track`, else
+/// `OMNI_TRACK`, else none (app level). `--global` means none whatever
+/// `OMNI_TRACK` says.
+pub(crate) fn creation_track(
     args: &Args,
     agent: &Agent,
     project_id: &str,
 ) -> Result<Option<String>> {
     if args.global {
-        if args.feature.is_some() {
-            bail!("give --feature or --global, not both");
+        if args.track.is_some() {
+            bail!("give --track or --global, not both");
         }
         return Ok(None);
     }
-    current_feature(args)
-        .map(|given| resolve_feature(agent, project_id, &given))
+    current_track(args)
+        .map(|given| resolve_track(agent, project_id, &given))
         .transpose()
 }

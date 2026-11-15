@@ -1,4 +1,4 @@
-//! `omni import penpot <file.penpot> --project <id> [--feature <name>]`:
+//! `omni import penpot <file.penpot> --project <id> [--track <name>]`:
 //! imports a Penpot export straight into the project (US-105), with no change
 //! set, as an agent's own edits are written. The export is read first, with the
 //! reader and converter of the `omni-penpot` crate, so a file that is no export
@@ -13,7 +13,7 @@
 //!   it: its tokens and components stay with their IDs, and a token of the same
 //!   path takes the export's value,
 //! - the design doc: the pages and boards, with the copies of components as
-//!   instances, in the UI pillar of the feature when there is `--feature`, else
+//!   instances, in the UI pillar of the track when there is `--track`, else
 //!   at the app level.
 //!
 //! Whatever cannot be imported is in the report, which `--json` prints whole.
@@ -29,7 +29,7 @@ use crate::attach;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{creation_feature, project_id};
+use crate::projects::{creation_track, project_id};
 
 /// How many times the components are sent: the first time without the
 /// instances in them, which wait for the IDs of the components they place.
@@ -67,9 +67,9 @@ fn body_of(field: &str, value: &str) -> String {
     format!("{{{}:{value}}}", quote(field))
 }
 
-/// `omni import penpot <file.penpot> --project <id> [--feature <name>]`
+/// `omni import penpot <file.penpot> --project <id> [--track <name>]`
 pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
-    const USAGE: &str = "omni import penpot <file.penpot> --project <id> [--feature <name>]";
+    const USAGE: &str = "omni import penpot <file.penpot> --project <id> [--track <name>]";
     let Some(file) = file else {
         bail!("this command needs the Penpot export to import, a .penpot file: {USAGE}");
     };
@@ -85,7 +85,7 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let feature = creation_feature(args, &agent, &project)?;
+    let track = creation_track(args, &agent, &project)?;
     let title = Path::new(file).file_name().map_or_else(
         || file.to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -115,7 +115,7 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
         Some(send_design(
             &agent,
             &base,
-            feature.as_deref(),
+            track.as_deref(),
             &import,
             &ids,
             &title,
@@ -221,12 +221,12 @@ fn send_design_system(
     )
 }
 
-/// Starts the design doc, at the app level or in the feature, and writes the
+/// Starts the design doc, at the app level or in the track, and writes the
 /// pages into its head. Returns the doc's ID.
 fn send_design(
     agent: &Agent,
     base: &str,
-    feature: Option<&str>,
+    track: Option<&str>,
     import: &Import,
     ids: &Ids,
     title: &str,
@@ -236,8 +236,8 @@ fn send_design(
         "{{\"kind\":\"design\",\"pillar\":\"ui\",\"title\":{}}}",
         quote(title)
     );
-    let path = match feature {
-        Some(feature) => format!("{base}/tracks/{feature}/docs"),
+    let path = match track {
+        Some(track) => format!("{base}/tracks/{track}/docs"),
         None => format!("{base}/docs"),
     };
     let response = agent.request("POST", &path, Some(body.as_bytes()))?;

@@ -7,7 +7,7 @@ use crate::commands::{Agent, agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
 use crate::projects::{
-    creation_feature, current_feature, is_uuid, project_features, project_id, resolve_feature,
+    creation_track, current_track, is_uuid, project_id, project_tracks, resolve_track,
 };
 use omni_core::design::{Node, tags};
 use omni_core::ops::EditDoc;
@@ -49,9 +49,9 @@ fn project_path(agent: &Agent, project: &str) -> String {
     format!("/api/v1/w/{}/projects/{project}", agent.workspace_id)
 }
 
-/// `omni doc create [--feature <name or id>] --kind <kind> --pillar <pillar> --title <text>`
+/// `omni doc create [--track <name or id>] --kind <kind> --pillar <pillar> --title <text>`
 pub fn create(args: &Args) -> Result<()> {
-    const USAGE: &str = "omni doc create [--feature <name|id>] --kind html|design|design-system --pillar spec|ui|architecture|db|research --title <text>";
+    const USAGE: &str = "omni doc create [--track <name|id>] --kind html|design|design-system --pillar spec|ui|architecture|db|research --title <text>";
     let kind = match args.kind.as_deref() {
         None => bail!("a doc needs --kind, one of {KINDS}: {USAGE}"),
         Some(kind @ ("html" | "design" | "design-system")) => kind,
@@ -79,8 +79,8 @@ pub fn create(args: &Args) -> Result<()> {
         quote(pillar),
         quote(title)
     );
-    let path = match creation_feature(args, &agent, &project)? {
-        Some(feature) => format!("{}/tracks/{feature}/docs", project_path(&agent, &project)),
+    let path = match creation_track(args, &agent, &project)? {
+        Some(track) => format!("{}/tracks/{track}/docs", project_path(&agent, &project)),
         None => format!("{}/docs", project_path(&agent, &project)),
     };
     let response = agent.request("POST", &path, Some(body.as_bytes()))?;
@@ -101,20 +101,20 @@ pub fn create(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// `omni doc list [--feature <name or id> | --global] [--pillar <pillar>]`
+/// `omni doc list [--track <name or id> | --global] [--pillar <pillar>]`
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let mut query = Vec::new();
     if args.global {
-        if args.feature.is_some() {
-            bail!("give --feature or --global, not both");
+        if args.track.is_some() {
+            bail!("give --track or --global, not both");
         }
         query.push("track=global".to_string());
-    } else if let Some(given) = current_feature(args) {
+    } else if let Some(given) = current_track(args) {
         query.push(format!(
             "track={}",
-            resolve_feature(&agent, &project, &given)?
+            resolve_track(&agent, &project, &given)?
         ));
     }
     if let Some(pillar) = args.pillar.as_deref() {
@@ -139,19 +139,19 @@ pub fn list(args: &Args) -> Result<()> {
     if docs.is_empty() {
         say("no docs");
     }
-    // The names of the features are only looked up when a doc is in one.
-    let features = if docs.iter().any(|doc| doc.str_at("track_id").is_some()) {
-        project_features(&agent, &project).unwrap_or_default()
+    // The names of the tracks are only looked up when a doc is in one.
+    let tracks = if docs.iter().any(|doc| doc.str_at("track_id").is_some()) {
+        project_tracks(&agent, &project).unwrap_or_default()
     } else {
         Vec::new()
     };
     for doc in docs {
         let scope = match doc.str_at("track_id") {
             None => "project",
-            Some(id) => features
+            Some(id) => tracks
                 .iter()
-                .find(|feature| feature.str_at("id") == Some(id))
-                .and_then(|feature| feature.str_at("name"))
+                .find(|track| track.str_at("id") == Some(id))
+                .and_then(|track| track.str_at("name"))
                 .unwrap_or(id),
         };
         let field = |name: &str| doc.str_at(name).unwrap_or("?");

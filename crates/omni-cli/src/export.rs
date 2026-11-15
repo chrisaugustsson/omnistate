@@ -1,4 +1,4 @@
-//! `omni export --project <p> [--feature <name>] --out <dir>`: write the plan
+//! `omni export --project <p> [--track <name>] --out <dir>`: write the plan
 //! of one scope to a folder a builder can work from without the API. The
 //! folder gets `manifest.json`, one `.html` file per HTML doc under its
 //! pillar, one tag-format file per board of each design under `ui/<doc>/`
@@ -10,7 +10,7 @@ use crate::components::is_node_id;
 use crate::error::{CliError, Result, bail};
 use crate::http;
 use crate::json::Value;
-use crate::projects::{creation_feature, project_id};
+use crate::projects::{creation_track, project_id};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -58,15 +58,15 @@ fn doc_stem(title: &str, id: &str) -> String {
     format!("{}-{tail}", slug(title))
 }
 
-/// `omni export --project <p> [--feature <name>] --out <dir>`
+/// `omni export --project <p> [--track <name>] --out <dir>`
 pub fn run(args: &Args) -> Result<()> {
-    const USAGE: &str = "omni export --project <name|id> [--feature <name|id>] --out <dir>";
+    const USAGE: &str = "omni export --project <name|id> [--track <name|id>] --out <dir>";
     let Some(out) = args.out.as_deref() else {
         bail!("an export needs the folder to write to: {USAGE}");
     };
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let feature = creation_feature(args, &agent, &project)?;
+    let track = creation_track(args, &agent, &project)?;
     let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
 
     let docs_of = |scope: &str| -> Result<Vec<Value>> {
@@ -78,8 +78,8 @@ pub fn run(args: &Args) -> Result<()> {
             .to_vec())
     };
     let app_docs = docs_of("global")?;
-    let docs = match &feature {
-        Some(feature) => docs_of(feature)?,
+    let docs = match &track {
+        Some(track) => docs_of(track)?,
         None => app_docs.clone(),
     };
 

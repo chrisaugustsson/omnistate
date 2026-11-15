@@ -1,5 +1,5 @@
-//! `omni feature`: create, list, show, rename and delete the features of a
-//! project (Q51). A feature is a part of a project with docs and threads of
+//! `omni track`: create, list, show, rename and delete the tracks of a
+//! project (Q51). A track is a part of a project with docs and threads of
 //! its own. It has no status (V7); a delete is soft and takes its
 //! docs and threads with it.
 
@@ -7,7 +7,7 @@ use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{is_uuid, project_id, projects_path, resolve_feature};
+use crate::projects::{is_uuid, project_id, projects_path, resolve_track};
 
 /// The text of an API response, for `--json`.
 fn print_json(text: &str) {
@@ -22,20 +22,20 @@ fn parsed(text: &str, what: &str) -> Result<Value> {
     })
 }
 
-fn features_path(agent: &Agent, project_id: &str) -> String {
+fn tracks_path(agent: &Agent, project_id: &str) -> String {
     format!("{}/{project_id}/tracks", projects_path(agent))
 }
 
 /// One line: ID and name.
-fn summary(feature: &Value) -> String {
-    let field = |name: &str| feature.str_at(name).unwrap_or("?");
+fn summary(track: &Value) -> String {
+    let field = |name: &str| track.str_at(name).unwrap_or("?");
     format!("{}  {}", field("id"), field("name"))
 }
 
 pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
     let name = name.map(str::trim).unwrap_or_default();
     if name.is_empty() {
-        bail!("a feature needs a name: omni feature create <name> [--description <text>]");
+        bail!("a track needs a name: omni track create <name> [--description <text>]");
     }
     let mut body = format!("{{\"name\":{}", quote(name));
     if let Some(description) = &args.description {
@@ -46,7 +46,7 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
     let project = project_id(args, &agent)?;
     let response = agent.request(
         "POST",
-        &features_path(&agent, &project),
+        &tracks_path(&agent, &project),
         Some(body.as_bytes()),
     )?;
     let text = response.text();
@@ -54,12 +54,12 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
         print_json(&text);
         return Ok(());
     }
-    let body = parsed(&text, "the new feature")?;
-    let feature = body.get("track").unwrap_or(&body);
+    let body = parsed(&text, "the new track")?;
+    let track = body.get("track").unwrap_or(&body);
     say(&format!(
         "{}  {}",
-        feature.str_at("id").unwrap_or("?"),
-        feature.str_at("name").unwrap_or(name)
+        track.str_at("id").unwrap_or("?"),
+        track.str_at("name").unwrap_or(name)
     ));
     Ok(())
 }
@@ -67,33 +67,33 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let response = agent.request("GET", &features_path(&agent, &project), None)?;
+    let response = agent.request("GET", &tracks_path(&agent, &project), None)?;
     let text = response.text();
     if args.json {
         print_json(&text);
         return Ok(());
     }
-    let body = parsed(&text, "the features")?;
-    let features = body
+    let body = parsed(&text, "the tracks")?;
+    let tracks = body
         .get("tracks")
         .and_then(Value::as_array)
         .unwrap_or_default();
-    if features.is_empty() {
-        say("no features");
+    if tracks.is_empty() {
+        say("no tracks");
     }
-    for feature in features {
-        say(&summary(feature));
+    for track in tracks {
+        say(&summary(track));
     }
     Ok(())
 }
 
-pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
-    let Some(given) = feature else {
-        bail!("`omni feature show` needs a feature name or ID; `omni feature list` shows them");
+pub fn show(args: &Args, track: Option<&str>) -> Result<()> {
+    let Some(given) = track else {
+        bail!("`omni track show` needs a track name or ID; `omni track list` shows them");
     };
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let path = features_path(&agent, &project);
+    let path = tracks_path(&agent, &project);
     let text = if is_uuid(given) {
         let response = agent.request(
             "GET",
@@ -103,20 +103,20 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
         response.text()
     } else {
         let response = agent.request("GET", &path, None)?;
-        let listed = parsed(&response.text(), "the features")?;
+        let listed = parsed(&response.text(), "the tracks")?;
         let found = listed
             .get("tracks")
             .and_then(Value::as_array)
             .unwrap_or_default()
             .iter()
-            .find(|feature| {
-                feature
+            .find(|track| {
+                track
                     .str_at("name")
                     .is_some_and(|name| name.eq_ignore_ascii_case(given.trim()))
             })
             .ok_or_else(|| {
                 CliError::new(format!(
-                    "no feature named {given:?}; `omni feature list` shows the features"
+                    "no track named {given:?}; `omni track list` shows the tracks"
                 ))
             })?;
         format!("{{\"track\":{found}}}")
@@ -125,14 +125,14 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
         print_json(&text);
         return Ok(());
     }
-    let body = parsed(&text, "the feature")?;
-    let feature = body.get("track").unwrap_or(&body);
-    say(&summary(feature));
+    let body = parsed(&text, "the track")?;
+    let track = body.get("track").unwrap_or(&body);
+    say(&summary(track));
     say(&format!(
         "project: {}",
-        feature.str_at("project_id").unwrap_or("?")
+        track.str_at("project_id").unwrap_or("?")
     ));
-    if let Some(description) = feature.str_at("description").filter(|d| !d.is_empty()) {
+    if let Some(description) = track.str_at("description").filter(|d| !d.is_empty()) {
         say("description:");
         for line in description.lines() {
             say(&format!("  {line}"));
@@ -141,22 +141,22 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `omni feature rename <name|id> <new name>`
-pub fn rename(args: &Args, feature: Option<&str>, name: Option<&str>) -> Result<()> {
-    let usage = "omni feature rename <name|id> <new name>";
-    let Some(given) = feature else {
-        bail!("a feature rename needs the feature and its new name: {usage}");
+/// `omni track rename <name|id> <new name>`
+pub fn rename(args: &Args, track: Option<&str>, name: Option<&str>) -> Result<()> {
+    let usage = "omni track rename <name|id> <new name>";
+    let Some(given) = track else {
+        bail!("a track rename needs the track and its new name: {usage}");
     };
     let name = name.map(str::trim).unwrap_or_default();
     if name.is_empty() {
-        bail!("a feature rename needs a new name: {usage}");
+        bail!("a track rename needs a new name: {usage}");
     }
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let id = resolve_feature(&agent, &project, given)?;
+    let id = resolve_track(&agent, &project, given)?;
     let response = agent.request(
         "PATCH",
-        &format!("{}/{id}", features_path(&agent, &project)),
+        &format!("{}/{id}", tracks_path(&agent, &project)),
         Some(format!("{{\"name\":{}}}", quote(name)).as_bytes()),
     )?;
     let text = response.text();
@@ -164,33 +164,33 @@ pub fn rename(args: &Args, feature: Option<&str>, name: Option<&str>) -> Result<
         print_json(&text);
         return Ok(());
     }
-    let body = parsed(&text, "the renamed feature")?;
-    let feature = body.get("track").unwrap_or(&body);
+    let body = parsed(&text, "the renamed track")?;
+    let track = body.get("track").unwrap_or(&body);
     say(&format!(
         "{}  {}",
-        feature.str_at("id").unwrap_or(&id),
-        feature.str_at("name").unwrap_or(name)
+        track.str_at("id").unwrap_or(&id),
+        track.str_at("name").unwrap_or(name)
     ));
     Ok(())
 }
 
-/// `omni feature delete <name|id>`
-pub fn delete(args: &Args, feature: Option<&str>) -> Result<()> {
-    let Some(given) = feature else {
-        bail!("`omni feature delete` needs a feature name or ID: omni feature delete <name|id>");
+/// `omni track delete <name|id>`
+pub fn delete(args: &Args, track: Option<&str>) -> Result<()> {
+    let Some(given) = track else {
+        bail!("`omni track delete` needs a track name or ID: omni track delete <name|id>");
     };
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let id = resolve_feature(&agent, &project, given)?;
+    let id = resolve_track(&agent, &project, given)?;
     agent.request(
         "DELETE",
-        &format!("{}/{id}", features_path(&agent, &project)),
+        &format!("{}/{id}", tracks_path(&agent, &project)),
         None,
     )?;
     if args.json {
         say(&format!("{{\"deleted\":{}}}", quote(&id)));
     } else {
-        say(&format!("deleted feature {id}"));
+        say(&format!("deleted track {id}"));
     }
     Ok(())
 }
