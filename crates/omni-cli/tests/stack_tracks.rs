@@ -289,10 +289,10 @@ fn a_track_is_created_listed_and_shown_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{checkout}  Checkout  Wision"),
-            format!("{wish_list}  Wish list  Wision"),
+            format!("{checkout}  Checkout  Wision  planning"),
+            format!("{wish_list}  Wish list  Wision  planning"),
         ],
-        "the tracks in creation order, `<id>  <name>  <part>`"
+        "the tracks in creation order, `<id>  <name>  <part>  <state>`"
     );
 
     for which in [checkout.as_str(), "Checkout"] {
@@ -488,8 +488,8 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{checkout}  Express checkout  Wision"),
-            format!("{search}  Search  Wision"),
+            format!("{checkout}  Express checkout  Wision  planning"),
+            format!("{search}  Search  Wision  planning"),
         ],
         "the renamed track keeps its ID"
     );
@@ -521,7 +521,7 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
         non_empty_lines(&listed.stdout),
-        [format!("{search}  Search  Wision")],
+        [format!("{search}  Search  Wision  planning")],
         "the deleted track is in no list"
     );
     let shown = run(&home, &["track", "show", &checkout, "--project", &project]);
