@@ -568,6 +568,7 @@ export const TrackBodySchema = z.object({
   name: z.string(),
   part_id: z.string(),
   project_id: z.string(),
+  state: z.string(),
 });
 export type TrackBody = z.infer<typeof TrackBodySchema>;
 
@@ -1123,6 +1124,11 @@ export const TrackResponseSchema = z.object({
 });
 export type TrackResponse = z.infer<typeof TrackResponseSchema>;
 
+export const TrackStateRequestSchema = z.object({
+  state: z.string().nullable().optional(),
+});
+export type TrackStateRequest = z.infer<typeof TrackStateRequestSchema>;
+
 export const UsageBoardSchema = z.object({
   board_id: z.string(),
   board_name: z.string(),
@@ -1310,6 +1316,7 @@ export const schemas = {
   TrackBody: TrackBodySchema,
   TrackListResponse: TrackListResponseSchema,
   TrackResponse: TrackResponseSchema,
+  TrackStateRequest: TrackStateRequestSchema,
   TrackSummary: TrackSummarySchema,
   UsageBoard: UsageBoardSchema,
   UsageResponse: UsageResponseSchema,
@@ -1896,6 +1903,17 @@ export const operations = {
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move": {
     request: MoveTrackRequestSchema,
+    responses: {
+      "200": TrackResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state": {
+    request: TrackStateRequestSchema,
     responses: {
       "200": TrackResponseSchema,
       "400": ErrorBodySchema,

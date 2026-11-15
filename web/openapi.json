@@ -4006,6 +4006,10 @@
           },
           "project_id": {
             "type": "string"
+          },
+          "state": {
+            "description": "`planning` (a new track), `building`, `done` or `dropped`.",
+            "type": "string"
           }
         },
         "required": [
@@ -4014,6 +4018,7 @@
           "name",
           "description",
           "part_id",
+          "state",
           "created_at"
         ],
         "type": "object"
@@ -4041,6 +4046,18 @@
         "required": [
           "track"
         ],
+        "type": "object"
+      },
+      "TrackStateRequest": {
+        "properties": {
+          "state": {
+            "description": "`planning`, `building`, `done` or `dropped`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "TrackSummary": {
@@ -10752,6 +10769,117 @@
           }
         },
         "summary": "Puts a track on another part of its project. Moving it to the part it is\non changes nothing.",
+        "tags": [
+          "crate::tracks"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state": {
+      "post": {
+        "operationId": "set_track_state",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrackStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackResponse"
+                }
+              }
+            },
+            "description": "The track in its new state"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`state` is missing or none of the four states"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or it was deleted"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_transition`: the move is not allowed; the body's `state` is the track's current state and it stays there"
+          }
+        },
+        "summary": "Moves a track to another state. Only planning to building, building to\nplanning, building to done, planning to dropped and building to dropped are\nmoves; any other, a request for the state it already has included, is 422\n`invalid_transition` with the track's current `state`.",
         "tags": [
           "crate::tracks"
         ],

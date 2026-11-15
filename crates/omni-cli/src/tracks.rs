@@ -1,7 +1,7 @@
 //! `omni track`: create, list, show, rename and delete the tracks of a
 //! project (Q51). A track is a part of a project with docs and threads of
-//! its own. It has no status (V7); a delete is soft and takes its
-//! docs and threads with it.
+//! its own, and a state (planning, building, done or dropped); a delete is
+//! soft and takes its docs and threads with it.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
@@ -59,7 +59,8 @@ fn resolve_part(agent: &Agent, project_id: &str, given: &str) -> Result<String> 
         })
 }
 
-/// One line: ID, name and the part's name (its ID when the part is not listed).
+/// One line: ID, name, the part's name (its ID when the part is not listed)
+/// and the state.
 fn summary(track: &Value, parts: &[Value]) -> String {
     let field = |name: &str| track.str_at(name).unwrap_or("?");
     let part_id = field("part_id");
@@ -68,7 +69,12 @@ fn summary(track: &Value, parts: &[Value]) -> String {
         .find(|part| part.str_at("id") == Some(part_id))
         .and_then(|part| part.str_at("name"))
         .unwrap_or(part_id);
-    format!("{}  {}  {part}", field("id"), field("name"))
+    format!(
+        "{}  {}  {part}  {}",
+        field("id"),
+        field("name"),
+        field("state")
+    )
 }
 
 pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
@@ -258,6 +264,31 @@ pub fn move_to(args: &Args, track: Option<&str>) -> Result<()> {
         return Ok(());
     }
     let body = parsed(&text, "the moved track")?;
+    let track = body.get("track").unwrap_or(&body);
+    say(&summary(track, &project_parts(&agent, &project)?));
+    Ok(())
+}
+
+/// `omni track state <name|id> planning|building|done|dropped`
+pub fn state(args: &Args, track: Option<&str>, to: Option<&str>) -> Result<()> {
+    let usage = "omni track state <name|id> planning|building|done|dropped";
+    let (Some(given), Some(to)) = (track, to) else {
+        bail!("a track state needs the track and its new state: {usage}");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let id = resolve_track(&agent, &project, given)?;
+    let response = agent.request(
+        "POST",
+        &format!("{}/{id}/state", tracks_path(&agent, &project)),
+        Some(format!("{{\"state\":{}}}", quote(to.trim())).as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the track")?;
     let track = body.get("track").unwrap_or(&body);
     say(&summary(track, &project_parts(&agent, &project)?));
     Ok(())

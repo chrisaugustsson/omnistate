@@ -298,6 +298,10 @@ pub fn router(state: AppState) -> Router {
             post(tracks::move_track),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state",
+            post(tracks::set_track_state),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",
             get(home::show),
         )

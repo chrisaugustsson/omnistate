@@ -1,7 +1,8 @@
 //! Tracks (Q51, FR-52). A project holds global docs and tracks; a track
 //! is the same thing one level deeper, with its own docs and threads, so
 //! several tracks can be worked on at once. A track has a name that is
-//! unique in its project ignoring case and a description, and no status (V7).
+//! unique in its project ignoring case and a description, and a state: planning,
+//! building, done or dropped (US-311).
 //! Agents create, rename and delete tracks. A delete is soft (`deleted_at`)
 //! and takes the track's docs and threads with it.
 
@@ -15,6 +16,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
@@ -29,6 +31,8 @@ pub struct TrackBody {
     pub description: String,
     /// The part of the project the track changes.
     pub part_id: String,
+    /// `planning` (a new track), `building`, `done` or `dropped`.
+    pub state: String,
     pub created_at: String,
 }
 
@@ -54,7 +58,7 @@ pub struct CreateTrackRequest {
 }
 
 pub(crate) const TRACK_COLUMNS: &str = concat!(
-    "id::text, project_id::text, name, description, part_id::text, to_char(created_at AT TIME ZONE 'UTC', ",
+    "id::text, project_id::text, name, description, part_id::text, state, to_char(created_at AT TIME ZONE 'UTC', ",
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
 );
 
@@ -338,6 +342,122 @@ pub async fn move_track(
         &project_id,
         "track.moved",
         &json!({ "track_id": track.id, "part_id": track.part_id }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(TrackResponse { track }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct TrackStateRequest {
+    /// `planning`, `building`, `done` or `dropped`.
+    pub state: Option<String>,
+}
+
+const STATES: [&str; 4] = ["planning", "building", "done", "dropped"];
+
+/// The moves a track may make: planning to building, building back to
+/// planning, building to done, and planning or building to dropped.
+fn allowed_move(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("planning", "building")
+            | ("building", "planning")
+            | ("building", "done")
+            | ("planning", "dropped")
+            | ("building", "dropped")
+    )
+}
+
+/// An error of a state change: the usual ones, or a move that is not allowed.
+pub enum TrackStateError {
+    Api(ApiError),
+    InvalidTransition { state: String, to: String },
+}
+
+impl From<ApiError> for TrackStateError {
+    fn from(error: ApiError) -> Self {
+        Self::Api(error)
+    }
+}
+
+impl IntoResponse for TrackStateError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Api(error) => error.into_response(),
+            Self::InvalidTransition { state, to } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "error": "invalid_transition",
+                    "state": state,
+                    "message": format!("a track in {state} cannot move to {to}"),
+                })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// Moves a track to another state. Only planning to building, building to
+/// planning, building to done, planning to dropped and building to dropped are
+/// moves; any other, a request for the state it already has included, is 422
+/// `invalid_transition` with the track's current `state`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+    ),
+    request_body = TrackStateRequest,
+    responses(
+        (status = 200, description = "The track in its new state", body = TrackResponse),
+        (status = 400, description = "`state` is missing or none of the four states", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or it was deleted", body = ErrorBody),
+        (status = 422, description = "`invalid_transition`: the move is not allowed; the body's `state` is the track's current state and it stays there", body = ErrorBody),
+    )
+)]
+pub async fn set_track_state(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<TrackResponse>, TrackStateError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<TrackStateRequest>(&body);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    lock_track(&mut tx, &project_id, &track_id).await?;
+    let to = new?
+        .state
+        .filter(|to| STATES.contains(&to.as_str()))
+        .ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let (from,): (String,) = sqlx::query_as("SELECT state FROM tracks WHERE id = $1::uuid")
+        .bind(&track_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+    if !allowed_move(&from, &to) {
+        return Err(TrackStateError::InvalidTransition { state: from, to });
+    }
+    let track = sqlx::query_as::<_, TrackBody>(&format!(
+        "UPDATE tracks SET state = $2 WHERE id = $1::uuid RETURNING {TRACK_COLUMNS}"
+    ))
+    .bind(&track_id)
+    .bind(&to)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "track.state_changed",
+        &json!({ "track_id": track.id, "from": from, "state": track.state }),
     )
     .await?;
     tx.commit().await.map_err(ApiError::database)?;

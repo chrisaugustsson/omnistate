@@ -59,12 +59,14 @@ Usage:
   omni track create <name> --part <name|id>
                                       create a track on a part of the project
                                       [--description <text>]; prints its ID and name
-  omni track list [--part <name|id>]  list the project's tracks: ID, name and part
+  omni track list [--part <name|id>]  list the project's tracks: ID, name, part and state
   omni track show <name|id>           show a track
   omni track rename <name|id> <new name>
                                       rename a track; its ID, docs and threads stay
   omni track move <name|id> --part <name|id>
                                       put a track on another part of the project
+  omni track state <name|id> planning|building|done|dropped
+                                      move a track to another state
   omni track delete <name|id>         delete a track with its docs, threads and comments (they
                                       are kept, hidden; the name can be used again)
   omni doc create [--track <name|id>] --kind html|design|design-system

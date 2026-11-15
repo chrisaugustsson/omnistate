@@ -88,10 +88,13 @@ pub fn run(args: &Args) -> Result<()> {
         ["track", "rename", track, name] => tracks::rename(args, Some(track), Some(name)),
         ["track", "move"] => tracks::move_to(args, None),
         ["track", "move", track] => tracks::move_to(args, Some(track)),
+        ["track", "state"] => tracks::state(args, None, None),
+        ["track", "state", track] => tracks::state(args, Some(track), None),
+        ["track", "state", track, to] => tracks::state(args, Some(track), Some(to)),
         ["track", "delete"] => tracks::delete(args, None),
         ["track", "delete", track] => tracks::delete(args, Some(track)),
         ["track", ..] => {
-            bail!("usage: omni track create|list|show|rename|move|delete; see `omni --help`")
+            bail!("usage: omni track create|list|show|rename|move|state|delete; see `omni --help`")
         }
         ["doc", "create"] => docs::create(args),
         ["doc", "list"] => docs::list(args),
@@ -514,6 +517,11 @@ fn refused_operation(body: &Value) -> Option<String> {
         code @ ("invalid_components" | "invalid_design") => Some(format!(
             "{code}: {}; nothing was imported",
             body.str_at("message").unwrap_or("the tags are refused")
+        )),
+        "invalid_transition" => Some(format!(
+            "invalid_transition: {} (it is {})",
+            body.str_at("message")?,
+            body.str_at("state")?
         )),
         "invalid_operation" => {
             let index = match body.get("index") {
