@@ -32,6 +32,9 @@ use crate::docs::{
 };
 use crate::home::{HomeResponse, StoryCounts, TrackSummary, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
+use crate::parts::{
+    CreatePartRequest, PartBody, PartListResponse, PartResponse, RenamePartRequest,
+};
 use crate::pins::NodeBox;
 use crate::projects::{
     CreateProjectRequest, ProjectBody, ProjectListResponse, ProjectResponse, RenameProjectRequest,
@@ -80,6 +83,11 @@ use utoipa::OpenApi;
         crate::api_keys::create,
         crate::api_keys::revoke,
         crate::home::show,
+        crate::parts::list_parts,
+        crate::parts::create_part,
+        crate::parts::show_part,
+        crate::parts::rename_part,
+        crate::parts::delete_part,
         crate::tracks::list_tracks,
         crate::tracks::create_track,
         crate::tracks::show_track,
@@ -172,6 +180,11 @@ use utoipa::OpenApi;
         ProjectListResponse,
         CreateProjectRequest,
         RenameProjectRequest,
+        PartBody,
+        PartResponse,
+        RenamePartRequest,
+        PartListResponse,
+        CreatePartRequest,
         TrackBody,
         TrackResponse,
         RenameTrackRequest,

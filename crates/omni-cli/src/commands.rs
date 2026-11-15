@@ -22,6 +22,7 @@ use crate::identity::Identity;
 use crate::import;
 use crate::json::{Value, quote};
 use crate::links;
+use crate::parts;
 use crate::posts;
 use crate::projects;
 use crate::stories;
@@ -64,6 +65,19 @@ pub fn run(args: &Args) -> Result<()> {
         ["link"] => links::show(args),
         ["link", project] => links::link(args, Some(project)),
         ["unlink"] => links::unlink(args),
+        ["part", "create"] => parts::create(args, None),
+        ["part", "create", name] => parts::create(args, Some(name)),
+        ["part", "list"] => parts::list(args),
+        ["part", "show"] => parts::show(args, None),
+        ["part", "show", part] => parts::show(args, Some(part)),
+        ["part", "rename"] => parts::rename(args, None, None),
+        ["part", "rename", part] => parts::rename(args, Some(part), None),
+        ["part", "rename", part, name] => parts::rename(args, Some(part), Some(name)),
+        ["part", "delete"] => parts::delete(args, None),
+        ["part", "delete", part] => parts::delete(args, Some(part)),
+        ["part", ..] => {
+            bail!("usage: omni part create|list|show|rename|delete; see `omni --help`")
+        }
         ["track", "create"] => tracks::create(args, None),
         ["track", "create", name] => tracks::create(args, Some(name)),
         ["track", "list"] => tracks::list(args),

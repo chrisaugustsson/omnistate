@@ -22,6 +22,7 @@ mod identity;
 mod import;
 mod json;
 mod links;
+mod parts;
 mod posts;
 mod projects;
 mod stories;
@@ -46,6 +47,15 @@ Usage:
   omni link <project name|id>         link the current folder to a project (stored per user in ~/.config/omni/links.toml)
   omni link                           show the link in effect for the current folder
   omni unlink                         remove the current folder's link
+  omni part create <name> --kind app|service
+                                      create a part of the project, an app or a service
+                                      [--description <text>]; prints its ID, name and kind
+  omni part list                      list the project's parts: name and kind
+  omni part show <name|id>            show a part
+  omni part rename <name|id> <new name>
+                                      rename a part; its ID stays
+  omni part delete <name|id>          delete a part (it is kept, hidden; the name can be
+                                      used again)
   omni track create <name>            create a track in the project [--description <text>];
                                       prints its ID and name
   omni track list                     list the project's tracks: ID and name

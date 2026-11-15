@@ -56,6 +56,31 @@ pub fn registry() -> Vec<RouteEntry> {
         ),
         (
             "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts",
+            Access::Both,
+        ),
+        (
+            "POST",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts",
+            Access::Both,
+        ),
+        (
+            "GET",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+            Access::Both,
+        ),
+        (
+            "PATCH",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+            Access::Both,
+        ),
+        (
+            "DELETE",
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+            Access::Both,
+        ),
+        (
+            "GET",
             "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
             Access::Both,
         ),

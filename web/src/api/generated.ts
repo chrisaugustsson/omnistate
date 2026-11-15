@@ -317,6 +317,13 @@ export const CreateNodeRequestSchema = z.object({
 });
 export type CreateNodeRequest = z.infer<typeof CreateNodeRequestSchema>;
 
+export const CreatePartRequestSchema = z.object({
+  description: z.string().nullable().optional(),
+  kind: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+});
+export type CreatePartRequest = z.infer<typeof CreatePartRequestSchema>;
+
 export const CreatePostRequestSchema = z.object({
   attachments: z.array(z.string()).nullable().optional(),
   body: z.string().nullable().optional(),
@@ -856,6 +863,26 @@ export const NodeResponseSchema = z.object({
 });
 export type NodeResponse = z.infer<typeof NodeResponseSchema>;
 
+export const PartBodySchema = z.object({
+  created_at: z.string(),
+  description: z.string(),
+  id: z.string(),
+  kind: z.string(),
+  name: z.string(),
+  project_id: z.string(),
+});
+export type PartBody = z.infer<typeof PartBodySchema>;
+
+export const PartListResponseSchema = z.object({
+  parts: z.array(PartBodySchema),
+});
+export type PartListResponse = z.infer<typeof PartListResponseSchema>;
+
+export const PartResponseSchema = z.object({
+  part: PartBodySchema,
+});
+export type PartResponse = z.infer<typeof PartResponseSchema>;
+
 export const PatchNodeRequestSchema = z.object({
   behaviour: z.string().nullable().optional(),
   expected_version: z.number().int(),
@@ -933,6 +960,11 @@ export const RenameDocRequestSchema = z.object({
   title: z.string().nullable().optional(),
 });
 export type RenameDocRequest = z.infer<typeof RenameDocRequestSchema>;
+
+export const RenamePartRequestSchema = z.object({
+  name: z.string().nullable().optional(),
+});
+export type RenamePartRequest = z.infer<typeof RenamePartRequestSchema>;
 
 export const RenameProjectRequestSchema = z.object({
   name: z.string().nullable().optional(),
@@ -1156,6 +1188,7 @@ export const schemas = {
   CreateCommentRequest: CreateCommentRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
   CreateNodeRequest: CreateNodeRequestSchema,
+  CreatePartRequest: CreatePartRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
   CreateRuleRequest: CreateRuleRequestSchema,
@@ -1216,6 +1249,9 @@ export const schemas = {
   NodeResponse: NodeResponseSchema,
   NodeSummaryBody: NodeSummaryBodySchema,
   OpResultBody: OpResultBodySchema,
+  PartBody: PartBodySchema,
+  PartListResponse: PartListResponseSchema,
+  PartResponse: PartResponseSchema,
   PatchNodeRequest: PatchNodeRequestSchema,
   PatchRuleRequest: PatchRuleRequestSchema,
   PatchStoryRequest: PatchStoryRequestSchema,
@@ -1232,6 +1268,7 @@ export const schemas = {
   ReachRuleBody: ReachRuleBodySchema,
   ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
+  RenamePartRequest: RenamePartRequestSchema,
   RenameProjectRequest: RenameProjectRequestSchema,
   RenameTrackRequest: RenameTrackRequestSchema,
   ReplyBody: ReplyBodySchema,
@@ -1541,6 +1578,47 @@ export const operations = {
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts": {
+    responses: {
+      "200": PartListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/parts": {
+    request: CreatePartRequestSchema,
+    responses: {
+      "201": PartResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}": {
+    responses: {
+      "200": PartResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}": {
+    request: RenamePartRequestSchema,
+    responses: {
+      "200": PartResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}": {

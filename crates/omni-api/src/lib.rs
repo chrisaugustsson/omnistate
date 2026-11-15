@@ -21,6 +21,7 @@ mod exports;
 mod home;
 pub mod live;
 pub mod openapi;
+mod parts;
 pub mod password;
 mod pins;
 mod placeholders;
@@ -271,6 +272,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}",
             patch(projects::rename_project),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts",
+            get(parts::list_parts).post(parts::create_part),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+            get(parts::show_part)
+                .patch(parts::rename_part)
+                .delete(parts::delete_part),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
