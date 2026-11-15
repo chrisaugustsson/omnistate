@@ -26,6 +26,7 @@ function track(name: string, fields: { id?: string; description?: string; lastAc
       id: fields.id ?? newId(),
       project_id: PROJECT_ID,
       part_id: PART_ID,
+      state: "planning",
       name,
       description: fields.description ?? "",
       created_at: fields.createdAt ?? AT,

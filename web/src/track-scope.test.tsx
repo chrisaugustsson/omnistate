@@ -84,7 +84,7 @@ function trackPath(trackId: string, section = "") {
  * show that the app pays no heed to it.
  */
 function track(id: string, name: string, description: string, legacyStatus: string) {
-  return { id, project_id: PROJECT_ID, part_id: PART_ID, name, description, status: legacyStatus, created_at: AT };
+  return { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description, status: legacyStatus, created_at: AT };
 }
 
 function doc(trackId: string | null, kind: string, pillar: string, title: string) {

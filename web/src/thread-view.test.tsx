@@ -78,7 +78,7 @@ type Opened = HomeThread & { posts: Post[] };
 
 function track(id: string, name: string) {
   return {
-    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description: "", created_at: "2026-10-20T08:00:00.000Z" },
     docs: 0,
     waiting: 0,
     last_activity: null,

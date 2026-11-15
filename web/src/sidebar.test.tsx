@@ -37,7 +37,7 @@ const HUMAN = { kind: "human", user_id: USER.id };
 
 function track(id: string, name: string, stories = { total: 0, open: 0, done: 0 }) {
   return {
-    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
     stories,

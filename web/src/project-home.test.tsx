@@ -117,6 +117,7 @@ function seededHome() {
           id: TRACK_ID,
           project_id: PROJECT_ID,
           part_id: PART_ID,
+          state: "planning",
           name: "Checkout",
           description: "Pay in one step.\nNo account needed.",
           created_at: AT,

@@ -46,6 +46,14 @@
 //!   moving to the part it is on changes nothing, and a refused move leaves
 //!   the track on its part. `tracks.part_id` is NOT NULL, and the database
 //!   refuses a part of another project.
+//! - US-311: a Track carries its `state`, `planning` when it is new.
+//!   `POST /tracks/{track_id}/state` (agent) takes `{"state"}` and answers
+//!   200 `{"track": Track}` for the five moves planning to building,
+//!   building to planning, building to done, planning to dropped and building
+//!   to dropped, and emits `track.state_changed`. Any other move, one to the
+//!   state the track already has included, is 422 `{"error":
+//!   "invalid_transition", "state": <current state>, ...}` and leaves the
+//!   track where it is.
 
 mod common;
 
@@ -747,6 +755,142 @@ fn a_move_without_a_part_is_422_part_required_and_keeps_its_part() {
 // ---------------------------------------------------------------------------
 // Reading tracks
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Track states (US-311)
+// ---------------------------------------------------------------------------
+
+fn set_state_response(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    track: &str,
+    to: &str,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/state", track_path(f, project, track)),
+        &agent(f),
+        Some(&json!({ "state": to })),
+    )
+}
+
+/// Moves a track to `to`, which must be allowed, and checks the answer.
+fn set_state(f: &Fixture, client: &Client, project: &str, track: &str, to: &str) {
+    let moved = must(
+        set_state_response(f, client, project, track, to),
+        200,
+        &format!("move the track to {to}"),
+    );
+    assert_eq!(moved["track"]["id"], track, "{moved}");
+    assert_eq!(moved["track"]["state"], to, "{moved}");
+}
+
+/// The `state` of a track, as the API shows it.
+fn state_of(f: &Fixture, client: &Client, project: &str, track: &str) -> Value {
+    must(
+        call(
+            client,
+            "GET",
+            &track_path(f, project, track),
+            &agent(f),
+            None,
+        ),
+        200,
+        "show the track",
+    )["track"]["state"]
+        .clone()
+}
+
+/// Creates a track and walks it through `moves`, each one allowed.
+fn track_in(f: &Fixture, client: &Client, project: &str, moves: &[&str]) -> String {
+    let track = create_track(f, client, project, &unique("track"));
+    let id = track["id"].as_str().expect("an id").to_string();
+    for to in moves {
+        set_state(f, client, project, &id, to);
+    }
+    id
+}
+
+#[test]
+fn a_new_track_is_planning_and_makes_the_five_allowed_moves() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = create_track(f, client, &project, "Long windows");
+    assert_eq!(
+        track["state"], "planning",
+        "a new track is planning: {track}"
+    );
+    let id = track["id"].as_str().expect("an id");
+
+    // planning to building, back to planning, to building again, to done.
+    for to in ["building", "planning", "building", "done"] {
+        set_state(f, client, &project, id, to);
+        assert_eq!(state_of(f, client, &project, id), to);
+    }
+    // planning to dropped, and building to dropped.
+    for moves in [&["dropped"][..], &["building", "dropped"][..]] {
+        let other = track_in(f, client, &project, moves);
+        assert_eq!(state_of(f, client, &project, &other), "dropped");
+    }
+
+    let changes: Vec<Value> = events_of(&project, "track.state_changed")
+        .into_iter()
+        .filter(|data| data["track_id"] == id)
+        .collect();
+    assert_eq!(
+        changes
+            .iter()
+            .map(|data| data["state"].clone())
+            .collect::<Vec<_>>(),
+        ["building", "planning", "building", "done"],
+        "each move emits track.state_changed with the new state: {changes:?}"
+    );
+}
+
+#[test]
+fn a_move_that_is_not_allowed_is_422_invalid_transition_with_the_current_state() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let cases: [(&[&str], &str, &[&str]); 4] = [
+        (&[], "planning", &["done", "planning"]),
+        (&["building"], "building", &["building"]),
+        (
+            &["building", "done"],
+            "done",
+            &["building", "planning", "dropped", "done"],
+        ),
+        (
+            &["dropped"],
+            "dropped",
+            &["planning", "building", "done", "dropped"],
+        ),
+    ];
+    for (moves, current, refused) in cases {
+        let track = track_in(f, client, &project, moves);
+        for to in refused {
+            let response = set_state_response(f, client, &project, &track, to);
+            assert_eq!(
+                response.status,
+                422,
+                "{current} to {to}: {}",
+                response.text()
+            );
+            let body = response.json();
+            assert_eq!(
+                body["error"], "invalid_transition",
+                "{current} to {to}: {body}"
+            );
+            assert_eq!(body["state"], current, "{current} to {to}: {body}");
+            assert_eq!(
+                state_of(f, client, &project, &track),
+                current,
+                "a refused move to {to} leaves the track in {current}"
+            );
+        }
+    }
+}
 
 #[test]
 fn the_track_list_is_in_creation_order_for_the_agent_and_the_human() {

@@ -73,7 +73,7 @@ type Behaviour = { status: number; body: unknown };
 /** A track of the project's home data. */
 function track(id: string, name: string) {
   return {
-    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
     stories: { total: 0, open: 0, done: 0 },

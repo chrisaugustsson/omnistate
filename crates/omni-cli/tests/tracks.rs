@@ -88,6 +88,7 @@ fn track_json(id: &str, project: &str, name: &str, description: &str, part: &str
         "name": name,
         "description": description,
         "part_id": part,
+        "state": "planning",
         "created_at": "2026-10-23T10:00:00.000000Z"
     })
 }
@@ -103,13 +104,15 @@ fn checkout(project: &str) -> Value {
 }
 
 fn wish_list(project: &str) -> Value {
-    track_json(
+    let mut track = track_json(
         WISH_LIST,
         project,
         "Wish list",
         "Keep products for later.",
         IOT_SERVICE,
-    )
+    );
+    track["state"] = json!("building");
+    track
 }
 
 fn part_json(id: &str, name: &str, kind: &str) -> Value {
@@ -118,11 +121,13 @@ fn part_json(id: &str, name: &str, kind: &str) -> Value {
 
 /// An API that knows two projects, `brand-site` and `other`, each with the
 /// parts "Wision" and "iot-service" and the tracks "Checkout" (on Wision) and
-/// "Wish list" (on iot-service), in that order. A new track named "checkout"
+/// "Wish list" (on iot-service), in that order; Checkout is planning and Wish
+/// list is building. A new track named "checkout"
 /// in any case is refused as taken, and so is a rename to it. A track created
 /// or moved to `GONE_PART` is 422 `invalid_part`. A rename answers the track
 /// with its new name, a move answers it on its new part, and a delete answers
-/// 204.
+/// 204. A state change of Checkout to building or dropped answers it in that
+/// state; any other is 422 `invalid_transition` with the state `planning`.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -171,6 +176,22 @@ fn mock() -> MockServer {
                 ("POST", rest) if rest == format!("/{TRACK}/move") => {
                     let mut moved = checkout(project);
                     moved["part_id"] = json!(part);
+                    Reply::json(200, &json!({ "track": moved }))
+                }
+                ("POST", rest) if rest == format!("/{TRACK}/state") => {
+                    let to = body["state"].as_str().unwrap_or("");
+                    if to != "building" && to != "dropped" {
+                        return Reply::json(
+                            422,
+                            &json!({
+                                "error": "invalid_transition",
+                                "state": "planning",
+                                "message": format!("a track in planning cannot move to {to}")
+                            }),
+                        );
+                    }
+                    let mut moved = checkout(project);
+                    moved["state"] = json!(to);
                     Reply::json(200, &json!({ "track": moved }))
                 }
                 ("GET", "") => Reply::json(
@@ -412,7 +433,7 @@ fn track_create_on_a_part_id_sends_the_id_and_shows_the_apis_invalid_part() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn track_list_prints_one_line_per_track_without_a_status() {
+fn track_list_prints_one_line_per_track_with_its_state() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["track", "list", "--project", PROJECT]);
@@ -426,10 +447,10 @@ fn track_list_prints_one_line_per_track_without_a_status() {
     assert_eq!(
         non_empty_lines(&out.stdout),
         [
-            format!("{TRACK}  Checkout  Wision"),
-            format!("{WISH_LIST}  Wish list  iot-service"),
+            format!("{TRACK}  Checkout  Wision  planning"),
+            format!("{WISH_LIST}  Wish list  iot-service  building"),
         ],
-        "one `<id>  <name>  <part name>` line per track, in the API's order"
+        "one `<id>  <name>  <part name>  <state>` line per track, in the API's order"
     );
 
     let json = run(&home, &["track", "list", "--project", PROJECT, "--json"]);
@@ -459,7 +480,7 @@ fn track_list_with_a_part_lists_only_that_parts_tracks() {
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         non_empty_lines(&out.stdout),
-        [format!("{WISH_LIST}  Wish list  iot-service")]
+        [format!("{WISH_LIST}  Wish list  iot-service  building")]
     );
 }
 
@@ -504,8 +525,52 @@ fn track_move_sends_the_parts_id_and_prints_the_track_on_its_new_part() {
     assert_eq!(body_of(&moves[0]), json!({ "part_id": IOT_SERVICE }));
     assert_eq!(
         non_empty_lines(&out.stdout),
-        [format!("{TRACK}  Checkout  iot-service")]
+        [format!("{TRACK}  Checkout  iot-service  planning")]
     );
+}
+
+// ---------------------------------------------------------------------------
+// omni track state (US-311)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn track_state_sends_the_new_state_and_prints_the_track_in_it() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "track",
+            "state",
+            "Checkout",
+            "building",
+            "--project",
+            PROJECT,
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let changes = requests_to(
+        &server,
+        "POST",
+        &format!("{}/{TRACK}/state", tracks_path(PROJECT)),
+    );
+    assert_eq!(changes.len(), 1, "{:?}", server.requests());
+    assert_eq!(body_of(&changes[0]), json!({ "state": "building" }));
+    assert_eq!(
+        non_empty_lines(&out.stdout),
+        [format!("{TRACK}  Checkout  Wision  building")]
+    );
+}
+
+#[test]
+fn track_state_of_a_move_that_is_not_allowed_names_invalid_transition_and_the_current_state() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &["track", "state", "Checkout", "done", "--project", PROJECT],
+    );
+    assert_one_line_error(&out, &["invalid_transition", "planning"]);
 }
 
 #[test]

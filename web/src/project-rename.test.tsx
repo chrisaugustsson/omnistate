@@ -25,7 +25,7 @@ function fakeApi(rename: () => Response | Promise<Response>) {
   const patches: Call[] = [];
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const track = { id: TRACK_ID, project_id: PROJECT_ID, part_id: PART_ID, name: "Wishlist", description: "", created_at: AT };
+  const track = { id: TRACK_ID, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name: "Wishlist", description: "", created_at: AT };
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

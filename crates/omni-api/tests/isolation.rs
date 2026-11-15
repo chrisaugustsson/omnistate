@@ -588,6 +588,12 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state",
+        Some(r#"{"state":"building"}"#),
+        Kind::Workspace,
+    ),
+    case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
         None,

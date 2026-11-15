@@ -73,7 +73,7 @@ function waiting(on: Doc, text: string, replies: ReturnType<typeof reply>[]) {
 
 function feature(id: string, name: string) {
   return {
-    track: { id, project_id: PROJECT_ID, part_id: PART_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description: "", created_at: AT },
     docs: 1,
     waiting: 1,
     last_activity: null,
