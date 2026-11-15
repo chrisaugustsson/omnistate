@@ -6,7 +6,7 @@ import { ancestorsOf, childrenOf, shortTitle, words } from "./tree";
 import { cn } from "@/lib/utils";
 
 /**
- * The tree as folders: the feature first, always open, then its stories and
+ * The tree as folders: the track first, always open, then its stories and
  * what lies under them. `open` holds the ids of the nodes whose children show.
  */
 export function Folders({
@@ -87,7 +87,7 @@ export function Folders({
                     ),
                   )}
               </div>
-              <div className="mt-px truncate text-[11.5px] text-muted-foreground">{path || "Feature"}</div>
+              <div className="mt-px truncate text-[11.5px] text-muted-foreground">{path || "Track"}</div>
             </div>
           );
         })}

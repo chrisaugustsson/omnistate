@@ -5,11 +5,11 @@ export type TreeNode = NodeSummaryBody;
 
 const list = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour"];
 
-/** Every node of a feature's behaviour tree, the root first, in tree order. */
-export async function loadTree(workspaceId: string, projectId: string, featureId: string): Promise<TreeNode[]> {
+/** Every node of a track's behaviour tree, the root first, in tree order. */
+export async function loadTree(workspaceId: string, projectId: string, trackId: string): Promise<TreeNode[]> {
   const loaded = await callApi(
     "GET",
-    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/behaviour`,
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/behaviour`,
     { response: list.responses["200"] },
   );
   return loaded.nodes;
@@ -17,11 +17,11 @@ export async function loadTree(workspaceId: string, projectId: string, featureId
 
 const openList = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions"];
 
-/** The open questions of a feature's tree, a remark a person left among them. */
-export async function loadOpenQuestions(workspaceId: string, projectId: string, featureId: string) {
+/** The open questions of a track's tree, a remark a person left among them. */
+export async function loadOpenQuestions(workspaceId: string, projectId: string, trackId: string) {
   const loaded = await callApi(
     "GET",
-    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/behaviour/questions?state=open`,
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/behaviour/questions?state=open`,
     { response: openList.responses["200"] },
   );
   return loaded.questions;
@@ -30,10 +30,10 @@ export async function loadOpenQuestions(workspaceId: string, projectId: string, 
 const read = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}"];
 
 /** One node in full: its text, questions with all their answers, and the rules that reach it. */
-export function loadNode(workspaceId: string, projectId: string, featureId: string, nodeId: string) {
+export function loadNode(workspaceId: string, projectId: string, trackId: string, nodeId: string) {
   return callApi(
     "GET",
-    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/behaviour/nodes/${encodeURIComponent(nodeId)}`,
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/behaviour/nodes/${encodeURIComponent(nodeId)}`,
     { response: read.responses["200"] },
   );
 }
@@ -44,13 +44,13 @@ const answer = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/t
 export async function answerQuestion(
   workspaceId: string,
   projectId: string,
-  featureId: string,
+  trackId: string,
   questionId: string,
   body: { expected_version: number; answer: string; change?: boolean },
 ) {
   const done = await callApi(
     "POST",
-    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/behaviour/questions/${encodeURIComponent(questionId)}/answers`,
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/behaviour/questions/${encodeURIComponent(questionId)}/answers`,
     { body, response: answer.responses["201"] },
   );
   return done.question;
@@ -62,13 +62,13 @@ const ask = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/trac
 export async function askQuestion(
   workspaceId: string,
   projectId: string,
-  featureId: string,
+  trackId: string,
   nodeId: string,
   body: { question: string },
 ) {
   const done = await callApi(
     "POST",
-    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/behaviour/nodes/${encodeURIComponent(nodeId)}/questions`,
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/behaviour/nodes/${encodeURIComponent(nodeId)}/questions`,
     { body, response: ask.responses["201"] },
   );
   return done.question;

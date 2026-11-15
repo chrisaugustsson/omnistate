@@ -2,14 +2,14 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { PartyPopper } from "lucide-react";
 import type { CommentBody, HomeDoc, HomeResponse } from "@/api/generated";
 import { AgentChip } from "@/components/agent-chip";
-import { PILLARS, featureNames, waitingCount } from "@/components/project/items";
+import { PILLARS, trackNames, waitingCount } from "@/components/project/items";
 import { SectionPage } from "@/components/project/section-page";
 import { ElementSnapshot } from "@/components/viewer/comments";
 import { authorName, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 // The project's inbox: the comments whose latest reply is an agent's, and
-// nothing else, grouped by scope (the app, or a feature by its name). The group
+// nothing else, grouped by scope (the app, or a track by its name). The group
 // with the newest such reply comes first, and so does the newest reply in each
 // group. Replying to a comment or deleting it takes it off the list.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/inbox")({
@@ -24,27 +24,27 @@ type Entry = {
   doc: HomeDoc | undefined;
 };
 
-type Group = { feature: string | null; name: string; at: number; entries: Entry[] };
+type Group = { track: string | null; name: string; at: number; entries: Entry[] };
 
 /** The waiting comments by scope, newest agent reply first in the groups and in each group. */
 function groupsOf(home: HomeResponse): Group[] {
-  const names = featureNames(home);
+  const names = trackNames(home);
   const docs = new Map(home.docs.map((doc) => [doc.id, doc]));
   const groups = new Map<string | null, Group>();
   for (const comment of home.waiting.comments) {
     const reply = comment.replies.at(-1);
     if (!reply) continue;
-    const feature = comment.track_id ?? null;
+    const track = comment.track_id ?? null;
     const entry: Entry = { comment, reply, at: new Date(reply.created_at).getTime(), doc: docs.get(comment.doc_id) };
-    const group = groups.get(feature) ?? {
-      feature,
-      name: feature ? (names.get(feature) ?? "Feature") : "App",
+    const group = groups.get(track) ?? {
+      track,
+      name: track ? (names.get(track) ?? "Track") : "App",
       at: 0,
       entries: [],
     };
     group.entries.push(entry);
     group.at = Math.max(group.at, entry.at);
-    groups.set(feature, group);
+    groups.set(track, group);
   }
   for (const group of groups.values()) group.entries.sort((a, b) => b.at - a.at);
   return Array.from(groups.values()).sort((a, b) => b.at - a.at);
@@ -79,13 +79,13 @@ function Inbox() {
         return (
           <div className="space-y-10">
             {groups.map((group) => (
-              <section key={group.feature ?? "app"} aria-label={group.name}>
+              <section key={group.track ?? "app"} aria-label={group.name}>
                 <div className="flex items-baseline gap-2.5 border-b pb-2.5">
                   <h2 className="text-[15px] font-semibold tracking-tight">
-                    {group.feature ? (
+                    {group.track ? (
                       <Link
-                        to="/w/$workspaceId/projects/$projectId/features/$featureId"
-                        params={{ workspaceId, projectId, featureId: group.feature }}
+                        to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
+                        params={{ workspaceId, projectId, trackId: group.track }}
                         className="hover:underline hover:underline-offset-4"
                       >
                         {group.name}

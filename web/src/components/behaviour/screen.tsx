@@ -6,7 +6,7 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useProjectEvents } from "@/live/context";
-import { featureNames } from "@/components/project/items";
+import { trackNames } from "@/components/project/items";
 import { useHome } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
 import { Details } from "./details";
@@ -14,29 +14,29 @@ import { Folders } from "./folders";
 import { Graph } from "./graph";
 import { ancestorsOf, childrenOf, find, matches, shownUnder, type Filter } from "./tree";
 
-// A feature's Behaviour screen: folders on the left, the graph in the middle and
+// A track's Behaviour screen: folders on the left, the graph in the middle and
 // the details of the chosen node on the right. This owns the screen's state.
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
-/** The Behaviour screen of the feature `featureId`. */
+/** The Behaviour screen of the track `trackId`. */
 export function BehaviourScreen({
   workspaceId,
   projectId,
-  featureId,
+  trackId,
   me = null,
 }: {
   workspaceId: string;
   projectId: string;
-  featureId: string;
+  trackId: string;
   me?: string | null;
 }) {
-  const load = useCallback(() => loadTree(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
+  const load = useCallback(() => loadTree(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
   const { value: nodes, failed, reload: reloadTree } = useReloading(load);
   // How many questions wait on each node; a question a person asked is a remark and does not wait.
   const loadWaiting = useCallback(
-    () => loadOpenQuestions(workspaceId, projectId, featureId).catch(() => []),
-    [workspaceId, projectId, featureId],
+    () => loadOpenQuestions(workspaceId, projectId, trackId).catch(() => []),
+    [workspaceId, projectId, trackId],
   );
   const { value: openQuestions, reload: reloadQuestions } = useReloading(loadWaiting);
   const waiting = useMemo(() => {
@@ -47,7 +47,7 @@ export function BehaviourScreen({
     return counts;
   }, [openQuestions]);
   const { home } = useHome(workspaceId, projectId);
-  const featureName = home ? (featureNames(home).get(featureId) ?? "") : "";
+  const trackName = home ? (trackNames(home).get(trackId) ?? "") : "";
   // Every node starts closed.
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const toggle = (id: string) =>
@@ -136,7 +136,7 @@ export function BehaviourScreen({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [nodes, chosen]);
-  // Live: a behaviour event of this feature reads the tree and the open questions again, at most once in 300 ms
+  // Live: a behaviour event of this track reads the tree and the open questions again, at most once in 300 ms
   // (on the first event, and once more at the end of the window if more came); the chosen node too when it is concerned.
   const [nodeTick, setNodeTick] = useState(0);
   const chosenRef = useRef(chosen);
@@ -166,7 +166,7 @@ export function BehaviourScreen({
     [],
   );
   useProjectEvents(projectId, (event) => {
-    if (!event.event.startsWith("behaviour.") || event.data.track_id !== featureId) return;
+    if (!event.event.startsWith("behaviour.") || event.data.track_id !== trackId) return;
     const concerned =
       event.event === "behaviour.imported" || event.event === "behaviour.marked" || (chosenRef.current !== null && event.data.node_id === chosenRef.current);
     const state = throttle.current;
@@ -235,11 +235,11 @@ export function BehaviourScreen({
             O
           </span>
           <Link
-            to="/w/$workspaceId/projects/$projectId/features/$featureId"
-            params={{ workspaceId, projectId, featureId }}
+            to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
+            params={{ workspaceId, projectId, trackId }}
             className="max-w-64 truncate text-[13px] font-medium text-muted-foreground hover:text-foreground"
           >
-            ‹ {featureName}
+            ‹ {trackName}
           </Link>
           <h1 className="font-display text-2xl leading-none tracking-[-0.01em]">Behaviour</h1>
           {nodes && nodes.length > 0 && (
@@ -284,7 +284,7 @@ export function BehaviourScreen({
           </Alert>
         )}
         {nodes && nodes.length === 0 && (
-          <p className="col-span-3 p-4 text-sm text-muted-foreground">No behaviour has been written for this feature yet.</p>
+          <p className="col-span-3 p-4 text-sm text-muted-foreground">No behaviour has been written for this track yet.</p>
         )}
         {nodes && nodes.length > 0 && (
           <>
@@ -358,7 +358,7 @@ export function BehaviourScreen({
               onChoose={(id) => choose(id, "details")}
               workspaceId={workspaceId}
               projectId={projectId}
-              featureId={featureId}
+              trackId={trackId}
               onWritten={() => {
                 reloadTree();
                 reloadQuestions();

@@ -7,22 +7,22 @@ import { buildIndex, recentPlaces, search, type Place, type PlaceKind } from "@/
 import { cn } from "@/lib/utils";
 import { useVisits } from "@/lib/visits";
 
-// The ⌘K palette: finds a feature, doc or thread of the project by name or
+// The ⌘K palette: finds a track, doc or thread of the project by name or
 // title, and with nothing typed lists the places visited last. It is a
 // combobox over the project home; the search itself is in ./search, and
 // no fuzzy matching is done here.
 
 type Params = { workspaceId: string; projectId: string };
 
-const ICONS: Record<PlaceKind, LucideIcon> = { app: LayoutGrid, feature: Layers, doc: FileText, thread: MessagesSquare };
+const ICONS: Record<PlaceKind, LucideIcon> = { app: LayoutGrid, track: Layers, doc: FileText, thread: MessagesSquare };
 
 /** The `to` and `params` that open a place. */
 function linkOf(place: Place, params: Params) {
   switch (place.kind) {
     case "app":
       return { to: "/w/$workspaceId/projects/$projectId/app", params } as const;
-    case "feature":
-      return { to: "/w/$workspaceId/projects/$projectId/features/$featureId", params: { ...params, featureId: place.id } } as const;
+    case "track":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId", params: { ...params, trackId: place.id } } as const;
     case "doc":
       return { to: "/w/$workspaceId/projects/$projectId/docs/$docId", params: { ...params, docId: place.id } } as const;
     case "thread":
@@ -101,11 +101,11 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
       const recent = recentPlaces(index, visits);
       return recent.length > 0 ? [{ label: "Recent", places: recent }] : [];
     }
-    const { features, docs, threads } = search(index, query);
+    const { tracks, docs, threads } = search(index, query);
     const of = (group: { items: Place[]; total: number }) =>
       group.total > group.items.length ? `${group.items.length} of ${group.total}` : undefined;
     return [
-      { label: "Features", places: features.items, count: of(features) },
+      { label: "Tracks", places: tracks.items, count: of(tracks) },
       { label: "Docs", places: docs.items, count: of(docs) },
       { label: "Threads", places: threads.items, count: of(threads) },
     ].filter((group) => group.places.length > 0);
@@ -164,7 +164,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
             aria-controls={listId}
             aria-activedescendant={current >= 0 ? `${listId}-${current}` : undefined}
             aria-label="Search"
-            placeholder="Search features, docs and threads"
+            placeholder="Search tracks, docs and threads"
             autoComplete="off"
             value={query}
             onChange={(event) => {
@@ -180,7 +180,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
             <p className="px-3 py-8 text-center text-sm text-muted-foreground">
               {typed
                 ? `Nothing is called “${query.trim()}”. The palette searches names and titles, not what docs say.`
-                : "No places visited yet. Type to search features, docs and threads."}
+                : "No places visited yet. Type to search tracks, docs and threads."}
             </p>
           )}
           {groups.map((group) => (

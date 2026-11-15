@@ -64,7 +64,7 @@ function Count({ value, signal, zero }: { value?: number; signal?: boolean; zero
 const activeLink = { exact: true, includeSearch: false } as const;
 const activeClass = "bg-sidebar-accent text-foreground [&>svg]:text-foreground";
 
-/** The places of a project: Search, Inbox with what waits on the reviewer, App, Features with their number, and Threads. No feature is listed. */
+/** The places of a project: Search, Inbox with what waits on the reviewer, App, Tracks with their number, and Threads. No track is listed. */
 function ProjectNav({
   workspaceId,
   projectId,
@@ -106,14 +106,14 @@ function ProjectNav({
         App
       </Link>
       <Link
-        to="/w/$workspaceId/projects/$projectId/features"
+        to="/w/$workspaceId/projects/$projectId/tracks"
         params={params}
         activeOptions={activeLink}
         activeProps={{ className: activeClass }}
         className={itemClass}
       >
         <Layers />
-        Features
+        Tracks
         <Count value={home ? (home.tracks ?? []).length : undefined} zero />
       </Link>
       <Link
@@ -132,17 +132,17 @@ function ProjectNav({
 
 const MOST_RECENT = 5;
 
-/** The features of the visits that the project still has, newest first and each once: the last five. */
-function recentFeatures(home: HomeResponse, visits: Visit[]): { id: string; name: string }[] {
-  const names = new Map((home.tracks ?? []).map(({ track: feature }) => [feature.id, feature.name]));
+/** The tracks of the visits that the project still has, newest first and each once: the last five. */
+function recentTracks(home: HomeResponse, visits: Visit[]): { id: string; name: string }[] {
+  const names = new Map((home.tracks ?? []).map(({ track }) => [track.id, track.name]));
   const ids = [...new Set(visits.map((visit) => visit.scope))].filter((scope) => names.has(scope));
   return ids.slice(0, MOST_RECENT).map((id) => ({ id, name: names.get(id) ?? "" }));
 }
 
-/** The features visited last, for getting back to them; the label folds the list. */
+/** The tracks visited last, for getting back to them; the label folds the list. */
 function Recent({ workspaceId, projectId, home, visits }: { workspaceId: string; projectId: string; home: HomeResponse; visits: Visit[] }) {
   const [open, toggle] = useFold(`omni:fold:${projectId}:recent`);
-  const features = recentFeatures(home, visits);
+  const tracks = recentTracks(home, visits);
   return (
     <div>
       <button
@@ -155,21 +155,21 @@ function Recent({ workspaceId, projectId, home, visits }: { workspaceId: string;
         <ChevronRight aria-hidden className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
       </button>
       {open &&
-        (features.length === 0 ? (
-          <p className="px-2 py-1 text-xs text-muted-foreground">No recent features</p>
+        (tracks.length === 0 ? (
+          <p className="px-2 py-1 text-xs text-muted-foreground">No recent tracks</p>
         ) : (
           <div className="space-y-px">
-            {features.map((feature) => (
+            {tracks.map((track) => (
               <Link
-                key={feature.id}
-                to="/w/$workspaceId/projects/$projectId/features/$featureId"
-                params={{ workspaceId, projectId, featureId: feature.id }}
+                key={track.id}
+                to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
+                params={{ workspaceId, projectId, trackId: track.id }}
                 activeOptions={activeLink}
                 activeProps={{ className: activeClass }}
                 className={itemClass}
               >
                 <Layers />
-                <span className="min-w-0 flex-1 truncate">{feature.name}</span>
+                <span className="min-w-0 flex-1 truncate">{track.name}</span>
               </Link>
             ))}
           </div>
@@ -179,22 +179,22 @@ function Recent({ workspaceId, projectId, home, visits }: { workspaceId: string;
 }
 
 /**
- * The scope that the sidebar's tree shows: the feature or App of the current
- * page, and on a page of no scope (Inbox, Features, Threads) the last one
- * visited. It is App when there is none, or when the feature is gone.
+ * The scope that the sidebar's tree shows: the track or App of the current
+ * page, and on a page of no scope (Inbox, Tracks, Threads) the last one
+ * visited. It is App when there is none, or when the track is gone.
  */
 function treeScope(
   home: HomeResponse,
   visits: Visit[],
-  at: { featureId?: string; docId?: string; threadId?: string; onApp: boolean },
+  at: { trackId?: string; docId?: string; threadId?: string; onApp: boolean },
 ): string {
   let scope: string | undefined;
-  if (at.featureId) scope = at.featureId;
+  if (at.trackId) scope = at.trackId;
   else if (at.docId) scope = scopeOf(home.docs.find((doc) => doc.id === at.docId));
   else if (at.threadId) scope = scopeOf(home.threads.find((thread) => thread.id === at.threadId));
   else if (at.onApp) scope = "app";
   scope ??= visits[0]?.scope ?? "app";
-  const exists = scope === "app" || (home.tracks ?? []).some(({ track: feature }) => feature.id === scope);
+  const exists = scope === "app" || (home.tracks ?? []).some(({ track }) => track.id === scope);
   return exists ? scope : "app";
 }
 
@@ -202,7 +202,7 @@ function scopeOf(item?: { track_id?: string | null }): string | undefined {
   return item ? (item.track_id ?? "app") : undefined;
 }
 
-/** What the sidebar shows of a project: its places (and the palette they open), the features visited last, and the tree of the current scope. */
+/** What the sidebar shows of a project: its places (and the palette they open), the tracks visited last, and the tree of the current scope. */
 function ProjectSection({
   workspaceId,
   projectId,
@@ -217,8 +217,8 @@ function ProjectSection({
   const closeSearch = useCallback(() => setSearching(false), []);
   useSearchShortcut(useCallback(() => setSearching((open) => !open), []));
   const visits = useVisits(projectId);
-  const { featureId, docId, threadId } = useParams({ strict: false }) as {
-    featureId?: string;
+  const { trackId, docId, threadId } = useParams({ strict: false }) as {
+    trackId?: string;
     docId?: string;
     threadId?: string;
   };
@@ -240,7 +240,7 @@ function ProjectSection({
         <ScopeTree
           workspaceId={workspaceId}
           projectId={projectId}
-          scope={treeScope(home, visits, { featureId, docId, threadId, onApp })}
+          scope={treeScope(home, visits, { trackId, docId, threadId, onApp })}
           home={home}
         />
       )}

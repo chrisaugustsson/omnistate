@@ -12,20 +12,20 @@ type ProjectParams = { workspaceId: string; projectId: string };
 
 type Scoped = { track_id?: string | null };
 
-/** The names of the project's features by ID, for tagging the items that belong to one. */
-export type FeatureNames = ReadonlyMap<string, string>;
+/** The names of the project's tracks by ID, for tagging the items that belong to one. */
+export type TrackNames = ReadonlyMap<string, string>;
 
-export function featureNames(home: HomeResponse): FeatureNames {
-  return new Map((home.tracks ?? []).map(({ track: feature }) => [feature.id, feature.name]));
+export function trackNames(home: HomeResponse): TrackNames {
+  return new Map((home.tracks ?? []).map(({ track }) => [track.id, track.name]));
 }
 
-/** The name of the feature that `item` belongs to, when it belongs to one and `names` is given. */
-function tagOf(item: Scoped, names?: FeatureNames): string | undefined {
+/** The name of the track that `item` belongs to, when it belongs to one and `names` is given. */
+function tagOf(item: Scoped, names?: TrackNames): string | undefined {
   return item.track_id ? names?.get(item.track_id) : undefined;
 }
 
-/** A small tag with the name of the feature that an item belongs to. */
-export function FeatureTag({ name }: { name: string }) {
+/** A small tag with the name of the track that an item belongs to. */
+export function TrackTag({ name }: { name: string }) {
   return (
     <span className="inline-flex max-w-40 shrink-0 items-center gap-1 rounded-md px-1.5 py-px text-[11px] font-medium text-muted-foreground ring-1 ring-border ring-inset">
       <Layers aria-hidden className="size-3 shrink-0" />
@@ -104,8 +104,8 @@ export function DocRow({
   doc: DocBody;
   params: ProjectParams;
   showPillar?: boolean;
-  /** The project's features: given, a doc of a feature carries the feature's name. */
-  names?: FeatureNames;
+  /** The project's tracks: given, a doc of a track carries the track's name. */
+  names?: TrackNames;
 }) {
   const tag = tagOf(doc, names);
   const design = isDesign(doc);
@@ -119,7 +119,7 @@ export function DocRow({
       >
         <Glyph icon={design ? PenTool : FileText} tone={design ? TONES.violet : TONES.plain} />
         <span className="min-w-0 flex-1 truncate font-medium">{doc.title}</span>
-        {tag && <FeatureTag name={tag} />}
+        {tag && <TrackTag name={tag} />}
         {showPillar && (
           <span className="hidden font-mono text-[11px] text-muted-foreground uppercase sm:inline">{doc.pillar}</span>
         )}

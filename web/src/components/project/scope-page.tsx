@@ -11,7 +11,7 @@ import { useHome, useProjectName } from "@/lib/use-home";
 import { useVisit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 
-// The scope page: the app level of a project or one of its features, on one
+// The scope page: the app level of a project or one of its tracks, on one
 // layout. A header with the name, the description and the last activity, a
 // row of chips that jump to the five pillars, a section per pillar with a row
 // for each doc, and the scope's threads, newest post first. It loads the
@@ -152,9 +152,9 @@ function Skeleton() {
   );
 }
 
-/** The scope's docs and threads out of `home`: a feature's, or the app level's when `featureId` is null. */
-function inScope(home: HomeResponse, featureId: string | null) {
-  const own = (item: { track_id?: string | null }) => (item.track_id ?? null) === featureId;
+/** The scope's docs and threads out of `home`: a track's, or the app level's when `trackId` is null. */
+function inScope(home: HomeResponse, trackId: string | null) {
+  const own = (item: { track_id?: string | null }) => (item.track_id ?? null) === trackId;
   return {
     docs: home.docs.filter(own),
     threads: home.threads
@@ -172,20 +172,20 @@ function useScrollToHash(ready: boolean) {
   }, [ready]);
 }
 
-export function ScopePage({ workspaceId, projectId, featureId }: Params & { featureId: string | null }) {
+export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackId: string | null }) {
   const params = { workspaceId, projectId };
   const { home, failed } = useHome(workspaceId, projectId);
   const projectName = useProjectName(workspaceId, projectId);
-  const summary = featureId ? home?.tracks?.find((candidate) => candidate.track.id === featureId) : undefined;
-  const missing = home !== null && featureId !== null && !summary;
+  const summary = trackId ? home?.tracks?.find((candidate) => candidate.track.id === trackId) : undefined;
+  const missing = home !== null && trackId !== null && !summary;
   const ready = home !== null && !missing;
   useScrollToHash(ready);
-  useVisit(projectId, ready ? (featureId ?? "app") : undefined);
+  useVisit(projectId, ready ? (trackId ?? "app") : undefined);
 
-  const title = featureId ? (summary?.track.name ?? "") : (projectName ?? "");
-  const description = featureId ? summary?.track.description : undefined;
-  const lastActivity = featureId ? summary?.last_activity : home?.app?.last_activity;
-  const { docs, threads } = home && ready ? inScope(home, featureId) : { docs: [], threads: [] };
+  const title = trackId ? (summary?.track.name ?? "") : (projectName ?? "");
+  const description = trackId ? summary?.track.description : undefined;
+  const lastActivity = trackId ? summary?.last_activity : home?.app?.last_activity;
+  const { docs, threads } = home && ready ? inScope(home, trackId) : { docs: [], threads: [] };
 
   const headerDescription = (
     <>
@@ -205,9 +205,9 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
       )}
       {missing && (
         <div className="space-y-3">
-          <h1 className="font-display text-[2.125rem] leading-[1.1] tracking-[-0.01em]">Feature not found</h1>
+          <h1 className="font-display text-[2.125rem] leading-[1.1] tracking-[-0.01em]">Track not found</h1>
           <p className="text-[15px] text-muted-foreground">
-            The project has no such feature, or it was deleted.{" "}
+            The project has no such track, or it was deleted.{" "}
             <Link
               to="/w/$workspaceId/projects/$projectId/app"
               params={params}
@@ -221,25 +221,25 @@ export function ScopePage({ workspaceId, projectId, featureId }: Params & { feat
       {!home && !failed && <Skeleton />}
       {home && ready && (
         <>
-          {featureId ? (
+          {trackId ? (
             <PageHeader title={title} description={headerDescription} />
           ) : (
             <RenameTitle workspaceId={workspaceId} projectId={projectId} name={title} description={headerDescription} />
           )}
           <nav aria-label="Pillars" className="mt-6 flex flex-wrap gap-1.5">
-            {featureId && (
+            {trackId && (
               <Link
-                to="/w/$workspaceId/projects/$projectId/features/$featureId/board"
-                params={{ ...params, featureId }}
+                to="/w/$workspaceId/projects/$projectId/tracks/$trackId/board"
+                params={{ ...params, trackId }}
                 className="inline-flex h-7 items-center rounded-lg border px-2.5 text-[12.5px] text-foreground/80 transition-colors hover:bg-accent"
               >
                 Stories {summary?.stories?.open ?? 0}/{summary?.stories?.total ?? 0}
               </Link>
             )}
-            {featureId && (
+            {trackId && (
               <Link
-                to="/w/$workspaceId/projects/$projectId/features/$featureId/behaviour"
-                params={{ ...params, featureId }}
+                to="/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour"
+                params={{ ...params, trackId }}
                 className="inline-flex h-7 items-center rounded-lg border px-2.5 text-[12.5px] text-foreground/80 transition-colors hover:bg-accent"
               >
                 Behaviour

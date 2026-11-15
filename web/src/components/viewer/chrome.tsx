@@ -42,14 +42,14 @@ export function ViewerToolbar({
   children?: ReactNode;
 }) {
   const { home } = useHome(workspaceId, projectId);
-  const featureId = doc?.track_id ?? null;
-  const scopeName = featureId
-    ? (home?.tracks?.find((summary) => summary.track.id === featureId)?.track.name ?? "Feature")
+  const trackId = doc?.track_id ?? null;
+  const scopeName = trackId
+    ? (home?.tracks?.find((summary) => summary.track.id === trackId)?.track.name ?? "Track")
     : "App";
-  const scope = featureId
+  const scope = trackId
     ? {
-        to: "/w/$workspaceId/projects/$projectId/features/$featureId",
-        params: { workspaceId, projectId, featureId },
+        to: "/w/$workspaceId/projects/$projectId/tracks/$trackId",
+        params: { workspaceId, projectId, trackId },
       }
     : { to: "/w/$workspaceId/projects/$projectId/app", params: { workspaceId, projectId } };
   const pillar = PILLARS.find((candidate) => candidate.pillar === doc?.pillar);

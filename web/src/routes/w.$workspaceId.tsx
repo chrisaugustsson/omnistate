@@ -33,7 +33,7 @@ function WorkspaceLayout() {
   useShortcut("b", useCallback(() => setSidebar(!sidebar), [sidebar, setSidebar]));
   // The Behaviour screen takes the whole window: no sidebar, no panel.
   const wholeWindow = useMatches({
-    select: (matches) => matches.some((match) => match.routeId === "/w/$workspaceId/projects/$projectId_/features/$featureId/behaviour"),
+    select: (matches) => matches.some((match) => match.routeId === "/w/$workspaceId/projects/$projectId_/tracks/$trackId/behaviour"),
   });
 
   if (wholeWindow)

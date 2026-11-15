@@ -61,7 +61,7 @@ export function Details({
   onChoose,
   workspaceId,
   projectId,
-  featureId,
+  trackId,
   waitingCount = 0,
   onShowOpen,
   onWritten,
@@ -73,7 +73,7 @@ export function Details({
   onChoose: (id: string) => void;
   workspaceId: string;
   projectId: string;
-  featureId: string;
+  trackId: string;
   waitingCount?: number;
   onShowOpen?: () => void;
   /** After a write, accepted or not: the tree and the open questions need reading again. */
@@ -90,7 +90,7 @@ export function Details({
           tree={tree}
           me={me}
           onChoose={onChoose}
-          ids={{ workspaceId, projectId, featureId }}
+          ids={{ workspaceId, projectId, trackId }}
           onWritten={onWritten ?? (() => {})}
           refresh={refresh}
         />
@@ -120,13 +120,13 @@ function Chosen({
   tree: TreeNode[];
   me: string | null;
   onChoose: (id: string) => void;
-  ids: { workspaceId: string; projectId: string; featureId: string };
+  ids: { workspaceId: string; projectId: string; trackId: string };
   onWritten: () => void;
   refresh: number;
 }) {
   const load = useCallback(
-    () => loadNode(ids.workspaceId, ids.projectId, ids.featureId, listed.id),
-    [ids.workspaceId, ids.projectId, ids.featureId, listed.id],
+    () => loadNode(ids.workspaceId, ids.projectId, ids.trackId, listed.id),
+    [ids.workspaceId, ids.projectId, ids.trackId, listed.id],
   );
   const { value: read, failed, reload } = useReloading(load);
   // What to say under a question after a write; it lasts until another node is chosen.
@@ -181,7 +181,7 @@ function Chosen({
   return (
     <div className="px-5 pb-24 pt-4">
       <p className="text-[11.5px] leading-normal text-muted-foreground">
-        {crumbs.length === 0 && "Feature"}
+        {crumbs.length === 0 && "Track"}
         {crumbs.map((id, at) => (
           <span key={id}>
             {at > 0 && " › "}
@@ -201,13 +201,13 @@ function Chosen({
           </span>
         )}
         {level === 1 && <span className={pill}>User story</span>}
-        {level === 0 && <span className={pill}>Feature</span>}
+        {level === 0 && <span className={pill}>Track</span>}
         {defaults > 0 && <span className={pill}>{defaults} answered by default</span>}
       </div>
       {listed.needs_pass && (
         <p className="mt-3 rounded-lg border border-dashed border-foreground px-3 py-2.5 text-[12.5px] leading-normal">
           Waits for the next grill pass{listed.needs_pass_since ? ` since ${fmtDate(listed.needs_pass_since)}` : ""}. Something here or above was
-          answered, changed or remarked. Nothing is rewritten until the grill is started again on the feature.
+          answered, changed or remarked. Nothing is rewritten until the grill is started again on the track.
         </p>
       )}
       {listed.summary && <p className="mt-3 text-[13.5px] leading-relaxed">{listed.summary}</p>}
@@ -252,7 +252,7 @@ function Chosen({
   );
 }
 
-type Ids = { workspaceId: string; projectId: string; featureId: string };
+type Ids = { workspaceId: string; projectId: string; trackId: string };
 
 /** Under a waiting question: the asker's proposed answer when it has one, then the field and button. */
 function AnswerField({
@@ -276,7 +276,7 @@ function AnswerField({
     setBusy(true);
     setError("");
     try {
-      await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer });
+      await answerQuestion(ids.workspaceId, ids.projectId, ids.trackId, question.id, { expected_version: question.version, answer });
       setText(undefined);
       onWritten(question.id, "Recorded. This node now waits for the next grill pass.");
     } catch (failure) {
@@ -361,7 +361,7 @@ function ChangeField({
     setBusy(true);
     setError("");
     try {
-      await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer, change: true });
+      await answerQuestion(ids.workspaceId, ids.projectId, ids.trackId, question.id, { expected_version: question.version, answer, change: true });
       setBusy(false);
       setOpen(false);
       onWritten(
@@ -504,7 +504,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
     setBusy(true);
     setError("");
     try {
-      await askQuestion(ids.workspaceId, ids.projectId, ids.featureId, nodeId, { question });
+      await askQuestion(ids.workspaceId, ids.projectId, ids.trackId, nodeId, { question });
       setText("");
       setBusy(false);
       onAsked();
@@ -534,7 +534,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
   );
 }
 
-const reach: Record<string, string> = { node: "This node", story: "This story", feature: "Whole feature" };
+const reach: Record<string, string> = { node: "This node", story: "This story", track: "Whole track" };
 
 function Rules({ rules, nodeId, byId }: { rules: { id: string; node_id: string; scope: string; text: string }[]; nodeId: string; byId: Map<string, TreeNode> }) {
   const own = rules.filter((rule) => rule.node_id === nodeId);
@@ -542,7 +542,7 @@ function Rules({ rules, nodeId, byId }: { rules: { id: string; node_id: string; 
   const written = (id: string) => {
     const holder = byId.get(id);
     if (!holder) return "";
-    return holder.level === 0 ? "Feature" : holder.level === 1 ? "Story" : shortTitle(holder);
+    return holder.level === 0 ? "Track" : holder.level === 1 ? "Story" : shortTitle(holder);
   };
   return (
     <>

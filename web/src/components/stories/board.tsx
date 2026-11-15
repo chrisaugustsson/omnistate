@@ -12,7 +12,7 @@ import { useProjectName } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 
-// A feature's board: the five columns of a story's life, a card per story, and
+// A track's board: the five columns of a story's life, a card per story, and
 // a filter on priority. The stories are loaded again on every story event of
 // the project, so a card changes column as agents move it.
 
@@ -280,17 +280,17 @@ function AddStory({ onAdd, onClose }: { onAdd: (body: Parameters<typeof createSt
   );
 }
 
-/** The board of the feature `featureId`. */
+/** The board of the track `trackId`. */
 export function Board({
   workspaceId,
   projectId,
-  featureId,
+  trackId,
 }: {
   workspaceId: string;
   projectId: string;
-  featureId: string;
+  trackId: string;
 }) {
-  const load = useCallback(() => loadStories(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
+  const load = useCallback(() => loadStories(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
   const { value: loaded, failed, reload } = useReloading(load);
   // Answers of our own writes, shown until a load brings a version as new.
   const [answers, setAnswers] = useState<Map<string, StoryBody>>(new Map());
@@ -338,13 +338,13 @@ export function Board({
         say(story.id, "The change could not be saved. Try again in a moment.");
       }
     },
-    patch: (story, body) => patchStory(workspaceId, projectId, featureId, story.id, { expected_version: story.version, ...body }),
-    cancel: (story) => cancelStory(workspaceId, projectId, featureId, story.id, story.version),
-    check: (story, criterion) => checkCriterion(workspaceId, projectId, featureId, story.id, story.version, criterion),
+    patch: (story, body) => patchStory(workspaceId, projectId, trackId, story.id, { expected_version: story.version, ...body }),
+    cancel: (story) => cancelStory(workspaceId, projectId, trackId, story.id, story.version),
+    check: (story, criterion) => checkCriterion(workspaceId, projectId, trackId, story.id, story.version, criterion),
   };
   const add = async (body: Parameters<typeof createStory>[3]) => {
     try {
-      remember(await createStory(workspaceId, projectId, featureId, body));
+      remember(await createStory(workspaceId, projectId, trackId, body));
       reload();
       return true;
     } catch {
@@ -361,7 +361,7 @@ export function Board({
 
   return (
     <main className="mx-auto max-w-[96rem] px-5 py-8 md:px-10 md:py-12">
-      <PageHeader eyebrow={name ?? "Project"} title="Board" description="The stories of the feature, by where they are." />
+      <PageHeader eyebrow={name ?? "Project"} title="Board" description="The stories of the track, by where they are." />
       {failed && (
         <Alert variant="destructive" className="mt-6">
           <AlertDescription>The board could not be loaded. Try again in a moment.</AlertDescription>

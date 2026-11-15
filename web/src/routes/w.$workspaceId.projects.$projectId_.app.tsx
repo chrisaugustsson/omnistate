@@ -8,5 +8,5 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/app")
 
 function AppScope() {
   const { workspaceId, projectId } = Route.useParams();
-  return <ScopePage workspaceId={workspaceId} projectId={projectId} featureId={null} />;
+  return <ScopePage workspaceId={workspaceId} projectId={projectId} trackId={null} />;
 }

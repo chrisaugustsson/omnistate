@@ -6,15 +6,15 @@ import { ThreadRow, threadTime } from "@/components/project/scope-page";
 import { cn } from "@/lib/utils";
 
 // The Threads page: the threads of every scope of the project, newest post
-// first, with a filter that narrows them to the app level or one feature. The
-// choice is the page's `scope` search parameter (`app` or a feature's ID);
+// first, with a filter that narrows them to the app level or one track. The
+// choice is the page's `scope` search parameter (`app` or a track's ID);
 // without it every scope is listed. The list is the project's home, which is
 // loaded again on every live event, so threads reorder and their counts and
 // flags change as agents post.
 
 type ScopeOption = { value: string | undefined; label: string };
 
-/** A button that opens a searchable list of scopes: All scopes, App and each feature by name. */
+/** A button that opens a searchable list of scopes: All scopes, App and each track by name. */
 function ScopeFilter({
   options,
   value,
@@ -79,7 +79,7 @@ function ScopeFilter({
         }}
         className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-sm shadow-xs transition-colors outline-none hover:bg-accent/60 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30"
       >
-        <span className="truncate">{current?.label ?? "Feature"}</span>
+        <span className="truncate">{current?.label ?? "Track"}</span>
         <ChevronDown aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
       </button>
       {open && (
@@ -126,7 +126,7 @@ function ScopeFilter({
   );
 }
 
-/** The project's threads, newest post first; `scope` is `app`, a feature's ID, or absent for every scope. */
+/** The project's threads, newest post first; `scope` is `app`, a track's ID, or absent for every scope. */
 export function ThreadsPage({
   workspaceId,
   projectId,
@@ -147,9 +147,9 @@ export function ThreadsPage({
       description={() => "Each thread is one question that agents work out and you follow."}
     >
       {(home) => {
-        const names = new Map((home.tracks ?? []).map(({ track: feature }) => [feature.id, feature.name]));
-        const scopeName = (featureId: string | null | undefined) =>
-          featureId ? (names.get(featureId) ?? "Feature") : "App";
+        const names = new Map((home.tracks ?? []).map(({ track }) => [track.id, track.name]));
+        const scopeName = (trackId: string | null | undefined) =>
+          trackId ? (names.get(trackId) ?? "Track") : "App";
         const options: ScopeOption[] = [
           { value: undefined, label: "All scopes" },
           { value: "app", label: "App" },

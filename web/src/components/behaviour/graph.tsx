@@ -219,7 +219,7 @@ export function Graph({
     if (!reveal || !current || !areaRef.current || handled.current === reveal.n) return;
     handled.current = reveal.n;
     const box = boxes.get(reveal.id);
-    // The feature's root has no box: choosing it fits the whole drawing.
+    // The track's root has no box: choosing it fits the whole drawing.
     if (!box) {
       moveTo(fit(boundsRef.current, areaRef.current), reveal.ms);
       return;

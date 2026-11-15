@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ThreadsPage } from "@/components/thread/threads-page";
 
-// The project's threads of every scope; `scope` (`app` or a feature's ID) narrows them.
+// The project's threads of every scope; `scope` (`app` or a track's ID) narrows them.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/threads/")({
   component: Page,
   validateSearch: (search: Record<string, unknown>): { scope?: string } => ({

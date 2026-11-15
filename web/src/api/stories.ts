@@ -3,32 +3,32 @@ import { operations, type CreateStoryRequest, type PatchStoryRequest, type Story
 
 const list = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories"];
 
-/** Every story of a feature, any status, by priority then number. */
-export async function loadStories(workspaceId: string, projectId: string, featureId: string): Promise<StoryBody[]> {
+/** Every story of a track, any status, by priority then number. */
+export async function loadStories(workspaceId: string, projectId: string, trackId: string): Promise<StoryBody[]> {
   const loaded = await callApi(
     "GET",
-    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/stories`,
+    `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/stories`,
     { response: list.responses["200"] },
   );
   return loaded.stories;
 }
 
-const base = (workspaceId: string, projectId: string, featureId: string) =>
-  `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${featureId}/stories`;
+const base = (workspaceId: string, projectId: string, trackId: string) =>
+  `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/stories`;
 const prefix = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories";
 const created = operations[`POST ${prefix}`];
 const patched = operations[`PATCH ${prefix}/{story_id}`];
 const cancelled = operations[`POST ${prefix}/{story_id}/cancel`];
 const checked = operations[`POST ${prefix}/{story_id}/check`];
 
-/** Adds a story to the backlog of a feature. */
+/** Adds a story to the backlog of a track. */
 export async function createStory(
   workspaceId: string,
   projectId: string,
-  featureId: string,
+  trackId: string,
   body: CreateStoryRequest,
 ): Promise<StoryBody> {
-  const answer = await callApi("POST", base(workspaceId, projectId, featureId), { body, response: created.responses["201"] });
+  const answer = await callApi("POST", base(workspaceId, projectId, trackId), { body, response: created.responses["201"] });
   return answer.story;
 }
 
@@ -36,11 +36,11 @@ export async function createStory(
 export async function patchStory(
   workspaceId: string,
   projectId: string,
-  featureId: string,
+  trackId: string,
   storyId: string,
   body: PatchStoryRequest,
 ): Promise<StoryBody> {
-  const answer = await callApi("PATCH", `${base(workspaceId, projectId, featureId)}/${storyId}`, {
+  const answer = await callApi("PATCH", `${base(workspaceId, projectId, trackId)}/${storyId}`, {
     body,
     response: patched.responses["200"],
   });
@@ -51,11 +51,11 @@ export async function patchStory(
 export async function cancelStory(
   workspaceId: string,
   projectId: string,
-  featureId: string,
+  trackId: string,
   storyId: string,
   expectedVersion: number,
 ): Promise<StoryBody> {
-  const answer = await callApi("POST", `${base(workspaceId, projectId, featureId)}/${storyId}/cancel`, {
+  const answer = await callApi("POST", `${base(workspaceId, projectId, trackId)}/${storyId}/cancel`, {
     body: { expected_version: expectedVersion },
     response: cancelled.responses["200"],
   });
@@ -66,12 +66,12 @@ export async function cancelStory(
 export async function checkCriterion(
   workspaceId: string,
   projectId: string,
-  featureId: string,
+  trackId: string,
   storyId: string,
   expectedVersion: number,
   criterion: number,
 ): Promise<StoryBody> {
-  const answer = await callApi("POST", `${base(workspaceId, projectId, featureId)}/${storyId}/check`, {
+  const answer = await callApi("POST", `${base(workspaceId, projectId, trackId)}/${storyId}/check`, {
     body: { expected_version: expectedVersion, criterion },
     response: checked.responses["200"],
   });

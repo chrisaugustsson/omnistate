@@ -30,19 +30,19 @@ const crumbClass =
 /** Where the thread lives: its scope, the Threads page of that scope and the question. */
 function ThreadTrail({ workspaceId, projectId, thread }: { workspaceId: string; projectId: string; thread: ThreadBody }) {
   const { home } = useHome(workspaceId, projectId);
-  const featureId = thread.track_id ?? null;
+  const trackId = thread.track_id ?? null;
   const params = { workspaceId, projectId };
-  const scopeName = featureId
-    ? (home?.tracks?.find((summary) => summary.track.id === featureId)?.track.name ?? "Feature")
+  const scopeName = trackId
+    ? (home?.tracks?.find((summary) => summary.track.id === trackId)?.track.name ?? "Track")
     : "App";
   return (
     <nav aria-label="Breadcrumb">
       <ol className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-xs font-medium text-muted-foreground">
         <li className="min-w-0">
-          {featureId ? (
+          {trackId ? (
             <Link
-              to="/w/$workspaceId/projects/$projectId/features/$featureId"
-              params={{ ...params, featureId }}
+              to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
+              params={{ ...params, trackId }}
               className={crumbClass}
             >
               {scopeName}
@@ -58,7 +58,7 @@ function ThreadTrail({ workspaceId, projectId, thread }: { workspaceId: string; 
           <Link
             to="/w/$workspaceId/projects/$projectId/threads"
             params={params}
-            search={{ scope: featureId ?? "app" }}
+            search={{ scope: trackId ?? "app" }}
             className={crumbClass}
           >
             Threads

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Boxes, ChevronRight, Database, FileText, FlaskConical, MessagesSquare, Network, Palette, SquareKanban, type LucideIcon } from "lucide-react";
 import type { HomeResponse } from "@/api/generated";
-import { PILLARS, featureNames } from "@/components/project/items";
+import { PILLARS, trackNames } from "@/components/project/items";
 import { inOrder } from "@/components/project/scope-page";
 import { cn } from "@/lib/utils";
 
@@ -105,7 +105,7 @@ function Pillar({
 }
 
 /**
- * One scope's tree: `scope` is "app" or a feature's ID. It starts with the
+ * One scope's tree: `scope` is "app" or a track's ID. It starts with the
  * scope's name, linking to its page, then the five pillars with their docs,
  * and last the scope's threads.
  */
@@ -125,7 +125,7 @@ export function ScopeTree({
   const docs = home.docs.filter(own);
   const threads = home.threads.filter(own).length;
   const openStories = home.tracks?.find((summary) => summary.track.id === scope)?.stories?.open ?? 0;
-  const name = scope === "app" ? "App" : (featureNames(home).get(scope) ?? "");
+  const name = scope === "app" ? "App" : (trackNames(home).get(scope) ?? "");
   const headClass = cn(rowClass, "h-[30px] text-[13px] font-semibold text-foreground");
   return (
     <div className="space-y-0.5">
@@ -141,14 +141,14 @@ export function ScopeTree({
         </Link>
       ) : (
         <Link
-          to="/w/$workspaceId/projects/$projectId/features/$featureId"
-          params={{ ...params, featureId: scope }}
+          to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
+          params={{ ...params, trackId: scope }}
           activeOptions={{ exact: true, includeSearch: false }}
           activeProps={{ className: activeClass }}
           className={headClass}
         >
           <span className="truncate">{name}</span>
-          <span className="ml-auto text-[11px] font-medium text-muted-foreground">Feature</span>
+          <span className="ml-auto text-[11px] font-medium text-muted-foreground">Track</span>
         </Link>
       )}
       {PILLARS.map(({ pillar, title }) => (
@@ -175,8 +175,8 @@ export function ScopeTree({
       </Link>
       {scope !== "app" && (
         <Link
-          to="/w/$workspaceId/projects/$projectId/features/$featureId/board"
-          params={{ ...params, featureId: scope }}
+          to="/w/$workspaceId/projects/$projectId/tracks/$trackId/board"
+          params={{ ...params, trackId: scope }}
           activeOptions={{ exact: true, includeSearch: false }}
           activeProps={{ className: activeClass }}
           className={cn(rowClass, "h-7 text-xs font-medium")}
@@ -187,8 +187,8 @@ export function ScopeTree({
       )}
       {scope !== "app" && (
         <Link
-          to="/w/$workspaceId/projects/$projectId/features/$featureId/behaviour"
-          params={{ ...params, featureId: scope }}
+          to="/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour"
+          params={{ ...params, trackId: scope }}
           activeOptions={{ exact: true, includeSearch: false }}
           activeProps={{ className: activeClass }}
           className={cn(rowClass, "h-7 text-xs font-medium")}

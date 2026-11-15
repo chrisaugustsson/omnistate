@@ -3,19 +3,19 @@ import { PILLARS } from "@/components/project/items";
 import type { Visit } from "@/lib/visits";
 
 // The palette's search: pure functions over the project home. Items are found
-// by feature name, doc title and thread question, never by what a doc says.
+// by track name, doc title and thread question, never by what a doc says.
 
-export const MOST_FEATURES = 5;
+export const MOST_TRACKS = 5;
 export const MOST_DOCS = 6;
 export const MOST_THREADS = 3;
 export const MOST_RECENT = 6;
 
-export type PlaceKind = "app" | "feature" | "doc" | "thread";
+export type PlaceKind = "app" | "track" | "doc" | "thread";
 
 /** A place the palette can open: its name, and the scope and pillar it is in. */
 export type Place = {
   kind: PlaceKind;
-  /** The feature, doc or thread ID; "app" for the App page. */
+  /** The track, doc or thread ID; "app" for the App page. */
   id: string;
   name: string;
   /** "Checkout · UI" for a doc, the scope's name for a thread, empty for a scope. */
@@ -28,15 +28,15 @@ type Entry = Place & { lower: string; at: number };
 export type Group = { items: Place[]; total: number };
 
 export type Index = {
-  features: Entry[];
+  tracks: Entry[];
   docs: Entry[];
   threads: Entry[];
   places: Map<string, Entry>;
 };
 
-export type Results = { features: Group; docs: Group; threads: Group };
+export type Results = { tracks: Group; docs: Group; threads: Group };
 
-/** The query as the palette and the Features page read it: trimmed and lower case. */
+/** The query as the palette and the Tracks page read it: trimmed and lower case. */
 export function normalize(query: string): string {
   return query.trim().toLowerCase();
 }
@@ -62,7 +62,7 @@ function byRecent(a: Entry, b: Entry): number {
 const entryKey = (kind: PlaceKind, id: string) => `${kind}:${id}`;
 
 /**
- * What the palette searches, from the project home. A feature's activity is its
+ * What the palette searches, from the project home. A track's activity is its
  * `last_activity` (its creation while it has none), a doc's its `updated_at`,
  * and a thread's its newest post (its creation while it has none). Each list is
  * ordered by activity here, so that a search is one pass over it.
@@ -83,10 +83,10 @@ export function buildIndex(home: HomeResponse): Index {
     at,
   });
 
-  const features: Entry[] = [];
-  for (const { track: feature, last_activity } of home.tracks ?? []) {
-    scopes.set(feature.id, feature.name);
-    add(features, entry("feature", feature.id, feature.name, "", time(last_activity, feature.created_at)));
+  const tracks: Entry[] = [];
+  for (const { track, last_activity } of home.tracks ?? []) {
+    scopes.set(track.id, track.name);
+    add(tracks, entry("track", track.id, track.name, "", time(last_activity, track.created_at)));
   }
   const docs: Entry[] = [];
   for (const doc of home.docs) {
@@ -100,8 +100,8 @@ export function buildIndex(home: HomeResponse): Index {
     add(threads, entry("thread", thread.id, thread.question, scope, time(thread.last_post_at, thread.created_at)));
   }
   places.set(entryKey("app", "app"), entry("app", "app", "App", "", 0));
-  for (const list of [features, docs, threads]) list.sort(byRecent);
-  return { features, docs, threads, places };
+  for (const list of [tracks, docs, threads]) list.sort(byRecent);
+  return { tracks, docs, threads, places };
 }
 
 function find(list: Entry[], query: string, most: number): Group {
@@ -123,13 +123,13 @@ function find(list: Entry[], query: string, most: number): Group {
  */
 export function search(index: Index, query: string): Results {
   return {
-    features: find(index.features, query, MOST_FEATURES),
+    tracks: find(index.tracks, query, MOST_TRACKS),
     docs: find(index.docs, query, MOST_DOCS),
     threads: find(index.threads, query, MOST_THREADS),
   };
 }
 
-/** The places of the newest visits that the project still has: the App page, features, docs and threads. */
+/** The places of the newest visits that the project still has: the App page, tracks, docs and threads. */
 export function recentPlaces(index: Index, visits: Visit[], most = MOST_RECENT): Place[] {
   const places: Place[] = [];
   for (const visit of visits) {
@@ -137,7 +137,7 @@ export function recentPlaces(index: Index, visits: Visit[], most = MOST_RECENT):
       ? index.places.get(entryKey("doc", visit.doc))
       : visit.thread
         ? index.places.get(entryKey("thread", visit.thread))
-        : index.places.get(entryKey(visit.scope === "app" ? "app" : "feature", visit.scope));
+        : index.places.get(entryKey(visit.scope === "app" ? "app" : "track", visit.scope));
     if (found) places.push(found);
     if (places.length === most) break;
   }
