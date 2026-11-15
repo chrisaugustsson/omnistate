@@ -119,7 +119,7 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
                     "no feature named {given:?}; `omni feature list` shows the features"
                 ))
             })?;
-        format!("{{\"feature\":{found}}}")
+        format!("{{\"track\":{found}}}")
     };
     if args.json {
         print_json(&text);
