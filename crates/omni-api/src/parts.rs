@@ -14,6 +14,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
@@ -55,8 +56,24 @@ const PART_COLUMNS: &str = concat!(
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
 );
 
-fn invalid_kind() -> ApiError {
-    ApiError::Refused(StatusCode::UNPROCESSABLE_ENTITY, "invalid_kind")
+#[derive(Serialize, ToSchema)]
+pub struct InvalidKindBody {
+    /// `invalid_kind`
+    pub error: String,
+    /// `kind must be app or service`
+    pub message: String,
+}
+
+/// 422 `invalid_kind` for a kind that is missing or not `app` or `service`.
+fn invalid_kind() -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        Json(InvalidKindBody {
+            error: "invalid_kind".to_string(),
+            message: "kind must be app or service".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 /// Creates a part in a project.
@@ -74,7 +91,7 @@ fn invalid_kind() -> ApiError {
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
         (status = 409, description = "The project has a part of this name, ignoring case (`name_taken`)", body = ErrorBody),
-        (status = 422, description = "A kind that is missing or not `app` or `service` (`invalid_kind`)", body = ErrorBody),
+        (status = 422, description = "A kind that is missing or not `app` or `service` (`invalid_kind`); `message` says so", body = InvalidKindBody),
     )
 )]
 pub async fn create_part(
@@ -82,17 +99,16 @@ pub async fn create_part(
     request: WorkspaceRequest,
     Path((_, project_id)): Path<(String, String)>,
     body: Bytes,
-) -> Result<(StatusCode, Json<PartResponse>), ApiError> {
+) -> Result<Response, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<CreatePartRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
     let new = new?;
     let name = non_blank(new.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
-    let kind = new
-        .kind
-        .filter(|kind| kind == "app" || kind == "service")
-        .ok_or_else(invalid_kind)?;
+    let Some(kind) = new.kind.filter(|kind| kind == "app" || kind == "service") else {
+        return Ok(invalid_kind());
+    };
     let inserted = sqlx::query_as::<_, PartBody>(&format!(
         "INSERT INTO parts (workspace_id, project_id, name, kind, description) \
          VALUES ($1::uuid, $2::uuid, $3, $4, $5) RETURNING {PART_COLUMNS}"
@@ -121,7 +137,7 @@ pub async fn create_part(
     .await?;
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
-    Ok((StatusCode::CREATED, Json(PartResponse { part })))
+    Ok((StatusCode::CREATED, Json(PartResponse { part })).into_response())
 }
 
 /// The parts of a project, in the order they were created.

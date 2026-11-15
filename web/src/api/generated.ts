@@ -688,6 +688,12 @@ export const InvalidDesignBodySchema = z.object({
 });
 export type InvalidDesignBody = z.infer<typeof InvalidDesignBodySchema>;
 
+export const InvalidKindBodySchema = z.object({
+  error: z.string(),
+  message: z.string(),
+});
+export type InvalidKindBody = z.infer<typeof InvalidKindBodySchema>;
+
 export const InvalidOperationBodySchema = z.object({
   error: z.string(),
   index: z.number().int(),
@@ -721,7 +727,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -1226,6 +1232,7 @@ export const schemas = {
   ImportedHeadComponents: ImportedHeadComponentsSchema,
   ImportedHeadTokens: ImportedHeadTokensSchema,
   InvalidDesignBody: InvalidDesignBodySchema,
+  InvalidKindBody: InvalidKindBodySchema,
   InvalidOperationBody: InvalidOperationBodySchema,
   InvalidTokensBody: InvalidTokensBodySchema,
   KeyListResponse: KeyListResponseSchema,
@@ -1595,7 +1602,7 @@ export const operations = {
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
-      "422": ErrorBodySchema,
+      "422": InvalidKindBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}": {

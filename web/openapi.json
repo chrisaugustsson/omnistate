@@ -1931,6 +1931,23 @@
         ],
         "type": "object"
       },
+      "InvalidKindBody": {
+        "properties": {
+          "error": {
+            "description": "`invalid_kind`",
+            "type": "string"
+          },
+          "message": {
+            "description": "`kind must be app or service`",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "type": "object"
+      },
       "InvalidOperationBody": {
         "properties": {
           "error": {
@@ -2058,6 +2075,9 @@
           "track.created",
           "track.deleted",
           "track.renamed",
+          "part.created",
+          "part.deleted",
+          "part.renamed",
           "post.created",
           "project.renamed",
           "story.cancelled",
@@ -7315,11 +7335,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
+                  "$ref": "#/components/schemas/InvalidKindBody"
                 }
               }
             },
-            "description": "A kind that is missing or not `app` or `service` (`invalid_kind`)"
+            "description": "A kind that is missing or not `app` or `service` (`invalid_kind`); `message` says so"
           }
         },
         "summary": "Creates a part in a project.",
