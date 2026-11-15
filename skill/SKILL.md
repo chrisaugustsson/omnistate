@@ -62,8 +62,8 @@ Done when `omni design flows` reports no dangling targets and no unreached board
 
 For a feature that will be built story by story from the board. Three tools carry it, installed by the human with `make install-agent-tools`.
 
-1. `omni-grill`: the grill session. It writes the Spec doc as the decisions are made, then settles and freezes the API contract and data model.
-2. `omni-stories`: cuts the settled spec into stories on the feature's board.
+1. `omni-grill`: the grill session. It writes the Spec doc as the decisions are made.
+2. `omni-stories`: splits the feature into tasks (story records) on its board, with criteria from the behaviour tree when the feature has one.
 3. `omni-deliver`: the workflow that runs the board, implementing the stories in worktrees, reviewing and testing them.
 
 A story's status is one of eight: `backlog`, `implementing`, `implemented`, `review`, `reviewed`, `testing`, `done`, `cancelled`.
