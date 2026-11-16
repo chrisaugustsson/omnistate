@@ -473,10 +473,17 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
                 .find(|b| b.str_at("id") == Some(id));
             match blocker {
                 Some(b) => format!(
-                    "{} ({}, {})",
+                    "{} ({}, {}){}",
                     b.str_at("key").unwrap_or(id),
                     b.str_at("track_name").unwrap_or("?"),
-                    b.str_at("status").unwrap_or("?")
+                    b.str_at("status").unwrap_or("?"),
+                    if matches!(b.get("blocker_dropped"), Some(Value::Bool(true)))
+                        && !matches!(b.str_at("status"), Some("done" | "cancelled"))
+                    {
+                        " blocker dropped"
+                    } else {
+                        ""
+                    }
                 ),
                 None => all
                     .iter()

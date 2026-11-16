@@ -1,16 +1,20 @@
 import { callApi } from "./client";
-import { operations, type CreateStoryRequest, type PatchStoryRequest, type StoryBody } from "./generated";
+import { operations, type CreateStoryRequest, type LinkedBody, type PatchStoryRequest, type StoryBody } from "./generated";
 
 const list = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories"];
 
-/** Every story of a track, any status, by priority then number. */
-export async function loadStories(workspaceId: string, projectId: string, trackId: string): Promise<StoryBody[]> {
+/** Every story of a track, any status, by priority then number, and the stories of other tracks linked to them. */
+export async function loadStories(
+  workspaceId: string,
+  projectId: string,
+  trackId: string,
+): Promise<{ stories: StoryBody[]; linked: LinkedBody[] }> {
   const loaded = await callApi(
     "GET",
     `/api/v1/w/${workspaceId}/projects/${projectId}/tracks/${trackId}/stories`,
     { response: list.responses["200"] },
   );
-  return loaded.stories;
+  return { stories: loaded.stories, linked: loaded.linked ?? [] };
 }
 
 const base = (workspaceId: string, projectId: string, trackId: string) =>

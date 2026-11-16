@@ -137,6 +137,7 @@ export const BlockStoryRequestSchema = z.object({
 export type BlockStoryRequest = z.infer<typeof BlockStoryRequestSchema>;
 
 export const BlockerBodySchema = z.object({
+  blocker_dropped: z.boolean(),
   id: z.string(),
   key: z.string(),
   status: z.string(),
@@ -773,6 +774,22 @@ export const LinkFeatureRequestSchema = z.object({
 });
 export type LinkFeatureRequest = z.infer<typeof LinkFeatureRequestSchema>;
 
+export const LinkedBodySchema = z.object({
+  blocker_dropped: z.boolean(),
+  id: z.string(),
+  key: z.string(),
+  part_id: z.string(),
+  part_name: z.string(),
+  relation: z.string(),
+  status: z.string(),
+  story_id: z.string(),
+  story_key: z.string(),
+  title: z.string(),
+  track_id: z.string(),
+  track_name: z.string(),
+});
+export type LinkedBody = z.infer<typeof LinkedBodySchema>;
+
 export const LiveClientMessageSchema = z.object({
     after: z.number().int().nullable().optional(),
     project_id: z.string(),
@@ -1163,6 +1180,7 @@ export const StoryHeldBodySchema = z.object({
 export type StoryHeldBody = z.infer<typeof StoryHeldBodySchema>;
 
 export const StoryListResponseSchema = z.object({
+  linked: z.array(LinkedBodySchema).optional(),
   stories: z.array(StoryBodySchema),
 });
 export type StoryListResponse = z.infer<typeof StoryListResponseSchema>;
@@ -1334,6 +1352,7 @@ export const schemas = {
   KeyListResponse: KeyListResponseSchema,
   KeyResponse: KeyResponseSchema,
   LinkFeatureRequest: LinkFeatureRequestSchema,
+  LinkedBody: LinkedBodySchema,
   LiveClientMessage: LiveClientMessageSchema,
   LiveErrorCode: LiveErrorCodeSchema,
   LiveEventName: LiveEventNameSchema,

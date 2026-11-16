@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useState, type FormEvent } from "react";
+import { Link } from "@tanstack/react-router";
 import { Check } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { cancelStory, checkCriterion, createStory, loadStories, patchStory } from "@/api/stories";
-import type { StoryBody } from "@/api/generated";
+import type { LinkedBody, StoryBody } from "@/api/generated";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
 import { Empty } from "@/components/project/items";
@@ -29,6 +30,9 @@ const PRIORITIES = ["all", "1", "2", "3"];
 
 const closed = (story: StoryBody) => story.status === "done" || story.status === "cancelled";
 const unresolved = (story: StoryBody) => story.findings.filter((finding) => finding.resolved !== true).length;
+/** Whether a blocker of the story sits on a dropped track and is still open: the story stays blocked. */
+const droppedBlocker = (story: StoryBody, byId: Map<string, StoryBody>) =>
+  (story.blockers ?? []).some((blocker) => blocker.blocker_dropped && blocker.status !== "done" && blocker.status !== "cancelled" && !byId.has(blocker.id));
 const toCheck = (story: StoryBody) => story.criteria.filter((criterion) => criterion.ticked && criterion.pending).length;
 
 /** A small count or flag on a card; the tone says how much it asks of the reviewer. */
@@ -102,6 +106,7 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
       )}
       <div className="flex flex-wrap items-center gap-1.5">
         {story.blocked && <Badge tone="warning">Blocked</Badge>}
+        {droppedBlocker(story, byId) && <Badge tone="warning">Blocker dropped</Badge>}
         {findings > 0 && <Badge tone="neutral">{`${findings} findings`}</Badge>}
         {check > 0 && (
           <button type="button" aria-expanded={checking} onClick={() => setChecking(!checking)}>
@@ -280,6 +285,37 @@ function AddStory({ onAdd, onClose }: { onAdd: (body: Parameters<typeof createSt
   );
 }
 
+/** The stories of other tracks that block or are blocked by this track's stories: read-only, each opening its own track's board. */
+function LinkedTasks({ workspaceId, projectId, linked }: { workspaceId: string; projectId: string; linked: LinkedBody[] }) {
+  return (
+    <section aria-label="Linked tasks" className="space-y-2">
+      <h2 className="text-sm font-medium">Linked tasks</h2>
+      <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {linked.map((task) => (
+          <li key={`${task.id}-${task.relation}-${task.story_id}`}>
+            <Link
+              to="/w/$workspaceId/projects/$projectId/tracks/$trackId/board"
+              params={{ workspaceId, projectId, trackId: task.track_id }}
+              className="block space-y-1 rounded-xl border bg-card px-3 py-2.5 text-sm"
+            >
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-medium tabular-nums">{task.key}</span>
+                <span>{task.relation === "blocks" ? `blocks ${task.story_key}` : `blocked by ${task.story_key}`}</span>
+                <span className="ml-auto">{task.status}</span>
+              </span>
+              <span className="block font-medium">{task.title}</span>
+              <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                {`${task.part_name} · ${task.track_name}`}
+                {task.blocker_dropped && <Badge tone="warning">Dropped</Badge>}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /** The board of the track `trackId`. */
 export function Board({
   workspaceId,
@@ -291,7 +327,9 @@ export function Board({
   trackId: string;
 }) {
   const load = useCallback(() => loadStories(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
-  const { value: loaded, failed, reload } = useReloading(load);
+  const { value: board, failed, reload } = useReloading(load);
+  const loaded = board?.stories;
+  const linked = board?.linked ?? [];
   // Answers of our own writes, shown until a load brings a version as new.
   const [answers, setAnswers] = useState<Map<string, StoryBody>>(new Map());
   const stories = useMemo(() => {
@@ -393,6 +431,7 @@ export function Board({
             </Button>
           </div>
           {adding && <AddStory onAdd={add} onClose={() => setAdding(false)} />}
+          {linked.length > 0 && <LinkedTasks workspaceId={workspaceId} projectId={projectId} linked={linked} />}
           <div className="flex gap-4 overflow-x-auto pb-2">
             {columns.map((column) => {
               const cards = shown

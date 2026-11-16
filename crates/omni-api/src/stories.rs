@@ -39,6 +39,30 @@ pub struct BlockerBody {
     pub track_name: String,
     /// The blocker story's own status.
     pub status: String,
+    /// Whether the blocker's track is dropped; a dropped track never unblocks the story by itself.
+    pub blocker_dropped: bool,
+}
+
+/// A story of another track of the project that blocks, or is blocked by, a story of this track.
+#[derive(Serialize, ToSchema)]
+pub struct LinkedBody {
+    pub id: String,
+    /// `US-<number>`.
+    pub key: String,
+    pub title: String,
+    pub track_id: String,
+    pub track_name: String,
+    pub part_id: String,
+    pub part_name: String,
+    /// The linked story's own status.
+    pub status: String,
+    /// `blocks` when it blocks `story_key`, `blocked_by` when `story_key` blocks it.
+    pub relation: String,
+    /// The story of this track the link runs to.
+    pub story_id: String,
+    pub story_key: String,
+    /// Whether the linked story's track is dropped.
+    pub blocker_dropped: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -101,6 +125,9 @@ pub struct StoryResponse {
 pub struct StoryListResponse {
     /// The track's stories, by priority and then number.
     pub stories: Vec<StoryBody>,
+    /// Stories of other tracks that block or are blocked by this track's stories, read-only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub linked: Vec<LinkedBody>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -385,6 +412,52 @@ pub async fn create_story(
     Ok((StatusCode::CREATED, Json(StoryResponse { story })))
 }
 
+type LinkedRow = (
+    String,
+    i32,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    bool,
+);
+
+fn linked_body(row: LinkedRow) -> LinkedBody {
+    let (
+        id,
+        number,
+        title,
+        track_id,
+        track_name,
+        part_id,
+        part_name,
+        status,
+        relation,
+        story_id,
+        story_number,
+        dropped,
+    ) = row;
+    LinkedBody {
+        id,
+        key: format!("US-{number}"),
+        title,
+        track_id,
+        track_name,
+        part_id,
+        part_name,
+        status,
+        relation,
+        story_id,
+        story_key: format!("US-{story_number}"),
+        blocker_dropped: dropped,
+    }
+}
+
 /// The stories of a track, by priority and then number.
 #[utoipa::path(
     get,
@@ -442,11 +515,11 @@ pub async fn list_stories(
         .iter()
         .flat_map(|story| story.blocked_by.iter().cloned())
         .collect();
-    let blockers: Vec<(String, i32, String, String, String)> = if wanted.is_empty() {
+    let blockers: Vec<(String, i32, String, String, String, bool)> = if wanted.is_empty() {
         Vec::new()
     } else {
         sqlx::query_as(
-            "SELECT s.id::text, s.number, s.track_id::text, t.name, s.status \
+            "SELECT s.id::text, s.number, s.track_id::text, t.name, s.status, t.state = 'dropped' \
              FROM stories s JOIN tracks t ON t.id = s.track_id \
              WHERE s.project_id = $1::uuid AND s.id::text = ANY($2)",
         )
@@ -456,25 +529,50 @@ pub async fn list_stories(
         .await
         .map_err(ApiError::database)?
     };
+    let linked: Vec<LinkedBody> = sqlx::query_as::<_, LinkedRow>(
+        "SELECT o.id::text, o.number, o.title, o.track_id::text, t.name, p.id::text, p.name, \
+                o.status, 'blocks', s.id::text, s.number, t.state = 'dropped' \
+         FROM stories s JOIN stories o ON s.blocked_by ? o.id::text \
+         JOIN tracks t ON t.id = o.track_id JOIN parts p ON p.id = t.part_id \
+         WHERE s.track_id = $1::uuid AND o.track_id <> s.track_id AND s.project_id = $2::uuid \
+         UNION ALL \
+         SELECT o.id::text, o.number, o.title, o.track_id::text, t.name, p.id::text, p.name, \
+                o.status, 'blocked_by', s.id::text, s.number, t.state = 'dropped' \
+         FROM stories s JOIN stories o ON o.blocked_by ? s.id::text \
+         JOIN tracks t ON t.id = o.track_id JOIN parts p ON p.id = t.part_id \
+         WHERE s.track_id = $1::uuid AND o.track_id <> s.track_id AND s.project_id = $2::uuid \
+         ORDER BY 11, 2",
+    )
+    .bind(&track_id)
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?
+    .into_iter()
+    .map(linked_body)
+    .collect();
     tx.commit().await.map_err(ApiError::database)?;
     for story in &mut stories {
         story.blockers = story
             .blocked_by
             .iter()
             .filter_map(|id| blockers.iter().find(|row| &row.0 == id))
-            .map(|(id, number, track_id, track_name, status)| BlockerBody {
-                id: id.clone(),
-                key: format!("US-{number}"),
-                track_id: track_id.clone(),
-                track_name: track_name.clone(),
-                status: status.clone(),
-            })
+            .map(
+                |(id, number, track_id, track_name, status, dropped)| BlockerBody {
+                    id: id.clone(),
+                    key: format!("US-{number}"),
+                    track_id: track_id.clone(),
+                    track_name: track_name.clone(),
+                    status: status.clone(),
+                    blocker_dropped: *dropped,
+                },
+            )
             .collect();
     }
     if pickable {
         stories = pickable_stories(stories, query.status.as_deref());
     }
-    Ok(Json(StoryListResponse { stories }))
+    Ok(Json(StoryListResponse { stories, linked }))
 }
 
 /// The files a story occupies: what it changed, else what it plans to change.

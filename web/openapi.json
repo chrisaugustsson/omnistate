@@ -446,6 +446,10 @@
       },
       "BlockerBody": {
         "properties": {
+          "blocker_dropped": {
+            "description": "Whether the blocker's track is dropped; a dropped track never unblocks the story by itself.",
+            "type": "boolean"
+          },
           "id": {
             "type": "string"
           },
@@ -468,7 +472,8 @@
           "key",
           "track_id",
           "track_name",
-          "status"
+          "status",
+          "blocker_dropped"
         ],
         "type": "object"
       },
@@ -2157,6 +2162,67 @@
             "description": "The feature to link: an undeleted feature of the track's own part.\nMissing or null is 422 `feature_required`; any other value that does\nnot name one is 422 `feature_not_on_part`."
           }
         },
+        "type": "object"
+      },
+      "LinkedBody": {
+        "description": "A story of another track of the project that blocks, or is blocked by, a story of this track.",
+        "properties": {
+          "blocker_dropped": {
+            "description": "Whether the linked story's track is dropped.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "key": {
+            "description": "`US-<number>`.",
+            "type": "string"
+          },
+          "part_id": {
+            "type": "string"
+          },
+          "part_name": {
+            "type": "string"
+          },
+          "relation": {
+            "description": "`blocks` when it blocks `story_key`, `blocked_by` when `story_key` blocks it.",
+            "type": "string"
+          },
+          "status": {
+            "description": "The linked story's own status.",
+            "type": "string"
+          },
+          "story_id": {
+            "description": "The story of this track the link runs to.",
+            "type": "string"
+          },
+          "story_key": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          },
+          "track_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "title",
+          "track_id",
+          "track_name",
+          "part_id",
+          "part_name",
+          "status",
+          "relation",
+          "story_id",
+          "story_key",
+          "blocker_dropped"
+        ],
         "type": "object"
       },
       "LiveClientMessage": {
@@ -4026,6 +4092,13 @@
       },
       "StoryListResponse": {
         "properties": {
+          "linked": {
+            "description": "Stories of other tracks that block or are blocked by this track's stories, read-only.",
+            "items": {
+              "$ref": "#/components/schemas/LinkedBody"
+            },
+            "type": "array"
+          },
           "stories": {
             "description": "The track's stories, by priority and then number.",
             "items": {
