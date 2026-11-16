@@ -19,8 +19,8 @@
 //!   another placeholder, or a registry route without a case, fails the suite.
 //!   A body may hold `<comment_node>`, the paragraph of `{doc_id}` that the
 //!   seeded comment is pinned to, `<node>`, the `{node_id}` behaviour node,
-//!   `<part>`, the `{part_id}` part, and `<feature>`, the `{feature_id}`
-//!   feature.
+//!   `<part>`, the `{part_id}` part, `<feature>`, the `{feature_id}`
+//!   feature, and `<membership>`, the workspace's membership.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -625,6 +625,18 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/owner",
+        Some(r#"{"membership_id":"<membership>"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/members",
+        None,
+        Kind::Workspace,
+    ),
+    case(
         "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features",
         None,
@@ -963,6 +975,8 @@ fn upload_attachment(
 struct Side {
     id: String,
     email: String,
+    /// The member's membership of the workspace.
+    membership_id: String,
     token: String,
     /// The key that the workspace's tests use; never revoked.
     key: String,
@@ -1034,6 +1048,7 @@ impl Side {
         Side {
             id: same(),
             email: String::new(),
+            membership_id: same(),
             token: String::new(),
             key: String::new(),
             key_id: same(),
@@ -1077,6 +1092,7 @@ impl Side {
         [
             &self.id,
             &self.email,
+            &self.membership_id,
             &self.key_id,
             &self.key_prefix,
             &self.project_id,
@@ -1183,378 +1199,384 @@ fn fixture() -> &'static Fixture {
                     &[&user, &session_token(name)],
                 )
                 .await;
-                text(
+                let membership = text(
                     "insert into memberships (workspace_id, user_id) \
                      values ($1::uuid, $2::uuid) returning id::text",
                     &[&workspace, &user],
                 )
                 .await;
-                found.push((name, workspace));
+                found.push((name, workspace, membership));
             }
             found
         });
         let server = TestServer::start(&config());
         let client = &server.client;
-        let mut sides = workspaces.into_iter().map(|(name, workspace)| {
-            let token = session_token(name);
-            let human = Auth::Session(&token);
-            let keys_path = format!("/api/v1/w/{workspace}/api-keys");
-            let minted = must(
-                call(client, "POST", &keys_path, &human, Some("{}")),
-                201,
-                "mint a key",
-            );
-            let key = minted["secret"].as_str().expect("a secret").to_string();
-            let spare = must(
-                call(client, "POST", &keys_path, &human, Some("{}")),
-                201,
-                "mint a spare key",
-            );
-            let agent = Auth::Key(&key);
-            let project = |label: &str| -> (String, String) {
-                let project_name = unique(&format!("{name}-{label}"));
-                let body = json!({ "name": project_name }).to_string();
+        let mut sides = workspaces
+            .into_iter()
+            .map(|(name, workspace, membership_id)| {
+                let token = session_token(name);
+                let human = Auth::Session(&token);
+                let keys_path = format!("/api/v1/w/{workspace}/api-keys");
+                let minted = must(
+                    call(client, "POST", &keys_path, &human, Some("{}")),
+                    201,
+                    "mint a key",
+                );
+                let key = minted["secret"].as_str().expect("a secret").to_string();
+                let spare = must(
+                    call(client, "POST", &keys_path, &human, Some("{}")),
+                    201,
+                    "mint a spare key",
+                );
+                let agent = Auth::Key(&key);
+                let project = |label: &str| -> (String, String) {
+                    let project_name = unique(&format!("{name}-{label}"));
+                    let body = json!({ "name": project_name }).to_string();
+                    let created = must(
+                        call(
+                            client,
+                            "POST",
+                            &format!("/api/v1/w/{workspace}/projects"),
+                            &agent,
+                            Some(&body),
+                        ),
+                        201,
+                        "create a project",
+                    );
+                    let id = created["project"]["id"].as_str().expect("an id");
+                    (id.to_string(), project_name)
+                };
+                let (project_id, project_name) = project("roadmap");
+                let (other_project_id, _) = project("backlog");
+                let base = format!("/api/v1/w/{workspace}/projects/{project_id}");
+                // A part of the project, so the parts table has rows of the
+                // workspace.
+                let part_name = unique(&format!("{name}-part"));
+                let body = json!({ "name": part_name, "kind": "service" }).to_string();
                 let created = must(
                     call(
                         client,
                         "POST",
-                        &format!("/api/v1/w/{workspace}/projects"),
+                        &format!("{base}/parts"),
                         &agent,
                         Some(&body),
                     ),
                     201,
-                    "create a project",
+                    "create a part",
                 );
-                let id = created["project"]["id"].as_str().expect("an id");
-                (id.to_string(), project_name)
-            };
-            let (project_id, project_name) = project("roadmap");
-            let (other_project_id, _) = project("backlog");
-            let base = format!("/api/v1/w/{workspace}/projects/{project_id}");
-            // A part of the project, so the parts table has rows of the
-            // workspace.
-            let part_name = unique(&format!("{name}-part"));
-            let body = json!({ "name": part_name, "kind": "service" }).to_string();
-            let created = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/parts"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "create a part",
-            );
-            let part_id = created["part"]["id"].as_str().expect("an id").to_string();
-            // A feature of the part, so the features table has rows of the
-            // workspace.
-            let feature_name = unique(&format!("{name}-feature"));
-            let feature_description = unique(&format!("{name}-feature-description"));
-            let body =
-                json!({ "name": feature_name, "description": feature_description }).to_string();
-            let created = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/parts/{part_id}/features"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "create a feature",
-            );
-            let feature_id = created["feature"]["id"]
-                .as_str()
-                .expect("an id")
+                let part_id = created["part"]["id"].as_str().expect("an id").to_string();
+                // A feature of the part, so the features table has rows of the
+                // workspace.
+                let feature_name = unique(&format!("{name}-feature"));
+                let feature_description = unique(&format!("{name}-feature-description"));
+                let body =
+                    json!({ "name": feature_name, "description": feature_description }).to_string();
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/parts/{part_id}/features"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "create a feature",
+                );
+                let feature_id = created["feature"]["id"]
+                    .as_str()
+                    .expect("an id")
+                    .to_string();
+                // A track on the part with a doc in it, so the tracks table
+                // and the docs of a track have rows of the workspace.
+                let track_name = unique(&format!("{name}-track"));
+                let body = json!({ "name": track_name, "part_id": part_id }).to_string();
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "create a track",
+                );
+                let track_id = created["track"]["id"].as_str().expect("an id").to_string();
+                // The track changes the feature, so the track_features table has
+                // rows of the workspace.
+                let body = json!({ "feature_id": feature_id }).to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/features"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    200,
+                    "link the track to the feature",
+                );
+                let body = json!({
+                    "kind": "html",
+                    "pillar": "spec",
+                    "title": unique(&format!("{name}-track-doc"))
+                })
                 .to_string();
-            // A track on the part with a doc in it, so the tracks table
-            // and the docs of a track have rows of the workspace.
-            let track_name = unique(&format!("{name}-track"));
-            let body = json!({ "name": track_name, "part_id": part_id }).to_string();
-            let created = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "create a track",
-            );
-            let track_id = created["track"]["id"].as_str().expect("an id").to_string();
-            // The track changes the feature, so the track_features table has
-            // rows of the workspace.
-            let body = json!({ "feature_id": feature_id }).to_string();
-            must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/features"),
-                    &agent,
-                    Some(&body),
-                ),
-                200,
-                "link the track to the feature",
-            );
-            let body = json!({
-                "kind": "html",
-                "pillar": "spec",
-                "title": unique(&format!("{name}-track-doc"))
-            })
-            .to_string();
-            must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/docs"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "create a doc in the track",
-            );
-            // A story of the track, so the stories table has rows of the
-            // workspace.
-            let story_title = unique(&format!("{name}-story"));
-            let body = json!({
-                "title": story_title,
-                "text": "",
-                "topic": "",
-                "criteria": [{ "text": "done" }]
-            })
-            .to_string();
-            let created = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/stories"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "create a story in the track",
-            );
-            let story_id = created["story"]["id"].as_str().expect("an id").to_string();
-            // A node of the track's behaviour tree, so the behaviour_nodes
-            // table has rows of the workspace.
-            let node_title = unique(&format!("{name}-node"));
-            let body = json!({ "title": node_title }).to_string();
-            let created = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/behaviour/nodes"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "add a node to the track's behaviour tree",
-            );
-            let node_id = created["node"]["id"].as_str().expect("an id").to_string();
-            // A question on that node and its answer, so the
-            // behaviour_questions and behaviour_answers tables have rows of
-            // the workspace.
-            let body =
-                json!({ "question": unique(&format!("{name}-question-on-node")) }).to_string();
-            let asked = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/behaviour/nodes/{node_id}/questions"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "ask a question on the node",
-            );
-            let question_id = asked["question"]["id"].as_str().expect("an id").to_string();
-            let body = json!({
-                "expected_version": 1,
-                "answer": unique(&format!("{name}-answer-to-question")),
-            })
-            .to_string();
-            must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/behaviour/questions/{question_id}/answers"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "answer the question",
-            );
-            // A rule on that node, so the behaviour_rules table has rows of
-            // the workspace.
-            let rule_text = unique(&format!("{name}-rule-on-node"));
-            let body = json!({ "text": rule_text }).to_string();
-            let recorded = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/behaviour/nodes/{node_id}/rules"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "record a rule on the node",
-            );
-            let rule_id = recorded["rule"]["id"].as_str().expect("an id").to_string();
-            // A file of the workspace's own.
-            let attachment_name = format!("{name}-notes.txt");
-            let attachment_text = unique(&format!("{name}-file-content"));
-            let uploaded = upload_attachment(
-                client,
-                &workspace,
-                &key,
-                attachment_text.as_bytes(),
-                &attachment_name,
-            );
-            let uploaded = must(uploaded, 201, "upload a file");
-            let attachment_id = uploaded["attachment"]["id"]
-                .as_str()
-                .expect("an id")
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/docs"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "create a doc in the track",
+                );
+                // A story of the track, so the stories table has rows of the
+                // workspace.
+                let story_title = unique(&format!("{name}-story"));
+                let body = json!({
+                    "title": story_title,
+                    "text": "",
+                    "topic": "",
+                    "criteria": [{ "text": "done" }]
+                })
                 .to_string();
-            // A doc with one applied operation, so the doc, chunk, node index
-            // and write log tables have rows of the workspace.
-            let doc_title = unique(&format!("{name}-doc"));
-            let body = json!({ "kind": "html", "pillar": "spec", "title": doc_title }).to_string();
-            let created = must(
-                call(client, "POST", &format!("{base}/docs"), &agent, Some(&body)),
-                201,
-                "create a doc",
-            );
-            let doc_id = created["doc"]["id"].as_str().expect("an id").to_string();
-            let doc_text = unique(&format!("{name}-doc-content"));
-            let ops = json!({ "ops": [{
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/stories"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "create a story in the track",
+                );
+                let story_id = created["story"]["id"].as_str().expect("an id").to_string();
+                // A node of the track's behaviour tree, so the behaviour_nodes
+                // table has rows of the workspace.
+                let node_title = unique(&format!("{name}-node"));
+                let body = json!({ "title": node_title }).to_string();
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/behaviour/nodes"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "add a node to the track's behaviour tree",
+                );
+                let node_id = created["node"]["id"].as_str().expect("an id").to_string();
+                // A question on that node and its answer, so the
+                // behaviour_questions and behaviour_answers tables have rows of
+                // the workspace.
+                let body =
+                    json!({ "question": unique(&format!("{name}-question-on-node")) }).to_string();
+                let asked = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/behaviour/nodes/{node_id}/questions"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "ask a question on the node",
+                );
+                let question_id = asked["question"]["id"].as_str().expect("an id").to_string();
+                let body = json!({
+                    "expected_version": 1,
+                    "answer": unique(&format!("{name}-answer-to-question")),
+                })
+                .to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!(
+                            "{base}/tracks/{track_id}/behaviour/questions/{question_id}/answers"
+                        ),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "answer the question",
+                );
+                // A rule on that node, so the behaviour_rules table has rows of
+                // the workspace.
+                let rule_text = unique(&format!("{name}-rule-on-node"));
+                let body = json!({ "text": rule_text }).to_string();
+                let recorded = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/behaviour/nodes/{node_id}/rules"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "record a rule on the node",
+                );
+                let rule_id = recorded["rule"]["id"].as_str().expect("an id").to_string();
+                // A file of the workspace's own.
+                let attachment_name = format!("{name}-notes.txt");
+                let attachment_text = unique(&format!("{name}-file-content"));
+                let uploaded = upload_attachment(
+                    client,
+                    &workspace,
+                    &key,
+                    attachment_text.as_bytes(),
+                    &attachment_name,
+                );
+                let uploaded = must(uploaded, 201, "upload a file");
+                let attachment_id = uploaded["attachment"]["id"]
+                    .as_str()
+                    .expect("an id")
+                    .to_string();
+                // A doc with one applied operation, so the doc, chunk, node index
+                // and write log tables have rows of the workspace.
+                let doc_title = unique(&format!("{name}-doc"));
+                let body =
+                    json!({ "kind": "html", "pillar": "spec", "title": doc_title }).to_string();
+                let created = must(
+                    call(client, "POST", &format!("{base}/docs"), &agent, Some(&body)),
+                    201,
+                    "create a doc",
+                );
+                let doc_id = created["doc"]["id"].as_str().expect("an id").to_string();
+                let doc_text = unique(&format!("{name}-doc-content"));
+                let ops = json!({ "ops": [{
                 "op": "insert",
                 "parent": null,
                 "position": { "after": null },
                 "content": format!("<p>{doc_text}</p>")
             }] })
-            .to_string();
-            let edited = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/docs/{doc_id}/ops"),
-                    &agent,
-                    Some(&ops),
-                ),
-                200,
-                "edit the doc",
-            );
-            let comment_node = edited["results"][0]["node"]
-                .as_str()
-                .expect("the new paragraph")
                 .to_string();
-            // A sealed thread with a post, so whatever holds threads, phases
-            // and posts has rows of the workspace.
-            let thread_question = unique(&format!("{name}-question"));
-            let body = json!({ "question": thread_question, "sealed": true }).to_string();
-            let created = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/threads"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "start a thread",
-            );
-            let thread_id = created["thread"]["id"].as_str().expect("an id").to_string();
-            let post_summary = unique(&format!("{name}-summary"));
-            let body = json!({
-                "summary": post_summary,
-                "body": unique(&format!("{name}-post"))
-            })
-            .to_string();
-            let posted = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/threads/{thread_id}/posts"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "post in the thread",
-            );
-            let post_id = posted["post"]["id"].as_str().expect("an id").to_string();
-            // The human's comment on the doc's paragraph and the agent's reply
-            // to it, so whatever holds comments and replies has rows of the
-            // workspace.
-            let comment_text = unique(&format!("{name}-comment"));
-            let body = json!({ "node": comment_node, "text": comment_text }).to_string();
-            let made = must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/docs/{doc_id}/comments"),
-                    &human,
-                    Some(&body),
-                ),
-                201,
-                "the human comments on the paragraph",
-            );
-            let comment_id = made["comment"]["id"].as_str().expect("an id").to_string();
-            let body = json!({ "text": unique(&format!("{name}-reply")) }).to_string();
-            must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/comments/{comment_id}/replies"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "the agent replies to the comment",
-            );
-            Side {
-                id: workspace,
-                email: format!("{name}@example.test"),
-                token: token.clone(),
-                key: key.clone(),
-                key_id: spare["key"]["id"].as_str().expect("an id").to_string(),
-                key_prefix: spare["key"]["prefix"]
+                let edited = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/docs/{doc_id}/ops"),
+                        &agent,
+                        Some(&ops),
+                    ),
+                    200,
+                    "edit the doc",
+                );
+                let comment_node = edited["results"][0]["node"]
                     .as_str()
-                    .expect("a prefix")
-                    .to_string(),
-                project_id,
-                project_name,
-                other_project_id,
-                attachment_id,
-                attachment_name,
-                attachment_text,
-                doc_id,
-                doc_title,
-                doc_text,
-                thread_id,
-                thread_question,
-                post_id,
-                post_summary,
-                comment_id,
-                comment_node,
-                comment_text,
-                part_id,
-                part_name,
-                feature_id,
-                feature_name,
-                feature_description,
-                track_id,
-                track_name,
-                story_id,
-                story_title,
-                node_id,
-                node_title,
-                question_id,
-                rule_id,
-                rule_text,
-            }
-        });
+                    .expect("the new paragraph")
+                    .to_string();
+                // A sealed thread with a post, so whatever holds threads, phases
+                // and posts has rows of the workspace.
+                let thread_question = unique(&format!("{name}-question"));
+                let body = json!({ "question": thread_question, "sealed": true }).to_string();
+                let created = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/threads"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "start a thread",
+                );
+                let thread_id = created["thread"]["id"].as_str().expect("an id").to_string();
+                let post_summary = unique(&format!("{name}-summary"));
+                let body = json!({
+                    "summary": post_summary,
+                    "body": unique(&format!("{name}-post"))
+                })
+                .to_string();
+                let posted = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/threads/{thread_id}/posts"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "post in the thread",
+                );
+                let post_id = posted["post"]["id"].as_str().expect("an id").to_string();
+                // The human's comment on the doc's paragraph and the agent's reply
+                // to it, so whatever holds comments and replies has rows of the
+                // workspace.
+                let comment_text = unique(&format!("{name}-comment"));
+                let body = json!({ "node": comment_node, "text": comment_text }).to_string();
+                let made = must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/docs/{doc_id}/comments"),
+                        &human,
+                        Some(&body),
+                    ),
+                    201,
+                    "the human comments on the paragraph",
+                );
+                let comment_id = made["comment"]["id"].as_str().expect("an id").to_string();
+                let body = json!({ "text": unique(&format!("{name}-reply")) }).to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/comments/{comment_id}/replies"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "the agent replies to the comment",
+                );
+                Side {
+                    id: workspace,
+                    email: format!("{name}@example.test"),
+                    membership_id,
+                    token: token.clone(),
+                    key: key.clone(),
+                    key_id: spare["key"]["id"].as_str().expect("an id").to_string(),
+                    key_prefix: spare["key"]["prefix"]
+                        .as_str()
+                        .expect("a prefix")
+                        .to_string(),
+                    project_id,
+                    project_name,
+                    other_project_id,
+                    attachment_id,
+                    attachment_name,
+                    attachment_text,
+                    doc_id,
+                    doc_title,
+                    doc_text,
+                    thread_id,
+                    thread_question,
+                    post_id,
+                    post_summary,
+                    comment_id,
+                    comment_node,
+                    comment_text,
+                    part_id,
+                    part_name,
+                    feature_id,
+                    feature_name,
+                    feature_description,
+                    track_id,
+                    track_name,
+                    story_id,
+                    story_title,
+                    node_id,
+                    node_title,
+                    question_id,
+                    rule_id,
+                    rule_text,
+                }
+            });
         let a = sides.next().expect("workspace A");
         let b = sides.next().expect("workspace B");
         Fixture { a, b, server }
@@ -1618,14 +1640,16 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
 
 /// The body of `case` for calls about the records of `record`: its
 /// `<comment_node>` is the node of `record`'s seeded comment, its `<node>`
-/// is `record`'s behaviour node, its `<part>` is `record`'s part and its
-/// `<feature>` is `record`'s feature.
+/// is `record`'s behaviour node, its `<part>` is `record`'s part, its
+/// `<feature>` is `record`'s feature and its `<membership>` is `record`'s
+/// membership.
 fn body_of(case: &Case, record: &Side) -> Option<String> {
     case.body.map(|body| {
         body.replace("<comment_node>", &record.comment_node)
             .replace("<node>", &record.node_id)
             .replace("<part>", &record.part_id)
             .replace("<feature>", &record.feature_id)
+            .replace("<membership>", &record.membership_id)
     })
 }
 

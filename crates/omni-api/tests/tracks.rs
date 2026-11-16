@@ -63,6 +63,12 @@
 //!   every state move. An admin who is not the owner may move planning and
 //!   building both ways and drop; done, and any move by another member, is
 //!   403 `{"error": "not_track_owner"}`, checked before the move itself.
+//! - US-315: `POST /tracks/{track_id}/owner` takes `{"membership_id"}`. The
+//!   owner or an admin hands the track to that member and gets 200 `{"track":
+//!   Track}` with the new `owner_user_id`; anyone else is 403 `{"error":
+//!   "not_track_owner"}`. From then on only the new owner's session and keys
+//!   write. An ID that is no membership of the workspace is 422 `{"error":
+//!   "not_a_member"}`; refused hand-overs keep the owner and emit nothing.
 
 mod common;
 
@@ -1332,4 +1338,192 @@ fn an_admin_who_is_not_the_owner_moves_and_drops_a_track_but_cannot_mark_it_done
         }
     }
     assert_eq!(state_of(f, client, &project, &track), "planning");
+}
+
+// ---------------------------------------------------------------------------
+// Hand a track over (US-315)
+// ---------------------------------------------------------------------------
+
+fn hand_over(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    track: &str,
+    membership: &str,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/owner", track_path(f, project, track)),
+        auth,
+        Some(&json!({ "membership_id": membership })),
+    )
+}
+
+/// The `owner_user_id` of a track, as the API shows it.
+fn owner_of(f: &Fixture, client: &Client, project: &str, track: &str) -> Value {
+    must(
+        call(
+            client,
+            "GET",
+            &track_path(f, project, track),
+            &human(f),
+            None,
+        ),
+        200,
+        "show the track",
+    )["track"]["owner_user_id"]
+        .clone()
+}
+
+#[test]
+fn the_owner_or_an_admin_hands_a_track_over_and_anyone_else_is_403_not_track_owner() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let alice = membership_of(f, &f.alice_user);
+    let bob = membership_of(f, &f.bob_user);
+
+    // Made with alice's key, so alice owns the track.
+    let track = track_in(f, client, &project, &[]);
+    for auth in [Auth::Session(&f.bob_token), Auth::Agent(&f.bob_key)] {
+        let response = hand_over(f, client, &auth, &project, &track, &bob);
+        assert_error(&response, 403, "not_track_owner");
+    }
+    assert_eq!(owner_of(f, client, &project, &track), f.alice_user.as_str());
+    assert!(events_of(&project, "track.owner_changed").is_empty());
+
+    for (auth, to, user, who) in [
+        (human(f), &bob, &f.bob_user, "the owner's session"),
+        (
+            Auth::Agent(&f.carol_key),
+            &alice,
+            &f.alice_user,
+            "an admin's key",
+        ),
+        (agent(f), &bob, &f.bob_user, "the owner's key"),
+        (
+            Auth::Session(&f.carol_token),
+            &alice,
+            &f.alice_user,
+            "an admin's session",
+        ),
+    ] {
+        let handed = must(
+            hand_over(f, client, &auth, &project, &track, to),
+            200,
+            &format!("hand the track over with {who}"),
+        );
+        assert_eq!(handed["track"]["id"], track.as_str(), "{handed}");
+        assert_eq!(handed["track"]["owner_user_id"], user.as_str(), "{handed}");
+        assert_eq!(
+            owner_of(f, client, &project, &track),
+            user.as_str(),
+            "{who}"
+        );
+    }
+    assert_eq!(events_of(&project, "track.owner_changed").len(), 4);
+}
+
+#[test]
+fn after_a_hand_over_the_old_owners_keys_cannot_write_to_the_track_and_the_new_owners_can() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    // Made with alice's key, so alice owns the track.
+    let track = track_in(f, client, &project, &[]);
+    must(
+        hand_over(
+            f,
+            client,
+            &agent(f),
+            &project,
+            &track,
+            &membership_of(f, &f.bob_user),
+        ),
+        200,
+        "alice hands the track to bob",
+    );
+
+    for auth in [
+        agent(f),
+        Auth::Agent(&f.alice_second_key),
+        Auth::Session(&f.alice_token),
+    ] {
+        let response = state_as(f, client, &auth, &project, &track, "building");
+        assert_error(&response, 403, "not_track_owner");
+        let response = hand_over(
+            f,
+            client,
+            &auth,
+            &project,
+            &track,
+            &membership_of(f, &f.alice_user),
+        );
+        assert_error(&response, 403, "not_track_owner");
+    }
+    assert_eq!(state_of(f, client, &project, &track), "planning");
+    assert_eq!(owner_of(f, client, &project, &track), f.bob_user.as_str());
+
+    for (auth, to) in [
+        (Auth::Agent(&f.bob_key), "building"),
+        (Auth::Session(&f.bob_token), "done"),
+    ] {
+        let moved = must(
+            state_as(f, client, &auth, &project, &track, to),
+            200,
+            &format!("the new owner moves the track to {to}"),
+        );
+        assert_eq!(moved["track"]["state"], to, "{moved}");
+    }
+}
+
+#[test]
+fn handing_a_track_to_someone_who_is_not_a_member_of_the_workspace_is_422_not_a_member() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    // A member of another workspace, who has no membership in this one.
+    let stranger = block(async {
+        let mut conn = admin_connection().await;
+        let workspace: String = sqlx::query_scalar(
+            "insert into workspaces (name) values ('Elsewhere') returning id::text",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .expect("seed a workspace");
+        let user: String =
+            sqlx::query_scalar("insert into users (email) values ($1) returning id::text")
+                .bind(format!("{}@example.test", unique("stranger")))
+                .fetch_one(&mut conn)
+                .await
+                .expect("seed a user");
+        sqlx::query_scalar::<_, String>(
+            "insert into memberships (workspace_id, user_id) \
+             values ($1::uuid, $2::uuid) returning id::text",
+        )
+        .bind(&workspace)
+        .bind(&user)
+        .fetch_one(&mut conn)
+        .await
+        .expect("seed a membership")
+    });
+
+    // Made with alice's key, so alice owns the track.
+    let track = track_in(f, client, &project, &[]);
+    for (membership, what) in [
+        (stranger.as_str(), "another workspace's membership"),
+        (UNKNOWN_ID, "an unknown membership"),
+        (
+            f.bob_user.as_str(),
+            "a member's user id, not a membership id",
+        ),
+    ] {
+        let response = hand_over(f, client, &agent(f), &project, &track, membership);
+        assert_error(&response, 422, "not_a_member");
+        assert_eq!(
+            owner_of(f, client, &project, &track),
+            f.alice_user.as_str(),
+            "{what}: the owner stays"
+        );
+    }
+    assert!(events_of(&project, "track.owner_changed").is_empty());
 }
