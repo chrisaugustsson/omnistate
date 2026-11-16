@@ -25,6 +25,8 @@
 //!   `?feature=<id>` lists and the track and global lists leave out. A design
 //!   may sit on a feature, a design system may not; a feature and a track
 //!   together are 422 `one_scope_only`.
+//! - US-328: `POST /docs` takes `part_id` for a doc on a part; more than one
+//!   of `part_id`, `feature_id` and `track_id` is 422 `one_scope_only`.
 //! - US-314: only a track's owner (with a session or a key the owner made)
 //!   adds a story to it; another member's is 403 `{"error":
 //!   "not_track_owner"}`. Every member reads the board and comments on the
@@ -901,6 +903,46 @@ fn a_doc_with_both_a_feature_and_a_track_is_422_one_scope_only() {
     assert!(
         list_docs(client, &agent(f), &docs_path(f, &project)).is_empty(),
         "the refused doc was not created"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Docs on parts (US-328)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_doc_with_a_part_and_a_feature_or_a_track_is_422_one_scope_only() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let part = new_part(f, client, &project);
+    let track = new_track(f, client, &project, "Wision");
+    let analyze = new_feature(f, client, &project);
+    let scopes = [
+        json!({ "part_id": part, "feature_id": analyze }),
+        json!({ "part_id": part, "track_id": track }),
+        json!({ "part_id": part, "feature_id": analyze, "track_id": track }),
+    ];
+    for scope in scopes {
+        let mut body = json!({
+            "kind": "html",
+            "pillar": "architecture",
+            "title": "Architecture",
+        });
+        body.as_object_mut()
+            .expect("an object")
+            .extend(scope.as_object().expect("an object").clone());
+        let response = call(
+            client,
+            "POST",
+            &docs_path(f, &project),
+            &agent(f),
+            Some(&body),
+        );
+        assert_error(&response, 422, "one_scope_only");
+    }
+    assert!(
+        list_docs(client, &agent(f), &docs_path(f, &project)).is_empty(),
+        "no refused doc was created"
     );
 }
 

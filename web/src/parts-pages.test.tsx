@@ -8,6 +8,8 @@
 // US-310: the part page creates, renames and deletes its features; a feature's
 // page, .../parts/<part>/features/<feature>, shows its name, description, docs
 // and linked tracks; a track's page lists the features it changes, read-only.
+// US-328: the part page lists the docs on the part itself (GET .../docs?part=<id>),
+// each row with its title, pillar and kind, each opening the doc viewer.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -59,6 +61,10 @@ function feature(id: string, partId: string, name: string, description = "") {
 
 type Feature = ReturnType<typeof feature>;
 
+function partDoc(id: string, partId: string, pillar: string, title: string) {
+  return { id, project_id: PROJECT_ID, track_id: null, feature_id: null, part_id: partId, kind: "html", pillar, title, created_at: AT };
+}
+
 function doc(id: string, featureId: string, kind: string, title: string) {
   return { id, project_id: PROJECT_ID, track_id: null, feature_id: featureId, kind, pillar: "spec", title, created_at: AT };
 }
@@ -70,6 +76,8 @@ function fakeApi(fields: {
   features?: Feature[];
   /** The docs answered for GET .../docs?feature=<id>. */
   featureDocs?: ReturnType<typeof doc>[];
+  /** The docs answered for GET .../docs?part=<part>; other parts have none. */
+  partDocs?: { part: string; docs: ReturnType<typeof partDoc>[] };
   /** The tracks answered for GET .../features/<id>/tracks. */
   featureTracks?: Track["track"][];
   /** The features answered for GET .../tracks/<id>/features. */
@@ -85,7 +93,7 @@ function fakeApi(fields: {
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const path = new URL(url, "http://localhost:3000").pathname;
+      const { pathname: path, searchParams } = new URL(url, "http://localhost:3000");
       const method = (init?.method ?? "GET").toUpperCase();
       const featureAt = path.match(/\/parts\/([^/]+)\/features(?:\/([^/]+))?(\/tracks)?$/);
       if (method !== "GET") {
@@ -149,6 +157,8 @@ function fakeApi(fields: {
             waiting: { comments: [] },
           });
         case `${API}/docs`:
+          if (searchParams.has("part"))
+            return json(200, { docs: searchParams.get("part") === fields.partDocs?.part ? fields.partDocs.docs : [] });
           return json(200, { docs: fields.featureDocs ?? [] });
         case `${API}/tracks`:
           return json(200, { tracks: (fields.tracks ?? []).map((summary) => summary.track) });
@@ -330,6 +340,33 @@ describe("the part page", () => {
     await waitFor(() =>
       expect(api.writes).toEqual([{ method: "POST", path: `${API}/tracks`, body: { name: "Gateway", description: "", part_id: IOT } }]),
     );
+  });
+
+  test("lists the part's own docs, each row with its title, pillar and kind, each opening the doc viewer", async () => {
+    const ARCHITECTURE = "0192d7a0-6666-7000-8000-000000000011";
+    const TABLES = "0192d7a0-6666-7000-8000-000000000012";
+    fakeApi({
+      parts: [part(WISION, "Wision", "app"), part(IOT, "iot-service", "service")],
+      partDocs: { part: IOT, docs: [partDoc(ARCHITECTURE, IOT, "architecture", "Architecture"), partDoc(TABLES, IOT, "db", "Tables")] },
+    });
+    renderAt(`${PROJECT_PATH}/parts/${IOT}`);
+    const docs = await region("Docs");
+    await within(docs).findByRole("link", { name: "Architecture" });
+    expect(within(docs).getAllByRole("link").map((row) => [shownText(row), row.getAttribute("href")])).toEqual([
+      ["ArchitecturearchitectureDoc", `${PROJECT_PATH}/docs/${ARCHITECTURE}`],
+      ["TablesdbDoc", `${PROJECT_PATH}/docs/${TABLES}`],
+    ]);
+  });
+
+  test("a part without docs shows No docs yet", async () => {
+    fakeApi({
+      parts: [part(WISION, "Wision", "app"), part(IOT, "iot-service", "service")],
+      partDocs: { part: IOT, docs: [partDoc("0192d7a0-6666-7000-8000-000000000011", IOT, "architecture", "Architecture")] },
+    });
+    renderAt(`${PROJECT_PATH}/parts/${WISION}`);
+    const docs = await region("Docs");
+    await waitFor(() => expect(docs.textContent).toContain("No docs yet"));
+    expect(within(docs).queryAllByRole("link")).toEqual([]);
   });
 });
 
