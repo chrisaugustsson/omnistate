@@ -27,6 +27,8 @@ const LOYALTY = "0192d7a0-4444-7000-8000-000000000006";
 const GONE = "0192d7a0-4444-7000-8000-000000000009";
 const MISSING = "0192d7a0-9999-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
+/** Another member of the workspace, who owns some tracks (US-317). */
+const OTHER_USER_ID = "0192d7a0-1111-7000-8000-000000000002";
 const WORKSPACE_PATH = `/w/${WORKSPACE_ID}`;
 const PROJECT_PATH = `${WORKSPACE_PATH}/projects/${PROJECT_ID}`;
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
@@ -35,9 +37,18 @@ const AT = "2026-10-21T09:00:00Z";
 const AGENT = { kind: "agent", run: "run-1", role: "writer", model: "test-model", harness: "test-harness" };
 const HUMAN = { kind: "human", user_id: USER.id };
 
-function track(id: string, name: string, stories = { total: 0, open: 0, done: 0 }) {
+function track(id: string, name: string, stories = { total: 0, open: 0, done: 0 }, owner = USER.id) {
   return {
-    track: { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description: "", created_at: AT },
+    track: {
+      id,
+      project_id: PROJECT_ID,
+      part_id: PART_ID,
+      state: "planning",
+      name,
+      description: "",
+      owner_user_id: owner,
+      created_at: AT,
+    },
     docs: 0,
     waiting: 0,
     stories,
@@ -75,13 +86,13 @@ function thread(id: string, trackId: string | null, question: string) {
   };
 }
 
-/** A comment of yours on the app's doc whose latest reply is an agent's. */
-function waiting(id: string, text: string) {
+/** A comment of yours on the app's doc, or on a doc of `trackId`, whose latest reply is an agent's. */
+function waiting(id: string, text: string, trackId: string | null = null) {
   return {
     id,
     project_id: PROJECT_ID,
-    track_id: null,
-    doc_id: APP_DOC,
+    track_id: trackId,
+    doc_id: trackId ? CHECKOUT_DOC : APP_DOC,
     node: "p0000001",
     author: HUMAN,
     text,
@@ -133,6 +144,8 @@ function fakeApi(fields: { home?: Home; workspaces?: Workspace[] } = {}) {
         return json(200, { user: USER });
       case "/api/v1/auth/workspaces":
         return json(200, { workspaces: fields.workspaces ?? [ACME] });
+      case `/api/v1/w/${WORKSPACE_ID}/whoami`:
+        return json(200, { actor: { kind: "human", user_id: USER.id }, workspace_id: WORKSPACE_ID });
       case `/api/v1/w/${WORKSPACE_ID}/projects`:
         api.projectsRequests += 1;
         return json(200, {
@@ -305,7 +318,7 @@ describe("the project sidebar", () => {
       fakeApi({
         home: home({
           tracks: [track(CHECKOUT, "Checkout"), track(WALLETS, "Wallets"), track(SEARCH, "Search")],
-          waiting: [waiting(SAY_WEEK, "Say which week."), waiting(INDEX_DATE, "Index the order date.")],
+          waiting: [waiting(SAY_WEEK, "Say which week.", CHECKOUT), waiting(INDEX_DATE, "Index the order date.", CHECKOUT)],
         }),
       });
       renderAt(`${PROJECT_PATH}/app`);
@@ -329,7 +342,9 @@ describe("the project sidebar", () => {
     });
 
     test("the Inbox count follows the comments as their events come in", async () => {
-      const api = fakeApi({ home: home({ waiting: [waiting(SAY_WEEK, "Say which week."), waiting(INDEX_DATE, "Index the order date.")] }) });
+      const api = fakeApi({
+        home: home({ waiting: [waiting(SAY_WEEK, "Say which week.", CHECKOUT), waiting(INDEX_DATE, "Index the order date.", CHECKOUT)] }),
+      });
       renderAt(`${PROJECT_PATH}/tracks`);
       const nav = await projectNav();
       await waitFor(() => expect(links(nav)[0]?.text).toBe("Inbox2"));
@@ -341,15 +356,43 @@ describe("the project sidebar", () => {
         expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })),
       );
       socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 10 });
-      api.home = home({ waiting: [waiting(INDEX_DATE, "Index the order date.")] });
+      api.home = home({ waiting: [waiting(INDEX_DATE, "Index the order date.", CHECKOUT)] });
       socket.receive({
         type: "event",
         seq: 11,
         event: "comment.replied",
         project_id: PROJECT_ID,
         at: "2026-10-21T15:00:00Z",
-        data: { comment_id: SAY_WEEK, doc_id: APP_DOC },
+        data: { comment_id: SAY_WEEK, doc_id: CHECKOUT_DOC },
       });
+      await waitFor(() => expect(links(nav)[0]?.text).toBe("Inbox1"));
+    });
+
+    // US-317: the fixed defect, a badge that counted every member's questions while the inbox listed only yours.
+    test("the Inbox counts only the questions on your own tracks, and everyone's once the inbox's switch is on", async () => {
+      fakeApi({
+        home: home({
+          tracks: [track(CHECKOUT, "Checkout"), track(WALLETS, "Wallets", undefined, OTHER_USER_ID)],
+          waiting: [
+            waiting(SAY_WEEK, "Say which week.", CHECKOUT),
+            waiting(INDEX_DATE, "Index the order date.", WALLETS),
+            waiting(MISSING, "Name the app."),
+          ],
+        }),
+      });
+      const router = renderAt(`${PROJECT_PATH}/inbox`);
+      const nav = await projectNav();
+      await waitFor(() => expect(links(nav)[0]?.text).toBe("Inbox1"));
+
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Show everyone's tracks" }));
+      await waitFor(() => expect(links(nav)[0]?.text).toBe("Inbox3"));
+      await router.navigate({ href: `${PROJECT_PATH}/tracks` });
+      await waitFor(() => expect(screen.queryByRole("checkbox", { name: "Show everyone's tracks" })).toBeNull());
+      expect(links(nav)[0]?.text).toBe("Inbox3");
+
+      // Back to the default, for the tests after this one.
+      await router.navigate({ href: `${PROJECT_PATH}/inbox` });
+      fireEvent.click(await screen.findByRole("checkbox", { name: "Show everyone's tracks" }));
       await waitFor(() => expect(links(nav)[0]?.text).toBe("Inbox1"));
     });
   });

@@ -4,9 +4,10 @@
 // is an agent's), grouped by scope and updated live. The app is rendered with
 // its own router on a memory history, the browser's fetch is replaced by a
 // fake of the API, and the browser's WebSocket by a fake socket that the test
-// drives.
+// drives. US-317: by default it lists only the comments on the member's own
+// tracks; its switch shows everyone's.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 
@@ -17,6 +18,9 @@ const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
 const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
+/** Another member of the workspace, who owns Wallets. */
+const OTHER_USER_ID = "0192d7a0-1111-7000-8000-000000000002";
+const EVERYONE = "Show everyone's tracks";
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const INBOX_PATH = `${PROJECT_PATH}/inbox`;
 const AT = "2026-10-21T09:00:00Z";
@@ -71,9 +75,18 @@ function waiting(on: Doc, text: string, replies: ReturnType<typeof reply>[]) {
   };
 }
 
-function feature(id: string, name: string) {
+function feature(id: string, name: string, owner: string) {
   return {
-    track: { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description: "", created_at: AT },
+    track: {
+      id,
+      project_id: PROJECT_ID,
+      part_id: PART_ID,
+      state: "planning",
+      name,
+      description: "",
+      owner_user_id: owner,
+      created_at: AT,
+    },
     docs: 1,
     waiting: 1,
     last_activity: null,
@@ -82,8 +95,9 @@ function feature(id: string, name: string) {
 
 /**
  * Comments that wait in the app (agent replies at 11:00 and 14:00), in
- * Checkout (13:00) and in Wallets (12:30), listed in an order that is none of
- * the orders the Inbox shows.
+ * Checkout (13:00), which the signed-in member owns, and in Wallets (12:30),
+ * which another member owns, listed in an order that is none of the orders
+ * the Inbox shows.
  */
 function seeded() {
   const docs = {
@@ -111,7 +125,7 @@ function seeded() {
   const home = {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    tracks: [feature(CHECKOUT, "Checkout"), feature(WALLETS, "Wallets")],
+    tracks: [feature(CHECKOUT, "Checkout", USER.id), feature(WALLETS, "Wallets", OTHER_USER_ID)],
     docs: Object.values(docs),
     threads: [],
     waiting: {
@@ -123,8 +137,8 @@ function seeded() {
 
 type Home = ReturnType<typeof seeded>["home"];
 
-/** A fake of the API: the auth routes, the workspace's one project and its home, which the test may change. */
-function fakeApi(home: Home) {
+/** A fake of the API: the auth routes, `me` as the signed-in member, the workspace's one project and its home, which the test may change. */
+function fakeApi(home: Home, me = USER.id) {
   const api = { home };
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), {
@@ -140,6 +154,8 @@ function fakeApi(home: Home) {
         return json(200, { user: USER });
       case "GET /api/v1/auth/workspaces":
         return json(200, { workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
+      case `GET /api/v1/w/${WORKSPACE_ID}/whoami`:
+        return json(200, { actor: { kind: "human", user_id: me }, workspace_id: WORKSPACE_ID });
       case `GET /api/v1/w/${WORKSPACE_ID}/projects`:
         return json(200, { projects: [{ id: PROJECT_ID, name: "Storefront", created_at: AT }] });
       case `GET /api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/home`:
@@ -223,6 +239,11 @@ async function page() {
   return screen.findByRole("main");
 }
 
+/** Turns the Inbox's switch on, to show everyone's tracks. */
+async function showEveryone(main: HTMLElement) {
+  fireEvent.click(await within(main).findByRole("checkbox", { name: EVERYONE }));
+}
+
 /** The Inbox's groups, each as its name and the comments of its items, in order. */
 function groups(main: HTMLElement) {
   return within(main)
@@ -253,15 +274,54 @@ describe("the Inbox", () => {
   });
 
   afterEach(() => {
+    // The switch's choice outlives the page; put it back to the default for the next test.
+    const everyone = screen.queryByRole("checkbox", { name: EVERYONE }) as HTMLInputElement | null;
+    if (everyone?.checked) fireEvent.click(everyone);
     cleanup();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  test("by default each member sees only the comments on their own tracks", async () => {
+    fakeApi(seeded().home);
+    renderAt(INBOX_PATH);
+    let main = await page();
+    await within(main).findByText("Drop the second step.");
+    expect(groups(main)).toEqual([{ name: "Checkout", items: [expect.stringContaining("Drop the second step.")] }]);
+    expect(within(main).getByText(/^1 comment has an agent's reply waiting on you/)).toBeTruthy();
+    expect((within(main).getByRole("checkbox", { name: EVERYONE }) as HTMLInputElement).checked).toBe(false);
+    cleanup();
+
+    fakeApi(seeded().home, OTHER_USER_ID);
+    renderAt(INBOX_PATH);
+    main = await page();
+    await within(main).findByText("Which wallets did they name?");
+    expect(groups(main)).toEqual([{ name: "Wallets", items: [expect.stringContaining("Which wallets did they name?")] }]);
+  });
+
+  test("the switch shows everyone's comments, and stays on while the member moves around the project", async () => {
+    fakeApi(seeded().home);
+    const router = renderAt(INBOX_PATH);
+    let main = await page();
+    await within(main).findByText("Drop the second step.");
+    await showEveryone(main);
+    await within(main).findByText("Which wallets did they name?");
+    expect(groups(main).map((group) => group.name)).toEqual(["App", "Checkout", "Wallets"]);
+
+    await router.navigate({ href: `${PROJECT_PATH}/tracks` });
+    await waitFor(() => expect(screen.queryByRole("checkbox", { name: EVERYONE })).toBeNull());
+    await router.navigate({ href: INBOX_PATH });
+    main = await page();
+    await within(main).findByText("Which wallets did they name?");
+    expect((within(main).getByRole("checkbox", { name: EVERYONE }) as HTMLInputElement).checked).toBe(true);
+    expect(groups(main).map((group) => group.name)).toEqual(["App", "Checkout", "Wallets"]);
   });
 
   test("the waiting comments come by scope, the newest agent reply first in the groups and in each group", async () => {
     fakeApi(seeded().home);
     renderAt(INBOX_PATH);
     const main = await page();
+    await showEveryone(main);
     await within(main).findByText("Say which week.");
     expect(groups(main)).toEqual([
       {
@@ -278,6 +338,7 @@ describe("the Inbox", () => {
     fakeApi(home);
     renderAt(INBOX_PATH);
     const main = await page();
+    await showEveryone(main);
     await within(main).findByText("Say which week.");
     const item = itemShowing(main, "Say which week.");
     expect(within(item).getByText("Returns PRD")).toBeTruthy();
@@ -296,6 +357,7 @@ describe("the Inbox", () => {
     fakeApi(home);
     renderAt(INBOX_PATH);
     const main = await page();
+    await showEveryone(main);
     await within(main).findByText("Drop the second step.");
     const item = itemShowing(main, "Drop the second step.");
     expect(within(item).getByText("Element removed")).toBeTruthy();
@@ -309,6 +371,7 @@ describe("the Inbox", () => {
     const api = fakeApi(home);
     renderAt(INBOX_PATH);
     const main = await page();
+    await showEveryone(main);
     await within(main).findByText("Say which week.");
 
     await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
