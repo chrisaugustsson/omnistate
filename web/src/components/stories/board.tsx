@@ -136,11 +136,13 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
       {story.blocked_by.length > 0 && (
         <ul className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
           {story.blocked_by.map((id) => {
-            const blocker = byId.get(id);
+            const blocker = byId.get(id) ?? story.blockers?.find((other) => other.id === id);
             return (
               <li key={id} className="inline-flex items-center gap-0.5">
                 {blocker?.key ?? "?"}
-                {blocker && closed(blocker) && <Check aria-label="done" className="size-3" />}
+                {blocker && (blocker.status === "done" || blocker.status === "cancelled") && (
+                  <Check aria-label="done" className="size-3" />
+                )}
               </li>
             );
           })}
