@@ -15,7 +15,8 @@ use crate::pins;
 use crate::previews;
 use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
+use crate::tracks::require_track_writer;
+use crate::workspace::{AgentRequest, Who, WorkspaceRequest, parse_uuid};
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use axum::Json;
 use axum::body::Bytes;
@@ -708,6 +709,7 @@ async fn create_live_doc(
         .await
         .map_err(ApiError::database)?;
         found.ok_or(ApiError::NotFound)?;
+        require_track_writer(&mut tx, &request.who(), track_id).await?;
     }
     if let Some(feature_id) = feature_id {
         let found: Option<(String,)> = sqlx::query_as(
@@ -964,6 +966,21 @@ async fn lock_doc(tx: &mut Tx, project_id: &str, doc_id: &str) -> Result<Option<
     found.map(|(head,)| head).ok_or(ApiError::NotFound)
 }
 
+/// Lets a write to a doc through when the doc is not in a track or the caller
+/// owns its track (403 `not_track_owner`).
+async fn require_doc_writer(tx: &mut Tx, who: &Who, doc_id: &str) -> Result<(), ApiError> {
+    let track: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT track_id::text FROM docs WHERE id = $1::uuid")
+            .bind(doc_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(ApiError::database)?;
+    match track {
+        Some((Some(track_id),)) => require_track_writer(tx, who, &track_id).await,
+        _ => Ok(()),
+    }
+}
+
 /// Renames a doc. Its ID, head and comments stay; the rename is one row of the
 /// doc's log, with the head before and after the same.
 #[utoipa::path(
@@ -999,6 +1016,7 @@ pub async fn rename_doc(
     let new = parse_body::<RenameDocRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let head = lock_doc(&mut tx, &project_id, &doc_id).await?;
+    require_doc_writer(&mut tx, &request.who(), &doc_id).await?;
     let title = non_blank(new?.title).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
     sqlx::query("UPDATE docs SET title = $2 WHERE id = $1::uuid")
         .bind(&doc_id)
@@ -1070,6 +1088,7 @@ pub async fn delete_doc(
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let head = lock_doc(&mut tx, &project_id, &doc_id).await?;
+    require_doc_writer(&mut tx, &request.who(), &doc_id).await?;
     sqlx::query("UPDATE docs SET deleted_at = clock_timestamp() WHERE id = $1::uuid")
         .bind(&doc_id)
         .execute(&mut *tx)
@@ -1292,7 +1311,7 @@ pub async fn edit_doc(
 ) -> Result<Json<EditResponse>, DocError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let doc_id = parse_uuid(&doc_id).ok_or(ApiError::NotFound)?;
-    let workspace_id = request.workspace_id;
+    let workspace_id = request.workspace_id.clone();
     let batch = parse_body::<EditRequest>(&body);
 
     // The lock comes first and the batch holds it to its commit, and the only
@@ -1308,6 +1327,7 @@ pub async fn edit_doc(
     .await
     .map_err(ApiError::database)?;
     let (kind, head_before) = locked.ok_or(ApiError::NotFound)?;
+    require_doc_writer(&mut tx, &request.who(), &doc_id).await?;
     let batch = batch?;
     let (sent, board) = (batch.ops, batch.board);
     if kind != "html" && kind != "design" {

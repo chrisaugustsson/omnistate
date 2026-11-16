@@ -12,7 +12,7 @@ use crate::features::{FEATURE_COLUMNS, FeatureBody, FeatureListResponse, Feature
 use crate::live;
 use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
+use crate::workspace::{AgentRequest, Who, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -292,6 +292,7 @@ pub async fn rename_track(
     let new = parse_body::<RenameTrackRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     lock_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let name = non_blank(new?.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
     let renamed = sqlx::query_as::<_, TrackBody>(&format!(
         "UPDATE tracks SET name = $2 WHERE id = $1::uuid RETURNING {TRACK_COLUMNS}"
@@ -358,6 +359,7 @@ pub async fn move_track(
     let new = parse_body::<MoveTrackRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     lock_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let part_id = require_part(&mut tx, &project_id, new?.part_id.as_ref()).await?;
     sqlx::query(
         "UPDATE track_features SET deleted_at = clock_timestamp() \
@@ -540,6 +542,7 @@ pub async fn link_feature(
     let new = parse_body::<LinkFeatureRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let part_id = track_part(&mut tx, &project_id, &track_id, true).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let unprocessable = StatusCode::UNPROCESSABLE_ENTITY;
     let given = match new?.feature_id {
         None | Some(serde_json::Value::Null) => {
@@ -625,6 +628,7 @@ pub async fn unlink_feature(
     let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     track_part(&mut tx, &project_id, &track_id, true).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let ended = match parse_uuid(&feature_id) {
         Some(feature_id) => {
             sqlx::query(
@@ -745,6 +749,8 @@ pub async fn set_track_state(
         .state
         .filter(|to| STATES.contains(&to.as_str()))
         .ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    // Only the owner marks a track done; an admin may make the other moves.
+    owner_check(&mut tx, &request.who(), &track_id, to != "done").await?;
     let (from,): (String,) = sqlx::query_as("SELECT state FROM tracks WHERE id = $1::uuid")
         .bind(&track_id)
         .fetch_one(&mut *tx)
@@ -772,6 +778,41 @@ pub async fn set_track_state(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
     Ok(Json(TrackResponse { track }))
+}
+
+/// Lets the track's owner through, and nobody else: 403 `not_track_owner`.
+/// This is the one check behind every write under a track. A track without an
+/// owner (made by a key with no creator) has nobody to guard it.
+pub(crate) async fn require_track_writer(
+    tx: &mut Tx,
+    who: &Who,
+    track_id: &str,
+) -> Result<(), ApiError> {
+    owner_check(tx, who, track_id, false).await
+}
+
+/// The owner guard, with admins let through when `admin_ok`.
+async fn owner_check(
+    tx: &mut Tx,
+    who: &Who,
+    track_id: &str,
+    admin_ok: bool,
+) -> Result<(), ApiError> {
+    let (owner,): (Option<String>,) =
+        sqlx::query_as("SELECT owner_membership_id::text FROM tracks WHERE id = $1::uuid")
+            .bind(track_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(ApiError::database)?;
+    let allowed = match owner {
+        None => true,
+        Some(owner) => (admin_ok && who.is_admin) || who.membership_id.as_deref() == Some(&owner),
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::Refused(StatusCode::FORBIDDEN, "not_track_owner"))
+    }
 }
 
 /// Locks a track of the project that is not deleted, 404 when there is none.
@@ -821,6 +862,7 @@ pub async fn delete_track(
     let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     lock_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let docs: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT id::text, head FROM docs \
          WHERE track_id = $1::uuid AND deleted_at IS NULL ORDER BY created_at, id FOR UPDATE",

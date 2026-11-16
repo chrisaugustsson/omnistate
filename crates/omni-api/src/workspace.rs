@@ -82,9 +82,9 @@ impl FromRequestParts<AppState> for HumanRequest {
 /// workspace of the path was checked (a session of another workspace is 404).
 pub struct AgentRequest {
     pub workspace_id: String,
-    /// Read by the track owner guard (US-314); nothing reads it yet.
-    #[allow(dead_code)]
     pub is_admin: bool,
+    /// The member who created the key, if any.
+    pub membership_id: Option<String>,
 }
 
 impl FromRequestParts<AppState> for AgentRequest {
@@ -99,8 +99,42 @@ impl FromRequestParts<AppState> for AgentRequest {
             Actor::Agent => Ok(Self {
                 workspace_id: request.workspace_id,
                 is_admin: request.is_admin,
+                membership_id: request.membership_id,
             }),
             Actor::Human { .. } => Err(ApiError::Forbidden),
+        }
+    }
+}
+
+/// The member a request acts as, for the track owner guard.
+pub struct Who {
+    pub membership_id: Option<String>,
+    pub is_admin: bool,
+}
+
+impl WorkspaceRequest {
+    pub fn who(&self) -> Who {
+        Who {
+            membership_id: self.membership_id.clone(),
+            is_admin: self.is_admin,
+        }
+    }
+}
+
+impl HumanRequest {
+    pub fn who(&self) -> Who {
+        Who {
+            membership_id: Some(self.membership_id.clone()),
+            is_admin: self.is_admin,
+        }
+    }
+}
+
+impl AgentRequest {
+    pub fn who(&self) -> Who {
+        Who {
+            membership_id: self.membership_id.clone(),
+            is_admin: self.is_admin,
         }
     }
 }

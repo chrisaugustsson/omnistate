@@ -12,6 +12,7 @@ use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
 use crate::stories::{StoryConflictBody, StoryError};
 use crate::threads::require_identity;
+use crate::tracks::require_track_writer;
 use crate::workspace::{Actor, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
@@ -794,6 +795,7 @@ pub async fn create_node(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     let track_name = lock_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let new = new?;
 
     let title = new.title.trim().to_string();
@@ -1208,6 +1210,7 @@ pub async fn patch_node(
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let current: Option<(i32, bool, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT version, parent_id IS NULL, same_as_id::text, handoff_id::text \
          FROM behaviour_nodes \
@@ -1349,6 +1352,7 @@ pub async fn move_node(
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let current: Option<(i32, bool, Option<String>)> = sqlx::query_as(
         "SELECT version, parent_id IS NULL, slug FROM behaviour_nodes \
          WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
@@ -1463,6 +1467,7 @@ pub async fn ask_question(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let node: Option<(String,)> = sqlx::query_as(
         "SELECT status FROM behaviour_nodes \
          WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
@@ -1668,6 +1673,7 @@ pub async fn answer_question(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let locked: Option<(String, String, i32, Option<String>)> = sqlx::query_as(
         "SELECT node_id::text, state, version, answered_by FROM behaviour_questions \
          WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
@@ -2017,6 +2023,7 @@ pub async fn create_rule(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let node: Option<(bool,)> = sqlx::query_as(
         "SELECT parent_id IS NULL FROM behaviour_nodes \
          WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE",
@@ -2130,6 +2137,7 @@ pub async fn patch_rule(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let current: Option<(String, i32, bool, String)> = sqlx::query_as(
         "SELECT r.node_id::text, r.version, n.parent_id IS NULL, r.scope \
          FROM behaviour_rules r JOIN behaviour_nodes n ON n.id = r.node_id \
@@ -2600,6 +2608,7 @@ pub async fn import_tree(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     lock_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let import = import?;
     let started: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM behaviour_nodes WHERE track_id = $1::uuid)",

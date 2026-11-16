@@ -8,7 +8,8 @@ use crate::AppState;
 use crate::live;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
+use crate::tracks::require_track_writer;
+use crate::workspace::{AgentRequest, HumanRequest, Who, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -272,6 +273,7 @@ pub async fn create_story(
             .map_err(ApiError::database)?;
     locked.ok_or(ApiError::NotFound)?;
     require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let new = new?;
 
     let title = new.title.trim().to_string();
@@ -617,14 +619,16 @@ impl IntoResponse for StoryError {
     }
 }
 
-/// The story with a lock on its row, 404 when the track has none.
+/// The story with a lock on its row, 404 when the track has none, 403 when
+/// the caller does not own the track.
 async fn lock_story(
     tx: &mut Transaction<'static, Postgres>,
+    who: &Who,
     project_id: &str,
     track_id: &str,
     story_id: &str,
 ) -> Result<StoryRow, ApiError> {
-    sqlx::query_as::<_, StoryRow>(&format!(
+    let story = sqlx::query_as::<_, StoryRow>(&format!(
         "SELECT {STORY_COLUMNS} FROM stories \
          WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE"
     ))
@@ -634,7 +638,9 @@ async fn lock_story(
     .fetch_optional(&mut **tx)
     .await
     .map_err(ApiError::database)?
-    .ok_or(ApiError::NotFound)
+    .ok_or(ApiError::NotFound)?;
+    require_track_writer(tx, who, track_id).await?;
+    Ok(story)
 }
 
 fn is_closed(status: &str) -> bool {
@@ -726,7 +732,7 @@ pub async fn patch_story(
     };
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &track_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if let Some(ids) = blocked_by.as_ref().filter(|ids| !ids.is_empty()) {
         let (found,): (i64,) = sqlx::query_as(
             "SELECT count(*) FROM stories WHERE track_id = $1::uuid AND id::text = ANY($2)",
@@ -830,7 +836,7 @@ pub async fn cancel_story(
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let cancel = parse_body::<CancelStoryRequest>(&body)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &track_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != cancel.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -969,7 +975,7 @@ pub async fn claim_story(
         return Err(invalid_field("invalid_stage").into());
     }
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &track_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != claim.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1047,7 +1053,7 @@ pub async fn release_story(
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let release = parse_body::<ReleaseStoryRequest>(&body)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &track_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != release.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1125,7 +1131,7 @@ pub async fn move_story(
         return Err(invalid_field("invalid_status").into());
     }
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &track_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != step.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1250,12 +1256,13 @@ pub struct CheckCriterionRequest {
 async fn open_run_write(
     state: &AppState,
     workspace_id: &str,
+    who: &Who,
     ids: [&str; 3],
     expected_version: i64,
     run: Option<&str>,
 ) -> Result<(Transaction<'static, Postgres>, StoryBody), StoryError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
-    let current = lock_story(&mut tx, ids[0], ids[1], ids[2]).await?;
+    let current = lock_story(&mut tx, who, ids[0], ids[1], ids[2]).await?;
     if i64::from(current.version) != expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1310,6 +1317,7 @@ pub async fn tick_criterion(
     let (mut tx, current) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
@@ -1369,6 +1377,7 @@ pub async fn add_finding(
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
@@ -1424,6 +1433,7 @@ pub async fn resolve_finding(
     let (mut tx, current) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
@@ -1482,6 +1492,7 @@ pub async fn add_decision(
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
@@ -1536,6 +1547,7 @@ pub async fn set_files(
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
@@ -1586,6 +1598,7 @@ pub async fn block_story(
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         None,
@@ -1644,6 +1657,7 @@ pub async fn unblock_story(
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         None,
@@ -1694,6 +1708,7 @@ pub async fn check_criterion(
     let (mut tx, current) = open_run_write(
         &state,
         &request.workspace_id,
+        &request.who(),
         [&project_id, &track_id, &story_id],
         write.expected_version,
         None,
@@ -1713,6 +1728,7 @@ pub async fn check_criterion(
     let request = AgentRequest {
         workspace_id: request.workspace_id,
         is_admin: request.is_admin,
+        membership_id: Some(request.membership_id),
     };
     finish_story_write(&state, tx, &request, &project_id, row, &["criteria"]).await
 }
