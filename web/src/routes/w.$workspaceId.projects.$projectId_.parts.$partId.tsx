@@ -88,7 +88,7 @@ function PartPage() {
                 ) : (
                   <List>
                     {docs.value.map((doc) => (
-                      <DocRow key={doc.id} doc={doc} params={params} />
+                      <DocRow key={doc.id} doc={doc} params={params} showPillar />
                     ))}
                   </List>
                 ))}
