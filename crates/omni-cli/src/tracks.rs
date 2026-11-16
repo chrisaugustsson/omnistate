@@ -60,8 +60,8 @@ fn resolve_part(agent: &Agent, project_id: &str, given: &str) -> Result<String> 
         })
 }
 
-/// One line: ID, name, the part's name (its ID when the part is not listed)
-/// and the state.
+/// One line: ID, name, the part's name (its ID when the part is not listed),
+/// the state and the owner's user ID (`-` when no member owns the track).
 fn summary(track: &Value, parts: &[Value]) -> String {
     let field = |name: &str| track.str_at(name).unwrap_or("?");
     let part_id = field("part_id");
@@ -71,10 +71,11 @@ fn summary(track: &Value, parts: &[Value]) -> String {
         .and_then(|part| part.str_at("name"))
         .unwrap_or(part_id);
     format!(
-        "{}  {}  {part}  {}",
+        "{}  {}  {part}  {}  {}",
         field("id"),
         field("name"),
-        field("state")
+        field("state"),
+        track.str_at("owner_user_id").unwrap_or("-")
     )
 }
 
@@ -121,7 +122,11 @@ pub fn list(args: &Args) -> Result<()> {
         Some(part) => Some(resolve_part(&agent, &project, part)?),
         None => None,
     };
-    let response = agent.request("GET", &tracks_path(&agent, &project), None)?;
+    let mut path = tracks_path(&agent, &project);
+    if args.mine {
+        path.push_str("?owner=me");
+    }
+    let response = agent.request("GET", &path, None)?;
     let text = response.text();
     if args.json && part_id.is_none() {
         print_json(&text);

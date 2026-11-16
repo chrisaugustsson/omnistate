@@ -595,6 +595,7 @@ export const TrackBodySchema = z.object({
   description: z.string(),
   id: z.string(),
   name: z.string(),
+  owner_user_id: z.string().nullable().optional(),
   part_id: z.string(),
   project_id: z.string(),
   state: z.string(),
@@ -1822,6 +1823,7 @@ export const operations = {
       "200": TrackListResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks": {

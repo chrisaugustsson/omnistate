@@ -34,6 +34,9 @@ pub struct WorkspaceRequest {
     pub actor: Actor,
     /// Whether the member, or the member who created the key, is an admin.
     pub is_admin: bool,
+    /// The member who acts: the session's, or for an API key the one who
+    /// created it, if any.
+    pub membership_id: Option<String>,
 }
 
 impl FromRequestParts<AppState> for WorkspaceRequest {
@@ -173,6 +176,7 @@ async fn resolve(
         .ok_or(ApiError::NotFound)?;
 
     let is_admin;
+    let acting_membership;
     let actor = match caller {
         Caller::Key(key) => {
             if key.workspace_id != workspace_id {
@@ -184,6 +188,7 @@ async fn resolve(
                 key.created_by_membership_id.as_deref(),
             )
             .await?;
+            acting_membership = key.created_by_membership_id.clone();
             Actor::Agent
         }
         Caller::Session { user, .. } => {
@@ -198,6 +203,7 @@ async fn resolve(
             .map_err(ApiError::database)?;
             let (membership_id, admin) = membership.ok_or(ApiError::NotFound)?;
             is_admin = admin;
+            acting_membership = Some(membership_id.clone());
             Actor::Human {
                 user_id: user.id,
                 membership_id,
@@ -208,6 +214,7 @@ async fn resolve(
         workspace_id,
         actor,
         is_admin,
+        membership_id: acting_membership,
     })
 }
 

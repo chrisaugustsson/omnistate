@@ -71,7 +71,9 @@ Usage:
   omni track create <name> --part <name|id>
                                       create a track on a part of the project
                                       [--description <text>]; prints its ID and name
-  omni track list [--part <name|id>]  list the project's tracks: ID, name, part and state
+  omni track list [--part <name|id>] [--mine]
+                                      list the project's tracks: ID, name, part, state and
+                                      owner's user ID; --mine keeps the ones you own
   omni track show <name|id>           show a track and the features it changes
   omni track rename <name|id> <new name>
                                       rename a track; its ID, docs and threads stay

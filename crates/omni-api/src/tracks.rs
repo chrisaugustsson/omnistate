@@ -15,12 +15,12 @@ use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 #[derive(Serialize, ToSchema, sqlx::FromRow)]
 pub struct TrackBody {
@@ -34,6 +34,8 @@ pub struct TrackBody {
     pub part_id: String,
     /// `planning` (a new track), `building`, `done` or `dropped`.
     pub state: String,
+    /// The user ID of the member who owns the track; null when no member does.
+    pub owner_user_id: Option<String>,
     pub created_at: String,
 }
 
@@ -59,7 +61,9 @@ pub struct CreateTrackRequest {
 }
 
 pub(crate) const TRACK_COLUMNS: &str = concat!(
-    "id::text, project_id::text, name, description, part_id::text, state, to_char(created_at AT TIME ZONE 'UTC', ",
+    "id::text, project_id::text, name, description, part_id::text, state, ",
+    "(SELECT m.user_id::text FROM memberships m WHERE m.workspace_id = tracks.workspace_id \
+     AND m.id = tracks.owner_membership_id) AS owner_user_id, to_char(created_at AT TIME ZONE 'UTC', ",
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
 );
 
@@ -95,14 +99,15 @@ pub async fn create_track(
     let name = non_blank(new.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
     let part_id = require_part(&mut tx, &project_id, new.part_id.as_ref()).await?;
     let inserted = sqlx::query_as::<_, TrackBody>(&format!(
-        "INSERT INTO tracks (workspace_id, project_id, name, description, part_id) \
-         VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid) RETURNING {TRACK_COLUMNS}"
+        "INSERT INTO tracks (workspace_id, project_id, name, description, part_id, owner_membership_id) \
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6::uuid) RETURNING {TRACK_COLUMNS}"
     ))
     .bind(&request.workspace_id)
     .bind(&project_id)
     .bind(&name)
     .bind(new.description.unwrap_or_default())
     .bind(&part_id)
+    .bind(&request.membership_id)
     .fetch_one(&mut *tx)
     .await;
     let track = match inserted {
@@ -154,6 +159,15 @@ async fn require_part(
     found.map(|(id,)| id).ok_or_else(invalid)
 }
 
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListTracksQuery {
+    /// `me` lists only the tracks the caller owns: the session's member, or
+    /// the member who created the API key. Any other value is 422
+    /// `invalid_owner`.
+    owner: Option<String>,
+}
+
 /// The tracks of a project, in the order they were created.
 #[utoipa::path(
     get,
@@ -161,26 +175,42 @@ async fn require_part(
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
+        ListTracksQuery,
     ),
     responses(
         (status = 200, description = "The project's tracks", body = TrackListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
+        (status = 422, description = "`invalid_owner` for an `owner` other than `me`", body = ErrorBody),
     )
 )]
 pub async fn list_tracks(
     State(state): State<AppState>,
     request: WorkspaceRequest,
     Path((_, project_id)): Path<(String, String)>,
+    Query(query): Query<ListTracksQuery>,
 ) -> Result<Json<TrackListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let mine = match query.owner.as_deref() {
+        None => false,
+        Some("me") => true,
+        Some(_) => {
+            return Err(ApiError::Refused(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_owner",
+            ));
+        }
+    };
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
     let tracks = sqlx::query_as(&format!(
         "SELECT {TRACK_COLUMNS} FROM tracks WHERE project_id = $1::uuid \
-         AND deleted_at IS NULL ORDER BY created_at, id"
+         AND deleted_at IS NULL \
+         AND (NOT $2::bool OR owner_membership_id = $3::uuid) ORDER BY created_at, id"
     ))
     .bind(&project_id)
+    .bind(mine)
+    .bind(&request.membership_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;

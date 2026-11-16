@@ -4121,6 +4121,13 @@
             "description": "Unique in the project ignoring case; the omni CLI accepts it where it\ntakes a track.",
             "type": "string"
           },
+          "owner_user_id": {
+            "description": "The user ID of the member who owns the track; null when no member does.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "part_id": {
             "description": "The part of the project the track changes.",
             "type": "string"
@@ -9325,6 +9332,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "`me` lists only the tracks the caller owns: the session's member, or\nthe member who created the API key. Any other value is 422\n`invalid_owner`.",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9357,6 +9373,16 @@
               }
             },
             "description": "No such project in this workspace"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_owner` for an `owner` other than `me`"
           }
         },
         "summary": "The tracks of a project, in the order they were created.",

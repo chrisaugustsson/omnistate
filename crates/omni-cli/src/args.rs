@@ -24,6 +24,8 @@ pub struct Args {
     /// on and `omni doc list` shows, instead of the track of `OMNI_TRACK`.
     pub feature: Option<String>,
     pub global: bool,
+    /// `omni track list --mine`: only the tracks the key's member owns.
+    pub mine: bool,
     /// `--part <name or id>`: the part `omni track create` and `omni track
     /// move` put a track on, and the one `omni track list` keeps to.
     pub part: Option<String>,
@@ -225,6 +227,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             }
             "--global" => {
                 parsed.global = true;
+                continue;
+            }
+            "--mine" => {
+                parsed.mine = true;
                 continue;
             }
             "--remove-commented" => {
