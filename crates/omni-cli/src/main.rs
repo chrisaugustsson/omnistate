@@ -79,6 +79,9 @@ Usage:
                                       rename a track; its ID, docs and threads stay
   omni track move <name|id> --part <name|id>
                                       put a track on another part of the project
+  omni track split <name> --part <name|id> --from <track>
+                                      split a new track off a track you own, on any part of
+                                      the project; you own the new one; both show the link
   omni track link-feature <track> <feature>
                                       say the track changes a feature of its part; twice is
                                       fine
@@ -232,6 +235,9 @@ Usage:
   omni story move <key> --run <id> --to <column>
                                       move the story you hold to backlog, implementing, implemented,
                                       review, reviewed, testing or done
+  omni story move-track <key> --to <track>
+                                      move a story to another track of the project; you must
+                                      own both tracks; its number and blockers stay
   omni story block <key> --run <id>   flag the story as waiting for the human and return a working
                                       story to its waiting state; unblock clears the flag
   omni story tick <key> --run <id> --criterion <n> [--pending] [--unticked]

@@ -456,6 +456,10 @@ pub fn router(state: AppState) -> Router {
             post(stories::cancel_story),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track",
+            post(stories::move_story_to_track),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/claim",
             post(stories::claim_story),
         )

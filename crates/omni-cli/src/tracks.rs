@@ -115,6 +115,47 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// `omni track split <name> --part <name|id> --from <track>`: a new track on
+/// the part, owned by the caller, linked to the track it is split off from.
+pub fn split(args: &Args, name: Option<&str>) -> Result<()> {
+    let usage = "omni track split <name> --part <name|id> --from <track>";
+    let name = name.map(str::trim).unwrap_or_default();
+    if name.is_empty() {
+        bail!("a track split needs a name: {usage}");
+    }
+    let (Some(part), Some(from)) = (&args.part, &args.from) else {
+        bail!("a track split needs --part and --from: {usage}");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let part_id = resolve_part(&agent, &project, part)?;
+    let from_id = resolve_track(&agent, &project, from)?;
+    let mut body = format!(
+        "{{\"name\":{},\"part_id\":{},\"split_from_track_id\":{}",
+        quote(name),
+        quote(&part_id),
+        quote(&from_id)
+    );
+    if let Some(description) = &args.description {
+        body.push_str(&format!(",\"description\":{}", quote(description)));
+    }
+    body.push('}');
+    let response = agent.request(
+        "POST",
+        &tracks_path(&agent, &project),
+        Some(body.as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the new track")?;
+    let track = body.get("track").unwrap_or(&body);
+    say(&summary(track, &project_parts(&agent, &project)?));
+    Ok(())
+}
+
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
@@ -211,6 +252,39 @@ pub fn show(args: &Args, track: Option<&str>) -> Result<()> {
         }
     }
     let id = track.str_at("id").unwrap_or(given);
+    let all = parsed(
+        &agent.request("GET", &path, None)?.text(),
+        "the project's tracks",
+    )?;
+    let all = all
+        .get("tracks")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    let line = |other: &Value| {
+        format!(
+            "  {}  {}  {}",
+            other.str_at("id").unwrap_or("?"),
+            other.str_at("name").unwrap_or("?"),
+            other.str_at("state").unwrap_or("?")
+        )
+    };
+    if let Some(from) = track.str_at("split_from_track_id") {
+        say("split off from:");
+        match all.iter().find(|other| other.str_at("id") == Some(from)) {
+            Some(other) => say(&line(other)),
+            None => say(&format!("  {from}")),
+        }
+    }
+    let off_to: Vec<&Value> = all
+        .iter()
+        .filter(|other| other.str_at("split_from_track_id") == Some(id))
+        .collect();
+    if !off_to.is_empty() {
+        say("split off to:");
+        for other in off_to {
+            say(&line(other));
+        }
+    }
     let features = parsed(
         &agent
             .request("GET", &format!("{path}/{id}/features"), None)?

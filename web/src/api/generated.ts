@@ -385,6 +385,7 @@ export const CreateTrackRequestSchema = z.object({
   description: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
   part_id: z.unknown().optional(),
+  split_from_track_id: z.unknown().optional(),
 });
 export type CreateTrackRequest = z.infer<typeof CreateTrackRequestSchema>;
 
@@ -612,6 +613,7 @@ export const TrackBodySchema = z.object({
   owner_user_id: z.string().nullable().optional(),
   part_id: z.string(),
   project_id: z.string(),
+  split_from_track_id: z.string().nullable().optional(),
   state: z.string(),
 });
 export type TrackBody = z.infer<typeof TrackBodySchema>;
@@ -855,6 +857,12 @@ export const MoveStoryRequestSchema = z.object({
   to: z.string(),
 });
 export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
+
+export const MoveToTrackRequestSchema = z.object({
+  expected_version: z.number().int(),
+  to_track_id: z.string(),
+});
+export type MoveToTrackRequest = z.infer<typeof MoveToTrackRequestSchema>;
 
 export const MoveTrackRequestSchema = z.object({
   part_id: z.unknown().optional(),
@@ -1338,6 +1346,7 @@ export const schemas = {
   MemberListResponse: MemberListResponseSchema,
   MoveNodeRequest: MoveNodeRequestSchema,
   MoveStoryRequest: MoveStoryRequestSchema,
+  MoveToTrackRequest: MoveToTrackRequestSchema,
   MoveTrackRequest: MoveTrackRequestSchema,
   NewCriterion: NewCriterionSchema,
   NodeBody: NodeBodySchema,
@@ -1870,6 +1879,7 @@ export const operations = {
       "201": TrackResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
       "422": ErrorBodySchema,
@@ -2245,6 +2255,18 @@ export const operations = {
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/tick": {
     request: TickRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track": {
+    request: MoveToTrackRequestSchema,
     responses: {
       "200": StoryResponseSchema,
       "400": ErrorBodySchema,

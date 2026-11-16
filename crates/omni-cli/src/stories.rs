@@ -6,7 +6,7 @@ use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{creation_track, is_uuid, project_id};
+use crate::projects::{creation_track, is_uuid, project_id, resolve_track};
 
 const ADD_USAGE: &str =
     "omni story add <file> [--priority <n>] [--link <doc>:<node>[:<label>]]... [--number-from <n>]";
@@ -517,7 +517,7 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-const WRITE_USAGE: &str = "omni story edit|cancel|claim|release|move|block|unblock|tick|finding|resolve|decision|files <key> ...; see `omni --help`";
+const WRITE_USAGE: &str = "omni story edit|cancel|claim|release|move|move-track|block|unblock|tick|finding|resolve|decision|files <key> ...; see `omni --help`";
 
 /// The option's value, or an error naming the option and the verb.
 fn needs<'a>(value: &'a Option<String>, name: &str, verb: &str) -> Result<&'a str> {
@@ -603,6 +603,10 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
                 quote(needs(&args.to, "--to <column>", verb)?)
             ));
             ("/move", "POST")
+        }
+        "move-track" => {
+            needs(&args.to, "--to <track>", verb)?;
+            ("/track", "POST")
         }
         "tick" => {
             fields.push(format!("\"run\":{}", quote(run()?)));
@@ -700,6 +704,11 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
             ids.push(quote(&id));
         }
         fields.push(format!("\"blocked_by\":[{}]", ids.join(",")));
+    }
+    if verb == "move-track" {
+        let project = project_id(args, &agent)?;
+        let to = resolve_track(&agent, &project, needs(&args.to, "--to <track>", verb)?)?;
+        fields.push(format!("\"to_track_id\":{}", quote(&to)));
     }
     fields.insert(0, format!("\"expected_version\":{version}"));
     let action = match finding {

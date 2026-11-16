@@ -29,6 +29,9 @@ pub struct Args {
     /// `--part <name or id>`: the part `omni track create` and `omni track
     /// move` put a track on, and the one `omni track list` keeps to.
     pub part: Option<String>,
+    /// `--from <name or id>`: the track `omni track split` splits a new one
+    /// off from.
+    pub from: Option<String>,
     /// `--title` and `--description` describe a doc or a track.
     pub title: Option<String>,
     pub description: Option<String>,
@@ -307,6 +310,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--track" => &mut parsed.track,
             "--feature" => &mut parsed.feature,
             "--part" => &mut parsed.part,
+            "--from" => &mut parsed.from,
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--doc" => &mut parsed.doc,

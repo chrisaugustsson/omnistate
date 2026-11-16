@@ -8,7 +8,7 @@ use crate::AppState;
 use crate::live;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::tracks::require_track_writer;
+use crate::tracks::{require_project_track, require_track_writer};
 use crate::workspace::{AgentRequest, HumanRequest, Who, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
@@ -1221,6 +1221,83 @@ pub async fn move_story(
         &["status", "holder"],
     )
     .await
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct MoveToTrackRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The track to move the story to: another track of the same project.
+    #[schema(value_type = String)]
+    pub to_track_id: Value,
+}
+
+/// Moves a story to another track of the project. It keeps its number,
+/// blockers, status, holder and history; only its track changes.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = MoveToTrackRequest,
+    responses(
+        (status = 200, description = "The story on its new track", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "`not_track_owner`: the caller owns not both the source and the target track", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
+        (status = 422, description = "`invalid_track`: the target is no undeleted track of the project", body = ErrorBody),
+    )
+)]
+pub async fn move_story_to_track(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let step = parse_body::<MoveToTrackRequest>(&body)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
+    if i64::from(current.version) != step.expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    let target = require_project_track(&mut tx, &project_id, &step.to_track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &target).await?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET track_id = $2::uuid, version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(&target)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let story = row.into_body();
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "story.changed",
+        &json!({
+            "story_id": story.id,
+            "key": story.key,
+            "fields": ["track_id"],
+            "from_track_id": track_id,
+            "to_track_id": target,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(StoryResponse { story }))
 }
 
 #[derive(Deserialize, ToSchema)]

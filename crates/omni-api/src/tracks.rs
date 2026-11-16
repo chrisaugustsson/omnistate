@@ -36,6 +36,9 @@ pub struct TrackBody {
     pub state: String,
     /// The user ID of the member who owns the track; null when no member does.
     pub owner_user_id: Option<String>,
+    /// The track this one was split off from; left out when it was not split.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split_from_track_id: Option<String>,
     pub created_at: String,
 }
 
@@ -58,12 +61,16 @@ pub struct CreateTrackRequest {
     /// project. Missing or null is 422 `part_required`; any other value that
     /// does not name one is 422 `invalid_part`.
     pub part_id: Option<serde_json::Value>,
+    /// The track this one is split off from: a track of the same project that
+    /// the caller owns. Any other value that does not name one is 422
+    /// `invalid_track`; a track of another owner is 403 `not_track_owner`.
+    pub split_from_track_id: Option<serde_json::Value>,
 }
 
 pub(crate) const TRACK_COLUMNS: &str = concat!(
     "id::text, project_id::text, name, description, part_id::text, state, ",
     "(SELECT m.user_id::text FROM memberships m WHERE m.workspace_id = tracks.workspace_id \
-     AND m.id = tracks.owner_membership_id) AS owner_user_id, to_char(created_at AT TIME ZONE 'UTC', ",
+     AND m.id = tracks.owner_membership_id) AS owner_user_id, split_from_track_id::text, to_char(created_at AT TIME ZONE 'UTC', ",
     "'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at"
 );
 
@@ -82,7 +89,8 @@ pub(crate) const TRACK_COLUMNS: &str = concat!(
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
         (status = 409, description = "The project has a track of this name, ignoring case", body = ErrorBody),
-        (status = 422, description = "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project", body = ErrorBody),
+        (status = 403, description = "`not_track_owner`: `split_from_track_id` names a track the caller does not own", body = ErrorBody),
+        (status = 422, description = "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project, `invalid_track` for a `split_from_track_id` that is no undeleted track of the project", body = ErrorBody),
     )
 )]
 pub async fn create_track(
@@ -98,9 +106,18 @@ pub async fn create_track(
     let new = new?;
     let name = non_blank(new.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
     let part_id = require_part(&mut tx, &project_id, new.part_id.as_ref()).await?;
+    let split_from = match new.split_from_track_id.as_ref() {
+        None | Some(serde_json::Value::Null) => None,
+        Some(given) => {
+            let id = require_project_track(&mut tx, &project_id, given).await?;
+            require_track_writer(&mut tx, &request.who(), &id).await?;
+            Some(id)
+        }
+    };
     let inserted = sqlx::query_as::<_, TrackBody>(&format!(
-        "INSERT INTO tracks (workspace_id, project_id, name, description, part_id, owner_membership_id) \
-         VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6::uuid) RETURNING {TRACK_COLUMNS}"
+        "INSERT INTO tracks (workspace_id, project_id, name, description, part_id, owner_membership_id, \
+         split_from_track_id) \
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6::uuid, $7::uuid) RETURNING {TRACK_COLUMNS}"
     ))
     .bind(&request.workspace_id)
     .bind(&project_id)
@@ -108,6 +125,7 @@ pub async fn create_track(
     .bind(new.description.unwrap_or_default())
     .bind(&part_id)
     .bind(&request.membership_id)
+    .bind(&split_from)
     .fetch_one(&mut *tx)
     .await;
     let track = match inserted {
@@ -128,6 +146,27 @@ pub async fn create_track(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
     Ok((StatusCode::CREATED, Json(TrackResponse { track })))
+}
+
+/// The ID of the undeleted track of the project that `track_id` names: 422
+/// `invalid_track` when it is not a UUID or names no such track.
+pub(crate) async fn require_project_track(
+    tx: &mut Tx,
+    project_id: &str,
+    track_id: &serde_json::Value,
+) -> Result<String, ApiError> {
+    let invalid = || ApiError::Refused(StatusCode::UNPROCESSABLE_ENTITY, "invalid_track");
+    let id = track_id.as_str().and_then(parse_uuid).ok_or_else(invalid)?;
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM tracks \
+         WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR SHARE",
+    )
+    .bind(&id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    found.map(|(id,)| id).ok_or_else(invalid)
 }
 
 /// The ID of the undeleted part of the project that `part_id` names: 422

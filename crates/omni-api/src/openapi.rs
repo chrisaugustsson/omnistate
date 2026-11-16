@@ -151,6 +151,7 @@ use utoipa::OpenApi;
         crate::stories::show_story,
         crate::stories::patch_story,
         crate::stories::cancel_story,
+        crate::stories::move_story_to_track,
         crate::stories::claim_story,
         crate::stories::release_story,
         crate::stories::move_story,

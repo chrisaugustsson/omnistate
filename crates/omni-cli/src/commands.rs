@@ -115,6 +115,8 @@ pub fn run(args: &Args) -> Result<()> {
         ["track", "unlink-feature", track, feature] => {
             tracks::link_feature(args, Some(track), Some(feature), true)
         }
+        ["track", "split"] => tracks::split(args, None),
+        ["track", "split", name] => tracks::split(args, Some(name)),
         ["track", "state"] => tracks::state(args, None, None),
         ["track", "state", track] => tracks::state(args, Some(track), None),
         ["track", "state", track, to] => tracks::state(args, Some(track), Some(to)),
@@ -122,7 +124,7 @@ pub fn run(args: &Args) -> Result<()> {
         ["track", "delete", track] => tracks::delete(args, Some(track)),
         ["track", ..] => {
             bail!(
-                "usage: omni track create|list|show|rename|move|link-feature|unlink-feature|state|delete; see `omni --help`"
+                "usage: omni track create|list|show|rename|move|split|link-feature|unlink-feature|state|delete; see `omni --help`"
             )
         }
         ["doc", "create"] => docs::create(args),
@@ -221,12 +223,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["story", "read", story] => stories::read(args, Some(story)),
         [
             "story",
-            verb @ ("edit" | "cancel" | "claim" | "release" | "move" | "block" | "unblock" | "tick"
-            | "finding" | "resolve" | "decision" | "files"),
+            verb @ ("edit" | "cancel" | "claim" | "release" | "move" | "move-track" | "block"
+            | "unblock" | "tick" | "finding" | "resolve" | "decision" | "files"),
             rest @ ..,
         ] => stories::write(args, verb, rest),
         ["story", ..] => bail!(
-            "usage: omni story add|list|read|edit|cancel|claim|release|move|block|unblock|tick|finding|resolve|decision|files; see `omni --help`"
+            "usage: omni story add|list|read|edit|cancel|claim|release|move|move-track|block|unblock|tick|finding|resolve|decision|files; see `omni --help`"
         ),
         ["thread", "create"] => threads::create(args, None),
         ["thread", "create", question] => threads::create(args, Some(question)),

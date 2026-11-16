@@ -1112,6 +1112,9 @@
           },
           "part_id": {
             "description": "The part of the project the track is on: an undeleted part of the same\nproject. Missing or null is 422 `part_required`; any other value that\ndoes not name one is 422 `invalid_part`."
+          },
+          "split_from_track_id": {
+            "description": "The track this one is split off from: a track of the same project that\nthe caller owns. Any other value that does not name one is 422\n`invalid_track`; a track of another owner is 403 `not_track_owner`."
           }
         },
         "type": "object"
@@ -2498,6 +2501,24 @@
           "expected_version",
           "run",
           "to"
+        ],
+        "type": "object"
+      },
+      "MoveToTrackRequest": {
+        "properties": {
+          "expected_version": {
+            "description": "The `version` the caller last read.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "to_track_id": {
+            "description": "The track to move the story to: another track of the same project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_version",
+          "to_track_id"
         ],
         "type": "object"
       },
@@ -4214,6 +4235,13 @@
           },
           "project_id": {
             "type": "string"
+          },
+          "split_from_track_id": {
+            "description": "The track this one was split off from; left out when it was not split.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "description": "`planning` (a new track), `building`, `done` or `dropped`.",
@@ -9587,6 +9615,16 @@
             },
             "description": "No valid API key or session"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`not_track_owner`: `split_from_track_id` names a track the caller does not own"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9615,7 +9653,7 @@
                 }
               }
             },
-            "description": "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project"
+            "description": "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project, `invalid_track` for a `split_from_track_id` that is no undeleted track of the project"
           }
         },
         "summary": "Creates a track in a project, with an API key or a session.",
@@ -13840,6 +13878,136 @@
           "crate::stories"
         ],
         "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track": {
+      "post": {
+        "operationId": "move_story_to_track",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story's UUID",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveToTrackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryResponse"
+                }
+              }
+            },
+            "description": "The story on its new track"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not JSON of the expected shape (`invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`not_track_owner`: the caller owns not both the source and the target track"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such story in this track, project and workspace"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryConflictBody"
+                }
+              }
+            },
+            "description": "`conflict` with `current_version` when `expected_version` is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_track`: the target is no undeleted track of the project"
+          }
+        },
+        "summary": "Moves a story to another track of the project. It keeps its number,\nblockers, status, holder and history; only its track changes.",
+        "tags": [
+          "crate::stories"
+        ],
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/unblock": {
