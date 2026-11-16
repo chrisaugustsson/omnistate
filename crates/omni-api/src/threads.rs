@@ -98,6 +98,9 @@ pub struct StartThreadRequest {
     /// Whether an agent that has not posted yet reads no other agent's posts.
     /// Defaults to `false`.
     pub sealed: Option<bool>,
+    /// The track the thread starts on; required by the project-level route,
+    /// ignored by the track-scoped one.
+    pub track_id: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -505,7 +508,8 @@ async fn insert_phase(
     Ok(())
 }
 
-/// Starts a thread at the app level or in a track of the project. Its one
+/// Starts a thread in a track of the project, named by the path or, on the
+/// project-level route, by the body. Its one
 /// phase is sealed when the thread is.
 async fn start_live_thread(
     state: &AppState,
@@ -519,6 +523,22 @@ async fn start_live_thread(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     require_project(&mut tx, project_id).await?;
+    let from_body = match (track_id, &new) {
+        (None, Ok(request)) => request.track_id.as_deref().map(parse_uuid),
+        _ => None,
+    };
+    let track_id = match (track_id, from_body) {
+        (Some(track_id), _) => track_id.to_string(),
+        (None, Some(Some(track_id))) => track_id,
+        (None, Some(None)) => return Err(ApiError::NotFound),
+        (None, None) => {
+            return Err(ApiError::Refused(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "track_required",
+            ));
+        }
+    };
+    let track_id = Some(track_id.as_str());
     if let Some(track_id) = track_id {
         let found: Option<(String,)> = sqlx::query_as(
             "SELECT id::text FROM tracks \
@@ -567,7 +587,7 @@ async fn start_live_thread(
     Ok((StatusCode::CREATED, Json(ThreadResponse { thread })))
 }
 
-/// Starts a thread at the app level of a project.
+/// Starts a thread in a track of a project, named by `track_id` in the body.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
@@ -585,7 +605,8 @@ async fn start_live_thread(
         (status = 400, description = "The question is missing or blank, or `sealed` is not a boolean", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
-        (status = 404, description = "No such project in this workspace", body = ErrorBody),
+        (status = 404, description = "No such project in this workspace, or no such track in it", body = ErrorBody),
+        (status = 422, description = "`track_id` is missing or null: `track_required`", body = ErrorBody),
     )
 )]
 pub async fn create_app_thread(

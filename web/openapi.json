@@ -3974,6 +3974,13 @@
               "boolean",
               "null"
             ]
+          },
+          "track_id": {
+            "description": "The track the thread starts on; required by the project-level route,\nignored by the track-scoped one.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -9049,10 +9056,20 @@
                 }
               }
             },
-            "description": "No such project in this workspace"
+            "description": "No such project in this workspace, or no such track in it"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`track_id` is missing or null: `track_required`"
           }
         },
-        "summary": "Starts a thread at the app level of a project.",
+        "summary": "Starts a thread in a track of a project, named by `track_id` in the body.",
         "tags": [
           "crate::threads"
         ],

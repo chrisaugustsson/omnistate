@@ -1,5 +1,5 @@
-//! `omni thread create`, `list`, `read`, `conclude` and `digest`: threads at the
-//! app level of a project or in one of its tracks. A
+//! `omni thread create`, `list`, `read`, `conclude` and `digest`: threads on a
+//! track of a project. A
 //! thread is a question that agents work out together: they post to it with
 //! `omni post`, and one of them writes the conclusion. A sealed thread hides
 //! the posts of other agents from an agent until it has posted itself. The
@@ -38,23 +38,20 @@ pub fn create(args: &Args, question: Option<&str>) -> Result<()> {
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let track = creation_track(args, &agent, &project)?;
+    let Some(track) = creation_track(args, &agent, &project)? else {
+        bail!(
+            "track_required: a thread starts on a track; give --track <name or id> or set OMNI_TRACK"
+        );
+    };
     let body = format!(
         "{{\"question\":{},\"sealed\":{}}}",
         quote(question),
         args.sealed
     );
     let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
-    let (path, not_found) = match track {
-        Some(track) => (
-            format!("{base}/tracks/{track}/threads"),
-            format!("not_found: no track {track} in this project; `omni track list` shows them"),
-        ),
-        None => (
-            format!("{base}/threads"),
-            format!("not_found: no project {project} in this workspace"),
-        ),
-    };
+    let path = format!("{base}/tracks/{track}/threads");
+    let not_found =
+        format!("not_found: no track {track} in this project; `omni track list` shows them");
     let response = agent.request_or_not_found("POST", &path, Some(body.as_bytes()), &not_found)?;
     let text = response.text();
     if args.json {

@@ -1166,6 +1166,7 @@ export type SinglePostResponse = z.infer<typeof SinglePostResponseSchema>;
 export const StartThreadRequestSchema = z.object({
   question: z.string().nullable().optional(),
   sealed: z.boolean().nullable().optional(),
+  track_id: z.string().nullable().optional(),
 });
 export type StartThreadRequest = z.infer<typeof StartThreadRequestSchema>;
 
@@ -1874,6 +1875,7 @@ export const operations = {
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}": {

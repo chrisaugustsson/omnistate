@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Link } from "@tanstack/react-router";
 import { Check, ChevronDown } from "lucide-react";
 import { Empty, List } from "@/components/project/items";
 import { SectionPage } from "@/components/project/section-page";
@@ -6,15 +7,15 @@ import { ThreadRow, threadTime } from "@/components/project/scope-page";
 import { cn } from "@/lib/utils";
 
 // The Threads page: the threads of every scope of the project, newest post
-// first, with a filter that narrows them to the app level or one track. The
-// choice is the page's `scope` search parameter (`app` or a track's ID);
-// without it every scope is listed. The list is the project's home, which is
+// first, grouped by track in the project's track order, with a filter that narrows
+// them to one track. The choice is the page's `scope` search parameter (a
+// track's ID); without it every track is listed. The list is the project's home, which is
 // loaded again on every live event, so threads reorder and their counts and
 // flags change as agents post.
 
 type ScopeOption = { value: string | undefined; label: string };
 
-/** A button that opens a searchable list of scopes: All scopes, App and each track by name. */
+/** A button that opens a searchable list of scopes: All scopes and each track by name. */
 function ScopeFilter({
   options,
   value,
@@ -148,27 +149,40 @@ export function ThreadsPage({
     >
       {(home) => {
         const names = new Map((home.tracks ?? []).map(({ track }) => [track.id, track.name]));
-        const scopeName = (trackId: string | null | undefined) =>
-          trackId ? (names.get(trackId) ?? "Track") : "App";
         const options: ScopeOption[] = [
           { value: undefined, label: "All scopes" },
-          { value: "app", label: "App" },
           ...[...names].map(([id, name]) => ({ value: id, label: name })),
         ];
         const shown = home.threads
-          .filter((thread) => scope === undefined || (scope === "app" ? !thread.track_id : thread.track_id === scope))
+          .filter((thread) => scope === undefined || thread.track_id === scope)
           .sort((a, b) => threadTime(b).localeCompare(threadTime(a)));
+        const groups = (home.tracks ?? [])
+          .map(({ track }) => ({ track, threads: shown.filter((thread) => thread.track_id === track.id) }))
+          .filter((group) => group.threads.length > 0);
         return (
           <>
             <ScopeFilter options={options} value={scope} onChange={onScope} />
             {shown.length === 0 ? (
               <Empty>No threads here yet.</Empty>
             ) : (
-              <List>
-                {shown.map((thread) => (
-                  <ThreadRow key={thread.id} thread={thread} params={params} scopeName={scopeName(thread.track_id)} eachFlag />
-                ))}
-              </List>
+              groups.map(({ track, threads }) => (
+                <section key={track.id} aria-label={track.name} className="space-y-2">
+                  <h2 className="text-sm font-medium">
+                    <Link
+                      to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
+                      params={{ ...params, trackId: track.id }}
+                      className="hover:underline"
+                    >
+                      {track.name}
+                    </Link>
+                  </h2>
+                  <List>
+                    {threads.map((thread) => (
+                      <ThreadRow key={thread.id} thread={thread} params={params} scopeName={track.name} eachFlag />
+                    ))}
+                  </List>
+                </section>
+              ))
             )}
           </>
         );

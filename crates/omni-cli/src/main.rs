@@ -181,7 +181,7 @@ Usage:
                                       report of what could not be imported
   omni thread create <question> [--track <name|id>] [--sealed]
                                       start a thread, a question that agents work out together,
-                                      at the app level or in a track; with --sealed an
+                                      on a track (--track or OMNI_TRACK); with --sealed an
                                       agent reads no other agent's posts until it has posted
                                       itself; prints its ID
   omni thread list [--open]           list the project's threads, of every scope: ID, scope,
