@@ -1087,3 +1087,249 @@ fn unlink_leaves_the_folders_line_in_another_workspace_and_drops_the_emptied_hea
     );
     assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
+
+/// A server with the project "Monitoring" (parts Wision, iot-service and
+/// wision-api) and the project "Elsewhere" (no parts), for the parts a folder
+/// holds (US-326).
+fn parts_mock() -> MockServer {
+    MockServer::start(|request| {
+        if request.method == "GET" && request.path == format!("/api/v1/w/{WORKSPACE}/projects") {
+            return Reply::json(
+                200,
+                &json!({ "projects": [
+                    { "id": PROJECT, "name": "Monitoring" },
+                    { "id": OTHER_PROJECT, "name": "Elsewhere" }
+                ] }),
+            );
+        }
+        if request.method == "GET"
+            && request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/parts")
+        {
+            return Reply::json(
+                200,
+                &json!({ "parts": [
+                    { "id": "01900000-0000-7000-8000-0000000000e1", "name": "Wision", "kind": "app" },
+                    { "id": "01900000-0000-7000-8000-0000000000e2", "name": "iot-service", "kind": "service" },
+                    { "id": "01900000-0000-7000-8000-0000000000e3", "name": "wision-api", "kind": "service" }
+                ] }),
+            );
+        }
+        if request.method == "GET"
+            && request.path == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/parts")
+        {
+            return Reply::json(200, &json!({ "parts": [] }));
+        }
+        Reply::json(404, &json!({ "error": "not_found" }))
+    })
+}
+
+/// `<home>/projects/<name>`, created, as its canonical path.
+fn project_folder(home: &Scratch, name: &str) -> std::path::PathBuf {
+    let folder = home.join("projects").join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::canonicalize(&folder).unwrap()
+}
+
+fn omni_in(home: &Scratch, folder: &std::path::Path, args: &[&str]) -> Out {
+    omni(&home.path)
+        .args(args)
+        .args(&["--as", "run-7/author"])
+        .cwd(folder)
+        .run()
+}
+
+/// Whether some line of `text` names the part and its path.
+fn lists_part(text: &str, part: &str, path: &str) -> bool {
+    text.lines().any(|line| {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        words.contains(&part) && words.iter().any(|w| w.trim_end_matches('/') == path)
+    })
+}
+
+#[test]
+fn link_with_parts_stores_them_and_a_plain_link_shows_and_keeps_them() {
+    let server = parts_mock();
+    let home = logged_in(&server.url);
+    let helios = project_folder(&home, "helios");
+
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "iot-service=services/iot-service",
+            "--part",
+            "wision-api=services/wision-api",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("Monitoring"), "{}", out.stdout);
+    assert!(
+        lists_part(&out.stdout, "iot-service", "services/iot-service"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        lists_part(&out.stdout, "wision-api", "services/wision-api"),
+        "{}",
+        out.stdout
+    );
+
+    let shown = omni_in(&home, &helios, &["link"]);
+    assert_eq!(shown.code, 0, "{}", shown.stderr);
+    assert!(shown.stdout.contains("Monitoring"), "{}", shown.stdout);
+    assert!(
+        lists_part(&shown.stdout, "iot-service", "services/iot-service"),
+        "{}",
+        shown.stdout
+    );
+    assert!(
+        lists_part(&shown.stdout, "wision-api", "services/wision-api"),
+        "{}",
+        shown.stdout
+    );
+
+    // A --part updates that part's path and the other part stays.
+    let out = omni_in(
+        &home,
+        &helios,
+        &["link", "Monitoring", "--part", "wision-api=api"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    // A plain link to the same project keeps the parts.
+    let out = omni_in(&home, &helios, &["link", "Monitoring"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let shown = omni_in(&home, &helios, &["link"]);
+    assert!(
+        lists_part(&shown.stdout, "iot-service", "services/iot-service"),
+        "{}",
+        shown.stdout
+    );
+    assert!(
+        lists_part(&shown.stdout, "wision-api", "api"),
+        "{}",
+        shown.stdout
+    );
+    assert!(
+        !shown.stdout.contains("services/wision-api"),
+        "{}",
+        shown.stdout
+    );
+
+    // Linking the folder to another project clears its parts.
+    let out = omni_in(&home, &helios, &["link", "Elsewhere"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = omni_in(&home, &helios, &["link", "Monitoring"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let shown = omni_in(&home, &helios, &["link"]);
+    assert!(!shown.stdout.contains("iot-service"), "{}", shown.stdout);
+    assert!(!shown.stdout.contains("wision-api"), "{}", shown.stdout);
+}
+
+#[test]
+fn part_where_finds_a_part_in_another_folder_of_the_project_or_says_not_linked() {
+    let server = parts_mock();
+    let home = logged_in(&server.url);
+    let helios = project_folder(&home, "helios");
+    let wision = project_folder(&home, "wision");
+    let later = project_folder(&home, "later");
+    let elsewhere = project_folder(&home, "elsewhere");
+
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "iot-service=services/iot-service",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = omni_in(&home, &wision, &["link", "Monitoring", "--part", "Wision"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    // A later folder of the project that also lists iot-service loses to the
+    // first one in the links file.
+    let out = omni_in(
+        &home,
+        &later,
+        &["link", "Monitoring", "--part", "iot-service=iot"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = omni_in(&home, &elsewhere, &["link", "Elsewhere"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+
+    let out = omni_in(&home, &wision, &["part", "where", "iot-service"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout.trim_end(),
+        format!("{}/services/iot-service", helios.display())
+    );
+
+    // A part with no path is the folder itself.
+    let out = omni_in(&home, &helios, &["part", "where", "Wision"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout.trim_end().trim_end_matches('/'),
+        wision.display().to_string()
+    );
+
+    let out = omni_in(&home, &wision, &["part", "where", "wision-api"]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert_eq!(out.stdout, "");
+    assert!(out.stderr.contains("not_linked"), "{}", out.stderr);
+}
+
+#[test]
+fn an_unknown_part_is_refused_with_unknown_part_and_changes_nothing() {
+    let server = parts_mock();
+    let home = logged_in(&server.url);
+    let helios = project_folder(&home, "helios");
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "iot-service=services/iot-service",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let before = links_text(&home);
+    let sent = server.requests().len();
+
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "wision-api=services/wision-api",
+            "--part",
+            "frontend=web",
+        ],
+    );
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(out.stderr.contains("unknown_part"), "{}", out.stderr);
+    assert_eq!(links_text(&home), before);
+
+    let out = omni_in(&home, &helios, &["part", "where", "frontend"]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(out.stderr.contains("unknown_part"), "{}", out.stderr);
+
+    // Nothing about folders goes to the server: only reads, none naming one.
+    let folder = helios.display().to_string();
+    for request in &server.requests()[sent..] {
+        assert_eq!(request.method, "GET", "{} {}", request.method, request.path);
+        assert!(!request.path.contains("helios"), "{}", request.path);
+        assert!(
+            !String::from_utf8_lossy(&request.body).contains(&folder),
+            "{}",
+            request.path
+        );
+    }
+}
