@@ -47,6 +47,10 @@ Usage:
   omni project list                   list the projects
   omni project rename <name|id> <new name>   rename a project; its ID, tracks, docs and threads stay
   omni link <project name|id>         link the current folder to a project (stored per user in ~/.config/omni/links.toml)
+  omni link <project> --part <name>[=<path>] [--part ...]
+                                      also say which parts live in the folder, each in a path under
+                                      it; the folder's other parts stay (unknown_part if the project
+                                      has no such part)
   omni link                           show the link in effect for the current folder
   omni unlink                         remove the current folder's link
   omni part create <name> --kind app|service
@@ -54,6 +58,8 @@ Usage:
                                       [--description <text>]; prints its ID, name and kind
   omni part list                      list the project's parts: name and kind
   omni part show <name|id>            show a part
+  omni part where <name|id>           print the folder of a part, found among the folders linked
+                                      to the project (not_linked if none lists it)
   omni part rename <name|id> <new name>
                                       rename a part; its ID stays
   omni part delete <name|id>          delete a part (it is kept, hidden; the name can be

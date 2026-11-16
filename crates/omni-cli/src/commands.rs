@@ -70,6 +70,8 @@ pub fn run(args: &Args) -> Result<()> {
         ["part", "create"] => parts::create(args, None),
         ["part", "create", name] => parts::create(args, Some(name)),
         ["part", "list"] => parts::list(args),
+        ["part", "where"] => links::part_where(args, None),
+        ["part", "where", part] => links::part_where(args, Some(part)),
         ["part", "show"] => parts::show(args, None),
         ["part", "show", part] => parts::show(args, Some(part)),
         ["part", "rename"] => parts::rename(args, None, None),
@@ -78,7 +80,7 @@ pub fn run(args: &Args) -> Result<()> {
         ["part", "delete"] => parts::delete(args, None),
         ["part", "delete", part] => parts::delete(args, Some(part)),
         ["part", ..] => {
-            bail!("usage: omni part create|list|show|rename|delete; see `omni --help`")
+            bail!("usage: omni part create|list|show|rename|delete|where; see `omni --help`")
         }
         ["feature", "create"] => features::create(args, None),
         ["feature", "create", name] => features::create(args, Some(name)),

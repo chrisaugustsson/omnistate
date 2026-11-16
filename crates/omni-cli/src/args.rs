@@ -29,6 +29,9 @@ pub struct Args {
     /// `--part <name or id>`: the part `omni track create` and `omni track
     /// move` put a track on, and the one `omni track list` keeps to.
     pub part: Option<String>,
+    /// Every `--part` given, in order: `omni link` takes it repeatedly, as
+    /// `<name>[=<path>]`.
+    pub parts: Vec<String>,
     /// `--from <name or id>`: the track `omni track split` splits a new one
     /// off from.
     pub from: Option<String>,
@@ -314,7 +317,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--project" => &mut parsed.project,
             "--track" => &mut parsed.track,
             "--feature" => &mut parsed.feature,
-            "--part" => &mut parsed.part,
+            "--part" => {
+                let Some(value) = inline.or_else(|| args.next()) else {
+                    bail!("{arg} needs a value; see `omni --help`");
+                };
+                parsed.parts.push(value.clone());
+                parsed.part = Some(value);
+                continue;
+            }
             "--from" => &mut parsed.from,
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,

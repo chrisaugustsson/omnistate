@@ -1,15 +1,19 @@
 //! `~/.config/omni/links.toml`, which holds the project each folder is linked
 //! to, and `omni link`, which writes it. The file has one `[<workspace id>]`
 //! table per workspace and, under it, one `"<path>" = "<project id>"` line per
-//! linked folder. It holds no secret, so it keeps the default file mode.
+//! linked folder. The parts a folder holds are lines of a `[parts-<workspace
+//! id>]` table: `"<path>\t<part name>" = "<path of the part under the folder>"`,
+//! empty when the part is the folder itself. It holds no secret, so it keeps
+//! the default file mode.
 
 use crate::args::Args;
 use crate::commands::{agent, say};
 use crate::config;
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote as json_quote};
-use crate::projects::{is_uuid, projects_path};
+use crate::projects::{is_uuid, project_id, projects_path};
 use crate::toml;
+use crate::tracks::project_parts;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -24,7 +28,12 @@ pub fn links_path() -> Result<PathBuf> {
 pub struct Links {
     /// `(workspace id, folder path, project id)`.
     entries: Vec<(String, String, String)>,
+    /// `(workspace id, folder path, part name, path under the folder)`.
+    parts: Vec<(String, String, String, String)>,
 }
+
+/// The prefix of the table that holds a workspace's parts.
+const PARTS_TABLE: &str = "parts-";
 
 impl Links {
     /// The links in the file; none when the file does not exist.
@@ -43,13 +52,26 @@ impl Links {
         };
         let pairs = toml::parse(&text).map_err(|e| invalid(&e))?;
         let mut entries = Vec::new();
-        for (key, project) in pairs {
+        let mut parts = Vec::new();
+        for (key, value) in pairs {
             let (workspace, folder) = key.split_once('.').ok_or_else(|| {
                 invalid(&format!("the link {key:?} is outside a workspace table"))
             })?;
-            entries.push((workspace.to_string(), folder.to_string(), project));
+            if let Some(workspace) = workspace.strip_prefix(PARTS_TABLE) {
+                let (folder, part) = folder
+                    .rsplit_once('\t')
+                    .ok_or_else(|| invalid(&format!("the part line {key:?} names no part")))?;
+                parts.push((
+                    workspace.to_string(),
+                    folder.to_string(),
+                    part.to_string(),
+                    value,
+                ));
+            } else {
+                entries.push((workspace.to_string(), folder.to_string(), value));
+            }
         }
-        Ok(Links { entries })
+        Ok(Links { entries, parts })
     }
 
     /// Links `path` to `project_id` in a workspace. A link of the same path
@@ -66,6 +88,10 @@ impl Links {
             .iter_mut()
             .find(|(w, p, _)| w == workspace_id && p == path)
         {
+            if found.2 != project_id {
+                self.parts
+                    .retain(|(w, f, _, _)| !(w == workspace_id && f == path));
+            }
             *found = entry;
         } else if let Some(last) = self.entries.iter().rposition(|(w, _, _)| w == workspace_id) {
             self.entries.insert(last + 1, entry);
@@ -74,9 +100,41 @@ impl Links {
         }
     }
 
+    /// Says that `part` lives in `path` under the linked folder `folder`
+    /// (empty for the folder itself). The folder's other parts stay.
+    pub fn set_part(&mut self, workspace_id: &str, folder: &str, part: &str, path: &str) {
+        let entry = (
+            workspace_id.to_string(),
+            folder.to_string(),
+            part.to_string(),
+            path.to_string(),
+        );
+        if let Some(found) = self
+            .parts
+            .iter_mut()
+            .find(|(w, f, n, _)| w == workspace_id && f == folder && n == part)
+        {
+            *found = entry;
+        } else {
+            self.parts.push(entry);
+        }
+    }
+
+    /// The parts a linked folder holds, as `(name, path)`, in the file's order.
+    pub fn parts_of(&self, workspace_id: &str, folder: &str) -> Vec<(String, String)> {
+        self.parts
+            .iter()
+            .filter(|(w, f, _, _)| w == workspace_id && f == folder)
+            .map(|(_, _, name, path)| (name.clone(), path.clone()))
+            .collect()
+    }
+
     /// Removes the line of `path` in a workspace's table; false when it has
     /// none. Other lines, and the table's header while it has lines, stay.
+    /// The parts of the folder go with it.
     pub fn remove(&mut self, workspace_id: &str, path: &str) -> bool {
+        self.parts
+            .retain(|(w, f, _, _)| !(w == workspace_id && f == path));
         let before = self.entries.len();
         self.entries
             .retain(|(w, p, _)| !(w == workspace_id && p == path));
@@ -109,6 +167,18 @@ impl Links {
                     toml::quote(folder),
                     toml::quote(project)
                 ));
+            }
+            if self.parts.iter().any(|(w, _, _, _)| w == workspace) {
+                text.push_str(&format!("\n[{PARTS_TABLE}{workspace}]\n"));
+                for (_, folder, part, path) in
+                    self.parts.iter().filter(|(w, _, _, _)| w == workspace)
+                {
+                    text.push_str(&format!(
+                        "{} = {}\n",
+                        toml::quote(&format!("{folder}\t{part}")),
+                        toml::quote(path)
+                    ));
+                }
             }
         }
 
@@ -266,22 +336,82 @@ pub fn link(args: &Args, project: Option<&str>) -> Result<()> {
         bail!("no project named {given:?}; `omni project list` shows the projects");
     };
 
+    let mut wanted = Vec::new();
+    if !args.parts.is_empty() {
+        let known = project_parts(&agent, id)?;
+        for given in &args.parts {
+            let (part, path) = given.split_once('=').unwrap_or((given, ""));
+            let part = part.trim();
+            let canonical = known
+                .iter()
+                .find(|candidate| {
+                    candidate
+                        .str_at("name")
+                        .is_some_and(|n| n.eq_ignore_ascii_case(part))
+                })
+                .and_then(|candidate| candidate.str_at("name"))
+                .ok_or_else(|| {
+                    CliError::new(format!(
+                        "unknown_part: {name} has no part named {part:?}; `omni part list` shows the parts"
+                    ))
+                })?;
+            wanted.push((canonical.to_string(), path.to_string()));
+        }
+    }
+
     let mut links = Links::load()?;
     links.set(&agent.workspace_id, &folder, id);
+    for (part, path) in &wanted {
+        links.set_part(&agent.workspace_id, &folder, part, path);
+    }
     links.save()?;
+    let parts = links.parts_of(&agent.workspace_id, &folder);
 
     if args.json {
         say(&format!(
-            "{{\"path\": {}, \"workspace_id\": {}, \"project\": {{\"id\": {}, \"name\": {}}}}}",
+            "{{\"path\": {}, \"workspace_id\": {}, \"project\": {{\"id\": {}, \"name\": {}}}{}}}",
             json_quote(&folder),
             json_quote(&agent.workspace_id),
             json_quote(id),
-            json_quote(name)
+            json_quote(name),
+            parts_json(&parts)
         ));
     } else {
         say(&format!("linked {folder} to {name} ({id})"));
+        for line in part_lines(&folder, &parts) {
+            say(&line);
+        }
     }
     Ok(())
+}
+
+/// `, "parts": [...]` for a folder's parts; nothing when it has none.
+fn parts_json(parts: &[(String, String)]) -> String {
+    if parts.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = parts
+        .iter()
+        .map(|(name, path)| {
+            format!(
+                "{{\"name\": {}, \"path\": {}}}",
+                json_quote(name),
+                json_quote(path)
+            )
+        })
+        .collect();
+    format!(", \"parts\": [{}]", items.join(", "))
+}
+
+/// One line per part: its name and its path, the folder itself when it has none.
+fn part_lines(folder: &str, parts: &[(String, String)]) -> Vec<String> {
+    parts
+        .iter()
+        .map(|(name, path)| {
+            let shown = if path.is_empty() { folder } else { path };
+            format!("  {name}  {shown}")
+        })
+        .collect()
 }
 
 /// `omni link` alone: the folder that matched and its project, found without
@@ -314,13 +444,16 @@ pub fn show(args: &Args) -> Result<()> {
         ),
     };
 
+    let matched_key = matched.to_string_lossy().into_owned();
+    let parts = Links::load()?.parts_of(&agent.workspace_id, &matched_key);
     if args.json {
         say(&format!(
-            "{{\"path\": {}, \"matched\": {}, \"workspace_id\": {}, \"project_id\": {}}}",
+            "{{\"path\": {}, \"matched\": {}, \"workspace_id\": {}, \"project_id\": {}{}}}",
             json_quote(&folder.to_string_lossy()),
             json_quote(&matched.to_string_lossy()),
             json_quote(&agent.workspace_id),
-            json_quote(&project_id)
+            json_quote(&project_id),
+            parts_json(&parts)
         ));
         return Ok(());
     }
@@ -348,7 +481,67 @@ pub fn show(args: &Args) -> Result<()> {
         matched.to_string()
     };
     say(&format!("{origin} is linked to {name} ({project_id})"));
+    for line in part_lines(&matched_key, &parts) {
+        say(&line);
+    }
     Ok(())
+}
+
+/// `omni part where <part>`: the absolute folder of a part, found among the
+/// folders linked to the project of the current folder; the first in the
+/// file's order that lists it.
+pub fn part_where(args: &Args, part: Option<&str>) -> Result<()> {
+    let Some(given) = part else {
+        bail!("a part needs its name: omni part where <name|id>");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let known = project_parts(&agent, &project)?;
+    let given = given.trim();
+    let name = known
+        .iter()
+        .find(|candidate| {
+            candidate
+                .str_at("name")
+                .is_some_and(|n| n.eq_ignore_ascii_case(given))
+                || (is_uuid(given)
+                    && candidate
+                        .str_at("id")
+                        .is_some_and(|id| id.eq_ignore_ascii_case(given)))
+        })
+        .and_then(|candidate| candidate.str_at("name"))
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "unknown_part: no part named {given:?}; `omni part list` shows the parts"
+            ))
+        })?;
+
+    let links = Links::load()?;
+    for (workspace, folder, linked) in &links.entries {
+        if *workspace != agent.workspace_id || !linked.eq_ignore_ascii_case(&project) {
+            continue;
+        }
+        let found = links
+            .parts_of(workspace, folder)
+            .into_iter()
+            .find(|(part, _)| part.eq_ignore_ascii_case(name));
+        if let Some((_, path)) = found {
+            let full = Path::new(folder).join(path);
+            if args.json {
+                say(&format!(
+                    "{{\"part\": {}, \"path\": {}}}",
+                    json_quote(name),
+                    json_quote(&full.to_string_lossy())
+                ));
+            } else {
+                say(&full.to_string_lossy());
+            }
+            return Ok(());
+        }
+    }
+    bail!(
+        "not_linked: no folder linked to this project lists the part {name:?}; run omni link <project> --part {name}=<path> in its folder"
+    )
 }
 
 /// `omni unlink`: removes the current folder's own line, never the link of an

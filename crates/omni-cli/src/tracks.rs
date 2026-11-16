@@ -28,7 +28,7 @@ fn tracks_path(agent: &Agent, project_id: &str) -> String {
 }
 
 /// The parts of the project that are not deleted.
-fn project_parts(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
+pub(crate) fn project_parts(agent: &Agent, project_id: &str) -> Result<Vec<Value>> {
     let path = format!("{}/{project_id}/parts", projects_path(agent));
     let listed = parsed(&agent.request("GET", &path, None)?.text(), "the parts")?;
     Ok(listed
