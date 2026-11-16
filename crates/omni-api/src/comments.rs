@@ -135,7 +135,7 @@ fn not_in_head() -> ApiError {
 }
 
 /// Who writes a comment or a reply, as the JSON that is stored.
-fn author_of(actor: &Actor, identity: &AgentIdentity) -> Value {
+pub(crate) fn author_of(actor: &Actor, identity: &AgentIdentity) -> Value {
     match actor {
         Actor::Agent => {
             let mut author = identity.to_json();

@@ -22,6 +22,9 @@ use crate::comments::{
     CommentBody, CommentListResponse, CommentResponse, CreateCommentRequest, ReplyBody,
     ReplyRequest, SingleCommentResponse,
 };
+use crate::decisions::{
+    CreateDecisionRequest, DecisionBody, DecisionListResponse, DecisionResponse,
+};
 use crate::design::{
     ImportTagsRequest, ImportedHeadComponents, InvalidDesignBody, UsageBoard, UsageResponse,
 };
@@ -110,6 +113,9 @@ use utoipa::OpenApi;
         crate::tracks::link_feature,
         crate::tracks::unlink_feature,
         crate::tracks::list_feature_tracks,
+        crate::decisions::create_decision,
+        crate::decisions::list_track_decisions,
+        crate::decisions::list_feature_decisions,
         crate::tracks::delete_track,
         crate::projects::list_projects,
         crate::projects::create_project,
@@ -204,6 +210,10 @@ use utoipa::OpenApi;
         FeatureListResponse,
         FeatureResponse,
         RenameFeatureRequest,
+        DecisionBody,
+        DecisionResponse,
+        DecisionListResponse,
+        CreateDecisionRequest,
         PartBody,
         PartResponse,
         RenamePartRequest,

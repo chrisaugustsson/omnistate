@@ -14,6 +14,7 @@ mod behaviour;
 mod boards;
 mod chunks;
 mod comments;
+mod decisions;
 pub mod delete_workspace;
 mod design;
 mod docs;
@@ -328,6 +329,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks",
             get(tracks::list_feature_tracks),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions",
+            get(decisions::list_track_decisions).post(decisions::create_decision),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/decisions",
+            get(decisions::list_feature_decisions),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",

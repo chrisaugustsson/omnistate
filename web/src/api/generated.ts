@@ -310,6 +310,15 @@ export const CreateCommentRequestSchema = z.object({
 });
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
 
+export const CreateDecisionRequestSchema = z.object({
+  decision: z.string().nullable().optional(),
+  feature_id: z.string().nullable().optional(),
+  question: z.string().nullable().optional(),
+  replaces_decision_id: z.string().nullable().optional(),
+  why: z.string().nullable().optional(),
+});
+export type CreateDecisionRequest = z.infer<typeof CreateDecisionRequestSchema>;
+
 export const CreateDocRequestSchema = z.object({
   feature_id: z.string().nullable().optional(),
   kind: z.string().nullable().optional(),
@@ -404,6 +413,26 @@ export const CriterionBodySchema = z.object({
 });
 export type CriterionBody = z.infer<typeof CriterionBodySchema>;
 
+export const DecisionBodySchema = z.object({
+  author: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  decision: z.string(),
+  feature_id: z.string().nullable().optional(),
+  id: z.string(),
+  project_id: z.string(),
+  question: z.string(),
+  replaced_by_decision_id: z.string().nullable().optional(),
+  replaces_decision_id: z.string().nullable().optional(),
+  track_id: z.string(),
+  why: z.string(),
+});
+export type DecisionBody = z.infer<typeof DecisionBodySchema>;
+
+export const DecisionListResponseSchema = z.object({
+  decisions: z.array(DecisionBodySchema),
+});
+export type DecisionListResponse = z.infer<typeof DecisionListResponseSchema>;
+
 export const DecisionRequestSchema = z.object({
   by: z.string(),
   choice: z.string(),
@@ -412,6 +441,11 @@ export const DecisionRequestSchema = z.object({
   run: z.string(),
 });
 export type DecisionRequest = z.infer<typeof DecisionRequestSchema>;
+
+export const DecisionResponseSchema = z.object({
+  decision: DecisionBodySchema,
+});
+export type DecisionResponse = z.infer<typeof DecisionResponseSchema>;
 
 export const DigestEntrySchema = z.object({
   author: z.record(z.string(), z.unknown()),
@@ -800,7 +834,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "track.owner_changed", "track.feature_linked", "track.feature_unlinked", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "track.owner_changed", "track.feature_linked", "track.feature_unlinked", "decision.recorded", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -1301,6 +1335,7 @@ export const schemas = {
   ConflictBody: ConflictBodySchema,
   ConflictDetails: ConflictDetailsSchema,
   CreateCommentRequest: CreateCommentRequestSchema,
+  CreateDecisionRequest: CreateDecisionRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
   CreateFeatureRequest: CreateFeatureRequestSchema,
   CreateNodeRequest: CreateNodeRequestSchema,
@@ -1312,7 +1347,10 @@ export const schemas = {
   CreateTrackRequest: CreateTrackRequestSchema,
   CreatedKeyResponse: CreatedKeyResponseSchema,
   CriterionBody: CriterionBodySchema,
+  DecisionBody: DecisionBodySchema,
+  DecisionListResponse: DecisionListResponseSchema,
   DecisionRequest: DecisionRequestSchema,
+  DecisionResponse: DecisionResponseSchema,
   DigestEntry: DigestEntrySchema,
   DigestResponse: DigestResponseSchema,
   DocBody: DocBodySchema,
@@ -1798,6 +1836,13 @@ export const operations = {
       "409": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/decisions": {
+    responses: {
+      "200": DecisionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks": {
     responses: {
       "200": TrackListResponseSchema,
@@ -2050,6 +2095,24 @@ export const operations = {
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions": {
+    responses: {
+      "200": DecisionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions": {
+    request: CreateDecisionRequestSchema,
+    responses: {
+      "201": DecisionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
       "422": ErrorBodySchema,
     },
   },

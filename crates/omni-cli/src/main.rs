@@ -13,6 +13,7 @@ mod commands;
 mod comments;
 mod components;
 mod config;
+mod decisions;
 mod design;
 mod docs;
 mod error;
@@ -94,6 +95,13 @@ Usage:
                                       the owner or an admin can
   omni track delete <name|id>         delete a track with its docs, threads and comments (they
                                       are kept, hidden; the name can be used again)
+  omni decision add --question <q> --decision <d> --why <w> [--feature <name|id>] [--replaces <id>]
+                                      record a decision on the current track, about a feature if
+                                      given; it takes the replaced decision's feature unless
+                                      --feature says another. Decisions are never edited or deleted
+  omni decision list [--track <name|id> | --feature <name|id>]
+                                      list a track's or a feature's decisions, newest first, with
+                                      what each replaces and what replaced it
   omni doc create [--track <name|id> | --feature <name|id>] --kind html|design|design-system
                 --pillar spec|ui|architecture|db|research --title <text>
                                       create a doc at the app level, in a track or on a
@@ -377,7 +385,10 @@ Options (before or after the command):
   --link <target>       what a post points to: post:<id>, attachment:<id>,
                         node:<doc>/<address> or an http(s) address (repeat for more)
   --confidence <n>      how sure the post is, from 0 to 1
-  --replaces <post>     your earlier post in the thread that this one replaces
+  --replaces <post>     your earlier post in the thread that this one replaces; for `omni decision
+                        add` the earlier decision's ID
+  --decision <text>     what `omni decision add` records as decided; --why <text> says why, and
+                        --question <q> what was asked
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
                         (`omni design edit` also takes it as an argument), or the doc whose
                         comments `omni comment list` shows

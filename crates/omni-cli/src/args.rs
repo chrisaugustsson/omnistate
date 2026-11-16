@@ -95,6 +95,9 @@ pub struct Args {
     pub criterion: Option<String>,
     pub finding: Option<String>,
     pub question: Option<String>,
+    /// `omni decision add --decision <what> --why <why>`.
+    pub decision: Option<String>,
+    pub why: Option<String>,
     pub choice: Option<String>,
     pub by: Option<String>,
     pub text: Option<String>,
@@ -284,6 +287,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--criterion" => &mut parsed.criterion,
             "--finding" => &mut parsed.finding,
             "--question" => &mut parsed.question,
+            "--decision" => &mut parsed.decision,
+            "--why" => &mut parsed.why,
             "--choice" => &mut parsed.choice,
             "--by" => &mut parsed.by,
             "--text" => &mut parsed.text,

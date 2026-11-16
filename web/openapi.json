@@ -814,6 +814,46 @@
         },
         "type": "object"
       },
+      "CreateDecisionRequest": {
+        "properties": {
+          "decision": {
+            "description": "What was decided. Not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "feature_id": {
+            "description": "A feature of the track's project the decision is about. Another\nproject's feature is 422 `feature_not_in_project`, an unknown ID 404.\nWithout it, a decision that replaces another takes that one's feature.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "question": {
+            "description": "What was asked. Not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replaces_decision_id": {
+            "description": "A decision of the same project that this one replaces. Another\nproject's decision is 422 `replaces_not_in_project`, an unknown ID 404.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "description": "Why. Not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "CreateDocRequest": {
         "properties": {
           "feature_id": {
@@ -1165,6 +1205,81 @@
         ],
         "type": "object"
       },
+      "DecisionBody": {
+        "properties": {
+          "author": {
+            "description": "`{\"kind\": \"human\", \"user_id\"}` or `{\"kind\": \"agent\", \"run\", \"role\",\n\"model\", \"harness\"}`.",
+            "type": "object"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "feature_id": {
+            "description": "The feature the decision is about; null when it is about none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "replaced_by_decision_id": {
+            "description": "The latest decision that replaces this one; null while none does.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replaces_decision_id": {
+            "description": "The earlier decision this one replaces; null when it replaces none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "track_id": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "track_id",
+          "question",
+          "decision",
+          "why",
+          "author",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "DecisionListResponse": {
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "decisions"
+        ],
+        "type": "object"
+      },
       "DecisionRequest": {
         "properties": {
           "by": {
@@ -1193,6 +1308,17 @@
           "question",
           "choice",
           "by"
+        ],
+        "type": "object"
+      },
+      "DecisionResponse": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/DecisionBody"
+          }
+        },
+        "required": [
+          "decision"
         ],
         "type": "object"
       },
@@ -2291,6 +2417,7 @@
           "track.owner_changed",
           "track.feature_linked",
           "track.feature_unlinked",
+          "decision.recorded",
           "feature.created",
           "feature.deleted",
           "feature.renamed",
@@ -8433,6 +8560,86 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/decisions": {
+      "get": {
+        "operationId": "list_feature_decisions",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionListResponse"
+                }
+              }
+            },
+            "description": "The feature's decisions, newest first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature on this part, or it or its part was deleted"
+          }
+        },
+        "summary": "The decisions about a feature, newest first, from every track.",
+        "tags": [
+          "crate::decisions"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks": {
       "get": {
         "operationId": "list_feature_tracks",
@@ -11418,6 +11625,234 @@
         "summary": "Rewrites a rule, changes its scope, or withdraws it. A rule is never deleted.",
         "tags": [
           "crate::behaviour"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions": {
+      "get": {
+        "operationId": "list_track_decisions",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionListResponse"
+                }
+              }
+            },
+            "description": "The track's decisions, newest first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or it was deleted"
+          }
+        },
+        "summary": "The decisions of a track, newest first.",
+        "tags": [
+          "crate::decisions"
+        ],
+        "x-omni-access": "both"
+      },
+      "post": {
+        "operationId": "create_decision",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The agent's run",
+            "in": "header",
+            "name": "X-Omni-Run",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The agent's role",
+            "in": "header",
+            "name": "X-Omni-Role",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The model behind the agent",
+            "in": "header",
+            "name": "X-Omni-Model",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "The harness that runs the agent",
+            "in": "header",
+            "name": "X-Omni-Harness",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            },
+            "description": "The new decision"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The question, the decision or the why is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`not_track_owner`: the caller does not own the track"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or no such feature or decision"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`feature_not_in_project` or `replaces_not_in_project`: the feature or the decision is of another project"
+          }
+        },
+        "summary": "Records a decision on a track.",
+        "tags": [
+          "crate::decisions"
         ],
         "x-omni-access": "both"
       }

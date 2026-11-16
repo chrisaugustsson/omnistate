@@ -13,6 +13,7 @@ use crate::behaviour_import;
 use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
+use crate::decisions;
 use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
@@ -127,6 +128,9 @@ pub fn run(args: &Args) -> Result<()> {
                 "usage: omni track create|list|show|rename|move|split|link-feature|unlink-feature|state|delete; see `omni --help`"
             )
         }
+        ["decision", "add"] => decisions::add(args),
+        ["decision", "list"] => decisions::list(args),
+        ["decision", ..] => bail!("usage: omni decision add|list; see `omni --help`"),
         ["doc", "create"] => docs::create(args),
         ["doc", "list"] => docs::list(args),
         ["doc", "read"] => docs::read(args, None),
