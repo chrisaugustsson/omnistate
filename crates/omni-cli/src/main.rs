@@ -88,9 +88,9 @@ Usage:
                                       readable at once
   omni doc list                       list the project's docs: ID, scope (project or the
                                       track's or feature's name), kind, pillar and title;
-                                      --track <name|id>, --feature <name|id> or --global
-                                      list one scope only; --pillar
-                                      <pillar> lists one pillar only
+                                      one of --track <name|id>, --feature <name|id> or
+                                      --global lists one scope only; --pillar <pillar>
+                                      lists one pillar only
   omni doc read <doc> [--node <id>]...
                                       print the doc's head: HTML with data-omni-id and
                                       data-rev (a design's tags). --node prints only that

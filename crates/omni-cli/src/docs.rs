@@ -123,8 +123,11 @@ pub fn list(args: &Args) -> Result<()> {
     let project = project_id(args, &agent)?;
     let mut query = Vec::new();
     if args.global {
-        if args.track.is_some() || args.feature.is_some() {
-            bail!("give --track, --feature or --global, one of them");
+        if args.track.is_some() {
+            bail!("give --track or --global, not both");
+        }
+        if args.feature.is_some() {
+            bail!("give --feature or --global, not both");
         }
         query.push("track=global".to_string());
     } else if let Some(given) = args.feature.as_deref() {
