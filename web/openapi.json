@@ -11792,7 +11792,7 @@
                 }
               }
             },
-            "description": "Called with a session; agents only"
+            "description": "`not_track_owner`: the caller is not the track's owner, nor an admin making a move other than done"
           },
           "404": {
             "content": {
@@ -11819,7 +11819,7 @@
         "tags": [
           "crate::tracks"
         ],
-        "x-omni-access": "agent"
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories": {

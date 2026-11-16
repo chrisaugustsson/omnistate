@@ -729,14 +729,14 @@ impl IntoResponse for TrackStateError {
         (status = 200, description = "The track in its new state", body = TrackResponse),
         (status = 400, description = "`state` is missing or none of the four states", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 403, description = "`not_track_owner`: the caller is not the track's owner, nor an admin making a move other than done", body = ErrorBody),
         (status = 404, description = "No such track in this project and workspace, or it was deleted", body = ErrorBody),
         (status = 422, description = "`invalid_transition`: the move is not allowed; the body's `state` is the track's current state and it stays there", body = ErrorBody),
     )
 )]
 pub async fn set_track_state(
     State(state): State<AppState>,
-    request: AgentRequest,
+    request: WorkspaceRequest,
     Path((_, project_id, track_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<Json<TrackResponse>, TrackStateError> {
