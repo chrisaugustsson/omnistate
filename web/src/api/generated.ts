@@ -301,9 +301,11 @@ export const CreateCommentRequestSchema = z.object({
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
 
 export const CreateDocRequestSchema = z.object({
+  feature_id: z.string().nullable().optional(),
   kind: z.string().nullable().optional(),
   pillar: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
+  track_id: z.string().nullable().optional(),
 });
 export type CreateDocRequest = z.infer<typeof CreateDocRequestSchema>;
 
@@ -417,6 +419,7 @@ export type DigestResponse = z.infer<typeof DigestResponseSchema>;
 
 export const DocBodySchema = z.object({
   created_at: z.string(),
+  feature_id: z.string().nullable().optional(),
   id: z.string(),
   kind: z.string(),
   pillar: z.string(),
@@ -1535,6 +1538,7 @@ export const operations = {
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/docs": {

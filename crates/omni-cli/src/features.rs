@@ -45,7 +45,7 @@ impl Found {
 
 /// The undeleted features of the project's undeleted parts, or of the one
 /// part `part` names.
-fn project_features(agent: &Agent, project_id: &str, part: Option<&str>) -> Result<Vec<Found>> {
+pub fn project_features(agent: &Agent, project_id: &str, part: Option<&str>) -> Result<Vec<Found>> {
     let listed = parsed(
         &agent
             .request("GET", &project_path(agent, project_id), None)?

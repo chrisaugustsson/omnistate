@@ -81,13 +81,15 @@ Usage:
                                       move a track to another state
   omni track delete <name|id>         delete a track with its docs, threads and comments (they
                                       are kept, hidden; the name can be used again)
-  omni doc create [--track <name|id>] --kind html|design|design-system
+  omni doc create [--track <name|id> | --feature <name|id>] --kind html|design|design-system
                 --pillar spec|ui|architecture|db|research --title <text>
-                                      create a doc at the app level, or in a track; it is
+                                      create a doc at the app level, in a track or on a
+                                      feature of a part (--part narrows the name); it is
                                       readable at once
   omni doc list                       list the project's docs: ID, scope (project or the
-                                      track's name), kind, pillar and title; --track
-                                      <name|id> or --global list one scope only; --pillar
+                                      track's or feature's name), kind, pillar and title;
+                                      --track <name|id>, --feature <name|id> or --global
+                                      list one scope only; --pillar
                                       <pillar> lists one pillar only
   omni doc read <doc> [--node <id>]...
                                       print the doc's head: HTML with data-omni-id and
@@ -347,6 +349,7 @@ Options (before or after the command):
   --server <url>        the API address, http:// or https:// (fallback: OMNI_SERVER, then the config file)
   --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link)
   --track <name|id>   the track that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_TRACK)
+  --feature <name|id>   the feature that `omni doc create` creates a doc on and `omni doc list` shows; replaces OMNI_TRACK
   --global              `omni doc create` creates an app-level doc, whatever OMNI_TRACK says;
                         `omni doc list` shows those only
   --body-file <path>    send this file as the request body (for `doc edit` and `design
