@@ -304,6 +304,15 @@ describe("decisions on a feature page", () => {
     expect(replacedUnder(top[1])).toEqual([]);
     expect(replacedUnder(top[2]), "its replacer is on another feature").toEqual([]);
 
+    const meta = (entry: HTMLElement) => linesOf(entry).at(-1) ?? "";
+    expect(meta(top[0]), "the newest says it replaces one, as on the track page").toMatch(/replaces an earlier decision/);
+    expect(meta(top[0])).not.toMatch(/replaced by/);
+    expect(meta(underHourly[0]), "a replaced one is marked, and says what it replaced in turn").toMatch(/replaced by a later decision/);
+    expect(meta(underHourly[0])).toMatch(/replaces an earlier decision/);
+    expect(meta(underDaily[0])).toMatch(/replaced by a later decision/);
+    expect(meta(underDaily[0])).not.toMatch(/replaces/);
+    expect(meta(top[1])).not.toMatch(/replace/);
+
     expect(section.querySelectorAll("li"), "each decision shows once").toHaveLength(5);
   });
 });
