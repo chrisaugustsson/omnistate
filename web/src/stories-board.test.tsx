@@ -33,6 +33,7 @@ function story(
     holder?: { run: string; stage: string } | null;
     blocked?: boolean;
     blockedBy?: number[];
+    blockers?: Blocker[];
     findings?: Finding[];
     criteria?: Criterion[];
     version?: number;
@@ -50,7 +51,8 @@ function story(
     status: fields.status ?? "backlog",
     priority: fields.priority ?? 3,
     blocked: fields.blocked ?? false,
-    blocked_by: (fields.blockedBy ?? []).map(storyId),
+    blocked_by: [...(fields.blockedBy ?? []).map(storyId), ...(fields.blockers ?? []).map((other) => other.id)],
+    ...(fields.blockers ? { blockers: fields.blockers } : {}),
     criteria: fields.criteria ?? [],
     findings: fields.findings ?? [],
     decisions: [],
@@ -78,15 +80,55 @@ function criterion(ticked: boolean, pending: boolean): Criterion {
 
 type Story = ReturnType<typeof story>;
 
+// US-321: stories of the Ingest track on the iot-service part, linked to this track's stories.
+const INGEST_ID = "0192d7a0-4444-7000-8000-000000000002";
+const INGEST_PART_ID = "0192d7a0-5555-7000-8000-000000000002";
+const INGEST_BOARD_PATH = `${PROJECT_PATH}/tracks/${INGEST_ID}/board`;
+
+function ingestId(number: number) {
+  return `0192d7a0-8888-7000-8000-${number.toString(16).padStart(12, "0")}`;
+}
+
+type Blocker = { id: string; key: string; track_id: string; track_name: string; status: string; blocker_dropped: boolean };
+
+/** Story US-<number> on Ingest as the `blockers` of a story of this track list it. */
+function ingestBlocker(number: number, status: string, dropped = false): Blocker {
+  return { id: ingestId(number), key: `US-${number}`, track_id: INGEST_ID, track_name: "Ingest", status, blocker_dropped: dropped };
+}
+
+/** Story US-<number> on Ingest as the board's `linked` lists it, related to this track's US-<to>. */
+function linkedTask(
+  number: number,
+  relation: "blocks" | "blocked_by",
+  to: number,
+  fields: { status?: string; title?: string; dropped?: boolean } = {},
+) {
+  return {
+    id: ingestId(number),
+    key: `US-${number}`,
+    title: fields.title ?? `Ingest story ${number}`,
+    track_id: INGEST_ID,
+    track_name: "Ingest",
+    part_id: INGEST_PART_ID,
+    part_name: "iot-service",
+    status: fields.status ?? "backlog",
+    relation,
+    story_id: storyId(to),
+    story_key: `US-${to}`,
+    blocker_dropped: fields.dropped ?? false,
+  };
+}
+
 type Write = { method: string; path: string; body: unknown };
 
 /**
  * A fake of the API whose `stories` the test may replace before a live event.
  * Every write is recorded in `writes` and answered by `answer`.
  */
-function fakeApi(stories: Story[]) {
+function fakeApi(stories: Story[], linked: ReturnType<typeof linkedTask>[] = []) {
   const api = {
     stories,
+    linked,
     writes: [] as Write[],
     answer: ((): { status: number; body: unknown } => ({ status: 404, body: { error: "not_found" } })) as (
       write: Write,
@@ -125,7 +167,7 @@ function fakeApi(stories: Story[]) {
         case `${API}/comments`:
           return json(200, { project_id: PROJECT_ID, comments: [] });
         case `${API}/tracks/${TRACK_ID}/stories`:
-          return json(200, { stories: api.stories });
+          return json(200, api.linked.length > 0 ? { stories: api.stories, linked: api.linked } : { stories: api.stories });
         default:
           return json(404, { error: "not_found" });
       }
@@ -442,6 +484,73 @@ describe("the board", () => {
     });
     await waitFor(() => expect(cardKeys(main, "Review")).toEqual(["US-1"]));
     expect(cardKeys(main, "Implementing")).toEqual([]);
+  });
+});
+
+describe("linked tasks on the board", () => {
+  /** The Linked tasks area of the board. */
+  const linkedArea = (main: HTMLElement) => within(main).getByRole("region", { name: "Linked tasks" });
+
+  test("a card blocked from another track names its blocker's key, and checks it once that blocker is done", async () => {
+    fakeApi(
+      [story(2, { blockers: [ingestBlocker(3, "implementing")] }), story(5, { blockers: [ingestBlocker(6, "done")] })],
+      [linkedTask(3, "blocks", 2, { status: "implementing" }), linkedTask(6, "blocks", 5, { status: "done" })],
+    );
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    expect(within(card(main, "US-2")).queryByText("?"), "the blocker is named, not unknown").toBeNull();
+    expect(within(blocker(main, "US-2", "US-3")).queryByLabelText("done"), "an open blocker has no check mark").toBeNull();
+    expect(within(card(main, "US-5")).queryByText("?"), "the blocker is named, not unknown").toBeNull();
+    expect(within(blocker(main, "US-5", "US-6")).getByLabelText("done")).toBeTruthy();
+  });
+
+  test("the Linked tasks area shows each task of another track with its status, part, track and which way it links, each opening its own track's board, read-only", async () => {
+    fakeApi(
+      [story(2, { blockers: [ingestBlocker(3, "implementing")] }), story(4)],
+      [
+        linkedTask(3, "blocks", 2, { status: "implementing", title: "Store the windows" }),
+        linkedTask(7, "blocked_by", 4, { status: "backlog", title: "Aggregate the windows" }),
+      ],
+    );
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    const area = linkedArea(main);
+    const tasks = within(area).getAllByRole("link");
+    expect(tasks).toHaveLength(2);
+    const [blocks, blockedBy] = tasks;
+    for (const text of ["US-3", "blocks US-2", "implementing", "Store the windows", "iot-service", "Ingest"]) {
+      expect(blocks.textContent, text).toContain(text);
+    }
+    for (const text of ["US-7", "blocked by US-4", "backlog", "Aggregate the windows"]) {
+      expect(blockedBy.textContent, text).toContain(text);
+    }
+    for (const task of tasks) expect(task.getAttribute("href")).toBe(INGEST_BOARD_PATH);
+    expect(within(area).queryAllByRole("button"), "no edit controls").toEqual([]);
+    expect(within(area).queryAllByRole("combobox"), "no status or priority controls").toEqual([]);
+    expect(within(area).queryAllByRole("checkbox"), "no blocker controls").toEqual([]);
+    for (const title of FIVE_COLUMNS) {
+      expect(cardKeys(main, title), `${title} holds only this track's stories`).not.toContain("US-3");
+    }
+  });
+
+  test("an open blocker on a dropped track shows Blocker dropped on the blocked card, and a done one does not", async () => {
+    fakeApi(
+      [
+        story(2, { blockers: [ingestBlocker(3, "backlog", true)] }),
+        story(5, { blockers: [ingestBlocker(6, "done", true)] }),
+      ],
+      [linkedTask(3, "blocks", 2, { dropped: true }), linkedTask(6, "blocks", 5, { status: "done", dropped: true })],
+    );
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    expect(within(card(main, "US-2")).getByText("Blocker dropped")).toBeTruthy();
+    expect(within(card(main, "US-5")).queryByText("Blocker dropped"), "a done blocker no longer holds the story").toBeNull();
+    const [dropped] = within(linkedArea(main)).getAllByRole("link");
+    expect(dropped.textContent).toContain("US-3");
+    expect(dropped.textContent).toMatch(/dropped/i);
   });
 });
 

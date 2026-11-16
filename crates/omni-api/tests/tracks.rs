@@ -1951,3 +1951,134 @@ fn a_story_moves_only_within_its_project_and_only_for_the_owner_of_both_tracks()
     );
     assert_eq!(moved["story"]["track_id"], alices.as_str(), "{moved}");
 }
+
+// ---------------------------------------------------------------------------
+// Linked tasks on a track, and dropped blockers (US-321)
+// ---------------------------------------------------------------------------
+
+/// The `linked` entry of `board` for the story `id`.
+fn linked_entry<'a>(board: &'a Value, id: &Value) -> &'a Value {
+    board["linked"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the board has `linked`: {board}"))
+        .iter()
+        .find(|entry| &entry["id"] == id)
+        .unwrap_or_else(|| panic!("{id} is linked: {board}"))
+}
+
+#[test]
+fn the_board_lists_the_linked_tasks_of_other_tracks_and_a_dropped_blocker_keeps_blocking() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let make = |part: &str, name: &str| {
+        let part = new_part(f, client, &project, part);
+        create_track_as(
+            f,
+            client,
+            &agent(f),
+            &project,
+            &json!({ "name": name, "part_id": part }),
+        )["id"]
+            .as_str()
+            .expect("an id")
+            .to_string()
+    };
+    let wision = make("Wision", "Wision track");
+    let ingest = make("iot-service", "Ingest");
+    let iot = part_of(f, client, &project, &ingest);
+    let blocker = create_story(
+        f,
+        client,
+        &project,
+        &ingest,
+        json!({ "title": "Store the windows" }),
+    );
+    let blocked = create_story(
+        f,
+        client,
+        &project,
+        &wision,
+        json!({ "blocked_by": [blocker["id"]] }),
+    );
+    let waiting = create_story(
+        f,
+        client,
+        &project,
+        &ingest,
+        json!({ "title": "Aggregate the windows", "blocked_by": [blocked["id"]] }),
+    );
+    let board = || {
+        must(
+            call(
+                client,
+                "GET",
+                &stories_path(f, project.as_str(), &wision),
+                &agent(f),
+                None,
+            ),
+            200,
+            "read the Wision board",
+        )
+    };
+
+    let shown = board();
+    let blocks = linked_entry(&shown, &blocker["id"]);
+    assert_eq!(blocks["key"], blocker["key"], "{blocks}");
+    assert_eq!(blocks["title"], "Store the windows", "{blocks}");
+    assert_eq!(blocks["track_id"], ingest.as_str(), "{blocks}");
+    assert_eq!(blocks["track_name"], "Ingest", "{blocks}");
+    assert_eq!(blocks["part_id"], iot, "{blocks}");
+    assert_eq!(blocks["part_name"], "iot-service", "{blocks}");
+    assert_eq!(blocks["status"], "backlog", "{blocks}");
+    assert_eq!(blocks["relation"], "blocks", "{blocks}");
+    assert_eq!(blocks["story_key"], blocked["key"], "{blocks}");
+    assert_eq!(blocks["blocker_dropped"], false, "{blocks}");
+    let blocked_by = linked_entry(&shown, &waiting["id"]);
+    assert_eq!(blocked_by["relation"], "blocked_by", "{blocked_by}");
+    assert_eq!(blocked_by["story_key"], blocked["key"], "{blocked_by}");
+    assert_eq!(blocked_by["blocker_dropped"], false, "{blocked_by}");
+    assert_eq!(
+        shown["linked"].as_array().map(Vec::len),
+        Some(2),
+        "only the two linked stories: {shown}"
+    );
+    assert!(
+        shown["stories"]
+            .as_array()
+            .expect("`stories` is a list")
+            .iter()
+            .all(|story| story["track_id"] == wision.as_str()),
+        "linked tasks stay out of the track's own stories: {shown}"
+    );
+    assert_eq!(
+        story_keys(f, client, &project, &wision, "pickable=true"),
+        Vec::<Value>::new(),
+        "the story waits for its blocker on Ingest"
+    );
+
+    set_state(f, client, &project, &ingest, "dropped");
+    let shown = board();
+    let blocks = linked_entry(&shown, &blocker["id"]);
+    assert_eq!(blocks["blocker_dropped"], true, "{blocks}");
+    assert_eq!(blocks["status"], "backlog", "{blocks}");
+    let card = shown["stories"]
+        .as_array()
+        .expect("`stories` is a list")
+        .iter()
+        .find(|story| story["id"] == blocked["id"])
+        .expect("the blocked story is on its board");
+    assert_eq!(card["blockers"][0]["id"], blocker["id"], "{card}");
+    assert_eq!(card["blockers"][0]["blocker_dropped"], true, "{card}");
+    assert_eq!(
+        story_keys(f, client, &project, &wision, "pickable=true"),
+        Vec::<Value>::new(),
+        "dropping the blocker's track does not unblock the story"
+    );
+
+    finish_story(&blocker);
+    assert_eq!(
+        story_keys(f, client, &project, &wision, "pickable=true"),
+        vec![blocked["key"].clone()],
+        "the blocker done on the dropped track releases the story"
+    );
+}

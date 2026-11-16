@@ -529,3 +529,118 @@ fn a_track_is_split_off_and_a_story_moved_to_it_keeps_its_key_and_blockers() {
         "{dependant} is still blocked by {moving}, now on Aggregated readings: {line:?}"
     );
 }
+
+/// US-321: when the blocker's track is dropped, `read` prints "blocker
+/// dropped" next to that blocker and the story stays unpickable; only the
+/// blocker becoming done releases it, and then the mark goes.
+#[test]
+fn a_blocker_on_a_dropped_track_reads_blocker_dropped_and_keeps_blocking_until_it_is_done() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("monitoring");
+    let created = run_as(&home, AGENT, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    for (part, kind, track) in [
+        ("Wision", "app", "Wision track"),
+        ("iot-service", "service", "Ingest"),
+    ] {
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "part",
+                "create",
+                part,
+                "--kind",
+                kind,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "part create {part}: {}", made.stderr);
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "track",
+                "create",
+                track,
+                "--part",
+                part,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "track create {track}: {}", made.stderr);
+    }
+    let on_wision = ["--project", project.as_str(), "--track", "Wision track"];
+    let on_ingest = ["--project", project.as_str(), "--track", "Ingest"];
+    let blocker = add_story(&home, &on_ingest, "Store the windows");
+    let blocked = add_story(&home, &on_wision, "Show the windows");
+    let wision = |args: &[&str]| run_as(&home, AGENT, &[args, &on_wision[..]].concat());
+    let ingest = |args: &[&str]| run_as(&home, AGENT, &[args, &on_ingest[..]].concat());
+    let blocked_by_line = || {
+        let read = wision(&["story", "read", &blocked]);
+        assert_eq!(read.code, 0, "story read: {}", read.stderr);
+        read.stdout
+            .lines()
+            .find(|line| line.starts_with("blocked by:"))
+            .unwrap_or_else(|| panic!("read shows no blocker: {}", read.stdout))
+            .to_string()
+    };
+    let pickable = || {
+        let listed = wision(&["story", "list", "--pickable"]);
+        assert_eq!(listed.code, 0, "story list: {}", listed.stderr);
+        listed
+            .stdout
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(blocked.as_str()))
+    };
+
+    let edited = wision(&["story", "edit", &blocked, "--blocked-by", &blocker]);
+    assert_eq!(edited.code, 0, "story edit: {}", edited.stderr);
+    let line = blocked_by_line();
+    assert!(line.contains(&blocker), "{line:?}");
+    assert!(
+        !line.contains("blocker dropped"),
+        "the track is live: {line:?}"
+    );
+
+    let dropped = run_as(
+        &home,
+        AGENT,
+        &["track", "state", "Ingest", "dropped", "--project", &project],
+    );
+    assert_eq!(dropped.code, 0, "track state: {}", dropped.stderr);
+    let line = blocked_by_line();
+    assert!(line.contains(&blocker), "{line:?}");
+    assert!(line.contains("blocker dropped"), "{line:?}");
+    assert!(
+        !pickable(),
+        "{blocked} stays blocked by {blocker} on the dropped track"
+    );
+
+    for step in [
+        &[
+            "story",
+            "claim",
+            &blocker,
+            "--run",
+            "r1",
+            "--stage",
+            "implementing",
+        ][..],
+        &["story", "tick", &blocker, "--run", "r1", "--criterion", "0"],
+        &["story", "move", &blocker, "--run", "r1", "--to", "done"],
+    ] {
+        let done = ingest(step);
+        assert_eq!(done.code, 0, "{step:?}: {}", done.stderr);
+    }
+    let line = blocked_by_line();
+    assert!(line.contains("done"), "{line:?}");
+    assert!(
+        !line.contains("blocker dropped"),
+        "a done blocker holds nothing: {line:?}"
+    );
+    assert!(pickable(), "{blocked} is pickable once {blocker} is done");
+}
