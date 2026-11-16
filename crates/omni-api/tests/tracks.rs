@@ -2300,3 +2300,276 @@ fn a_feature_or_a_replaced_decision_of_another_project_is_422_and_records_nothin
         "a refused decision records nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Decision records from story decisions and concluded threads (US-323)
+// ---------------------------------------------------------------------------
+
+/// The track's decisions, newest first.
+fn track_decisions(f: &Fixture, client: &Client, project: &str, track: &str) -> Vec<Value> {
+    must(
+        call(
+            client,
+            "GET",
+            &decisions_path(f, project, track),
+            &agent(f),
+            None,
+        ),
+        200,
+        "list the track's decisions",
+    )["decisions"]
+        .as_array()
+        .expect("`decisions` is a list")
+        .clone()
+}
+
+/// Starts a thread on the track with alice's key; returns its ID.
+fn start_thread(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    track: &str,
+    question: &str,
+) -> String {
+    must(
+        call(
+            client,
+            "POST",
+            &format!("{}/threads", track_path(f, project, track)),
+            &agent(f),
+            Some(&json!({ "question": question })),
+        ),
+        201,
+        "start a thread on the track",
+    )["thread"]["id"]
+        .as_str()
+        .expect("the thread has an id")
+        .to_string()
+}
+
+fn conclude(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    thread: &str,
+    conclusion: &str,
+) -> Response {
+    call(
+        client,
+        "PUT",
+        &format!(
+            "/api/v1/w/{}/projects/{project}/threads/{thread}/conclusion",
+            f.workspace
+        ),
+        auth,
+        Some(&json!({ "conclusion": conclusion })),
+    )
+}
+
+#[test]
+fn a_story_decision_writes_a_decision_record_on_its_track_with_its_author() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = create_track(f, client, &project, "Long windows")["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let story = create_story(f, client, &project, &track, json!({}));
+    let path = format!(
+        "{}/{}/decisions",
+        stories_path(f, &project, &track),
+        story["id"].as_str().expect("an id")
+    );
+
+    let after_human = must(
+        call(
+            client,
+            "POST",
+            &path,
+            &agent(f),
+            Some(&json!({
+                "expected_version": story["version"],
+                "run": "run-1",
+                "question": "Raw or aggregated?",
+                "choice": "Aggregate per hour",
+                "by": "human"
+            })),
+        ),
+        200,
+        "record a human story decision",
+    )["story"]
+        .clone();
+    let decisions = track_decisions(f, client, &project, &track);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    let record = &decisions[0];
+    assert_eq!(record["track_id"], track.as_str(), "{record}");
+    assert_eq!(record["question"], "Raw or aggregated?", "{record}");
+    assert_eq!(record["decision"], "Aggregate per hour", "{record}");
+    assert_eq!(
+        record["why"], "",
+        "a story decision has no rationale, so none is made up: {record}"
+    );
+    assert_eq!(
+        record["author"],
+        json!({ "kind": "human", "user_id": f.alice_user }),
+        "`--by human` with a key names the member who created the key: {record}"
+    );
+
+    must(
+        call(
+            client,
+            "POST",
+            &path,
+            &agent(f),
+            Some(&json!({
+                "expected_version": after_human["version"],
+                "run": "run-1",
+                "question": "Keep raw rows?",
+                "choice": "For 30 days",
+                "by": "agent"
+            })),
+        ),
+        200,
+        "record an agent story decision",
+    );
+    let decisions = track_decisions(f, client, &project, &track);
+    assert_eq!(decisions.len(), 2, "{decisions:?}");
+    let record = &decisions[0];
+    assert_eq!(record["question"], "Keep raw rows?", "{record}");
+    assert_eq!(record["decision"], "For 30 days", "{record}");
+    assert_eq!(record["author"]["kind"], "agent", "{record}");
+    assert_eq!(record["author"]["run"], "run-1", "{record}");
+    assert_eq!(record["author"]["role"], "planner", "{record}");
+    assert_eq!(
+        record["replaces_decision_id"],
+        Value::Null,
+        "a story decision replaces nothing: {record}"
+    );
+}
+
+#[test]
+fn each_conclusion_of_a_thread_writes_a_decision_that_replaces_the_one_before() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = create_track(f, client, &project, "Long windows")["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let thread = start_thread(f, client, &project, &track, "How coarse?");
+
+    let mut written: Vec<Value> = Vec::new();
+    for conclusion in ["Use hourly", "Use daily", "Use weekly"] {
+        must(
+            conclude(f, client, &agent(f), &project, &thread, conclusion),
+            200,
+            "the owner's key concludes the thread",
+        );
+        let decisions = track_decisions(f, client, &project, &track);
+        assert_eq!(decisions.len(), written.len() + 1, "{decisions:?}");
+        let record = decisions[0].clone();
+        assert_eq!(record["question"], "How coarse?", "{record}");
+        assert_eq!(record["decision"], conclusion, "{record}");
+        assert_eq!(
+            record["why"], "",
+            "the conclusion goes into `decision`, `why` stays empty: {record}"
+        );
+        assert_eq!(record["author"]["kind"], "agent", "{record}");
+        assert_eq!(record["author"]["run"], "run-1", "{record}");
+        let replaced = written
+            .last()
+            .map_or(Value::Null, |prev| prev["id"].clone());
+        assert_eq!(
+            record["replaces_decision_id"], replaced,
+            "{conclusion}: replaces the record the thread wrote last"
+        );
+        written.push(record);
+    }
+
+    let decisions = track_decisions(f, client, &project, &track);
+    let chain: Vec<(&Value, &Value, &Value)> = decisions
+        .iter()
+        .map(|d| {
+            (
+                &d["decision"],
+                &d["replaces_decision_id"],
+                &d["replaced_by_decision_id"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        chain,
+        [
+            (&json!("Use weekly"), &written[1]["id"], &Value::Null),
+            (&json!("Use daily"), &written[0]["id"], &written[2]["id"]),
+            (&json!("Use hourly"), &Value::Null, &written[1]["id"]),
+        ],
+        "the records form a chain, newest first"
+    );
+}
+
+#[test]
+fn only_the_track_writer_concludes_its_thread_and_every_member_posts() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    // alice's key creates the track, so alice owns it.
+    let track = create_track(f, client, &project, "Long windows")["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let thread = start_thread(f, client, &project, &track, "How coarse?");
+
+    for (who, auth) in [
+        ("bob's key", Auth::Agent(&f.bob_key)),
+        ("admin carol's key", Auth::Agent(&f.carol_key)),
+    ] {
+        let refused = conclude(f, client, &auth, &project, &thread, "Use daily");
+        assert_eq!(refused.status, 403, "{who}: {}", refused.text());
+        assert_error(&refused, 403, "not_track_owner");
+    }
+    assert_eq!(
+        decision_rows(&project),
+        0,
+        "a refused conclusion records nothing"
+    );
+    let shown = must(
+        call(
+            client,
+            "GET",
+            &format!(
+                "/api/v1/w/{}/projects/{project}/threads/{thread}",
+                f.workspace
+            ),
+            &agent(f),
+            None,
+        ),
+        200,
+        "read the thread",
+    );
+    assert_eq!(
+        shown["thread"]["conclusion"],
+        Value::Null,
+        "a refused conclusion leaves the thread open: {shown}"
+    );
+
+    must(
+        call(
+            client,
+            "POST",
+            &format!(
+                "/api/v1/w/{}/projects/{project}/threads/{thread}/posts",
+                f.workspace
+            ),
+            &Auth::Agent(&f.bob_key),
+            Some(&json!({ "summary": "Daily is enough", "body": "Dashboards show days." })),
+        ),
+        201,
+        "bob's key posts in the thread",
+    );
+    must(
+        conclude(f, client, &agent(f), &project, &thread, "Use hourly"),
+        200,
+        "the owner's key concludes the thread",
+    );
+    assert_eq!(decision_rows(&project), 1);
+}
