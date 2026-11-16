@@ -157,6 +157,8 @@ function fakeApi(home: Home) {
         return json(200, { projects: [{ id: PROJECT_ID, name: "Storefront", created_at: AT }] });
       case `GET /api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/home`:
         return json(200, api.home);
+      case `GET /api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/parts`:
+        return json(200, { parts: [] });
       default:
         return json(404, { error: "not_found" });
     }
@@ -298,12 +300,12 @@ describe("the scope pages", () => {
     expect(main.textContent).not.toContain("The app as intended now.");
   });
 
-  test("the five pillars come in order, an empty one saying No docs yet", async () => {
+  test("the parts and then the five pillars come in order, an empty one saying No docs yet", async () => {
     fakeApi(seededHome().home);
     renderAt(APP_PATH);
     const main = await page();
     await section(main, /^spec\b/i);
-    expect(sectionNames(main)).toEqual(["Spec", "UI", "Architecture", "DB", "Research", "Threads"]);
+    expect(sectionNames(main)).toEqual(["Parts", "Spec", "UI", "Architecture", "DB", "Research", "Threads"]);
     const architecture = await section(main, /^architecture\b/i);
     expect(architecture.textContent).toContain("No docs yet");
     expect(within(architecture).queryAllByRole("listitem")).toEqual([]);

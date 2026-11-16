@@ -13,6 +13,7 @@ const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 /** The part every track of the fixtures is on (US-305). */
 const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
+const OTHER_PART_ID = "0192d7a0-3333-7000-8000-000000000002";
 const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
 const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
 const RETURNS = "0192d7a0-4444-7000-8000-000000000003";
@@ -33,14 +34,23 @@ type Stories = { total: number; open: number; done: number };
 function track(
   id: string,
   name: string,
-  fields: { description?: string; waiting?: number; lastActivity?: string | null; createdAt?: string; stories?: Stories } = {},
+  fields: {
+    description?: string;
+    waiting?: number;
+    lastActivity?: string | null;
+    createdAt?: string;
+    stories?: Stories;
+    state?: string;
+    partName?: string;
+    partDeleted?: boolean;
+  } = {},
 ) {
   return {
     track: {
       id,
       project_id: PROJECT_ID,
       part_id: PART_ID,
-      state: "planning",
+      state: fields.state ?? "planning",
       name,
       description: fields.description ?? "",
       created_at: fields.createdAt ?? AT,
@@ -49,7 +59,13 @@ function track(
     waiting: fields.waiting ?? 0,
     stories: fields.stories ?? { total: 0, open: 0, done: 0 },
     last_activity: fields.lastActivity ?? null,
+    part_name: fields.partName ?? "Wision",
+    part_deleted: fields.partDeleted ?? false,
   };
+}
+
+function part(id: string, name: string) {
+  return { id, project_id: PROJECT_ID, name, kind: "app", description: "", created_at: AT };
 }
 
 function doc(id: string, trackId: string | null, title: string) {
@@ -84,15 +100,27 @@ function home(fields: { tracks?: ReturnType<typeof track>[]; docs?: ReturnType<t
 
 type Home = ReturnType<typeof home>;
 
-/** A fake of the API: the auth routes, the workspace's project, its home and its comments. */
-function fakeApi(projectHome: Home) {
+/**
+ * A fake of the API: the auth routes, the workspace's project, its home, its
+ * parts and its comments. A POST of a track is recorded and answered 201.
+ */
+function fakeApi(projectHome: Home, parts: ReturnType<typeof part>[] = [part(PART_ID, "Wision")]) {
+  const posted: unknown[] = [];
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      switch (new URL(url, "http://localhost:3000").pathname) {
+      const path = new URL(url, "http://localhost:3000").pathname;
+      if ((init?.method ?? "GET").toUpperCase() === "POST" && path === `${API}/tracks`) {
+        const body = JSON.parse(String(init?.body));
+        posted.push(body);
+        return json(201, { track: { ...track(CHECKOUT, body.name).track, part_id: body.part_id } });
+      }
+      switch (path) {
+        case `${API}/parts`:
+          return json(200, { parts });
         case "/api/v1/auth/me":
           return json(200, { user: USER });
         case "/api/v1/auth/workspaces":
@@ -108,6 +136,7 @@ function fakeApi(projectHome: Home) {
       }
     }),
   );
+  return posted;
 }
 
 /** A WebSocket that never opens: these pages are not tested live here. */
@@ -168,13 +197,20 @@ afterEach(() => {
 describe("the Tracks page", () => {
   const tracks = [
     track(RETURNS, "Returns", { lastActivity: "2026-10-21T11:00:00Z" }),
-    track(WALLETS, "Wallets", { description: "Apple Pay and Google Pay.", lastActivity: null, createdAt: "2026-10-21T12:00:00Z" }),
+    track(WALLETS, "Wallets", {
+      description: "Apple Pay and Google Pay.",
+      lastActivity: null,
+      createdAt: "2026-10-21T12:00:00Z",
+      partName: "Old app",
+      partDeleted: true,
+    }),
     track(GIFT_CARDS, "Gift cards", { lastActivity: "2026-10-21T11:00:00Z" }),
     track(CHECKOUT, "Checkout", {
       description: "Pay in one step.\nWorks with saved wallets.",
       waiting: 2,
       lastActivity: "2026-10-21T13:00:00Z",
       stories: { total: 3, open: 2, done: 1 },
+      state: "building",
     }),
     track(APPLE_PAY, "apple pay", { lastActivity: "2026-10-21T11:00:00Z" }),
   ];
@@ -197,13 +233,47 @@ describe("the Tracks page", () => {
     expect(within(main()).getByText("5 tracks")).toBeTruthy();
   });
 
-  test("a row shows the name, the first line of the description, done of total stories, what waits and the last activity, and opens the track", async () => {
+  test("a row shows the name, the first line of the description, the part, the state, done of total stories, what waits and the last activity, and opens the track", async () => {
     fakeApi(home({ tracks }));
     renderAt(`${PROJECT_PATH}/tracks`);
     await waitFor(() => expect(rows()).toHaveLength(5));
-    expect(shownText(rows()[0])).toBe("CheckoutPay in one step.1/3 stories22 h ago");
+    expect(shownText(rows()[0])).toBe("CheckoutPay in one step.Wisionbuilding1/3 stories22 h ago");
     expect(rows()[0].getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${CHECKOUT}`);
-    expect(shownText(rows()[1])).toBe("WalletsApple Pay and Google Pay.0/0 storiesNo activity yet");
+    expect(shownText(rows()[1]), "a track on a deleted part stays, its part marked deleted").toBe(
+      "WalletsApple Pay and Google Pay.Old app (deleted)planning0/0 storiesNo activity yet",
+    );
+  });
+
+  test("New track asks for a part, starting empty, and creates the track on the part picked", async () => {
+    const posted = fakeApi(home({ tracks }), [part(PART_ID, "Wision"), part(OTHER_PART_ID, "iot-service")]);
+    renderAt(`${PROJECT_PATH}/tracks`);
+    await waitFor(() => expect(rows()).toHaveLength(5));
+    fireEvent.click(await within(main()).findByRole("button", { name: "New track" }));
+
+    const picker = within(main()).getByRole("combobox", { name: "Part" }) as HTMLSelectElement;
+    expect(picker.value, "the picker starts empty").toBe("");
+    expect(within(picker).getAllByRole("option").filter((option) => !(option as HTMLOptionElement).disabled).map((option) => option.textContent)).toEqual([
+      "Wision",
+      "iot-service",
+    ]);
+    fireEvent.change(within(main()).getByRole("textbox", { name: "Track name" }), { target: { value: "Alarms" } });
+    const create = within(main()).getByRole("button", { name: "Create track" }) as HTMLButtonElement;
+    expect(create.disabled, "no part, no create").toBe(true);
+
+    fireEvent.change(picker, { target: { value: OTHER_PART_ID } });
+    expect(create.disabled).toBe(false);
+    fireEvent.click(create);
+    await waitFor(() => expect(posted).toEqual([{ name: "Alarms", description: "", part_id: OTHER_PART_ID }]));
+  });
+
+  test("with no parts, New track is disabled and points to the project page to create one", async () => {
+    fakeApi(home({ tracks }), []);
+    renderAt(`${PROJECT_PATH}/tracks`);
+    await waitFor(() => expect(rows()).toHaveLength(5));
+    const create = (await within(main()).findByRole("button", { name: "New track" })) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    const hint = within(main()).getByRole("link", { name: "Create a part on the project page" });
+    expect(hint.getAttribute("href")).toBe(`${PROJECT_PATH}/app#parts`);
   });
 
   test("the filter narrows the list as you type to the names and full descriptions holding the trimmed query, in the same order, and says N of M", async () => {

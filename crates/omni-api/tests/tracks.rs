@@ -9,11 +9,11 @@
 //! The contract these tests pin down (all paths are under
 //! `/api/v1/w/{workspace_id}/projects/{project_id}`):
 //!
-//! - `POST /tracks` (agent) takes `{"name", "description"}` and answers 201
-//!   `{"track": Track}`. `name` is required: missing, blank or not a
-//!   string is 400 `{"error": "invalid_request"}` and creates nothing.
-//!   `description` is optional and defaults to `""`. A session (the human) is
-//!   403 `{"error": "forbidden"}`.
+//! - `POST /tracks` (both, since US-306) takes `{"name", "description"}` and
+//!   answers 201 `{"track": Track}`. `name` is required: missing, blank or
+//!   not a string is 400 `{"error": "invalid_request"}` and creates nothing.
+//!   `description` is optional and defaults to `""`. A session (the human)
+//!   creates a track as an API key does.
 //! - A Track (`TrackBody`) is `{"id" (UUIDv7), "project_id", "name",
 //!   "description", "created_at"}` and nothing else: since US-110 a track
 //!   has no status.
@@ -566,19 +566,30 @@ fn track_names_are_unique_in_a_project_ignoring_case() {
 }
 
 #[test]
-fn only_an_agent_creates_a_track() {
+fn a_session_creates_a_track_on_the_part_it_names() {
+    // US-306: the web creates a track with the signed-in member's session.
     let (f, client) = ready();
     let project = new_project(f, client);
     let part = new_part(f, client, &project, "Wision");
-    let response = call(
-        client,
-        "POST",
-        &tracks_path(f, &project),
-        &human(f),
-        Some(&json!({ "name": "Checkout", "part_id": part })),
-    );
-    assert_error(&response, 403, "forbidden");
-    assert_eq!(track_rows(&project), 0, "a refused request creates nothing");
+    let created = must(
+        call(
+            client,
+            "POST",
+            &tracks_path(f, &project),
+            &human(f),
+            Some(&json!({ "name": "Checkout", "part_id": part })),
+        ),
+        201,
+        "create a track with a session",
+    )["track"]
+        .clone();
+    assert_eq!(created["name"], "Checkout");
+    assert_eq!(created["part_id"], part.as_str());
+    assert_eq!(created["state"], "planning");
+    assert_eq!(track_rows(&project), 1);
+    let listed = list_tracks(f, client, &human(f), &project);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["id"], created["id"]);
 }
 
 // ---------------------------------------------------------------------------

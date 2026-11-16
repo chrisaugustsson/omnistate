@@ -47,6 +47,8 @@ function fakeApi(rename: () => Response | Promise<Response>) {
             waiting: { comments: [] },
             tracks: [{ track, docs: 0, waiting: 0, stories: { total: 0, open: 0, done: 0 } }],
           });
+        case `GET ${API}/parts`:
+          return json(200, { parts: [] });
         case `PATCH ${API}`:
           patches.push({ method, path, body: JSON.parse(String(init?.body)) });
           return rename();

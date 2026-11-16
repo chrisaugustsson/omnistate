@@ -2615,7 +2615,7 @@ const TRACK_ROUTES: [(&str, &str, Access); 5] = [
     (
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
-        Access::Agent,
+        Access::Both,
     ),
     (
         "GET",
