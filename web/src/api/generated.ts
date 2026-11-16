@@ -499,6 +499,11 @@ export const FindingRequestSchema = z.object({
 });
 export type FindingRequest = z.infer<typeof FindingRequestSchema>;
 
+export const HandoverRequestSchema = z.object({
+  membership_id: z.unknown().optional(),
+});
+export type HandoverRequest = z.infer<typeof HandoverRequestSchema>;
+
 export const HeadBoardSchema = z.object({
   chunk: z.string(),
   id: z.string(),
@@ -767,7 +772,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "track.feature_linked", "track.feature_unlinked", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "track.owner_changed", "track.feature_linked", "track.feature_unlinked", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -816,6 +821,18 @@ export const ManifestSchema = z.object({
   pages: z.array(ManifestPageSchema),
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
+
+export const MemberBodySchema = z.object({
+  membership_id: z.string(),
+  role: z.string(),
+  user_id: z.string(),
+});
+export type MemberBody = z.infer<typeof MemberBodySchema>;
+
+export const MemberListResponseSchema = z.object({
+  members: z.array(MemberBodySchema),
+});
+export type MemberListResponse = z.infer<typeof MemberListResponseSchema>;
 
 export const MoveNodeRequestSchema = z.object({
   expected_version: z.number().int(),
@@ -1272,6 +1289,7 @@ export const schemas = {
   FeatureResponse: FeatureResponseSchema,
   FilesRequest: FilesRequestSchema,
   FindingRequest: FindingRequestSchema,
+  HandoverRequest: HandoverRequestSchema,
   HeadBoard: HeadBoardSchema,
   HeadHtmlResponse: HeadHtmlResponseSchema,
   HeadTokensResponse: HeadTokensResponseSchema,
@@ -1305,6 +1323,8 @@ export const schemas = {
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
+  MemberBody: MemberBodySchema,
+  MemberListResponse: MemberListResponseSchema,
   MoveNodeRequest: MoveNodeRequestSchema,
   MoveStoryRequest: MoveStoryRequestSchema,
   MoveTrackRequest: MoveTrackRequestSchema,
@@ -1451,6 +1471,13 @@ export const operations = {
   },
   "GET /api/v1/w/{workspace_id}/attachments/{attachment_id}": {
     responses: {
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/members": {
+    responses: {
+      "200": MemberListResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
@@ -2024,6 +2051,17 @@ export const operations = {
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move": {
     request: MoveTrackRequestSchema,
+    responses: {
+      "200": TrackResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/owner": {
+    request: HandoverRequestSchema,
     responses: {
       "200": TrackResponseSchema,
       "400": ErrorBodySchema,

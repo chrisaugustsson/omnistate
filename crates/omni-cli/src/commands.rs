@@ -102,6 +102,9 @@ pub fn run(args: &Args) -> Result<()> {
         ["track", "rename", track, name] => tracks::rename(args, Some(track), Some(name)),
         ["track", "move"] => tracks::move_to(args, None),
         ["track", "move", track] => tracks::move_to(args, Some(track)),
+        ["track", "handover"] => tracks::handover(args, None, None),
+        ["track", "handover", track] => tracks::handover(args, Some(track), None),
+        ["track", "handover", track, user] => tracks::handover(args, Some(track), Some(user)),
         ["track", "link-feature"] => tracks::link_feature(args, None, None, false),
         ["track", "link-feature", track] => tracks::link_feature(args, Some(track), None, false),
         ["track", "link-feature", track, feature] => {

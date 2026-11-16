@@ -395,6 +395,51 @@ pub fn state(args: &Args, track: Option<&str>, to: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// `omni track handover <name|id> <user-id>`: the user's membership in the
+/// workspace gets the track. A user that is no member fails before any call
+/// to the track.
+pub fn handover(args: &Args, track: Option<&str>, user: Option<&str>) -> Result<()> {
+    let usage = "omni track handover <name|id> <user-id>";
+    let (Some(given), Some(user)) = (track, user) else {
+        bail!("a track handover needs the track and the user: {usage}");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let id = resolve_track(&agent, &project, given)?;
+    let path = format!("/api/v1/w/{}/members", agent.workspace_id);
+    let listed = parsed(&agent.request("GET", &path, None)?.text(), "the members")?;
+    let membership = listed
+        .get("members")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .find(|member| {
+            member
+                .str_at("user_id")
+                .is_some_and(|id| id.eq_ignore_ascii_case(user.trim()))
+        })
+        .and_then(|member| member.str_at("membership_id"))
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "not_a_member: {user} is not a member of this workspace"
+            ))
+        })?;
+    let response = agent.request(
+        "POST",
+        &format!("{}/{id}/owner", tracks_path(&agent, &project)),
+        Some(format!("{{\"membership_id\":{}}}", quote(membership)).as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the track")?;
+    let track = body.get("track").unwrap_or(&body);
+    say(&summary(track, &project_parts(&agent, &project)?));
+    Ok(())
+}
+
 /// `omni track delete <name|id>`
 pub fn delete(args: &Args, track: Option<&str>) -> Result<()> {
     let Some(given) = track else {

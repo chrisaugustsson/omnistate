@@ -86,6 +86,9 @@ Usage:
                                       end that link
   omni track state <name|id> planning|building|done|dropped
                                       move a track to another state
+  omni track handover <name|id> <user-id>
+                                      give a track to another member of the workspace; only
+                                      the owner or an admin can
   omni track delete <name|id>         delete a track with its docs, threads and comments (they
                                       are kept, hidden; the name can be used again)
   omni doc create [--track <name|id> | --feature <name|id>] --kind html|design|design-system

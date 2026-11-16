@@ -1446,6 +1446,14 @@
         ],
         "type": "object"
       },
+      "HandoverRequest": {
+        "properties": {
+          "membership_id": {
+            "description": "The membership that gets the track. Missing, null or anything that is\nnot a membership of this workspace is 422 `not_a_member`."
+          }
+        },
+        "type": "object"
+      },
       "HeadBoard": {
         "description": "A board of a design's head and the chunk that holds it.",
         "properties": {
@@ -2183,6 +2191,7 @@
           "track.deleted",
           "track.renamed",
           "track.moved",
+          "track.owner_changed",
           "track.feature_linked",
           "track.feature_unlinked",
           "feature.created",
@@ -2384,6 +2393,42 @@
           "id",
           "chunk",
           "boards"
+        ],
+        "type": "object"
+      },
+      "MemberBody": {
+        "properties": {
+          "membership_id": {
+            "description": "The membership's UUID, what a hand-over takes.",
+            "type": "string"
+          },
+          "role": {
+            "description": "`member` or `admin`.",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "The member's user UUID; no name or email.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "membership_id",
+          "user_id",
+          "role"
+        ],
+        "type": "object"
+      },
+      "MemberListResponse": {
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/MemberBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "members"
         ],
         "type": "object"
       },
@@ -4992,6 +5037,59 @@
         "summary": "The bytes of a file. An image whose bytes confirm its type is served inline;\nanything else is a download.",
         "tags": [
           "crate::attachments"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/members": {
+      "get": {
+        "operationId": "list_members",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberListResponse"
+                }
+              }
+            },
+            "description": "The workspace's members"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller cannot reach this workspace"
+          }
+        },
+        "summary": "The members of the workspace, by user ID, in the order they joined.",
+        "tags": [
+          "crate::tracks"
         ],
         "x-omni-access": "both"
       }
@@ -11709,6 +11807,117 @@
           "crate::tracks"
         ],
         "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/owner": {
+      "post": {
+        "operationId": "hand_over_track",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackResponse"
+                }
+              }
+            },
+            "description": "The track with its owner"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not readable"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`not_track_owner`: the caller is neither the track's owner nor an admin"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or it was deleted"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`not_a_member`: `membership_id` is missing or no membership of this workspace; the owner stays"
+          }
+        },
+        "summary": "Hands a track to another member of the workspace, in any state. Handing it\nto its current owner changes nothing and emits no event. Claims on its\nstories stay as they are. Only the owner or an admin may do it.",
+        "tags": [
+          "crate::tracks"
+        ],
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state": {

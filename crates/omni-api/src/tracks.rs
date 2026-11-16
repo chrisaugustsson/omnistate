@@ -780,6 +780,142 @@ pub async fn set_track_state(
     Ok(Json(TrackResponse { track }))
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct HandoverRequest {
+    /// The membership that gets the track. Missing, null or anything that is
+    /// not a membership of this workspace is 422 `not_a_member`.
+    pub membership_id: Option<serde_json::Value>,
+}
+
+/// Hands a track to another member of the workspace, in any state. Handing it
+/// to its current owner changes nothing and emits no event. Claims on its
+/// stories stay as they are. Only the owner or an admin may do it.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/owner",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+    ),
+    request_body = HandoverRequest,
+    responses(
+        (status = 200, description = "The track with its owner", body = TrackResponse),
+        (status = 400, description = "The body is not readable", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "`not_track_owner`: the caller is neither the track's owner nor an admin", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or it was deleted", body = ErrorBody),
+        (status = 422, description = "`not_a_member`: `membership_id` is missing or no membership of this workspace; the owner stays", body = ErrorBody),
+    )
+)]
+pub async fn hand_over_track(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<TrackResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<HandoverRequest>(&body);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    lock_track(&mut tx, &project_id, &track_id).await?;
+    owner_check(&mut tx, &request.who(), &track_id, true).await?;
+    let not_a_member = || ApiError::Refused(StatusCode::UNPROCESSABLE_ENTITY, "not_a_member");
+    let membership_id = new?
+        .membership_id
+        .as_ref()
+        .and_then(|given| given.as_str())
+        .and_then(parse_uuid)
+        .ok_or_else(not_a_member)?;
+    let found: Option<(String,)> =
+        sqlx::query_as("SELECT id::text FROM memberships WHERE id = $1::uuid")
+            .bind(&membership_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+    let membership_id = found.map(|(id,)| id).ok_or_else(not_a_member)?;
+    let (before,): (Option<String>,) =
+        sqlx::query_as("SELECT owner_membership_id::text FROM tracks WHERE id = $1::uuid")
+            .bind(&track_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+    let changed = before.as_deref() != Some(&membership_id);
+    let track = sqlx::query_as::<_, TrackBody>(&format!(
+        "UPDATE tracks SET owner_membership_id = $2::uuid WHERE id = $1::uuid \
+         RETURNING {TRACK_COLUMNS}"
+    ))
+    .bind(&track_id)
+    .bind(&membership_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    if changed {
+        live::emit(
+            &mut tx,
+            &request.workspace_id,
+            &project_id,
+            "track.owner_changed",
+            &json!({ "track_id": track.id, "owner_user_id": track.owner_user_id }),
+        )
+        .await?;
+    }
+    tx.commit().await.map_err(ApiError::database)?;
+    if changed {
+        state.live.announce(&request.workspace_id, &project_id);
+    }
+    Ok(Json(TrackResponse { track }))
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct MemberBody {
+    /// The membership's UUID, what a hand-over takes.
+    pub membership_id: String,
+    /// The member's user UUID; no name or email.
+    pub user_id: String,
+    /// `member` or `admin`.
+    pub role: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct MemberListResponse {
+    pub members: Vec<MemberBody>,
+}
+
+/// The members of the workspace, by user ID, in the order they joined.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/members",
+    params(("workspace_id" = String, Path, description = "The workspace's UUID")),
+    responses(
+        (status = 200, description = "The workspace's members", body = MemberListResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "The caller cannot reach this workspace", body = ErrorBody),
+    )
+)]
+pub async fn list_members(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+) -> Result<Json<MemberListResponse>, ApiError> {
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT id::text, user_id::text, role FROM memberships ORDER BY created_at, id",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    let members = rows
+        .into_iter()
+        .map(|(membership_id, user_id, role)| MemberBody {
+            membership_id,
+            user_id,
+            role,
+        })
+        .collect();
+    Ok(Json(MemberListResponse { members }))
+}
+
 /// Lets the track's owner through, and nobody else: 403 `not_track_owner`.
 /// This is the one check behind every write under a track. A track without an
 /// owner (made by a key with no creator) has nobody to guard it.

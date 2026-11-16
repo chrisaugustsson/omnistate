@@ -313,6 +313,11 @@ pub fn router(state: AppState) -> Router {
             post(tracks::set_track_state),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/owner",
+            post(tracks::hand_over_track),
+        )
+        .route("/api/v1/w/{workspace_id}/members", get(tracks::list_members))
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features",
             get(tracks::list_track_features).post(tracks::link_feature),
         )

@@ -146,6 +146,8 @@ pub enum LiveEventName {
     TrackRenamed,
     #[serde(rename = "track.moved")]
     TrackMoved,
+    #[serde(rename = "track.owner_changed")]
+    TrackOwnerChanged,
     #[serde(rename = "track.feature_linked")]
     TrackFeatureLinked,
     #[serde(rename = "track.feature_unlinked")]

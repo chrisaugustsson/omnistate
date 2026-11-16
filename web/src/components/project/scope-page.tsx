@@ -6,6 +6,7 @@ import { Empty, List, PILLARS } from "@/components/project/items";
 import { PageHeader } from "@/components/page-header";
 import { PartsSection } from "@/components/project/parts-section";
 import { TrackFeatures } from "@/components/project/track-features";
+import { TrackOwner } from "@/components/project/track-owner";
 import { RenameTitle } from "@/components/project/rename-title";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { timeAgo } from "@/lib/format";
@@ -261,6 +262,14 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
           <div className="mt-10 space-y-12">
             {!trackId && <PartsSection workspaceId={workspaceId} projectId={projectId} />}
             {trackId && <TrackFeatures workspaceId={workspaceId} projectId={projectId} trackId={trackId} />}
+            {trackId && (
+              <TrackOwner
+                workspaceId={workspaceId}
+                projectId={projectId}
+                trackId={trackId}
+                ownerUserId={summary?.track.owner_user_id ?? null}
+              />
+            )}
             {PILLARS.map(({ pillar, title: label }) => {
               const inPillar = inOrder(docs.filter((doc) => doc.pillar === pillar));
               const id = `${pillar}-title`;
