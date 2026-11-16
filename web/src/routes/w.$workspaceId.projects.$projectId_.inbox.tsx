@@ -1,11 +1,14 @@
+import { useCallback, useSyncExternalStore } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { PartyPopper } from "lucide-react";
 import type { CommentBody, HomeDoc, HomeResponse } from "@/api/generated";
+import { loadMyUserId } from "@/api/members";
 import { AgentChip } from "@/components/agent-chip";
 import { PILLARS, trackNames, waitingCount } from "@/components/project/items";
 import { SectionPage } from "@/components/project/section-page";
 import { ElementSnapshot } from "@/components/viewer/comments";
 import { authorName, timeAgo } from "@/lib/format";
+import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 
 // The project's inbox: the comments whose latest reply is an agent's, and
@@ -15,6 +18,45 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/inbox")({
   component: Inbox,
 });
+
+const EVERYONE_KEY = "omni.inbox.everyone";
+const listeners = new Set<() => void>();
+let everyone = false;
+try {
+  everyone = sessionStorage.getItem(EVERYONE_KEY) === "1";
+} catch {
+  // No session storage: the choice lives in memory only.
+}
+
+/** The switch's choice: kept in memory and in this tab's session storage, so it survives navigation and reloads. */
+function useEveryone(): [boolean, (value: boolean) => void] {
+  const value = useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    () => everyone,
+  );
+  const set = useCallback((next: boolean) => {
+    everyone = next;
+    try {
+      sessionStorage.setItem(EVERYONE_KEY, next ? "1" : "0");
+    } catch {
+      // Memory only.
+    }
+    for (const listener of listeners) listener();
+  }, []);
+  return [value, set];
+}
+
+/** The home with only the waiting comments on tracks the member owns (owner=me). */
+function mineOf(home: HomeResponse, me: string): HomeResponse {
+  const owned = new Set(
+    (home.tracks ?? []).filter(({ track }) => track.owner_user_id === me).map(({ track }) => track.id),
+  );
+  const comments = home.waiting.comments.filter((comment) => comment.track_id && owned.has(comment.track_id));
+  return { ...home, waiting: { ...home.waiting, comments } };
+}
 
 /** A comment that waits, with the agent reply that makes it wait and the doc it is on. */
 type Entry = {
@@ -52,32 +94,51 @@ function groupsOf(home: HomeResponse): Group[] {
 
 function Inbox() {
   const { workspaceId, projectId } = Route.useParams();
+  const [everyone, setEveryone] = useEveryone();
+  const loadMe = useCallback(() => loadMyUserId(workspaceId), [workspaceId]);
+  const { value: me } = useReloading(loadMe);
+  // Until the member is known, wait rather than flash everyone's questions.
+  const scoped = (home: HomeResponse): HomeResponse | null => (everyone ? home : me ? mineOf(home, me) : null);
 
   return (
     <SectionPage
       workspaceId={workspaceId}
       projectId={projectId}
       title="Inbox"
-      description={(home) => {
+      description={(all) => {
+        const home = scoped(all);
+        if (!home) return null;
         const count = waitingCount(home);
         return count
           ? `${count} ${count === 1 ? "comment has" : "comments have"} an agent's reply waiting on you. Reply, or delete the comment when you're done with it.`
           : "Nothing waits for you. Comments that an agent has replied to show up here.";
       }}
     >
-      {(home) => {
+      {(all) => {
+        const home = scoped(all);
+        if (!home) return null;
         const groups = groupsOf(home);
+        const toggle = (
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input type="checkbox" checked={everyone} onChange={(event) => setEveryone(event.target.checked)} />
+            Show everyone's tracks
+          </label>
+        );
         if (groups.length === 0) {
           return (
-            <div className="rounded-xl border border-dashed px-6 py-14 text-center">
-              <PartyPopper className="mx-auto size-6 text-muted-foreground" />
-              <p className="mt-3 text-sm font-medium">You're all caught up</p>
-              <p className="mt-1 text-sm text-muted-foreground">Agents keep working; new replies appear here live.</p>
+            <div className="space-y-6">
+              {toggle}
+              <div className="rounded-xl border border-dashed px-6 py-14 text-center">
+                <PartyPopper className="mx-auto size-6 text-muted-foreground" />
+                <p className="mt-3 text-sm font-medium">You're all caught up</p>
+                <p className="mt-1 text-sm text-muted-foreground">Agents keep working; new replies appear here live.</p>
+              </div>
             </div>
           );
         }
         return (
           <div className="space-y-10">
+            {toggle}
             {groups.map((group) => (
               <section key={group.track ?? "app"} aria-label={group.name}>
                 <div className="flex items-baseline gap-2.5 border-b pb-2.5">
