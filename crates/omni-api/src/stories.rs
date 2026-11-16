@@ -5,11 +5,14 @@
 //! `story.changed` and cancelling one `story.cancelled`.
 
 use crate::AppState;
+use crate::comments::author_of;
+use crate::decisions::record_decision;
+use crate::docs::AgentIdentity;
 use crate::live;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
 use crate::tracks::{require_project_track, require_track_writer};
-use crate::workspace::{AgentRequest, HumanRequest, Who, WorkspaceRequest, parse_uuid};
+use crate::workspace::{Actor, AgentRequest, HumanRequest, Who, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -1699,6 +1702,7 @@ pub async fn resolve_finding(
 pub async fn add_decision(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
@@ -1731,6 +1735,32 @@ pub async fn add_decision(
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
+    let author = if write.by == "human" {
+        // The member who made the key; a key with no creator has no user.
+        let user_id: Option<String> = match &request.membership_id {
+            Some(membership_id) => {
+                sqlx::query_scalar("SELECT user_id::text FROM memberships WHERE id = $1::uuid")
+                    .bind(membership_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(ApiError::database)?
+            }
+            None => None,
+        };
+        json!({ "kind": "human", "user_id": user_id })
+    } else {
+        author_of(&Actor::Agent, &identity)
+    };
+    record_decision(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        &track_id,
+        None,
+        (&write.question, &write.choice, ""),
+        &author,
+    )
+    .await?;
     finish_story_write(&state, tx, &request, &project_id, row, &["decisions"]).await
 }
 

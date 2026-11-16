@@ -9269,7 +9269,7 @@
                 }
               }
             },
-            "description": "Called with a session; agents only"
+            "description": "Called with a session, or `not_track_owner`: the key is not the track owner's"
           },
           "404": {
             "content": {

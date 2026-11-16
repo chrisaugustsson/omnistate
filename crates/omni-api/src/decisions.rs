@@ -148,6 +148,60 @@ fn named_id(given: Option<Value>) -> Result<Option<String>, ApiError> {
     }
 }
 
+/// Writes a decision record inside the caller's transaction, for the places
+/// that record one as a side effect: a story decision, a concluded thread. The
+/// caller has checked the track and its writer. `thread_id` marks a record
+/// that came from concluding a thread. Emits `decision.recorded`; the caller
+/// commits and announces.
+pub(crate) async fn record_decision(
+    tx: &mut Tx,
+    workspace_id: &str,
+    project_id: &str,
+    track_id: &str,
+    thread_id: Option<&str>,
+    (question, decision, why): (&str, &str, &str),
+    author: &Value,
+) -> Result<String, ApiError> {
+    let replaces: Option<String> = match thread_id {
+        Some(thread_id) => sqlx::query_scalar(
+            "SELECT id::text FROM decisions WHERE thread_id = $1::uuid \
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(thread_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(ApiError::database)?,
+        None => None,
+    };
+    let id: String = sqlx::query_scalar(
+        "INSERT INTO decisions (workspace_id, project_id, track_id, thread_id, question, \
+         decision, why, author, replaces_decision_id) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8::text::jsonb, $9::uuid) \
+         RETURNING id::text",
+    )
+    .bind(workspace_id)
+    .bind(project_id)
+    .bind(track_id)
+    .bind(thread_id)
+    .bind(question)
+    .bind(decision)
+    .bind(why)
+    .bind(author.to_string())
+    .bind(&replaces)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        tx,
+        workspace_id,
+        project_id,
+        "decision.recorded",
+        &json!({ "decision_id": id, "track_id": track_id, "feature_id": null }),
+    )
+    .await?;
+    Ok(id)
+}
+
 /// Records a decision on a track.
 #[utoipa::path(
     post,

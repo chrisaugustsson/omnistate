@@ -17,10 +17,13 @@
 //! cached, so the next read after the agent posted shows what was hidden.
 
 use crate::AppState;
+use crate::comments::author_of;
+use crate::decisions::record_decision;
 use crate::docs::AgentIdentity;
 use crate::live;
 use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
+use crate::tracks::require_track_writer;
 use crate::workspace::{Actor, AgentRequest, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
@@ -687,22 +690,26 @@ pub async fn list_threads(
         (status = 200, description = "The thread with its conclusion", body = ThreadResponse),
         (status = 400, description = "The conclusion is missing or blank", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 403, description = "Called with a session, or `not_track_owner`: the key is not the track owner's", body = ErrorBody),
         (status = 404, description = "No such thread in this project and workspace", body = ErrorBody),
     )
 )]
 pub async fn conclude_thread(
     State(state): State<AppState>,
     request: AgentRequest,
+    identity: AgentIdentity,
     Path((_, project_id, thread_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<Json<ThreadResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let thread_id = parse_uuid(&thread_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<ConcludeThreadRequest>(&body);
-    let workspace_id = request.workspace_id;
+    let workspace_id = request.workspace_id.clone();
     let mut tx = state.workspace_tx(&workspace_id).await?;
     let thread = load_thread(&mut tx, &project_id, &thread_id, Some("FOR UPDATE")).await?;
+    if let Some(track_id) = &thread.track_id {
+        require_track_writer(&mut tx, &request.who(), track_id).await?;
+    }
     let conclusion = non_blank(new?.conclusion).ok_or_else(invalid)?;
     sqlx::query(
         "UPDATE threads SET conclusion = $2, concluded_at = clock_timestamp() WHERE id = $1::uuid",
@@ -712,6 +719,18 @@ pub async fn conclude_thread(
     .execute(&mut *tx)
     .await
     .map_err(ApiError::database)?;
+    if let Some(track_id) = &thread.track_id {
+        record_decision(
+            &mut tx,
+            &workspace_id,
+            &project_id,
+            track_id,
+            Some(&thread_id),
+            (&thread.question, &conclusion, ""),
+            &author_of(&Actor::Agent, &identity),
+        )
+        .await?;
+    }
     live::emit(
         &mut tx,
         &workspace_id,
