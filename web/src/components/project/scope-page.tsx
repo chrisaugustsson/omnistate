@@ -9,8 +9,11 @@ import { TrackFeatures } from "@/components/project/track-features";
 import { TrackOwner } from "@/components/project/track-owner";
 import { RenameTitle } from "@/components/project/rename-title";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/format";
 import { useHome, useProjectName } from "@/lib/use-home";
+import { useParts } from "@/lib/use-parts";
+import { useShowUi } from "@/lib/show-ui";
 import { useVisit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 
@@ -180,6 +183,10 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
   const { home, failed } = useHome(workspaceId, projectId);
   const projectName = useProjectName(workspaceId, projectId);
   const summary = trackId ? home?.tracks?.find((candidate) => candidate.track.id === trackId) : undefined;
+  const { parts } = useParts(workspaceId, projectId);
+  const [showUi, setShowUi] = useShowUi(trackId);
+  const onService = parts?.find((part) => part.id === summary?.track.part_id)?.kind === "service";
+  const pillars = onService && !showUi ? PILLARS.filter(({ pillar }) => pillar !== "ui") : PILLARS;
   const missing = home !== null && trackId !== null && !summary;
   const ready = home !== null && !missing;
   useScrollToHash(ready);
@@ -248,7 +255,7 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
                 Behaviour
               </Link>
             )}
-            {PILLARS.map(({ pillar, title: label }) => (
+            {pillars.map(({ pillar, title: label }) => (
               <a
                 key={pillar}
                 href={`#${pillar}`}
@@ -258,6 +265,11 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
                 <span className="text-muted-foreground tabular-nums">{docs.filter((doc) => doc.pillar === pillar).length}</span>
               </a>
             ))}
+            {trackId && onService && (
+              <Button type="button" variant="ghost" size="sm" className="h-7 text-[12.5px]" onClick={() => setShowUi(!showUi)}>
+                {showUi ? "Hide UI" : "Show UI"}
+              </Button>
+            )}
           </nav>
           <div className="mt-10 space-y-12">
             {!trackId && <PartsSection workspaceId={workspaceId} projectId={projectId} />}
@@ -270,7 +282,7 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
                 ownerUserId={summary?.track.owner_user_id ?? null}
               />
             )}
-            {PILLARS.map(({ pillar, title: label }) => {
+            {pillars.map(({ pillar, title: label }) => {
               const inPillar = inOrder(docs.filter((doc) => doc.pillar === pillar));
               const id = `${pillar}-title`;
               return (
