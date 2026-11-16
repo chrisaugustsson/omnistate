@@ -248,3 +248,124 @@ fn a_story_added_claimed_ticked_and_moved_to_done_reads_back_as_done() {
     assert_eq!(back["criteria"][0]["ticked"], true);
     assert_eq!(back["holder"], serde_json::Value::Null);
 }
+
+/// Adds a story with one criterion from a prd-format file; returns its key.
+fn add_story(home: &Scratch, scope: &[&str], title: &str) -> String {
+    let file = home.join(&format!("{}.md", unique("story")));
+    std::fs::write(
+        &file,
+        format!(
+            "### {title}\n\
+             **Description:** As the workflow, I want {title}.\n\
+             \n\
+             **Acceptance Criteria:**\n\
+             - [ ] It is done\n"
+        ),
+    )
+    .unwrap();
+    let added = run_as(
+        home,
+        AGENT,
+        &[&["story", "add", &file.display().to_string()], scope].concat(),
+    );
+    assert_eq!(added.code, 0, "story add: {}", added.stderr);
+    added.stdout.trim().to_string()
+}
+
+/// US-319: a story is blocked by a story on another part's track of the same
+/// project; `read` names the blocker's track and status, and the story is not
+/// pickable until the blocker is done.
+#[test]
+fn a_story_blocked_from_another_track_reads_its_track_and_status_and_waits_until_it_is_done() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("board");
+    let created = run_as(&home, AGENT, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    for (part, kind, track) in [
+        ("Wision", "app", "Analyze"),
+        ("iot-service", "service", "Ingest"),
+    ] {
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "part",
+                "create",
+                part,
+                "--kind",
+                kind,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "part create {part}: {}", made.stderr);
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "track",
+                "create",
+                track,
+                "--part",
+                part,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "track create {track}: {}", made.stderr);
+    }
+    let on_analyze = ["--project", project.as_str(), "--track", "Analyze"];
+    let on_ingest = ["--project", project.as_str(), "--track", "Ingest"];
+    let blocked = add_story(&home, &on_analyze, "Show the windows");
+    let blocker = add_story(&home, &on_ingest, "Store the windows");
+    let analyze = |args: &[&str]| run_as(&home, AGENT, &[args, &on_analyze[..]].concat());
+    let ingest = |args: &[&str]| run_as(&home, AGENT, &[args, &on_ingest[..]].concat());
+    let blocked_by_line = || {
+        let read = analyze(&["story", "read", &blocked]);
+        assert_eq!(read.code, 0, "story read: {}", read.stderr);
+        read.stdout
+            .lines()
+            .find(|line| line.starts_with("blocked by:"))
+            .unwrap_or_else(|| panic!("read shows no blocker: {}", read.stdout))
+            .to_string()
+    };
+    let pickable = || {
+        let listed = analyze(&["story", "list", "--pickable"]);
+        assert_eq!(listed.code, 0, "story list: {}", listed.stderr);
+        listed
+            .stdout
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(blocked.as_str()))
+    };
+
+    let edited = analyze(&["story", "edit", &blocked, "--blocked-by", &blocker]);
+    assert_eq!(edited.code, 0, "story edit: {}", edited.stderr);
+    let line = blocked_by_line();
+    for part in [blocker.as_str(), "Ingest", "backlog"] {
+        assert!(line.contains(part), "{part:?} missing from {line:?}");
+    }
+    assert!(!pickable(), "{blocked} waits for {blocker}");
+
+    for step in [
+        &[
+            "story",
+            "claim",
+            &blocker,
+            "--run",
+            "r1",
+            "--stage",
+            "implementing",
+        ][..],
+        &["story", "tick", &blocker, "--run", "r1", "--criterion", "0"],
+        &["story", "move", &blocker, "--run", "r1", "--to", "done"],
+    ] {
+        let done = ingest(step);
+        assert_eq!(done.code, 0, "{step:?}: {}", done.stderr);
+    }
+    let line = blocked_by_line();
+    for part in [blocker.as_str(), "Ingest", "done"] {
+        assert!(line.contains(part), "{part:?} missing from {line:?}");
+    }
+    assert!(pickable(), "{blocked} is pickable once {blocker} is done");
+}

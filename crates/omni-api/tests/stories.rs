@@ -19,7 +19,8 @@
 //! - 422 `{"error": "invalid_<field>"}`: a title that is blank after trimming,
 //!   a priority outside 0 to 3, a link that is neither `{doc_id, node_id,
 //!   label}` nor `{thread_id, label}`, a `blocked_by` id that is not a story
-//!   of the same track, a negative `number_from`. Duplicate `blocked_by` ids
+//!   of the same project (US-319: any track of it), a negative
+//!   `number_from`. Duplicate `blocked_by` ids
 //!   are kept once, in first-seen order.
 //! - `GET /stories` answers `{"stories": [Story, ...]}`, every status when
 //!   unfiltered, by priority and then number; `?status=<status>` filters and
@@ -41,7 +42,7 @@
 //!   `version` one higher and emits `story.changed` with `{story_id, key,
 //!   fields}`, every field of the body in that order. Checked in this order: a
 //!   body with no field but `expected_version`, or a `blocked_by` naming a
-//!   story of another track or the story itself, is 422; a stale
+//!   story of another project or the story itself, is 422; a stale
 //!   `expected_version` is 409 `{"error": "conflict", "current_version": n}`;
 //!   a `done` or `cancelled` story is 409 `not_open`; `title, text, topic,
 //!   criteria, files_planned` outside `backlog` are 409 `not_in_backlog`. A
@@ -806,15 +807,16 @@ fn a_link_of_neither_shape_is_refused_and_a_thread_link_is_accepted() {
 }
 
 #[test]
-fn a_blocker_must_be_a_story_of_the_same_track() {
+fn a_blocker_must_be_a_story_of_the_same_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
-    let other_track = new_track(f, client, &project);
+    let other_project = new_project(f, client);
+    let other_track = new_track(f, client, &other_project);
     let elsewhere = id_of(&create_story(
         f,
         client,
-        &project,
+        &other_project,
         &other_track,
         &body("Elsewhere"),
     ));
@@ -831,7 +833,50 @@ fn a_blocker_must_be_a_story_of_the_same_track() {
             "invalid_blocked_by",
         );
     }
-    assert_eq!(story_rows(&project), 1, "a refused story is not stored");
+    assert_eq!(story_rows(&project), 0, "a refused story is not stored");
+}
+
+#[test]
+fn a_blocker_on_another_track_of_the_project_holds_its_story_until_done_or_cancelled() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = new_track(f, client, &project);
+    let other_track = new_track(f, client, &project);
+    let to_finish = new_story(f, client, &project, &other_track, json!({}));
+    let to_cancel = new_story(f, client, &project, &other_track, json!({}));
+    let story = create_story(
+        f,
+        client,
+        &project,
+        &track,
+        &body_with("Blocked", json!({ "blocked_by": [to_finish] })),
+    );
+    assert_eq!(story["blocked_by"], json!([to_finish]), "{story}");
+    let patched = new_story(f, client, &project, &track, json!({}));
+    must(
+        patch(
+            f,
+            client,
+            &project,
+            &track,
+            &patched,
+            json!({ "expected_version": 1, "blocked_by": [to_cancel] }),
+        ),
+        200,
+        "patch a blocker on another track of the project",
+    );
+    assert_eq!(
+        listed_keys(f, client, &project, &track, "pickable=true"),
+        Vec::<Value>::new(),
+        "US-3 and US-4 wait for their open blockers on the other track"
+    );
+    set_status(&to_finish, "done");
+    set_status(&to_cancel, "cancelled");
+    assert_eq!(
+        listed_keys(f, client, &project, &track, "pickable=true"),
+        vec![json!("US-3"), json!("US-4")],
+        "a done or a cancelled blocker on another track releases its story"
+    );
 }
 
 #[test]
@@ -1520,8 +1565,9 @@ fn an_invalid_body_is_refused_before_a_stale_version_is_reported() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
-    let other_track = new_track(f, client, &project);
-    let elsewhere = new_story(f, client, &project, &other_track, json!({}));
+    let other_project = new_project(f, client);
+    let other_track = new_track(f, client, &other_project);
+    let elsewhere = new_story(f, client, &other_project, &other_track, json!({}));
     let story = new_story(f, client, &project, &track, json!({}));
     let only_version = patch(
         f,
@@ -1547,12 +1593,13 @@ fn an_invalid_body_is_refused_before_a_stale_version_is_reported() {
 }
 
 #[test]
-fn a_patched_blocker_must_be_another_story_of_the_same_track() {
+fn a_patched_blocker_must_be_another_story_of_the_same_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
-    let other_track = new_track(f, client, &project);
-    let elsewhere = new_story(f, client, &project, &other_track, json!({}));
+    let other_project = new_project(f, client);
+    let other_track = new_track(f, client, &other_project);
+    let elsewhere = new_story(f, client, &other_project, &other_track, json!({}));
     let story = new_story(f, client, &project, &track, json!({}));
     assert_error(
         &patch(
