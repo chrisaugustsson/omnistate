@@ -823,6 +823,61 @@ fn a_design_doc_may_sit_on_a_feature_and_a_design_system_may_not() {
     assert_error(&response, 422, "design_system_is_global");
 }
 
+/// US-318: the web hides a service track's UI step, but the API never refuses
+/// a design on one, in the track's docs or in the project's docs.
+#[test]
+fn a_design_doc_is_created_on_a_track_of_a_service_part() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let base = project_base(f, &project);
+    let iot = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/parts"),
+                &agent(f),
+                Some(&json!({ "name": unique("iot-service"), "kind": "service" })),
+            ),
+            201,
+            "create a service part",
+        )["part"],
+    );
+    let track = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{base}/tracks"),
+                &agent(f),
+                Some(&json!({ "name": "Ingest", "part_id": iot })),
+            ),
+            201,
+            "create a track on the service part",
+        )["track"],
+    );
+
+    let in_track = create_live(f, client, &project, Some(&track), "design", "ui");
+    let in_project = must(
+        call(
+            client,
+            "POST",
+            &docs_path(f, &project),
+            &agent(f),
+            Some(&json!({ "kind": "design", "pillar": "ui", "title": unique("ui"), "track_id": track })),
+        ),
+        201,
+        "create a design on the service track through the project's docs",
+    )["doc"]
+        .clone();
+    for doc in [in_track, in_project] {
+        assert_track_id(&doc, &json!(track), "a design on a service track");
+        let shown = show_doc(f, client, &human(f), &project, &id_of(&doc));
+        assert_eq!(shown["kind"], "design", "{shown}");
+        assert_track_id(&shown, &json!(track), "the shown design");
+    }
+}
+
 #[test]
 fn a_doc_with_both_a_feature_and_a_track_is_422_one_scope_only() {
     let (f, client) = ready();
