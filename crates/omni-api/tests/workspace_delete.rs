@@ -490,8 +490,8 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .expect("insert a post");
 
     sqlx::query(
-        "INSERT INTO decisions (workspace_id, project_id, track_id, feature_id, question, decision, why, author) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'deletion test', 'deletion test', 'deletion test', \
+        "INSERT INTO decisions (workspace_id, project_id, track_id, about, feature_id, question, decision, why, author) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'feature', $4::uuid, 'deletion test', 'deletion test', 'deletion test', \
          '{\"kind\":\"agent\"}'::jsonb)",
     )
     .bind(workspace)

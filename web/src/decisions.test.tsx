@@ -4,6 +4,8 @@
 // when, with a note on one that replaces another; a feature's page lists only the
 // decisions nobody replaced, each with the ones it replaced nested under it; the
 // track's owner, and nobody else, adds a decision from the track page.
+// US-329: a part's page and the project's page list the decisions about that
+// level the same way, and one replaced from another level is marked replaced.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -27,7 +29,11 @@ type Decision = {
   id: string;
   project_id: string;
   track_id: string;
+  about: string;
   feature_id: string | null;
+  feature_name: string | null;
+  part_id: string | null;
+  part_name: string | null;
   question: string;
   decision: string;
   why: string;
@@ -40,14 +46,19 @@ type Decision = {
 function decision(
   n: number,
   fields: { question: string; decision: string; why?: string; author?: Record<string, unknown>; minutesAgo: number },
-  links: { replaces?: number; replacedBy?: number; feature?: string | null } = {},
+  links: { replaces?: number; replacedBy?: number; feature?: string | null; about?: "part" | "project" } = {},
 ): Decision {
   const id = (k: number) => `0192d7a0-7777-7000-8000-${k.toString(16).padStart(12, "0")}`;
+  const featureId = links.about ? null : links.feature === undefined ? ANALYZE : links.feature;
   return {
     id: id(n),
     project_id: PROJECT_ID,
     track_id: TRACK_ID,
-    feature_id: links.feature === undefined ? ANALYZE : links.feature,
+    about: links.about ?? (featureId ? "feature" : "track"),
+    feature_id: featureId,
+    feature_name: featureId === ANALYZE ? "Analyze" : null,
+    part_id: links.about === "part" ? WISION : null,
+    part_name: links.about === "part" ? "Wision" : null,
     question: fields.question,
     decision: fields.decision,
     why: fields.why ?? "",
@@ -71,6 +82,8 @@ function fakeApi(fields: {
   role?: string;
   trackDecisions?: Decision[];
   featureDecisions?: Decision[];
+  partDecisions?: { decisions: Decision[]; earlier: Decision[] };
+  projectDecisions?: { decisions: Decision[]; earlier: Decision[] };
   trackFeatures?: ReturnType<typeof feature>[];
 }) {
   const api = { trackDecisions: fields.trackDecisions ?? [], posted: [] as unknown[] };
@@ -97,7 +110,9 @@ function fakeApi(fields: {
         api.posted.push(body);
         const created = {
           ...decision(99, { question: body.question, decision: body.decision, why: body.why, minutesAgo: 0 }),
+          about: body.feature_id ? "feature" : "track",
           feature_id: body.feature_id,
+          feature_name: body.feature_id === ANALYZE ? "Analyze" : null,
           author: { kind: "human", user_id: fields.me },
         };
         api.trackDecisions = [created, ...api.trackDecisions];
@@ -148,13 +163,19 @@ function fakeApi(fields: {
         case `${API}/tracks/${TRACK_ID}/features`:
           return json(200, { features: fields.trackFeatures ?? [] });
         case `${API}/tracks/${TRACK_ID}/decisions`:
-          return json(200, { decisions: api.trackDecisions });
+          return json(200, { decisions: api.trackDecisions, earlier: [] });
         case `${API}/parts/${WISION}/features/${ANALYZE}`:
           return json(200, { feature: feature(ANALYZE, "Analyze") });
         case `${API}/parts/${WISION}/features/${ANALYZE}/tracks`:
           return json(200, { tracks: [trackBody] });
         case `${API}/parts/${WISION}/features/${ANALYZE}/decisions`:
-          return json(200, { decisions: fields.featureDecisions ?? [] });
+          return json(200, { decisions: fields.featureDecisions ?? [], earlier: [] });
+        case `${API}/parts/${WISION}/features`:
+          return json(200, { features: [] });
+        case `${API}/parts/${WISION}/decisions`:
+          return json(200, fields.partDecisions ?? { decisions: [], earlier: [] });
+        case `${API}/decisions`:
+          return json(200, fields.projectDecisions ?? { decisions: [], earlier: [] });
         case `${API}/docs`:
           return json(200, { docs: [] });
         case `${API}/comments`:
@@ -224,9 +245,9 @@ describe("decisions on a track page", () => {
       me: USER.id,
       role: "admin",
       trackDecisions: [
-        decision(3, { question: "Which window?", decision: "Hourly", minutesAgo: 2 }, { replaces: 1 }),
-        decision(2, { question: "Store raw readings?", decision: "No", why: "Too much data", author: agent("planner"), minutesAgo: 180 }),
-        decision(1, { question: "Which window?", decision: "Daily", why: "Simple to start", author: agent("implementer"), minutesAgo: 2 * 24 * 60 }, { replacedBy: 3 }),
+        decision(3, { question: "Which window?", decision: "Hourly", minutesAgo: 2 }, { replaces: 1, feature: null }),
+        decision(2, { question: "Store raw readings?", decision: "No", why: "Too much data", author: agent("planner"), minutesAgo: 180 }, { feature: null }),
+        decision(1, { question: "Which window?", decision: "Daily", why: "Simple to start", author: agent("implementer"), minutesAgo: 2 * 24 * 60 }, { replacedBy: 3, feature: null }),
       ],
     });
     renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
@@ -287,6 +308,56 @@ describe("decisions on a feature page", () => {
   });
 });
 
+describe("decisions on a part page and on the project page", () => {
+  test("a part page lists the decisions about the part, newest first, a replaced one under its replacer, and marks one that a project decision replaced", async () => {
+    fakeApi({
+      owner: USER.id,
+      me: USER.id,
+      partDecisions: {
+        decisions: [
+          decision(21, { question: "Who writes readings?", decision: "Only writer of readings", minutesAgo: 5 }, { about: "part", replaces: 22 }),
+          decision(23, { question: "Theme?", decision: "Dark", why: "Taste", minutesAgo: 60 }, { about: "part", replacedBy: 30 }),
+          decision(22, { question: "Who writes readings?", decision: "Every service", minutesAgo: 120 }, { about: "part", replacedBy: 21 }),
+        ],
+        earlier: [],
+      },
+    });
+    renderAt(`${PROJECT_PATH}/parts/${WISION}`);
+    const section = await decisionsRegion();
+    await waitFor(() => expect(topEntries(section)).toHaveLength(2));
+    const [writer, theme] = topEntries(section);
+    expect(linesOf(writer).slice(0, 2)).toEqual(["Who writes readings?", "Only writer of readings"]);
+    expect(replacedUnder(writer).map((entry) => linesOf(entry)[1])).toEqual(["Every service"]);
+    expect(linesOf(writer).join(" ")).not.toMatch(/replaced/i);
+
+    expect(linesOf(theme).slice(0, 3)).toEqual(["Theme?", "Dark", "Taste"]);
+    expect(linesOf(theme)[3], "its replacer is about the project, so it is marked here").toMatch(/replaced/i);
+    expect(replacedUnder(theme)).toEqual([]);
+  });
+
+  test("the project page lists the decisions about the project, newest first, with a part decision one of them replaced nested under it", async () => {
+    fakeApi({
+      owner: USER.id,
+      me: USER.id,
+      projectDecisions: {
+        decisions: [
+          decision(30, { question: "Theme?", decision: "Dark everywhere", why: "One look", minutesAgo: 1 }, { about: "project", replaces: 23 }),
+          decision(31, { question: "Which licence?", decision: "MIT", why: "Open", minutesAgo: 30 }, { about: "project" }),
+        ],
+        earlier: [decision(23, { question: "Theme?", decision: "Dark", why: "Taste", minutesAgo: 60 }, { about: "part", replacedBy: 30 })],
+      },
+    });
+    renderAt(`${PROJECT_PATH}/app`);
+    const section = await decisionsRegion();
+    await waitFor(() => expect(topEntries(section)).toHaveLength(2));
+    const top = topEntries(section);
+    expect(top.map((entry) => linesOf(entry)[1])).toEqual(["Dark everywhere", "MIT"]);
+    expect(replacedUnder(top[0]).map((entry) => linesOf(entry)[1])).toEqual(["Dark"]);
+    expect(replacedUnder(top[1])).toEqual([]);
+    expect(section.querySelectorAll("li"), "each decision shows once").toHaveLength(3);
+  });
+});
+
 describe("adding a decision on a track page", () => {
   test("the owner fills question, decision and why, may pick one of the track's features, and the decision shows at once", async () => {
     const api = fakeApi({
@@ -319,8 +390,8 @@ describe("adding a decision on a track page", () => {
     await waitFor(() => expect(topEntries(section)).toHaveLength(2));
     expect(api.posted).toEqual([{ question: "Which window?", decision: "Hourly", why: "Customers look at hours", feature_id: ANALYZE }]);
     const newest = linesOf(topEntries(section)[0]);
-    expect(newest.slice(0, 3)).toEqual(["Which window?", "Hourly", "Customers look at hours"]);
-    expect(newest[3]).toMatch(/\bhuman\b/);
-    expect(newest[3]).toContain("just now");
+    expect(newest.slice(0, 4), "a label names the feature it is about").toEqual(["Feature: Analyze", "Which window?", "Hourly", "Customers look at hours"]);
+    expect(newest[4]).toMatch(/\bhuman\b/);
+    expect(newest[4]).toContain("just now");
   });
 });

@@ -687,6 +687,18 @@ const CASES: &[Case] = &[
     ),
     case(
         "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/decisions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
         None,
         Kind::Workspace,
@@ -1340,26 +1352,35 @@ fn fixture() -> &'static Fixture {
                 200,
                 "link the track to the feature",
             );
-            // A decision on the track about the feature, so the decisions
-            // table has rows of the workspace.
-            let body = json!({
-                "question": unique(&format!("{name}-question")),
-                "decision": "decided",
-                "why": "because",
-                "feature_id": feature_id
-            })
-            .to_string();
-            must(
-                call(
-                    client,
-                    "POST",
-                    &format!("{base}/tracks/{track_id}/decisions"),
-                    &agent,
-                    Some(&body),
-                ),
-                201,
-                "record a decision on the track",
-            );
+            // Decisions on the track about the feature, the part and the
+            // project, so the decisions table has rows of the workspace and
+            // each level's list has one.
+            for level in [
+                json!({ "feature_id": feature_id }),
+                json!({ "part_id": part_id }),
+                json!({ "about_project": true }),
+            ] {
+                let mut body = json!({
+                    "question": unique(&format!("{name}-question")),
+                    "decision": "decided",
+                    "why": "because"
+                });
+                body.as_object_mut()
+                    .expect("an object")
+                    .extend(level.as_object().expect("an object").clone());
+                let body = body.to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/decisions"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "record a decision on the track",
+                );
+            }
             let body = json!({
                 "kind": "html",
                 "pillar": "spec",
@@ -1976,7 +1997,11 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
             if entry.path.contains("/components/{component_id}") {
                 continue;
             }
-            let path = fill(&entry.path, own, own);
+            let mut path = fill(&entry.path, own, own);
+            // The project's decision list is only of the project level.
+            if entry.path.ends_with("/projects/{project_id}/decisions") {
+                path.push_str("?scope=project");
+            }
             for auth in credentials(entry.access, own) {
                 let what = format!("{} with {}", route_name(&entry.method, &path), auth.label());
                 let response = call(client, &entry.method, &path, &auth, None);

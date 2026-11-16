@@ -804,3 +804,150 @@ fn a_decision_is_recorded_on_the_track_and_listed_with_the_one_that_replaces_it(
         lines[1]
     );
 }
+
+// US-329: a decision about a part is listed by that part and by no feature, one
+// about the project by the project, the track lists both, and two levels at
+// once is one_scope_only.
+#[test]
+fn a_decision_about_a_part_or_the_project_is_listed_at_that_level_only() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("monitoring");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    for (part, kind) in [("Wision", "app"), ("iot-service", "service")] {
+        let out = run(
+            &home,
+            &[
+                "part",
+                "create",
+                part,
+                "--kind",
+                kind,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(out.code, 0, "part create {part}: {}", out.stderr);
+    }
+    for (feature, part) in [("Analyze", "Wision"), ("Ingest", "iot-service")] {
+        let out = run(
+            &home,
+            &[
+                "feature",
+                "create",
+                feature,
+                "--part",
+                part,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(out.code, 0, "feature create {feature}: {}", out.stderr);
+    }
+    let out = run(
+        &home,
+        &[
+            "track",
+            "create",
+            "Readings",
+            "--part",
+            "iot-service",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "track create: {}", out.stderr);
+    let on_track = |args: &[&str]| {
+        omni(&home.path)
+            .args(args)
+            .args(&["--project", &project, "--as", "run-7/planner"])
+            .env("OMNI_TRACK", "Readings")
+            .run()
+    };
+    let add = |level: &[&str], decision: &str| {
+        let base = [
+            "decision",
+            "add",
+            "--question",
+            "Q",
+            "--decision",
+            decision,
+            "--why",
+            "W",
+        ];
+        let added = on_track(&[&base[..], level, &["--json"][..]].concat());
+        assert_eq!(added.code, 0, "decision add {level:?}: {}", added.stderr);
+        added.json()["decision"]["id"]
+            .as_str()
+            .expect("an id")
+            .to_string()
+    };
+    let listed = |filter: &[&str]| {
+        let out = on_track(&[&["decision", "list"][..], filter].concat());
+        assert_eq!(out.code, 0, "decision list {filter:?}: {}", out.stderr);
+        out.stdout
+    };
+
+    let part = add(&["--part", "iot-service"], "Only writer of readings");
+    // A bare --project, before the --project <name> that selects the project.
+    let whole = add(&["--project"], "One stack per customer");
+
+    let of_part = listed(&["--part", "iot-service"]);
+    assert!(
+        of_part.contains(&part) && of_part.contains("Only writer of readings"),
+        "the part lists its decision: {of_part:?}"
+    );
+    assert!(
+        !of_part.contains(&whole),
+        "the part leaves out the project's decision: {of_part:?}"
+    );
+    for feature in ["Analyze", "Ingest"] {
+        let of_feature = listed(&["--feature", feature]);
+        assert!(
+            !of_feature.contains(&part) && !of_feature.contains(&whole),
+            "feature {feature} lists neither: {of_feature:?}"
+        );
+    }
+    let of_project = listed(&["--project"]);
+    assert!(
+        of_project.contains(&whole) && of_project.contains("One stack per customer"),
+        "the project lists its decision: {of_project:?}"
+    );
+    assert!(
+        !of_project.contains(&part),
+        "the project leaves out the part's decision: {of_project:?}"
+    );
+    let of_track = listed(&[]);
+    assert!(
+        of_track.contains(&part) && of_track.contains(&whole),
+        "the track lists every decision recorded on it: {of_track:?}"
+    );
+
+    for levels in [
+        &["--feature", "Ingest", "--part", "iot-service"][..],
+        &["--part", "iot-service", "--project"][..],
+    ] {
+        let base = [
+            "decision",
+            "add",
+            "--question",
+            "Q",
+            "--decision",
+            "Both",
+            "--why",
+            "W",
+        ];
+        let out = on_track(&[&base[..], levels].concat());
+        assert_ne!(out.code, 0, "{levels:?} is refused: {}", out.stdout);
+        assert!(
+            out.stderr.contains("one_scope_only"),
+            "{levels:?}: {}",
+            out.stderr
+        );
+    }
+    assert!(
+        !listed(&[]).contains("Both"),
+        "a refused decision is not recorded"
+    );
+}
