@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { loadPartDocs } from "@/api/features";
 import { PageHeader } from "@/components/page-header";
+import { PartDecisions } from "@/components/project/decisions";
 import { FeaturesSection } from "@/components/project/features-section";
 import { NewTrack } from "@/components/project/new-track";
 import { KindLabel } from "@/components/project/parts-section";
@@ -93,6 +94,7 @@ function PartPage() {
                   </List>
                 ))}
             </section>
+            <PartDecisions workspaceId={workspaceId} projectId={projectId} partId={part.id} />
             <section aria-labelledby="tracks-title" className="space-y-3">
               <div className="flex flex-wrap items-center gap-2.5">
                 <h2 id="tracks-title" className="text-[15px] font-semibold tracking-tight">

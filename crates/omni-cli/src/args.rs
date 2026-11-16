@@ -24,6 +24,10 @@ pub struct Args {
     /// on and `omni doc list` shows, instead of the track of `OMNI_TRACK`.
     pub feature: Option<String>,
     pub global: bool,
+    /// `omni decision add --project` and `omni decision list --project`: the
+    /// decision is about, or the list is of, the whole project. Only there
+    /// is `--project` a flag; everywhere else it takes a value.
+    pub project_level: bool,
     /// `omni track list --mine`: only the tracks the key's member owns.
     pub mine: bool,
     /// `--part <name or id>`: the part `omni track create` and `omni track
@@ -316,6 +320,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--harness" => &mut parsed.harness,
             "--server" => &mut parsed.server,
             "--body-file" => &mut parsed.body_file,
+            "--project" if parsed.words.first().is_some_and(|word| word == "decision") => {
+                parsed.project_level = true;
+                continue;
+            }
             "--project" => &mut parsed.project,
             "--track" => &mut parsed.track,
             "--feature" => &mut parsed.feature,

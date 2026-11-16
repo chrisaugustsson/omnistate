@@ -1,13 +1,14 @@
 //! `omni decision`: record a decision on a track and list the decisions of a
-//! track or a feature. A decision says what was decided and why, may be about
-//! one feature, and may replace an earlier decision; it is never edited or
-//! deleted.
+//! track, a feature, a part or the whole project. A decision says what was
+//! decided and why, may be about one feature, one part or the whole project,
+//! and may replace an earlier decision; it is never edited or deleted.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
-use crate::features::{project_features, resolve_feature};
+use crate::features::resolve_feature;
 use crate::json::{Value, quote};
+use crate::parts::resolve_part;
 use crate::projects::{current_track, is_uuid, project_id, projects_path, resolve_track};
 
 /// The text of an API response, for `--json`.
@@ -35,9 +36,23 @@ fn required<'a>(value: &'a Option<String>, flag: &str, usage: &str) -> Result<&'
     }
 }
 
-/// `omni decision add --question <q> --decision <d> --why <w> [--feature <f>] [--replaces <id>]`
+/// Fails with `one_scope_only` when more than one level is given.
+fn one_level(args: &Args) -> Result<()> {
+    let given = [
+        args.feature.is_some(),
+        args.part.is_some(),
+        args.project_level,
+    ];
+    if given.into_iter().filter(|set| *set).count() > 1 {
+        bail!("one_scope_only: give one of --feature, --part and --project, not several");
+    }
+    Ok(())
+}
+
+/// `omni decision add --question <q> --decision <d> --why <w> [--feature <f> | --part <p> | --project] [--replaces <id>]`
 pub fn add(args: &Args) -> Result<()> {
-    const USAGE: &str = "omni decision add --question <q> --decision <d> --why <w> [--feature <name|id>] [--replaces <id>]";
+    const USAGE: &str = "omni decision add --question <q> --decision <d> --why <w> [--feature <name|id> | --part <name|id> | --project] [--replaces <id>]";
+    one_level(args)?;
     let question = required(&args.question, "--question", USAGE)?;
     let decision = required(&args.decision, "--decision", USAGE)?;
     let why = required(&args.why, "--why", USAGE)?;
@@ -58,11 +73,18 @@ pub fn add(args: &Args) -> Result<()> {
         let feature = if is_uuid(given.trim()) {
             given.trim().to_ascii_lowercase()
         } else {
-            resolve_feature(&agent, &project, given, args.part.as_deref())?
+            resolve_feature(&agent, &project, given, None)?
                 .id()
                 .to_string()
         };
         body.push_str(&format!(",\"feature_id\":{}", quote(&feature)));
+    }
+    if let Some(given) = args.part.as_deref() {
+        let part = resolve_part(&agent, &project, given.trim())?;
+        body.push_str(&format!(",\"part_id\":{}", quote(&part)));
+    }
+    if args.project_level {
+        body.push_str(",\"about_project\":true");
     }
     if let Some(replaces) = args.replaces.as_deref() {
         body.push_str(&format!(
@@ -90,15 +112,27 @@ pub fn add(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// `omni decision list [--track <name|id> | --feature <name|id>]`
+/// `omni decision list [--track <name|id> | --feature <name|id> | --part <name|id> | --project]`
 pub fn list(args: &Args) -> Result<()> {
+    one_level(args)?;
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let path = if let Some(given) = args.feature.as_deref() {
+    let path = if args.project_level {
+        if args.track.is_some() {
+            bail!("give --track or --project, not both");
+        }
+        format!("{}/decisions?scope=project", project_path(&agent, &project))
+    } else if let Some(given) = args.part.as_deref() {
+        if args.track.is_some() {
+            bail!("give --track or --part, not both");
+        }
+        let part = resolve_part(&agent, &project, given.trim())?;
+        format!("{}/parts/{part}/decisions", project_path(&agent, &project))
+    } else if let Some(given) = args.feature.as_deref() {
         if args.track.is_some() {
             bail!("give --track or --feature, not both");
         }
-        let feature = resolve_feature(&agent, &project, given, args.part.as_deref())?;
+        let feature = resolve_feature(&agent, &project, given, None)?;
         format!(
             "{}/parts/{}/features/{}/decisions",
             project_path(&agent, &project),
@@ -108,7 +142,7 @@ pub fn list(args: &Args) -> Result<()> {
     } else {
         let Some(given) = current_track(args) else {
             bail!(
-                "omni decision list needs a track or a feature: --track <name|id>, --feature <name|id> or OMNI_TRACK"
+                "omni decision list needs a track, a feature, a part or the project: --track <name|id>, --feature <name|id>, --part <name|id>, --project or OMNI_TRACK"
             );
         };
         let track = resolve_track(&agent, &project, &given)?;
@@ -131,27 +165,26 @@ pub fn list(args: &Args) -> Result<()> {
     if decisions.is_empty() {
         say("no decisions");
     }
-    // The names of the features are only looked up when a decision is about one.
-    let features = if decisions
-        .iter()
-        .any(|decision| decision.str_at("feature_id").is_some())
-    {
-        project_features(&agent, &project, None).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     for decision in decisions {
         let field = |name: &str| decision.str_at(name).unwrap_or("?");
-        let feature = match decision.str_at("feature_id") {
-            None => "-",
-            Some(id) => features
-                .iter()
-                .find(|found| found.id() == id)
-                .and_then(|found| found.feature.str_at("name"))
-                .unwrap_or(id),
+        let about = match decision.str_at("about") {
+            Some("feature") => decision
+                .str_at("feature_name")
+                .or(decision.str_at("feature_id"))
+                .unwrap_or("?")
+                .to_string(),
+            Some("part") => format!(
+                "part {}",
+                decision
+                    .str_at("part_name")
+                    .or(decision.str_at("part_id"))
+                    .unwrap_or("?")
+            ),
+            Some("project") => "project".to_string(),
+            _ => "-".to_string(),
         };
         let mut line = format!(
-            "{}  {}  {feature}  {} -> {} (why: {})",
+            "{}  {}  {about}  {} -> {} (why: {})",
             field("id"),
             field("created_at"),
             field("question"),

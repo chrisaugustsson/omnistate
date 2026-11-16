@@ -1,6 +1,13 @@
 import { useCallback, useState } from "react";
 import { ApiError } from "@/api/client";
-import { loadTrackDecisions, loadFeatureDecisions, recordDecision } from "@/api/decisions";
+import {
+  loadFeatureDecisions,
+  loadPartDecisions,
+  loadProjectDecisions,
+  loadTrackDecisions,
+  recordDecision,
+  type LevelDecisions,
+} from "@/api/decisions";
 import { loadTrackFeatures } from "@/api/features";
 import type { DecisionBody } from "@/api/generated";
 import { loadMyUserId } from "@/api/members";
@@ -30,18 +37,30 @@ function Heading({ count }: { count: number }) {
   );
 }
 
+/** What a decision is about, for the track page; null for one about only the track. */
+function levelOf(decision: DecisionBody): string | null {
+  if (decision.about === "feature") return `Feature: ${decision.feature_name ?? "unknown"}`;
+  if (decision.about === "part") return `Part: ${decision.part_name ?? "unknown"}`;
+  if (decision.about === "project") return "Project";
+  return null;
+}
+
 function Entry({
   decision,
   replaced,
   showReplaces,
+  showLevel = false,
 }: {
   decision: DecisionBody;
   replaced: Map<string, DecisionBody[]>;
   showReplaces: boolean;
+  showLevel?: boolean;
 }) {
   const earlier = replaced.get(decision.id) ?? [];
+  const level = showLevel ? levelOf(decision) : null;
   return (
     <li className="space-y-1.5 rounded-lg border px-3.5 py-3 text-sm">
+      {level && <p className="text-[12px] font-medium uppercase tracking-wide text-muted-foreground">{level}</p>}
       <p className="text-[13px] text-muted-foreground">{decision.question}</p>
       <p className="font-medium">{decision.decision}</p>
       {decision.why && <p className="whitespace-pre-line text-[13px] text-foreground/80">{decision.why}</p>}
@@ -52,7 +71,7 @@ function Entry({
       {earlier.length > 0 && (
         <ul aria-label="Replaced decisions" className="ml-3 space-y-2 border-l pl-3">
           {earlier.map((one) => (
-            <Entry key={one.id} decision={one} replaced={replaced} showReplaces={showReplaces} />
+            <Entry key={one.id} decision={one} replaced={replaced} showReplaces={showReplaces} showLevel={showLevel} />
           ))}
         </ul>
       )}
@@ -66,21 +85,25 @@ function FlatList({ decisions }: { decisions: DecisionBody[] }) {
   return (
     <ul className="space-y-2">
       {decisions.map((decision) => (
-        <Entry key={decision.id} decision={decision} replaced={none} showReplaces />
+        <Entry key={decision.id} decision={decision} replaced={none} showReplaces showLevel />
       ))}
     </ul>
   );
 }
 
-/** Decisions nobody has replaced, each with the ones it replaced nested under it. */
-function NestedList({ decisions }: { decisions: DecisionBody[] }) {
-  const ids = new Set(decisions.map((decision) => decision.id));
+/**
+ * Decisions nobody has replaced, each with the ones it replaced nested under
+ * it, also those about another level that came with the list.
+ */
+function NestedList({ decisions, earlier }: LevelDecisions) {
+  const all = [...decisions, ...earlier];
+  const ids = new Set(all.map((decision) => decision.id));
   const replaced = new Map<string, DecisionBody[]>();
   const top: DecisionBody[] = [];
-  for (const decision of decisions) {
+  for (const decision of all) {
     const by = decision.replaced_by_decision_id;
     if (by && ids.has(by)) replaced.set(by, [...(replaced.get(by) ?? []), decision]);
-    else top.push(decision);
+    else if (decisions.includes(decision)) top.push(decision);
   }
   return (
     <ul className="space-y-2">
@@ -101,8 +124,37 @@ export function FeatureDecisions({ workspaceId, projectId, partId, featureId }: 
   useProjectEvents(projectId, reload);
   return (
     <section id="decisions" aria-labelledby="decisions-title" className="scroll-mt-6 space-y-3">
-      <Heading count={value?.length ?? 0} />
-      {value && (value.length === 0 ? <Empty>No decisions are linked to this feature</Empty> : <NestedList decisions={value} />)}
+      <Heading count={value?.decisions.length ?? 0} />
+      {value &&
+        (value.decisions.length === 0 ? <Empty>No decisions are linked to this feature</Empty> : <NestedList {...value} />)}
+    </section>
+  );
+}
+
+/** The decisions about a part itself, not about its features. */
+export function PartDecisions({ workspaceId, projectId, partId }: Params & { partId: string }) {
+  const load = useCallback(() => loadPartDecisions(workspaceId, projectId, partId), [workspaceId, projectId, partId]);
+  const { value, reload } = useReloading(load);
+  useProjectEvents(projectId, reload);
+  return (
+    <section id="decisions" aria-labelledby="decisions-title" className="scroll-mt-6 space-y-3">
+      <Heading count={value?.decisions.length ?? 0} />
+      {value &&
+        (value.decisions.length === 0 ? <Empty>No decisions are about this part</Empty> : <NestedList {...value} />)}
+    </section>
+  );
+}
+
+/** The decisions about the whole project, not about its parts or features. */
+export function ProjectDecisions({ workspaceId, projectId }: Params) {
+  const load = useCallback(() => loadProjectDecisions(workspaceId, projectId), [workspaceId, projectId]);
+  const { value, reload } = useReloading(load);
+  useProjectEvents(projectId, reload);
+  return (
+    <section id="decisions" aria-labelledby="decisions-title" className="scroll-mt-6 space-y-3">
+      <Heading count={value?.decisions.length ?? 0} />
+      {value &&
+        (value.decisions.length === 0 ? <Empty>No decisions are about the whole project</Empty> : <NestedList {...value} />)}
     </section>
   );
 }

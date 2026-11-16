@@ -116,6 +116,8 @@ use utoipa::OpenApi;
         crate::decisions::create_decision,
         crate::decisions::list_track_decisions,
         crate::decisions::list_feature_decisions,
+        crate::decisions::list_part_decisions,
+        crate::decisions::list_project_decisions,
         crate::tracks::delete_track,
         crate::projects::list_projects,
         crate::projects::create_project,

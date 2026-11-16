@@ -339,6 +339,14 @@ pub fn router(state: AppState) -> Router {
             get(decisions::list_feature_decisions),
         )
         .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/decisions",
+            get(decisions::list_part_decisions),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/decisions",
+            get(decisions::list_project_decisions),
+        )
+        .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",
             get(home::show),
         )

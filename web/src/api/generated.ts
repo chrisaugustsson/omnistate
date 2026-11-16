@@ -311,8 +311,10 @@ export const CreateCommentRequestSchema = z.object({
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
 
 export const CreateDecisionRequestSchema = z.object({
+  about_project: z.boolean().nullable().optional(),
   decision: z.string().nullable().optional(),
   feature_id: z.string().nullable().optional(),
+  part_id: z.string().nullable().optional(),
   question: z.string().nullable().optional(),
   replaces_decision_id: z.string().nullable().optional(),
   why: z.string().nullable().optional(),
@@ -415,11 +417,15 @@ export const CriterionBodySchema = z.object({
 export type CriterionBody = z.infer<typeof CriterionBodySchema>;
 
 export const DecisionBodySchema = z.object({
+  about: z.string(),
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
   decision: z.string(),
   feature_id: z.string().nullable().optional(),
+  feature_name: z.string().nullable().optional(),
   id: z.string(),
+  part_id: z.string().nullable().optional(),
+  part_name: z.string().nullable().optional(),
   project_id: z.string(),
   question: z.string(),
   replaced_by_decision_id: z.string().nullable().optional(),
@@ -431,6 +437,7 @@ export type DecisionBody = z.infer<typeof DecisionBodySchema>;
 
 export const DecisionListResponseSchema = z.object({
   decisions: z.array(DecisionBodySchema),
+  earlier: z.array(DecisionBodySchema),
 });
 export type DecisionListResponse = z.infer<typeof DecisionListResponseSchema>;
 
@@ -1646,6 +1653,14 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/decisions": {
+    responses: {
+      "200": DecisionListResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs": {
     responses: {
       "200": DocListResponseSchema,
@@ -1797,6 +1812,13 @@ export const operations = {
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/decisions": {
+    responses: {
+      "200": DecisionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features": {

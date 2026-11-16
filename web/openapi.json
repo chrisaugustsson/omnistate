@@ -816,6 +816,13 @@
       },
       "CreateDecisionRequest": {
         "properties": {
+          "about_project": {
+            "description": "`true`: the decision is about the whole project. At most one of\n`feature_id`, `part_id` and `about_project` may be given, else 422\n`one_scope_only`. With none of them, a decision that replaces another\ntakes that one's level.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "decision": {
             "description": "What was decided. Not blank.",
             "type": [
@@ -825,6 +832,13 @@
           },
           "feature_id": {
             "description": "A feature of the track's project the decision is about. Another\nproject's feature is 422 `feature_not_in_project`, an unknown ID 404.\nWithout it, a decision that replaces another takes that one's feature.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part_id": {
+            "description": "A part of the track's project the decision is about; a part of another\nproject is 422 `part_not_in_project`, an unknown ID 404.",
             "type": [
               "string",
               "null"
@@ -1214,6 +1228,10 @@
       },
       "DecisionBody": {
         "properties": {
+          "about": {
+            "description": "What level the decision is about: `track`, `feature`, `part` or\n`project`. A decision about the track shows only on its track.",
+            "type": "string"
+          },
           "author": {
             "description": "`{\"kind\": \"human\", \"user_id\"}` or `{\"kind\": \"agent\", \"run\", \"role\",\n\"model\", \"harness\"}`.",
             "type": "object"
@@ -1231,8 +1249,29 @@
               "null"
             ]
           },
+          "feature_name": {
+            "description": "The feature's name; null when `feature_id` is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
+          },
+          "part_id": {
+            "description": "The part the decision is about; null when it is about none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part_name": {
+            "description": "The part's name; null when `part_id` is.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "project_id": {
             "type": "string"
@@ -1265,6 +1304,7 @@
           "id",
           "project_id",
           "track_id",
+          "about",
           "question",
           "decision",
           "why",
@@ -1280,10 +1320,18 @@
               "$ref": "#/components/schemas/DecisionBody"
             },
             "type": "array"
+          },
+          "earlier": {
+            "description": "Decisions about another level that the listed ones replace, directly\nor through others, so a page can show them under the replacer. Empty\non a track's list, which has every decision of the track.",
+            "items": {
+              "$ref": "#/components/schemas/DecisionBody"
+            },
+            "type": "array"
           }
         },
         "required": [
-          "decisions"
+          "decisions",
+          "earlier"
         ],
         "type": "object"
       },
@@ -6288,6 +6336,90 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/decisions": {
+      "get": {
+        "operationId": "list_project_decisions",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only `project`: the decisions about the whole project.",
+            "in": "path",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionListResponse"
+                }
+              }
+            },
+            "description": "The decisions about the project, newest first"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`scope` is missing or is not `project`"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such project in this workspace"
+          }
+        },
+        "summary": "The decisions about the whole project, newest first, from every track; not\nthose about its parts or features.",
+        "tags": [
+          "crate::decisions"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs": {
       "get": {
         "operationId": "list_docs",
@@ -8157,6 +8289,77 @@
         "summary": "Renames a part. Its ID stays.",
         "tags": [
           "crate::parts"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/decisions": {
+      "get": {
+        "operationId": "list_part_decisions",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionListResponse"
+                }
+              }
+            },
+            "description": "The decisions about the part, newest first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such part in this project, or it was deleted"
+          }
+        },
+        "summary": "The decisions about a part, newest first, from every track; not those\nabout its features.",
+        "tags": [
+          "crate::decisions"
         ],
         "x-omni-access": "both"
       }
@@ -11877,7 +12080,7 @@
                 }
               }
             },
-            "description": "No such track in this project and workspace, or no such feature or decision"
+            "description": "No such track in this project and workspace, or no such feature, part or decision"
           },
           "422": {
             "content": {
@@ -11887,7 +12090,7 @@
                 }
               }
             },
-            "description": "`feature_not_in_project` or `replaces_not_in_project`: the feature or the decision is of another project"
+            "description": "`feature_not_in_project`, `part_not_in_project` or `replaces_not_in_project`: the feature, the part or the decision is of another project; `one_scope_only`: more than one of `feature_id`, `part_id` and `about_project` given"
           }
         },
         "summary": "Records a decision on a track.",

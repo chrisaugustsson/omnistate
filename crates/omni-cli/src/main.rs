@@ -101,13 +101,16 @@ Usage:
                                       the owner or an admin can
   omni track delete <name|id>         delete a track with its docs, threads and comments (they
                                       are kept, hidden; the name can be used again)
-  omni decision add --question <q> --decision <d> --why <w> [--feature <name|id>] [--replaces <id>]
-                                      record a decision on the current track, about a feature if
-                                      given; it takes the replaced decision's feature unless
-                                      --feature says another. Decisions are never edited or deleted
-  omni decision list [--track <name|id> | --feature <name|id>]
-                                      list a track's or a feature's decisions, newest first, with
-                                      what each replaces and what replaced it
+  omni decision add --question <q> --decision <d> --why <w> [--feature <name|id> | --part <name|id> | --project]
+                                [--replaces <id>]
+                                      record a decision on the current track, about a feature, a
+                                      part or the whole project if given (one of them); with
+                                      --replaces and none given it takes the replaced decision's
+                                      level. Decisions are never edited or deleted
+  omni decision list [--track <name|id> | --feature <name|id> | --part <name|id> | --project]
+                                      list the decisions of a track, or about a feature, a part or
+                                      the project (that exact level), newest first, with what each
+                                      replaces and what replaced it
   omni doc create [--track <name|id> | --feature <name|id> | --part <name|id>] --kind html|design|design-system
                 --pillar spec|ui|architecture|db|research --title <text>
                                       create a doc at the app level, in a track, on a
@@ -377,7 +380,8 @@ Options (before or after the command):
   --model <name>        the model behind the agent (fallback: OMNI_MODEL)
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address, http:// or https:// (fallback: OMNI_SERVER, then the config file)
-  --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link)
+  --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link);
+                        for `omni decision add|list` a flag: about, or of, the whole project
   --track <name|id>   the track that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_TRACK)
   --feature <name|id>   the feature that `omni doc create` creates a doc on and `omni doc list` shows; replaces OMNI_TRACK
   --part <name|id>      without --feature: the part that `omni doc create` creates a doc on and `omni doc list` shows; replaces OMNI_TRACK
