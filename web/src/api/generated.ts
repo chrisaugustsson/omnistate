@@ -136,6 +136,15 @@ export const BlockStoryRequestSchema = z.object({
 });
 export type BlockStoryRequest = z.infer<typeof BlockStoryRequestSchema>;
 
+export const BlockerBodySchema = z.object({
+  id: z.string(),
+  key: z.string(),
+  status: z.string(),
+  track_id: z.string(),
+  track_name: z.string(),
+});
+export type BlockerBody = z.infer<typeof BlockerBodySchema>;
+
 export const BoardBodySchema = z.object({
   board_id: z.string(),
   doc_id: z.string(),
@@ -1104,6 +1113,7 @@ export type StartThreadRequest = z.infer<typeof StartThreadRequestSchema>;
 export const StoryBodySchema = z.object({
   blocked: z.boolean(),
   blocked_by: z.array(z.string()),
+  blockers: z.array(BlockerBodySchema).optional(),
   created_at: z.string(),
   criteria: z.array(CriterionBodySchema),
   decisions: z.array(z.record(z.string(), z.unknown())),
@@ -1250,6 +1260,7 @@ export const schemas = {
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
   BlockStoryRequest: BlockStoryRequestSchema,
+  BlockerBody: BlockerBodySchema,
   BoardBody: BoardBodySchema,
   CancelStoryRequest: CancelStoryRequestSchema,
   ChainNodeBody: ChainNodeBodySchema,

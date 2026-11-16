@@ -39,6 +39,29 @@ fn list_stories(agent: &Agent, path: &str) -> Result<Vec<Value>> {
         .to_vec())
 }
 
+/// The id of the story with this key on any track of the project.
+fn project_story_id(agent: &Agent, args: &Args, key: &str) -> Result<Option<String>> {
+    let project = project_id(args, agent)?;
+    let base = format!("/api/v1/w/{}/projects/{project}/tracks", agent.workspace_id);
+    let response = agent.request("GET", &base, None)?;
+    let listed = Value::parse(&response.text()).map_err(|_| unreadable())?;
+    for track in listed
+        .get("tracks")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+    {
+        let Some(track_id) = track.str_at("id") else {
+            continue;
+        };
+        for story in list_stories(agent, &format!("{base}/{track_id}/stories"))? {
+            if story.str_at("key") == Some(key) {
+                return Ok(story.str_at("id").map(str::to_string));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// The text after a bold label such as `**Topic:**` at the start of a line.
 fn labelled<'a>(line: &'a str, label: &str) -> Option<&'a str> {
     line.trim_start()
@@ -435,17 +458,33 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
             if pending { " (pending)" } else { "" }
         ));
     }
-    let blockers: Vec<&str> = found
+    let blockers: Vec<String> = found
         .get("blocked_by")
         .and_then(Value::as_array)
         .unwrap_or_default()
         .iter()
         .filter_map(Value::as_str)
         .map(|id| {
-            all.iter()
-                .find(|s| s.str_at("id") == Some(id))
-                .and_then(|s| s.str_at("key"))
-                .unwrap_or(id)
+            let blocker = found
+                .get("blockers")
+                .and_then(Value::as_array)
+                .unwrap_or_default()
+                .iter()
+                .find(|b| b.str_at("id") == Some(id));
+            match blocker {
+                Some(b) => format!(
+                    "{} ({}, {})",
+                    b.str_at("key").unwrap_or(id),
+                    b.str_at("track_name").unwrap_or("?"),
+                    b.str_at("status").unwrap_or("?")
+                ),
+                None => all
+                    .iter()
+                    .find(|s| s.str_at("id") == Some(id))
+                    .and_then(|s| s.str_at("key"))
+                    .unwrap_or(id)
+                    .to_string(),
+            }
         })
         .collect();
     if !blockers.is_empty() {
@@ -647,14 +686,18 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
                 bail!("{word:?} is not a story key for --blocked-by; use US-1,US-2");
             };
             let wanted = format!("US-{n}");
-            let id = all
+            let own = all
                 .iter()
                 .find(|s| s.str_at("key") == Some(wanted.as_str()))
                 .and_then(|s| s.str_at("id"))
-                .ok_or_else(|| {
-                    CliError::new(format!("not_found: no story {wanted} in this track"))
-                })?;
-            ids.push(quote(id));
+                .map(str::to_string);
+            let id = match own {
+                Some(id) => id,
+                None => project_story_id(&agent, args, &wanted)?.ok_or_else(|| {
+                    CliError::new(format!("not_found: no story {wanted} in this project"))
+                })?,
+            };
+            ids.push(quote(&id));
         }
         fields.push(format!("\"blocked_by\":[{}]", ids.join(",")));
     }

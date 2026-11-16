@@ -32,6 +32,16 @@ const STATUSES: [&str; 8] = [
 ];
 
 #[derive(Serialize, ToSchema)]
+pub struct BlockerBody {
+    pub id: String,
+    pub key: String,
+    pub track_id: String,
+    pub track_name: String,
+    /// The blocker story's own status.
+    pub status: String,
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct CriterionBody {
     pub text: String,
     pub ticked: bool,
@@ -54,8 +64,11 @@ pub struct StoryBody {
     pub text: String,
     pub topic: String,
     pub criteria: Vec<CriterionBody>,
-    /// IDs of the stories of the track that block this one.
+    /// IDs of the stories of the project that block this one.
     pub blocked_by: Vec<String>,
+    /// The blockers with their track and status; filled by the story list only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<BlockerBody>,
     pub files_planned: Vec<String>,
     pub files_changed: Vec<String>,
     /// 0 to 3; 1 is the highest and 0 is reserved for fix stories.
@@ -178,6 +191,7 @@ impl StoryRow {
                 })
                 .collect(),
             blocked_by: list_of(&self.blocked_by),
+            blockers: Vec::new(),
             files_planned: list_of(&self.files_planned),
             files_changed: list_of(&self.files_changed),
             holder: self
@@ -250,7 +264,7 @@ async fn require_track(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such track in this project and workspace", body = ErrorBody),
-        (status = 422, description = "A blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), a link of neither shape (`invalid_links`), a `blocked_by` id that is not a story of the track (`invalid_blocked_by`) or a negative `number_from` (`invalid_number_from`)", body = ErrorBody),
+        (status = 422, description = "A blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), a link of neither shape (`invalid_links`), a `blocked_by` id that is not a story of the project (`invalid_blocked_by`) or a negative `number_from` (`invalid_number_from`)", body = ErrorBody),
     )
 )]
 pub async fn create_story(
@@ -300,9 +314,9 @@ pub async fn create_story(
     }
     if !blocked_by.is_empty() {
         let (found,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM stories WHERE track_id = $1::uuid AND id::text = ANY($2)",
+            "SELECT count(*) FROM stories WHERE project_id = $1::uuid AND id::text = ANY($2)",
         )
-        .bind(&track_id)
+        .bind(&project_id)
         .bind(&blocked_by)
         .fetch_one(&mut *tx)
         .await
@@ -423,8 +437,40 @@ pub async fn list_stories(
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    tx.commit().await.map_err(ApiError::database)?;
     let mut stories: Vec<StoryBody> = rows.into_iter().map(StoryRow::into_body).collect();
+    let wanted: Vec<String> = stories
+        .iter()
+        .flat_map(|story| story.blocked_by.iter().cloned())
+        .collect();
+    let blockers: Vec<(String, i32, String, String, String)> = if wanted.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "SELECT s.id::text, s.number, s.track_id::text, t.name, s.status \
+             FROM stories s JOIN tracks t ON t.id = s.track_id \
+             WHERE s.project_id = $1::uuid AND s.id::text = ANY($2)",
+        )
+        .bind(&project_id)
+        .bind(&wanted)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(ApiError::database)?
+    };
+    tx.commit().await.map_err(ApiError::database)?;
+    for story in &mut stories {
+        story.blockers = story
+            .blocked_by
+            .iter()
+            .filter_map(|id| blockers.iter().find(|row| &row.0 == id))
+            .map(|(id, number, track_id, track_name, status)| BlockerBody {
+                id: id.clone(),
+                key: format!("US-{number}"),
+                track_id: track_id.clone(),
+                track_name: track_name.clone(),
+                status: status.clone(),
+            })
+            .collect();
+    }
     if pickable {
         stories = pickable_stories(stories, query.status.as_deref());
     }
@@ -471,10 +517,9 @@ fn pickable_stories(stories: Vec<StoryBody>, status: Option<&str>) -> Vec<StoryB
             story.status == "backlog"
                 && !story.blocked
                 && story.blocked_by.iter().all(|id| {
-                    stories
-                        .iter()
-                        .find(|other| &other.id == id)
-                        .is_some_and(closed)
+                    story.blockers.iter().any(|blocker| {
+                        &blocker.id == id && matches!(blocker.status.as_str(), "done" | "cancelled")
+                    })
                 })
                 && !story_files(story).iter().any(|path| busy.contains(&path))
         })
@@ -664,7 +709,7 @@ fn is_closed(status: &str) -> bool {
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `not_in_backlog` (a text field of a story outside backlog) or `not_open` (any field of a done or cancelled story); the request is refused whole", body = StoryConflictBody),
-        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the track (`invalid_blocked_by`)", body = ErrorBody),
+        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the project (`invalid_blocked_by`)", body = ErrorBody),
     )
 )]
 pub async fn patch_story(
@@ -735,9 +780,9 @@ pub async fn patch_story(
     let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if let Some(ids) = blocked_by.as_ref().filter(|ids| !ids.is_empty()) {
         let (found,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM stories WHERE track_id = $1::uuid AND id::text = ANY($2)",
+            "SELECT count(*) FROM stories WHERE project_id = $1::uuid AND id::text = ANY($2)",
         )
-        .bind(&track_id)
+        .bind(&project_id)
         .bind(ids)
         .fetch_one(&mut *tx)
         .await

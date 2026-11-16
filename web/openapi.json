@@ -444,6 +444,34 @@
         ],
         "type": "object"
       },
+      "BlockerBody": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "status": {
+            "description": "The blocker story's own status.",
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          },
+          "track_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "track_id",
+          "track_name",
+          "status"
+        ],
+        "type": "object"
+      },
       "BoardBody": {
         "properties": {
           "board_id": {
@@ -3742,9 +3770,16 @@
             "type": "boolean"
           },
           "blocked_by": {
-            "description": "IDs of the stories of the track that block this one.",
+            "description": "IDs of the stories of the project that block this one.",
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "blockers": {
+            "description": "The blockers with their track and status; filled by the story list only.",
+            "items": {
+              "$ref": "#/components/schemas/BlockerBody"
             },
             "type": "array"
           },
@@ -12219,7 +12254,7 @@
                 }
               }
             },
-            "description": "A blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), a link of neither shape (`invalid_links`), a `blocked_by` id that is not a story of the track (`invalid_blocked_by`) or a negative `number_from` (`invalid_number_from`)"
+            "description": "A blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), a link of neither shape (`invalid_links`), a `blocked_by` id that is not a story of the project (`invalid_blocked_by`) or a negative `number_from` (`invalid_number_from`)"
           }
         },
         "summary": "Creates a story in a track.",
@@ -12417,7 +12452,7 @@
                 }
               }
             },
-            "description": "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the track (`invalid_blocked_by`)"
+            "description": "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the project (`invalid_blocked_by`)"
           }
         },
         "summary": "Changes a story's text, priority, blockers or links.",
