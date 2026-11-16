@@ -3,6 +3,7 @@ import { Link, createFileRoute } from "@tanstack/react-router";
 import { loadFeature, loadFeatureDocs, loadFeatureTracks } from "@/api/features";
 import type { TrackSummary } from "@/api/generated";
 import { PageHeader } from "@/components/page-header";
+import { FeatureDecisions } from "@/components/project/decisions";
 import { DocRow, Empty, List } from "@/components/project/items";
 import { TrackRow, orderTracks } from "@/components/project/track-row";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -103,6 +104,7 @@ function FeaturePage() {
                   </List>
                 ))}
             </section>
+            <FeatureDecisions workspaceId={workspaceId} projectId={projectId} partId={partId} featureId={featureId} />
             <section aria-labelledby="tracks-title" className="space-y-3">
               <div className="flex items-baseline gap-2.5">
                 <h2 id="tracks-title" className="text-[15px] font-semibold tracking-tight">

@@ -5,6 +5,7 @@ import type { HomeDoc, HomeResponse, HomeThread } from "@/api/generated";
 import { Empty, List, PILLARS } from "@/components/project/items";
 import { PageHeader } from "@/components/page-header";
 import { PartsSection } from "@/components/project/parts-section";
+import { TrackDecisions } from "@/components/project/decisions";
 import { TrackFeatures } from "@/components/project/track-features";
 import { TrackOwner } from "@/components/project/track-owner";
 import { RenameTitle } from "@/components/project/rename-title";
@@ -273,6 +274,14 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
             {trackId && <TrackFeatures workspaceId={workspaceId} projectId={projectId} trackId={trackId} />}
             {trackId && (
               <TrackOwner
+                workspaceId={workspaceId}
+                projectId={projectId}
+                trackId={trackId}
+                ownerUserId={summary?.track.owner_user_id ?? null}
+              />
+            )}
+            {trackId && (
+              <TrackDecisions
                 workspaceId={workspaceId}
                 projectId={projectId}
                 trackId={trackId}
