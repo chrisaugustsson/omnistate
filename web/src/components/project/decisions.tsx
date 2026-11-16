@@ -50,11 +50,14 @@ function Entry({
   replaced,
   showReplaces,
   showLevel = false,
+  replacedElsewhere = false,
 }: {
   decision: DecisionBody;
   replaced: Map<string, DecisionBody[]>;
   showReplaces: boolean;
   showLevel?: boolean;
+  /** Replaced by a decision this list leaves out, being about another level. */
+  replacedElsewhere?: boolean;
 }) {
   const earlier = replaced.get(decision.id) ?? [];
   const level = showLevel ? levelOf(decision) : null;
@@ -67,6 +70,7 @@ function Entry({
       <p className="text-[12.5px] text-muted-foreground">
         {whoOf(decision.author)} · {timeAgo(decision.created_at)}
         {showReplaces && decision.replaces_decision_id && " · replaces an earlier decision"}
+        {replacedElsewhere && decision.replaced_by_decision_id && " · replaced by a later decision"}
       </p>
       {earlier.length > 0 && (
         <ul aria-label="Replaced decisions" className="ml-3 space-y-2 border-l pl-3">
@@ -93,7 +97,8 @@ function FlatList({ decisions }: { decisions: DecisionBody[] }) {
 
 /**
  * Decisions nobody has replaced, each with the ones it replaced nested under
- * it, also those about another level that came with the list.
+ * it, also those about another level that came with the list. A decision
+ * replaced by one about another level stays at the top, marked as replaced.
  */
 function NestedList({ decisions, earlier }: LevelDecisions) {
   const all = [...decisions, ...earlier];
@@ -108,7 +113,7 @@ function NestedList({ decisions, earlier }: LevelDecisions) {
   return (
     <ul className="space-y-2">
       {top.map((decision) => (
-        <Entry key={decision.id} decision={decision} replaced={replaced} showReplaces={false} />
+        <Entry key={decision.id} decision={decision} replaced={replaced} showReplaces={false} replacedElsewhere />
       ))}
     </ul>
   );

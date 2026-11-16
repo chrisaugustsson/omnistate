@@ -25,8 +25,9 @@ pub struct Args {
     pub feature: Option<String>,
     pub global: bool,
     /// `omni decision add --project` and `omni decision list --project`: the
-    /// decision is about, or the list is of, the whole project. Only there
-    /// is `--project` a flag; everywhere else it takes a value.
+    /// decision is about, or the list is of, the whole project. Only there,
+    /// and only bare (last, or before another option), is `--project` a
+    /// flag; everywhere else it takes a value.
     pub project_level: bool,
     /// `omni track list --mine`: only the tracks the key's member owns.
     pub mine: bool,
@@ -153,7 +154,7 @@ fn is_gone(words: &[String]) -> bool {
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
     let mut parsed = Args::default();
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         if arg == "--" {
             parsed.words.extend(args.by_ref());
@@ -320,7 +321,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--harness" => &mut parsed.harness,
             "--server" => &mut parsed.server,
             "--body-file" => &mut parsed.body_file,
-            "--project" if parsed.words.first().is_some_and(|word| word == "decision") => {
+            // `omni decision add|list` take no words of their own, so a bare
+            // `--project` (last, or before another option) is the level
+            // flag, and `--project <name|id>` still selects the project.
+            "--project"
+                if inline.is_none()
+                    && parsed.words.first().is_some_and(|word| word == "decision")
+                    && args.peek().is_none_or(|next| next.starts_with('-')) =>
+            {
                 parsed.project_level = true;
                 continue;
             }
