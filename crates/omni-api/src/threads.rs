@@ -523,9 +523,19 @@ async fn start_live_thread(
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
     require_project(&mut tx, project_id).await?;
+    // When another field of the body is malformed, the track is read from the
+    // raw JSON, so a present track_id still moves on to the usual 400 checks.
     let from_body = match (track_id, &new) {
+        (Some(_), _) => None,
         (None, Ok(request)) => request.track_id.as_deref().map(parse_uuid),
-        _ => None,
+        (None, Err(_)) => match serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|raw| raw.get("track_id").cloned())
+        {
+            None | Some(Value::Null) => None,
+            Some(Value::String(track_id)) => Some(parse_uuid(&track_id)),
+            Some(_) => return Err(invalid()),
+        },
     };
     let track_id = match (track_id, from_body) {
         (Some(track_id), _) => track_id.to_string(),
