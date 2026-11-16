@@ -744,9 +744,11 @@ fn the_project_flag_takes_a_name_or_an_id() {
         "the name `brand-site` is looked up and its ID is used: {:?}",
         server.requests()
     );
+    // `track list`, and `track show` reading the project's tracks for the ones
+    // split off to and from (US-320).
     assert_eq!(
         requests_to(&server, "GET", &tracks_path(PROJECT)).len(),
-        1,
+        2,
         "{:?}",
         server.requests()
     );

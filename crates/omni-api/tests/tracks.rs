@@ -69,6 +69,16 @@
 //!   "not_track_owner"}`. From then on only the new owner's session and keys
 //!   write. An ID that is no membership of the workspace is 422 `{"error":
 //!   "not_a_member"}`; refused hand-overs keep the owner and emit nothing.
+//! - US-320: `POST /tracks` with `split_from_track_id` splits a track off:
+//!   the new track is planning, on the part it names, owned by the caller and
+//!   carries `split_from_track_id`. Only the owner of that track may split
+//!   from it; anyone else, an admin included, is 403 `{"error":
+//!   "not_track_owner"}` and creates nothing. `POST
+//!   /tracks/{track_id}/stories/{story_id}/track` takes `{expected_version,
+//!   to_track_id}` and moves the story to another track of the project; it
+//!   keeps its number, fields and blockers. A track of another project is 422
+//!   `{"error": "invalid_track"}`; a caller who does not own both tracks is
+//!   403 `{"error": "not_track_owner"}`; a refused move changes nothing.
 
 mod common;
 
@@ -1526,4 +1536,418 @@ fn handing_a_track_to_someone_who_is_not_a_member_of_the_workspace_is_422_not_a_
         );
     }
     assert!(events_of(&project, "track.owner_changed").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Split a track off and move stories to it (US-320)
+// ---------------------------------------------------------------------------
+
+/// The tracks `GET /tracks` lists for the project.
+fn listed_tracks(f: &Fixture, client: &Client, project: &str) -> Vec<Value> {
+    must(
+        call(client, "GET", &tracks_path(f, project), &human(f), None),
+        200,
+        "list the tracks",
+    )["tracks"]
+        .as_array()
+        .expect("`tracks` is a list")
+        .clone()
+}
+
+#[test]
+fn splitting_a_track_off_makes_a_planning_track_owned_by_the_caller_and_needs_the_from_track() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = new_part(f, client, &project, "Wision");
+    let iot = new_part(f, client, &project, "iot-service");
+    // Made with bob's key, so bob owns the track that is split from.
+    let long = create_track_as(
+        f,
+        client,
+        &Auth::Agent(&f.bob_key),
+        &project,
+        &json!({ "name": "Long windows", "part_id": wision }),
+    );
+    let long = long["id"].as_str().expect("an id").to_string();
+    let split = json!({
+        "name": "Aggregated readings",
+        "part_id": iot,
+        "split_from_track_id": long,
+    });
+
+    for (auth, who) in [
+        (agent(f), "alice's key"),
+        (human(f), "alice's session"),
+        (Auth::Agent(&f.carol_key), "an admin's key"),
+        (Auth::Session(&f.carol_token), "an admin's session"),
+    ] {
+        let response = call(
+            client,
+            "POST",
+            &tracks_path(f, &project),
+            &auth,
+            Some(&split),
+        );
+        assert_error(&response, 403, "not_track_owner");
+        assert_eq!(
+            ids(&listed_tracks(f, client, &project)),
+            vec![long.clone()],
+            "a split refused for {who} creates nothing"
+        );
+    }
+
+    let made = create_track_as(f, client, &Auth::Session(&f.bob_token), &project, &split);
+    assert_eq!(made["name"], "Aggregated readings", "{made}");
+    assert_eq!(made["part_id"], iot.as_str(), "{made}");
+    assert_eq!(made["state"], "planning", "{made}");
+    assert_eq!(made["owner_user_id"], f.bob_user.as_str(), "{made}");
+    assert_eq!(made["split_from_track_id"], long.as_str(), "{made}");
+    let made = made["id"].as_str().expect("an id").to_string();
+    let shown = must(
+        call(
+            client,
+            "GET",
+            &track_path(f, &project, &made),
+            &human(f),
+            None,
+        ),
+        200,
+        "show the split-off track",
+    );
+    assert_eq!(
+        shown["track"]["split_from_track_id"],
+        long.as_str(),
+        "{shown}"
+    );
+    let off_long: Vec<Value> = listed_tracks(f, client, &project)
+        .into_iter()
+        .filter(|track| track["split_from_track_id"] == long.as_str())
+        .collect();
+    assert_eq!(
+        ids(&off_long),
+        vec![made],
+        "the list shows the one track split off from Long windows"
+    );
+}
+
+fn stories_path(f: &Fixture, project: &str, track: &str) -> String {
+    format!("{}/stories", track_path(f, project, track))
+}
+
+/// Creates a story on the track with alice's key; returns the `story`.
+fn create_story(f: &Fixture, client: &Client, project: &str, track: &str, extra: Value) -> Value {
+    let mut body = json!({ "title": unique("story"), "text": "", "topic": "", "criteria": [] });
+    for (name, value) in extra.as_object().expect("an object") {
+        body[name] = value.clone();
+    }
+    must(
+        call(
+            client,
+            "POST",
+            &stories_path(f, project, track),
+            &agent(f),
+            Some(&body),
+        ),
+        201,
+        "create a story",
+    )["story"]
+        .clone()
+}
+
+fn get_story(f: &Fixture, client: &Client, project: &str, track: &str, story: &str) -> Response {
+    call(
+        client,
+        "GET",
+        &format!("{}/{story}", stories_path(f, project, track)),
+        &agent(f),
+        None,
+    )
+}
+
+fn move_story_to(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    track: &str,
+    story: &Value,
+    to: &str,
+) -> Response {
+    let id = story["id"].as_str().expect("an id");
+    call(
+        client,
+        "POST",
+        &format!("{}/{id}/track", stories_path(f, project, track)),
+        auth,
+        Some(&json!({ "expected_version": story["version"], "to_track_id": to })),
+    )
+}
+
+/// The keys `GET /stories?<query>` lists for the track.
+fn story_keys(f: &Fixture, client: &Client, project: &str, track: &str, query: &str) -> Vec<Value> {
+    must(
+        call(
+            client,
+            "GET",
+            &format!("{}?{query}", stories_path(f, project, track)),
+            &agent(f),
+            None,
+        ),
+        200,
+        "list the stories",
+    )["stories"]
+        .as_array()
+        .expect("`stories` is a list")
+        .iter()
+        .map(|story| story["key"].clone())
+        .collect()
+}
+
+/// Marks a story done as the admin role.
+fn finish_story(story: &Value) {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query("update stories set status = 'done' where id = $1::uuid")
+            .bind(story["id"].as_str().expect("an id"))
+            .execute(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("finish the story: {e}"));
+    })
+}
+
+/// A story without the fields a move to another track may change.
+fn unmoved_fields(story: &Value) -> Value {
+    let mut story = story.clone();
+    for field in ["track_id", "version", "updated_at", "blockers"] {
+        story.as_object_mut().expect("an object").remove(field);
+    }
+    story
+}
+
+#[test]
+fn a_story_moved_to_a_split_off_track_keeps_its_number_fields_and_blockers() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let long = create_track(f, client, &project, "Long windows");
+    let long = long["id"].as_str().expect("an id").to_string();
+    let iot = new_part(f, client, &project, "iot-service");
+    let aggregated = create_track_as(
+        f,
+        client,
+        &agent(f),
+        &project,
+        &json!({ "name": "Aggregated readings", "part_id": iot, "split_from_track_id": long }),
+    );
+    let aggregated = aggregated["id"].as_str().expect("an id").to_string();
+
+    let first = create_story(f, client, &project, &long, json!({}));
+    let moved = create_story(
+        f,
+        client,
+        &project,
+        &long,
+        json!({
+            "blocked_by": [first["id"]],
+            "priority": 1,
+            "topic": "api",
+            "text": "Aggregate the readings.",
+            "criteria": [{ "text": "It aggregates" }],
+        }),
+    );
+    let dependant = create_story(
+        f,
+        client,
+        &project,
+        &long,
+        json!({ "blocked_by": [moved["id"]] }),
+    );
+    let id = moved["id"].as_str().expect("an id").to_string();
+    let before = must(
+        get_story(f, client, &project, &long, &id),
+        200,
+        "read the story",
+    )["story"]
+        .clone();
+
+    let after = must(
+        move_story_to(f, client, &agent(f), &project, &long, &before, &aggregated),
+        200,
+        "move the story to the split-off track",
+    )["story"]
+        .clone();
+    assert_eq!(after["key"], "US-2", "{after}");
+    assert_eq!(after["track_id"], aggregated.as_str(), "{after}");
+    assert_eq!(after["blocked_by"], json!([first["id"]]), "{after}");
+    assert_eq!(
+        unmoved_fields(&after),
+        unmoved_fields(&before),
+        "only the track changes"
+    );
+    let read = must(
+        get_story(f, client, &project, &aggregated, &id),
+        200,
+        "read the story on its new track",
+    )["story"]
+        .clone();
+    assert_eq!(unmoved_fields(&read), unmoved_fields(&before), "{read}");
+    assert_eq!(
+        get_story(f, client, &project, &long, &id).status,
+        404,
+        "the story has left its old track"
+    );
+    assert_eq!(
+        story_keys(f, client, &project, &long, "pickable=false"),
+        vec![json!("US-1"), json!("US-3")]
+    );
+    assert_eq!(
+        story_keys(f, client, &project, &aggregated, "pickable=false"),
+        vec![json!("US-2")]
+    );
+    let changed: Vec<Value> = events_of(&project, "story.changed")
+        .into_iter()
+        .filter(|event| event["story_id"] == id.as_str())
+        .collect();
+    assert_eq!(changed.len(), 1, "the move is recorded once: {changed:?}");
+    assert_eq!(changed[0]["key"], "US-2", "{changed:?}");
+
+    // The blocker it has and the blocker it is still hold across the tracks.
+    let dependant_now = must(
+        get_story(
+            f,
+            client,
+            &project,
+            &long,
+            dependant["id"].as_str().unwrap(),
+        ),
+        200,
+        "read the dependant",
+    );
+    assert_eq!(
+        dependant_now["story"]["blocked_by"],
+        json!([id]),
+        "{dependant_now}"
+    );
+    assert_eq!(
+        story_keys(f, client, &project, &aggregated, "pickable=true"),
+        Vec::<Value>::new(),
+        "US-2 waits for US-1 on Long windows"
+    );
+    assert_eq!(
+        story_keys(f, client, &project, &long, "pickable=true"),
+        vec![json!("US-1")],
+        "US-3 waits for US-2 on Aggregated readings"
+    );
+    finish_story(&first);
+    assert_eq!(
+        story_keys(f, client, &project, &aggregated, "pickable=true"),
+        vec![json!("US-2")],
+        "US-1 done releases US-2"
+    );
+    finish_story(&after);
+    assert_eq!(
+        story_keys(f, client, &project, &long, "pickable=true"),
+        vec![json!("US-3")],
+        "US-2 done releases US-3"
+    );
+}
+
+#[test]
+fn a_story_moves_only_within_its_project_and_only_for_the_owner_of_both_tracks() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
+    let make = |auth: Auth| {
+        let track = create_track_as(
+            f,
+            client,
+            &auth,
+            &project,
+            &json!({ "name": unique("track"), "part_id": part }),
+        );
+        track["id"].as_str().expect("an id").to_string()
+    };
+    // alice owns the source and `alices`; bob owns `bobs`.
+    let source = make(agent(f));
+    let alices = make(agent(f));
+    let bobs = make(Auth::Agent(&f.bob_key));
+    let elsewhere = track_in(f, client, &new_project(f, client), &[]);
+    let story = create_story(f, client, &project, &source, json!({}));
+    let id = story["id"].as_str().expect("an id").to_string();
+
+    let refused = [
+        (
+            agent(f),
+            &elsewhere,
+            422,
+            "invalid_track",
+            "a track of another project",
+        ),
+        (
+            agent(f),
+            &bobs,
+            403,
+            "not_track_owner",
+            "a target alice does not own",
+        ),
+        (
+            human(f),
+            &bobs,
+            403,
+            "not_track_owner",
+            "a target alice does not own",
+        ),
+        (
+            Auth::Agent(&f.bob_key),
+            &bobs,
+            403,
+            "not_track_owner",
+            "bob, not owning the source",
+        ),
+        (
+            Auth::Session(&f.bob_token),
+            &bobs,
+            403,
+            "not_track_owner",
+            "bob, not owning the source",
+        ),
+        (
+            Auth::Agent(&f.carol_key),
+            &alices,
+            403,
+            "not_track_owner",
+            "an admin owning neither",
+        ),
+        (
+            Auth::Session(&f.carol_token),
+            &alices,
+            403,
+            "not_track_owner",
+            "an admin owning neither",
+        ),
+    ];
+    for (auth, to, status, code, what) in refused {
+        let response = move_story_to(f, client, &auth, &project, &source, &story, to);
+        assert_eq!(response.status, status, "{what}: {}", response.text());
+        assert_error(&response, status, code);
+        let still = must(
+            get_story(f, client, &project, &source, &id),
+            200,
+            &format!("{what}: the story stays on its track"),
+        );
+        assert_eq!(
+            still["story"]["version"], story["version"],
+            "{what}: {still}"
+        );
+    }
+    assert!(
+        events_of(&project, "story.changed").is_empty(),
+        "a refused move emits nothing"
+    );
+
+    let moved = must(
+        move_story_to(f, client, &human(f), &project, &source, &story, &alices),
+        200,
+        "alice's session moves the story between her tracks",
+    );
+    assert_eq!(moved["story"]["track_id"], alices.as_str(), "{moved}");
 }

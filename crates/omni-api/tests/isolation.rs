@@ -20,7 +20,8 @@
 //!   A body may hold `<comment_node>`, the paragraph of `{doc_id}` that the
 //!   seeded comment is pinned to, `<node>`, the `{node_id}` behaviour node,
 //!   `<part>`, the `{part_id}` part, `<feature>`, the `{feature_id}`
-//!   feature, and `<membership>`, the workspace's membership.
+//!   feature, `<track>`, the `{track_id}` track, and `<membership>`, the
+//!   workspace's membership.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -378,6 +379,12 @@ const CASES: &[Case] = &[
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/cancel",
         Some(r#"{"expected_version":1}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track",
+        Some(r#"{"expected_version":1,"to_track_id":"<track>"}"#),
         Kind::Workspace,
     ),
     case(
@@ -1637,14 +1644,15 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
 /// The body of `case` for calls about the records of `record`: its
 /// `<comment_node>` is the node of `record`'s seeded comment, its `<node>`
 /// is `record`'s behaviour node, its `<part>` is `record`'s part, its
-/// `<feature>` is `record`'s feature and its `<membership>` is `record`'s
-/// membership.
+/// `<feature>` is `record`'s feature, its `<track>` is `record`'s track and
+/// its `<membership>` is `record`'s membership.
 fn body_of(case: &Case, record: &Side) -> Option<String> {
     case.body.map(|body| {
         body.replace("<comment_node>", &record.comment_node)
             .replace("<node>", &record.node_id)
             .replace("<part>", &record.part_id)
             .replace("<feature>", &record.feature_id)
+            .replace("<track>", &record.track_id)
             .replace("<membership>", &record.membership_id)
     })
 }
