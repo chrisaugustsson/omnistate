@@ -48,6 +48,9 @@
 //!   among the project's parts that are not deleted (`GET .../parts`); one
 //!   that is not there is `unknown_part` and sends nothing. A `--part` that
 //!   is an ID is sent as it is, and the API's 422 `invalid_part` is shown.
+//! - US-313: `omni track list` lines end with the owner's user ID (`omni
+//!   track show` prints it too), and `omni track list --mine` sends `GET
+//!   .../tracks?owner=me` and prints the same columns.
 
 mod common;
 
@@ -64,6 +67,10 @@ const IOT_SERVICE: &str = "01900000-0000-7000-8000-0000000000a2";
 /// A part ID that the API refuses with 422 `invalid_part`, as it does for a
 /// deleted part or a part of another project.
 const GONE_PART: &str = "01900000-0000-7000-8000-0000000000a9";
+/// The user who owns Checkout: the member who created the key (US-313).
+const ME: &str = "01900000-0000-7000-8000-0000000000c1";
+/// The user who owns Wish list: another member.
+const OTHER_MEMBER: &str = "01900000-0000-7000-8000-0000000000c2";
 
 fn projects_path() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects")
@@ -89,6 +96,7 @@ fn track_json(id: &str, project: &str, name: &str, description: &str, part: &str
         "description": description,
         "part_id": part,
         "state": "planning",
+        "owner_user_id": ME,
         "created_at": "2026-10-23T10:00:00.000000Z"
     })
 }
@@ -112,6 +120,7 @@ fn wish_list(project: &str) -> Value {
         IOT_SERVICE,
     );
     track["state"] = json!("building");
+    track["owner_user_id"] = json!(OTHER_MEMBER);
     track
 }
 
@@ -198,6 +207,7 @@ fn mock() -> MockServer {
                     200,
                     &json!({ "tracks": [checkout(project), wish_list(project)] }),
                 ),
+                ("GET", "?owner=me") => Reply::json(200, &json!({ "tracks": [checkout(project)] })),
                 ("GET", rest) if rest == format!("/{TRACK}") => {
                     Reply::json(200, &json!({ "track": checkout(project) }))
                 }
@@ -453,10 +463,10 @@ fn track_list_prints_one_line_per_track_with_its_state() {
     assert_eq!(
         non_empty_lines(&out.stdout),
         [
-            format!("{TRACK}  Checkout  Wision  planning"),
-            format!("{WISH_LIST}  Wish list  iot-service  building"),
+            format!("{TRACK}  Checkout  Wision  planning  {ME}"),
+            format!("{WISH_LIST}  Wish list  iot-service  building  {OTHER_MEMBER}"),
         ],
-        "one `<id>  <name>  <part name>  <state>` line per track, in the API's order"
+        "one `<id>  <name>  <part name>  <state>  <owner>` line per track, in the API's order"
     );
 
     let json = run(&home, &["track", "list", "--project", PROJECT, "--json"]);
@@ -486,7 +496,34 @@ fn track_list_with_a_part_lists_only_that_parts_tracks() {
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         non_empty_lines(&out.stdout),
-        [format!("{WISH_LIST}  Wish list  iot-service  building")]
+        [format!(
+            "{WISH_LIST}  Wish list  iot-service  building  {OTHER_MEMBER}"
+        )]
+    );
+}
+
+#[test]
+fn track_list_mine_sends_owner_me_and_prints_the_same_columns() {
+    // US-313: the server resolves `me` to the key's member.
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["track", "list", "--mine", "--project", PROJECT]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        requests_to(
+            &server,
+            "GET",
+            &format!("{}?owner=me", tracks_path(PROJECT))
+        )
+        .len(),
+        1,
+        "{:?}",
+        server.requests()
+    );
+    assert_eq!(
+        non_empty_lines(&out.stdout),
+        [format!("{TRACK}  Checkout  Wision  planning  {ME}")],
+        "the caller's tracks, in the columns of `omni track list`"
     );
 }
 
@@ -531,7 +568,7 @@ fn track_move_sends_the_parts_id_and_prints_the_track_on_its_new_part() {
     assert_eq!(body_of(&moves[0]), json!({ "part_id": IOT_SERVICE }));
     assert_eq!(
         non_empty_lines(&out.stdout),
-        [format!("{TRACK}  Checkout  iot-service  planning")]
+        [format!("{TRACK}  Checkout  iot-service  planning  {ME}")]
     );
 }
 
@@ -564,7 +601,7 @@ fn track_state_sends_the_new_state_and_prints_the_track_in_it() {
     assert_eq!(body_of(&changes[0]), json!({ "state": "building" }));
     assert_eq!(
         non_empty_lines(&out.stdout),
-        [format!("{TRACK}  Checkout  Wision  building")]
+        [format!("{TRACK}  Checkout  Wision  building  {ME}")]
     );
 }
 
@@ -615,7 +652,7 @@ fn track_show_prints_the_track_named_by_its_id() {
         "an ID is shown with GET .../tracks/{{id}}: {:?}",
         server.requests()
     );
-    for needle in [TRACK, "Checkout", "Pay for the basket in one step."] {
+    for needle in [TRACK, "Checkout", "Pay for the basket in one step.", ME] {
         assert!(
             out.stdout.contains(needle),
             "the text shows {needle:?}: {:?}",

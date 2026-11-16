@@ -54,6 +54,11 @@
 //!   state the track already has included, is 422 `{"error":
 //!   "invalid_transition", "state": <current state>, ...}` and leaves the
 //!   track where it is.
+//! - US-313: a Track carries `owner_user_id`, the user of the member who
+//!   created it: the session's member, or for an API key the member who
+//!   created the key. `GET /tracks?owner=me` lists only the caller's tracks;
+//!   any other `owner` is 422 `{"error": "invalid_owner"}`, checked before
+//!   the project. No create or edit body sets the owner.
 
 mod common;
 
@@ -129,7 +134,13 @@ async fn admin_connection() -> PgConnection {
 struct Fixture {
     workspace: String,
     alice_token: String,
+    alice_user: String,
+    /// A key that alice minted with her session.
     key: String,
+    /// bob, a second member of the workspace, with a key he minted.
+    bob_token: String,
+    bob_user: String,
+    bob_key: String,
     server: TestServer,
 }
 
@@ -156,7 +167,7 @@ fn fixture() -> &'static Fixture {
                 .await
                 .expect("apply the migrations to the scratch database");
         });
-        let workspace = block(async {
+        let (workspace, users) = block(async {
             let mut conn = admin_connection().await;
             let mut text = async |sql: &str, binds: &[&str]| -> String {
                 let mut query = sqlx::query_scalar::<_, String>(sql);
@@ -170,43 +181,55 @@ fn fixture() -> &'static Fixture {
                 &[],
             )
             .await;
-            let user = text(
-                "insert into users (email) values ('alice@example.test') returning id::text",
-                &[],
-            )
-            .await;
-            text(
-                "insert into sessions (user_id, token_hash, expires_at) \
-                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
-                 returning id::text",
-                &[&user, &session_token("alice")],
-            )
-            .await;
-            text(
-                "insert into memberships (workspace_id, user_id) \
-                 values ($1::uuid, $2::uuid) returning id::text",
-                &[&workspace, &user],
-            )
-            .await;
-            workspace
+            let mut users = Vec::new();
+            for name in ["alice", "bob"] {
+                let user = text(
+                    "insert into users (email) values ($1) returning id::text",
+                    &[&format!("{name}@example.test")],
+                )
+                .await;
+                text(
+                    "insert into sessions (user_id, token_hash, expires_at) \
+                     values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+                     returning id::text",
+                    &[&user, &session_token(name)],
+                )
+                .await;
+                text(
+                    "insert into memberships (workspace_id, user_id) \
+                     values ($1::uuid, $2::uuid) returning id::text",
+                    &[&workspace, &user],
+                )
+                .await;
+                users.push(user);
+            }
+            (workspace, users)
         });
         let server = TestServer::start(&config());
-        let response = call(
-            &server.client,
-            "POST",
-            &format!("/api/v1/w/{workspace}/api-keys"),
-            &Auth::Session(&session_token("alice")),
-            Some(&json!({})),
-        );
-        assert_eq!(response.status, 201, "mint a key: {}", response.text());
-        let key = response.json()["secret"]
-            .as_str()
-            .expect("the new key has a secret")
-            .to_string();
+        let mint = |name: &str| -> String {
+            let response = call(
+                &server.client,
+                "POST",
+                &format!("/api/v1/w/{workspace}/api-keys"),
+                &Auth::Session(&session_token(name)),
+                Some(&json!({})),
+            );
+            assert_eq!(response.status, 201, "mint a key: {}", response.text());
+            response.json()["secret"]
+                .as_str()
+                .expect("the new key has a secret")
+                .to_string()
+        };
+        let key = mint("alice");
+        let bob_key = mint("bob");
         Fixture {
             workspace,
             alice_token: session_token("alice"),
+            alice_user: users[0].clone(),
             key,
+            bob_token: session_token("bob"),
+            bob_user: users[1].clone(),
+            bob_key,
             server,
         }
     })
@@ -996,4 +1019,215 @@ fn the_tracks_table_keeps_its_rules_in_the_database() {
         !accepted(insert, &[workspace, &project, "Elsewhere", &theirs]),
         "a track's part is a part of its own project"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The owner of a track (US-313)
+// ---------------------------------------------------------------------------
+
+/// Creates a track with `auth`; returns the `track` of the answer.
+fn create_track_as(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    body: &Value,
+) -> Value {
+    must(
+        call(client, "POST", &tracks_path(f, project), auth, Some(body)),
+        201,
+        "create a track",
+    )["track"]
+        .clone()
+}
+
+/// The membership ID of a user in the fixture's workspace.
+fn membership_of(f: &Fixture, user: &str) -> String {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar(
+            "select id::text from memberships where workspace_id = $1::uuid and user_id = $2::uuid",
+        )
+        .bind(&f.workspace)
+        .bind(user)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("read the membership: {e}"))
+    })
+}
+
+fn ids(tracks: &[Value]) -> Vec<String> {
+    tracks
+        .iter()
+        .map(|t| t["id"].as_str().expect("an id").to_string())
+        .collect()
+}
+
+#[test]
+fn a_track_is_owned_by_the_sessions_member_or_by_the_member_who_created_the_key() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
+    for (auth, owner, who) in [
+        (
+            Auth::Session(&f.alice_token),
+            &f.alice_user,
+            "alice's session",
+        ),
+        (Auth::Agent(&f.bob_key), &f.bob_user, "bob's key"),
+        (Auth::Session(&f.bob_token), &f.bob_user, "bob's session"),
+        (Auth::Agent(&f.key), &f.alice_user, "alice's key"),
+    ] {
+        let track = create_track_as(
+            f,
+            client,
+            &auth,
+            &project,
+            &json!({ "name": unique("owned"), "part_id": part }),
+        );
+        assert_eq!(
+            track["owner_user_id"],
+            owner.as_str(),
+            "a track created with {who} is owned by that member: {track}"
+        );
+        let id = track["id"].as_str().expect("an id");
+        let shown = must(
+            call(client, "GET", &track_path(f, &project, id), &human(f), None),
+            200,
+            "show the track",
+        );
+        assert_eq!(shown["track"]["owner_user_id"], owner.as_str(), "{shown}");
+    }
+}
+
+#[test]
+fn owner_me_lists_the_callers_tracks_and_any_other_owner_is_422_invalid_owner() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
+    let create = |auth: Auth| {
+        create_track_as(
+            f,
+            client,
+            &auth,
+            &project,
+            &json!({ "name": unique("mine"), "part_id": part }),
+        )
+    };
+    let alices = vec![
+        create(Auth::Session(&f.alice_token)),
+        create(Auth::Agent(&f.key)),
+    ];
+    let bobs = vec![
+        create(Auth::Agent(&f.bob_key)),
+        create(Auth::Session(&f.bob_token)),
+    ];
+    let mine = format!("{}?owner=me", tracks_path(f, &project));
+    for (auth, expected, who) in [
+        (Auth::Session(&f.alice_token), &alices, "alice's session"),
+        (Auth::Agent(&f.key), &alices, "alice's key"),
+        (Auth::Agent(&f.bob_key), &bobs, "bob's key"),
+        (Auth::Session(&f.bob_token), &bobs, "bob's session"),
+    ] {
+        let listed = must(call(client, "GET", &mine, &auth, None), 200, "?owner=me");
+        let listed = listed["tracks"].as_array().expect("`tracks` is a list");
+        assert_eq!(
+            ids(listed),
+            ids(expected),
+            "?owner=me with {who} lists every track its member owns and no other"
+        );
+    }
+
+    for owner in ["bob", "", "ME", f.bob_user.as_str()] {
+        let response = call(
+            client,
+            "GET",
+            &format!("{}?owner={owner}", tracks_path(f, &project)),
+            &agent(f),
+            None,
+        );
+        assert_error(&response, 422, "invalid_owner");
+    }
+    // The owner is checked before the project.
+    let response = call(
+        client,
+        "GET",
+        &format!("{}?owner=bob", tracks_path(f, UNKNOWN_ID)),
+        &agent(f),
+        None,
+    );
+    assert_error(&response, 422, "invalid_owner");
+}
+
+#[test]
+fn edits_to_a_track_never_change_its_owner() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let part = new_part(f, client, &project, "Wision");
+    let other_part = new_part(f, client, &project, "iot-service");
+    let takeover = json!({
+        "owner_user_id": f.alice_user,
+        "owner_membership_id": membership_of(f, &f.alice_user),
+        "owner": f.alice_user,
+    });
+    let bob = Auth::Agent(&f.bob_key);
+
+    // A create body that names another owner is owned by the caller anyway.
+    let mut body = takeover.clone();
+    body["name"] = json!("Long windows");
+    body["part_id"] = json!(part);
+    let track = create_track_as(f, client, &bob, &project, &body);
+    assert_eq!(track["owner_user_id"], f.bob_user.as_str(), "{track}");
+    let path = track_path(f, &project, track["id"].as_str().expect("an id"));
+
+    for (method, route, fields) in [
+        ("PATCH", path.clone(), json!({ "name": "Longer windows" })),
+        (
+            "POST",
+            format!("{path}/move"),
+            json!({ "part_id": other_part }),
+        ),
+        (
+            "POST",
+            format!("{path}/state"),
+            json!({ "state": "building" }),
+        ),
+    ] {
+        let mut body = takeover.clone();
+        for (name, value) in fields.as_object().expect("an object") {
+            body[name] = value.clone();
+        }
+        let edited = must(
+            call(client, method, &route, &bob, Some(&body)),
+            200,
+            &format!("{method} {route}"),
+        );
+        assert_eq!(
+            edited["track"]["owner_user_id"],
+            f.bob_user.as_str(),
+            "{method} {route} keeps the owner: {edited}"
+        );
+        let shown = must(
+            call(client, "GET", &path, &human(f), None),
+            200,
+            "show the track",
+        );
+        assert_eq!(
+            shown["track"]["owner_user_id"],
+            f.bob_user.as_str(),
+            "{shown}"
+        );
+    }
+    let alices = must(
+        call(
+            client,
+            "GET",
+            &format!("{}?owner=me", tracks_path(f, &project)),
+            &human(f),
+            None,
+        ),
+        200,
+        "?owner=me",
+    );
+    assert_eq!(alices["tracks"], json!([]), "alice owns none: {alices}");
 }
