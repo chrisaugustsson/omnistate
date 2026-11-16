@@ -568,11 +568,13 @@ fn the_home_lists_every_thread_of_the_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
-    let first = id_of(&scope_thread(f, client, &project, None));
-    let second = id_of(&scope_thread(f, client, &project, Some(&track)));
-    let third = id_of(&scope_thread(f, client, &project, None));
+    let other_track = new_track(f, client, &project);
+    let first = id_of(&scope_thread(f, client, &project, &track));
+    let second = id_of(&scope_thread(f, client, &project, &other_track));
+    let third = id_of(&scope_thread(f, client, &project, &track));
     let elsewhere = new_project(f, client);
-    let foreign = id_of(&scope_thread(f, client, &elsewhere, None));
+    let elsewhere_track = new_track(f, client, &elsewhere);
+    let foreign = id_of(&scope_thread(f, client, &elsewhere, &elsewhere_track));
 
     let home = home(f, client, &project);
     assert_eq!(
@@ -831,11 +833,10 @@ fn the_home_lists_the_docs_and_threads_of_the_project_and_every_track() {
     let first = new_track(f, client, &project);
     let second = new_track(f, client, &project);
     let global = live_doc_in(f, client, &project, None);
-    let global_thread = id_of(&scope_thread(f, client, &project, None));
     let first_doc = live_doc_in(f, client, &project, Some(&first));
-    let first_thread = id_of(&scope_thread(f, client, &project, Some(&first)));
+    let first_thread = id_of(&scope_thread(f, client, &project, &first));
     let second_doc = live_doc_in(f, client, &project, Some(&second));
-    let second_thread = id_of(&scope_thread(f, client, &project, Some(&second)));
+    let second_thread = id_of(&scope_thread(f, client, &project, &second));
 
     let home = home(f, client, &project);
     let none = Value::Null;
@@ -844,20 +845,17 @@ fn the_home_lists_the_docs_and_threads_of_the_project_and_every_track() {
     for (pointer, items, path) in [
         (
             "/docs",
-            [
+            vec![
                 (&global, &none),
                 (&first_doc, &first_id),
                 (&second_doc, &second_id),
             ],
             "docs",
         ),
+        // US-325: threads live only on tracks, so none is at the app level.
         (
             "/threads",
-            [
-                (&global_thread, &none),
-                (&first_thread, &first_id),
-                (&second_thread, &second_id),
-            ],
+            vec![(&first_thread, &first_id), (&second_thread, &second_id)],
             "threads",
         ),
     ] {
@@ -946,12 +944,10 @@ fn latest_write(f: &Fixture, client: &Client, project: &str, doc: &str) -> Strin
         .to_string()
 }
 
-/// The author starts a thread at the app level or in `track`; returns the thread.
-fn scope_thread(f: &Fixture, client: &Client, project: &str, track: Option<&str>) -> Value {
-    let path = match track {
-        None => format!("{}/threads", project_base(f, project)),
-        Some(track) => format!("{}/tracks/{track}/threads", project_base(f, project)),
-    };
+/// The author starts a thread in `track` (threads live only on tracks,
+/// US-325); returns the thread.
+fn scope_thread(f: &Fixture, client: &Client, project: &str, track: &str) -> Value {
+    let path = format!("{}/tracks/{track}/threads", project_base(f, project));
     must(
         call(
             client,
@@ -1067,24 +1063,9 @@ fn each_scope_has_the_time_of_its_latest_doc_or_thread_write_as_its_last_activit
         "the app's doc is not the track's"
     );
 
-    let thread = scope_thread(f, client, &project, None);
-    assert_eq!(
-        at(&app_activity(&home_now())),
-        at(&thread["created_at"]),
-        "a thread's start"
-    );
-    let posted = at(&post_in(f, client, &project, &id_of(&thread))["created_at"]);
-    assert_eq!(at(&app_activity(&home_now())), posted, "a post");
-    conclude(f, client, &project, &id_of(&thread));
-    let concluded = at(&app_activity(&home_now()));
-    assert!(
-        concluded > posted,
-        "a conclusion: {concluded} after {posted}"
-    );
-
     write_paragraph(f, client, &critic(f), &project, &doc);
     let edited = latest_write(f, client, &project, &doc);
-    assert!(edited > concluded, "{edited}");
+    assert!(edited > created, "{edited}");
     assert_eq!(at(&app_activity(&home_now())), edited, "an edit");
 
     let track_doc = live_doc_in(f, client, &project, Some(&track));
@@ -1093,11 +1074,20 @@ fn each_scope_has_the_time_of_its_latest_doc_or_thread_write_as_its_last_activit
         latest_write(f, client, &project, &track_doc),
         "the track's own doc"
     );
-    let track_thread = scope_thread(f, client, &project, Some(&track));
+    // US-325: threads live only on tracks, so a thread's writes are its track's.
+    let thread = scope_thread(f, client, &project, &track);
     assert_eq!(
         at(&track_activity(&home_now(), &track)),
-        at(&track_thread["created_at"]),
-        "the track's own thread"
+        at(&thread["created_at"]),
+        "a thread's start"
+    );
+    let posted = at(&post_in(f, client, &project, &id_of(&thread))["created_at"]);
+    assert_eq!(at(&track_activity(&home_now(), &track)), posted, "a post");
+    conclude(f, client, &project, &id_of(&thread));
+    let concluded = at(&track_activity(&home_now(), &track));
+    assert!(
+        concluded > posted,
+        "a conclusion: {concluded} after {posted}"
     );
     assert_eq!(
         at(&app_activity(&home_now())),
@@ -1181,8 +1171,9 @@ fn each_doc_has_when_and_by_which_role_it_was_last_written_and_how_many_of_its_c
 fn each_thread_has_its_post_count_and_the_time_of_its_newest_post() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let quiet = id_of(&scope_thread(f, client, &project, None));
-    let busy = id_of(&scope_thread(f, client, &project, None));
+    let track = new_track(f, client, &project);
+    let quiet = id_of(&scope_thread(f, client, &project, &track));
+    let busy = id_of(&scope_thread(f, client, &project, &track));
     post_in(f, client, &project, &busy);
     let newest = post_in(f, client, &project, &busy);
 

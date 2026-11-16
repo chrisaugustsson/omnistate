@@ -467,12 +467,10 @@ fn waiting_comment(f: &Fixture, client: &Client, project: &str, doc: &str, node:
     comment
 }
 
-/// Starts a thread at the app level or in a track; returns its ID.
-fn new_thread(f: &Fixture, client: &Client, project: &str, track: Option<&str>) -> String {
-    let path = match track {
-        None => format!("{}/threads", project_base(f, project)),
-        Some(track) => format!("{}/threads", track_path(f, project, track)),
-    };
+/// Starts a thread in a track (threads live only on tracks, US-325); returns
+/// its ID.
+fn new_thread(f: &Fixture, client: &Client, project: &str, track: &str) -> String {
+    let path = format!("{}/threads", track_path(f, project, track));
     id_of(
         &must(
             call(
@@ -1010,14 +1008,13 @@ fn a_deleted_track_disappears_with_its_docs_threads_and_comments() {
     let doc = new_doc(f, client, &project, Some(&track), "Track plan");
     let node = write_paragraph(f, client, &project, &doc, "Pay in one step.");
     let comment = waiting_comment(f, client, &project, &doc, &node);
-    let thread = new_thread(f, client, &project, Some(&track));
+    let thread = new_thread(f, client, &project, &track);
     // ... and those of the app level and another track, which stay.
     let app_doc = new_doc(f, client, &project, None, "App plan");
     let app_node = write_paragraph(f, client, &project, &app_doc, "The shop.");
     let app_comment = waiting_comment(f, client, &project, &app_doc, &app_node);
-    let app_thread = new_thread(f, client, &project, None);
     let other_doc = new_doc(f, client, &project, Some(&other), "Other plan");
-    let other_thread = new_thread(f, client, &project, Some(&other));
+    let other_thread = new_thread(f, client, &project, &other);
 
     assert_deleted(
         &delete_track(f, client, &agent(f), &project, &track),
@@ -1049,10 +1046,7 @@ fn a_deleted_track_disappears_with_its_docs_threads_and_comments() {
             !threads.contains(&thread),
             "the track's thread is in no list: {threads:?}"
         );
-        assert!(
-            threads.contains(&app_thread) && threads.contains(&other_thread),
-            "{threads:?}"
-        );
+        assert!(threads.contains(&other_thread), "{threads:?}");
         let comments = listed(f, client, &auth, &project, "/comments", "comments");
         assert!(
             !comments.contains(&comment),
@@ -1080,7 +1074,7 @@ fn a_deleted_track_disappears_with_its_docs_threads_and_comments() {
         for rest in [
             format!("/tracks/{other}"),
             format!("/docs/{app_doc}"),
-            format!("/threads/{app_thread}"),
+            format!("/threads/{other_thread}"),
             format!("/comments/{app_comment}"),
         ] {
             must(
@@ -1114,7 +1108,7 @@ fn a_deleted_track_takes_nothing_new() {
     let doc = new_doc(f, client, &project, Some(&track), "Track plan");
     let node = write_paragraph(f, client, &project, &doc, "Pay in one step.");
     let comment = waiting_comment(f, client, &project, &doc, &node);
-    let thread = new_thread(f, client, &project, Some(&track));
+    let thread = new_thread(f, client, &project, &track);
     assert_deleted(
         &delete_track(f, client, &agent(f), &project, &track),
         "delete the track",
@@ -1416,7 +1410,7 @@ fn renaming_a_track_keeps_its_id_docs_and_threads() {
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
     let doc = new_doc(f, client, &project, Some(&track), "Track plan");
-    let thread = new_thread(f, client, &project, Some(&track));
+    let thread = new_thread(f, client, &project, &track);
     let new_name = unique("Express checkout");
 
     let renamed = must(

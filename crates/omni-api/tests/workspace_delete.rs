@@ -412,36 +412,6 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .await
     .expect("insert a reply to a comment");
 
-    // A thread, its phase and a post in it.
-    let thread_id: String = sqlx::query_scalar(
-        "INSERT INTO threads (workspace_id, project_id, question, criteria) \
-         VALUES ($1::uuid, $2::uuid, 'deletion test', '[]'::jsonb) RETURNING id::text",
-    )
-    .bind(workspace)
-    .bind(&project_id)
-    .fetch_one(&mut *conn)
-    .await
-    .expect("insert a thread");
-    sqlx::query(
-        "INSERT INTO thread_phases (workspace_id, thread_id, number, sealed) \
-         VALUES ($1::uuid, $2::uuid, 1, true)",
-    )
-    .bind(workspace)
-    .bind(&thread_id)
-    .execute(&mut *conn)
-    .await
-    .expect("insert a thread phase");
-    sqlx::query(
-        "INSERT INTO posts (workspace_id, thread_id, phase, summary, body, author) \
-         VALUES ($1::uuid, $2::uuid, 1, 'deletion test', 'deletion test', $3::jsonb)",
-    )
-    .bind(workspace)
-    .bind(&thread_id)
-    .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
-    .execute(&mut *conn)
-    .await
-    .expect("insert a post");
-
     // A part of the project.
     let part_id: String = sqlx::query_scalar(
         "INSERT INTO parts (workspace_id, project_id, name, kind) \
@@ -486,6 +456,39 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .execute(&mut *conn)
     .await
     .expect("link the track to the feature");
+
+    // A thread on the track (threads live only on tracks), its phase and a
+    // post in it.
+    let thread_id: String = sqlx::query_scalar(
+        "INSERT INTO threads (workspace_id, project_id, track_id, question, criteria) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test', '[]'::jsonb) RETURNING id::text",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .bind(&track_id)
+    .fetch_one(&mut *conn)
+    .await
+    .expect("insert a thread");
+    sqlx::query(
+        "INSERT INTO thread_phases (workspace_id, thread_id, number, sealed) \
+         VALUES ($1::uuid, $2::uuid, 1, true)",
+    )
+    .bind(workspace)
+    .bind(&thread_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a thread phase");
+    sqlx::query(
+        "INSERT INTO posts (workspace_id, thread_id, phase, summary, body, author) \
+         VALUES ($1::uuid, $2::uuid, 1, 'deletion test', 'deletion test', $3::jsonb)",
+    )
+    .bind(workspace)
+    .bind(&thread_id)
+    .bind(r#"{"run":"run-1","role":"writer","model":null,"harness":null}"#)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a post");
+
     sqlx::query(
         "INSERT INTO decisions (workspace_id, project_id, track_id, feature_id, question, decision, why, author) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'deletion test', 'deletion test', 'deletion test', \

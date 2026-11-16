@@ -10,7 +10,8 @@
 //! tests/thread_waits.rs, the API's in crates/omni-api/tests/live_threads.rs.
 //!
 //! What these tests add is the round trip: `omni thread create` starts
-//! threads at the app level and in a feature, `omni thread read` and `omni wait --thread --posts` keep to a sealed thread (an agent
+//! threads on a track (`--track` or `OMNI_TRACK`) and never without one
+//! (US-325), `omni thread read` and `omni wait --thread --posts` keep to a sealed thread (an agent
 //! that has not posted reads no other agent's posts, and counts none of
 //! them), and `omni thread conclude` writes a conclusion that leaves the
 //! thread open to posts.
@@ -181,12 +182,60 @@ fn unique(label: &str) -> String {
 
 const MODERATOR: &str = "run-7/moderator";
 
-/// A new project made by the moderator from the command line; its name.
+/// A new project made by the moderator from the command line, with the part
+/// "Wision" and its track "Checkout" for threads to start on; its name.
 fn new_project(home: &Scratch) -> String {
     let project = unique("forum-site");
     let created = run_as(home, MODERATOR, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let out = run_as(
+        home,
+        MODERATOR,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "part create: {}", out.stderr);
+    let out = run_as(
+        home,
+        MODERATOR,
+        &[
+            "track",
+            "create",
+            "Checkout",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "track create: {}", out.stderr);
     project
+}
+
+/// The ID of the project's track "Checkout".
+fn checkout_id(home: &Scratch, project: &str) -> String {
+    let out = run_as(
+        home,
+        MODERATOR,
+        &["track", "list", "--project", project, "--json"],
+    );
+    assert_eq!(out.code, 0, "track list: {}", out.stderr);
+    let listed = out.json();
+    listed["tracks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a list of tracks: {listed}"))
+        .iter()
+        .find(|track| track["name"] == "Checkout")
+        .and_then(|track| track["id"].as_str())
+        .unwrap_or_else(|| panic!("the track Checkout is listed: {listed}"))
+        .to_string()
 }
 
 /// Starts a thread from the command line with `extra` options; its ID.
@@ -294,75 +343,88 @@ fn wait_posts(
 }
 
 #[test]
-fn an_agent_starts_threads_at_the_app_level_and_in_a_feature() {
+fn an_agent_starts_threads_on_a_track_and_never_without_one() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
-    let out = run_as(
-        &home,
-        MODERATOR,
-        &[
-            "part",
-            "create",
-            "Wision",
-            "--kind",
-            "app",
-            "--project",
-            &project,
-        ],
-    );
-    assert_eq!(out.code, 0, "part create: {}", out.stderr);
-    let out = run_as(
-        &home,
-        MODERATOR,
-        &[
-            "track",
-            "create",
-            "Checkout",
-            "--part",
-            "Wision",
-            "--project",
-            &project,
-        ],
-    );
-    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
+    let checkout = checkout_id(&home, &project);
 
-    let app_question = unique("Which hero layout?");
-    let app = new_thread(&home, &project, &app_question, &[]);
-    let feature_question = unique("Do we need a cart page?");
-    let in_feature = new_thread(
-        &home,
-        &project,
-        &feature_question,
-        &["--track", "checkout", "--sealed"],
-    );
-
-    let out = run_as(&home, MODERATOR, &["thread", "list", "--project", &project]);
-    assert_eq!(out.code, 0, "thread list: {}", out.stderr);
-    for (id, question) in [(&app, &app_question), (&in_feature, &feature_question)] {
-        let lines: Vec<&str> = non_empty_lines(&out.stdout)
-            .into_iter()
-            .filter(|line| line.contains(id.as_str()))
-            .collect();
-        assert_eq!(lines.len(), 1, "one line for {id}: {:?}", out.stdout);
-        assert!(lines[0].contains(question.as_str()), "{:?}", lines[0]);
-    }
-    let shown = run_as(
+    let out = run_as(
         &home,
         MODERATOR,
         &[
             "thread",
-            "read",
-            &in_feature,
+            "create",
+            "Which hero layout?",
+            "--project",
+            &project,
+        ],
+    );
+    assert_ne!(out.code, 0, "no track: {:?}", out.stdout);
+    assert!(
+        out.stderr.contains("track_required"),
+        "the error names track_required: {:?}",
+        out.stderr
+    );
+
+    let flag_question = unique("Do we need a cart page?");
+    let by_flag = new_thread(
+        &home,
+        &project,
+        &flag_question,
+        &["--track", "checkout", "--sealed"],
+    );
+    let env_question = unique("Which hero layout?");
+    let out = omni(&home.path)
+        .args(&[
+            "thread",
+            "create",
+            &env_question,
             "--project",
             &project,
             "--json",
-        ],
+            "--as",
+            MODERATOR,
+        ])
+        .env("OMNI_TRACK", "Checkout")
+        .run();
+    assert_eq!(out.code, 0, "thread create with OMNI_TRACK: {}", out.stderr);
+    let by_env = out.json()["thread"]["id"]
+        .as_str()
+        .expect("the thread's id")
+        .to_string();
+
+    let out = run_as(&home, MODERATOR, &["thread", "list", "--project", &project]);
+    assert_eq!(out.code, 0, "thread list: {}", out.stderr);
+    let listed = non_empty_lines(&out.stdout);
+    assert_eq!(
+        listed.len(),
+        2,
+        "only the two threads on the track: {:?}",
+        out.stdout
     );
-    assert_eq!(shown.code, 0, "thread read: {}", shown.stderr);
-    let thread = &shown.json()["thread"];
-    assert_eq!(thread["scope"], "track", "{thread}");
-    assert_eq!(thread["sealed"], true, "{thread}");
+    for (id, question, sealed) in [
+        (&by_flag, &flag_question, true),
+        (&by_env, &env_question, false),
+    ] {
+        let lines: Vec<&str> = listed
+            .iter()
+            .copied()
+            .filter(|line| line.contains(id.as_str()))
+            .collect();
+        assert_eq!(lines.len(), 1, "one line for {id}: {:?}", out.stdout);
+        assert!(lines[0].contains(question.as_str()), "{:?}", lines[0]);
+        let shown = run_as(
+            &home,
+            MODERATOR,
+            &["thread", "read", id, "--project", &project, "--json"],
+        );
+        assert_eq!(shown.code, 0, "thread read: {}", shown.stderr);
+        let thread = &shown.json()["thread"];
+        assert_eq!(thread["scope"], "track", "{thread}");
+        assert_eq!(thread["track_id"], checkout.as_str(), "{thread}");
+        assert_eq!(thread["sealed"], sealed, "{thread}");
+    }
 }
 
 #[test]
@@ -370,7 +432,12 @@ fn in_a_sealed_thread_read_and_wait_show_an_agent_no_other_agents_posts_until_it
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
-    let thread = new_thread(&home, &project, "Which hero layout?", &["--sealed"]);
+    let thread = new_thread(
+        &home,
+        &project,
+        "Which hero layout?",
+        &["--track", "Checkout", "--sealed"],
+    );
     let a = post(&home, "run-7/critic-a", &project, &thread);
     let b = post(&home, "run-8/critic-b", &project, &thread);
 
@@ -410,7 +477,12 @@ fn thread_conclude_sets_the_conclusion_and_posts_can_still_be_added() {
     let f = fixture();
     let home = agent_home(f);
     let project = new_project(&home);
-    let thread = new_thread(&home, &project, "Which hero layout?", &[]);
+    let thread = new_thread(
+        &home,
+        &project,
+        "Which hero layout?",
+        &["--track", "Checkout"],
+    );
     post(&home, "run-7/critic-a", &project, &thread);
 
     let conclusion = unique("We take the left layout");

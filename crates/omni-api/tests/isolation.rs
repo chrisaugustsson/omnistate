@@ -460,7 +460,7 @@ const CASES: &[Case] = &[
     case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
-        Some(r#"{"question":"intruder"}"#),
+        Some(r#"{"question":"intruder","track_id":"<track>"}"#),
         Kind::Workspace,
     ),
     case(
@@ -1512,10 +1512,15 @@ fn fixture() -> &'static Fixture {
                 .as_str()
                 .expect("the new paragraph")
                 .to_string();
-            // A sealed thread with a post, so whatever holds threads, phases
-            // and posts has rows of the workspace.
+            // A sealed thread on the track with a post, so whatever holds
+            // threads, phases and posts has rows of the workspace.
             let thread_question = unique(&format!("{name}-question"));
-            let body = json!({ "question": thread_question, "sealed": true }).to_string();
+            let body = json!({
+                "question": thread_question,
+                "sealed": true,
+                "track_id": track_id
+            })
+            .to_string();
             let created = must(
                 call(
                     client,

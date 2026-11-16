@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // US-114: the thread page (/…/threads/<thread>) and the Threads page
-// (/…/threads?scope=app|<track>). The app is rendered with its own router on
+// (/…/threads?scope=<track>), whose threads all sit on tracks (US-325). The
+// app is rendered with its own router on
 // a memory history, fetch is replaced by a fake of the API and WebSocket by a
 // fake socket that the test drives.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
@@ -14,6 +15,8 @@ const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
 const CHECKOUT_ID = "0192d7a0-4444-7000-8000-000000000001";
 const SEARCH_ID = "0192d7a0-4444-7000-8000-000000000002";
+const ACCOUNTS_ID = "0192d7a0-4444-7000-8000-000000000003";
+const BILLING_ID = "0192d7a0-4444-7000-8000-000000000004";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const THREADS_PATH = `${PROJECT_PATH}/threads`;
@@ -62,7 +65,7 @@ function thread(
   return {
     id: newId(),
     project_id: PROJECT_ID,
-    track_id: fields.track ?? null,
+    track_id: fields.track ?? CHECKOUT_ID,
     question,
     sealed: fields.sealed ?? false,
     conclusion: fields.conclusion ?? null,
@@ -89,7 +92,12 @@ function home(threads: HomeThread[]) {
   return {
     project_id: PROJECT_ID,
     app: { last_activity: null },
-    tracks: [track(CHECKOUT_ID, "Checkout"), track(SEARCH_ID, "Search")],
+    tracks: [
+      track(CHECKOUT_ID, "Checkout"),
+      track(SEARCH_ID, "Search"),
+      track(ACCOUNTS_ID, "Accounts"),
+      track(BILLING_ID, "Billing"),
+    ],
     docs: [],
     threads,
     waiting: { comments: [] },
@@ -262,6 +270,11 @@ function rowQuestions(main: HTMLElement) {
   return within(main)
     .getAllByRole("listitem")
     .map((item) => (item.querySelector("a span")?.textContent ?? "").trim());
+}
+
+/** The Threads page's track groups, in order. */
+function trackGroups(main: HTMLElement) {
+  return within(main).queryAllByRole("region");
 }
 
 describe("threads in the web app", () => {
@@ -440,17 +453,6 @@ describe("threads in the web app", () => {
       );
     });
 
-    test("an app-level thread: App › Threads › question, linking the App page and the app's threads", async () => {
-      const opened = { ...thread("Which fonts?"), posts: [] as Post[] };
-      fakeApi([opened], opened);
-      renderAt(`${THREADS_PATH}/${opened.id}`);
-      const trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
-
-      expect(Array.from(trail.querySelectorAll("li"), (item) => item.textContent)).toEqual(["App", "Threads", "Which fonts?"]);
-      expect(within(trail).getByRole("link", { name: "App" }).getAttribute("href")).toBe(`${PROJECT_PATH}/app`);
-      expect(within(trail).getByRole("link", { name: "Threads" }).getAttribute("href")).toBe(`${THREADS_PATH}?scope=app`);
-    });
-
     test("#post-<id> scrolls to that post and highlights it", async () => {
       const opened = openedThread();
       const scrolled: Element[] = [];
@@ -488,45 +490,45 @@ describe("threads in the web app", () => {
       expect(within(row).getByText("Concluded")).toBeTruthy();
     });
 
-    test("the threads of every scope come newest post first, a thread without posts at its start, each with its scope and post count", async () => {
-      const fonts = thread("Which fonts?", { posts: 3, lastPostAt: "2026-10-21T11:00:00.000Z" });
+    test("threads are grouped by track in the project's track order, each heading opening its track, and nothing starts a thread", async () => {
       const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
-      const footer = thread("What goes in the footer?", { createdAt: "2026-10-21T12:00:00.000Z" });
+      const footer = thread("What goes in the footer?", { track: CHECKOUT_ID, createdAt: "2026-10-21T12:00:00.000Z" });
       const ranking = thread("How do we rank results?", {
         track: SEARCH_ID,
         createdAt: "2026-10-21T07:00:00.000Z",
         posts: 2,
-        lastPostAt: "2026-10-21T10:00:00.000Z",
+        lastPostAt: "2026-10-21T14:00:00.000Z",
       });
-      fakeApi([fonts, wallets, footer, ranking]);
+      const login = thread("Do we keep passwords?", { track: ACCOUNTS_ID, posts: 3, lastPostAt: "2026-10-21T11:00:00.000Z" });
+      fakeApi([login, footer, ranking, wallets]);
       renderAt(THREADS_PATH);
       const main = await screen.findByRole("main");
 
-      await waitFor(() =>
-        expect(rowQuestions(main)).toEqual(["Which wallets?", "What goes in the footer?", "Which fonts?", "How do we rank results?"]),
-      );
-      expect(threadRow(main, "Which wallets?").textContent).toContain("Checkout");
-      expect(threadRow(main, "Which wallets?").textContent).toContain("1 post");
-      expect(threadRow(main, "Which fonts?").textContent).toContain("App");
-      expect(threadRow(main, "Which fonts?").textContent).toContain("3 posts");
-      expect(threadRow(main, "What goes in the footer?").textContent).toContain("0 posts");
-      expect(threadRow(main, "How do we rank results?").textContent).toContain("Search");
-      expect(threadRow(main, "Which wallets?").getAttribute("href")).toBe(`${THREADS_PATH}/${wallets.id}`);
-    });
+      await waitFor(() => expect(trackGroups(main)).toHaveLength(3));
+      const groups = trackGroups(main);
+      expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Checkout", "Search", "Accounts"]);
+      groups.forEach((group, index) => {
+        const id = [CHECKOUT_ID, SEARCH_ID, ACCOUNTS_ID][index];
+        const heading = within(group).getByRole("heading", { level: 2 });
+        expect(within(heading).getByRole("link").getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${id}`);
+      });
+      const [checkout, search, accounts] = groups;
+      expect(rowQuestions(checkout)).toEqual(["Which wallets?", "What goes in the footer?"]);
+      expect(rowQuestions(search)).toEqual(["How do we rank results?"]);
+      expect(rowQuestions(accounts)).toEqual(["Do we keep passwords?"]);
+      expect(threadRow(checkout, "Which wallets?").textContent).toContain("1 post");
+      expect(threadRow(checkout, "What goes in the footer?").textContent).toContain("0 posts");
+      expect(threadRow(accounts, "Do we keep passwords?").textContent).toContain("3 posts");
+      expect(threadRow(checkout, "Which wallets?").getAttribute("href")).toBe(`${THREADS_PATH}/${wallets.id}`);
+      expect(within(main).queryByText("App")).toBeNull();
 
-    test("?scope=app lists the app's threads only", async () => {
-      const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
-      const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
-      fakeApi([fonts, wallets]);
-      renderAt(`${THREADS_PATH}?scope=app`);
-      const main = await screen.findByRole("main");
-
-      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which fonts?"]));
-      expect(within(main).getByRole("button", { name: "Scope" }).textContent).toBe("App");
+      expect(within(main).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Scope"]);
+      expect(within(main).queryAllByRole("textbox")).toEqual([]);
+      expect(main.querySelector("form")).toBeNull();
     });
 
     test("choosing a track in the scope filter narrows the list and keeps it in ?scope=, All scopes takes it out", async () => {
-      const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
+      const fonts = thread("Which fonts?", { track: ACCOUNTS_ID, posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
       const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
       const ranking = thread("How do we rank results?", { track: SEARCH_ID, posts: 1, lastPostAt: "2026-10-21T10:00:00.000Z" });
       fakeApi([fonts, wallets, ranking]);
@@ -546,10 +548,10 @@ describe("threads in the web app", () => {
       fireEvent.click(within(main).getByRole("option", { name: "All scopes" }));
       await waitFor(() => expect(router.state.location.search).toEqual({}));
       expect(router.state.location.href).not.toContain("scope=");
-      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?", "Which fonts?", "How do we rank results?"]));
+      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?", "How do we rank results?", "Which fonts?"]));
     });
 
-    test("a new post moves its thread to the top and counts it", async () => {
+    test("a new post moves its thread to the top of its track and counts it", async () => {
       const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
       const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
       const api = fakeApi([fonts, wallets]);

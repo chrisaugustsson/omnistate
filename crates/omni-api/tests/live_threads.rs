@@ -13,19 +13,23 @@
 //! `/api/v1/w/{workspace_id}/projects/{project_id}`; the rest is the green
 //! step's choice):
 //!
-//! - `POST /threads` (agent) starts a thread at the app level and `POST
-//!   /tracks/{track_id}/threads` (agent) one in a track of the project,
-//!   both with `{"question", "sealed"}` (`sealed` defaults to `false`). They answer 201 `{"thread": Thread}`. A missing or blank
-//!   question is 400 `invalid_request`, a track the project does not have is
-//!   404, and a browser session is 403. Starting a thread emits
-//!   `thread.created` with the thread's ID in `data.thread_id`.
-//! - A Thread has `id`, `project_id`, `scope` (`"app"` or `"track"`),
-//!   `track_id` (`null` at the app level), `question`, `sealed`,
+//! - Threads live only on tracks (US-325, D21). `POST
+//!   /tracks/{track_id}/threads` (agent) starts one in a track of the project
+//!   with `{"question", "sealed"}` (`sealed` defaults to `false`), and `POST
+//!   /threads` (agent) does the same for the track named by `track_id` in the
+//!   body. They answer 201 `{"thread": Thread}`. On `POST /threads` a missing
+//!   or null `track_id` is 422 `track_required`, before anything else of the
+//!   body is looked at. A missing or blank question is 400 `invalid_request`,
+//!   a track the project does not have is 404, and a browser session is 403.
+//!   Starting a thread emits `thread.created` with the thread's ID in
+//!   `data.thread_id`.
+//! - A Thread has `id`, `project_id`, `scope` (`"track"`), `track_id`,
+//!   `question`, `sealed`,
 //!   `conclusion` (`null` until it is written) and `run_tag` (the run of the
 //!   agent that started it). It has none of what US-108 removed: no `criteria`,
 //!   no `phases` and no `decision`.
 //! - `GET /threads` (both) answers `{"threads": [Thread, ...]}`: the threads of
-//!   the project, of every scope.
+//!   the project, of every track, each with its `track_id`.
 //! - `GET /threads/{thread_id}` (both) answers `{"thread": Thread}` with
 //!   `posts`: the posts the caller may read, oldest first.
 //! - `POST /threads/{thread_id}/posts` (both: an agent with its API key, the
@@ -403,7 +407,8 @@ fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
     )
 }
 
-/// The route that starts a thread at the app level, or in `track`.
+/// The route that starts a thread: the project-level one, which takes the
+/// track in the body, or that of `track`.
 fn threads_route(f: &Fixture, project: &str, track: Option<&str>) -> String {
     match track {
         None => format!("{}/threads", project_base(f, project)),
@@ -428,22 +433,16 @@ fn start_thread(
     )
 }
 
-/// A new thread of the moderator's, at the app level or in `track`: the
-/// thread as the API answered it.
-fn new_thread(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    track: Option<&str>,
-    sealed: bool,
-) -> Value {
+/// A new thread of the moderator's in `track`: the thread as the API answered
+/// it.
+fn new_thread(f: &Fixture, client: &Client, project: &str, track: &str, sealed: bool) -> Value {
     must(
         start_thread(
             f,
             client,
             &moderator(f),
             project,
-            track,
+            Some(track),
             &json!({ "question": unique("Which hero layout?"), "sealed": sealed }),
         ),
         201,
@@ -452,10 +451,12 @@ fn new_thread(
         .clone()
 }
 
-/// A new project with an app-level thread, sealed or not: (project, thread).
+/// A new project with a thread on one of its tracks, sealed or not:
+/// (project, thread).
 fn thread_in_new_project(f: &Fixture, client: &Client, sealed: bool) -> (String, String) {
     let project = new_project(f, client);
-    let thread = id_of(&new_thread(f, client, &project, None, sealed));
+    let track = new_track(f, client, &project);
+    let thread = id_of(&new_thread(f, client, &project, &track, sealed));
     (project, thread)
 }
 
@@ -574,18 +575,11 @@ fn threads_in(project: &str) -> i64 {
     })
 }
 
-/// A thread of US-108: its scope and nothing of what US-108 removed.
-fn assert_live_thread(thread: &Value, track: Option<&str>) {
-    match track {
-        None => {
-            assert_eq!(thread["scope"], "app", "{thread}");
-            assert_eq!(thread["track_id"], Value::Null, "{thread}");
-        }
-        Some(track) => {
-            assert_eq!(thread["scope"], "track", "{thread}");
-            assert_eq!(thread["track_id"], track, "{thread}");
-        }
-    }
+/// A thread of US-108 on `track`: its scope and nothing of what US-108
+/// removed.
+fn assert_live_thread(thread: &Value, track: &str) {
+    assert_eq!(thread["scope"], "track", "{thread}");
+    assert_eq!(thread["track_id"], track, "{thread}");
     for removed in ["criteria", "phases", "decision"] {
         assert!(
             thread.get(removed).is_none(),
@@ -910,13 +904,14 @@ fn the_thread_routes_are_in_the_registry_with_who_may_call_them() {
 }
 
 // ---------------------------------------------------------------------------
-// Starting threads at the app level and in a track
+// Starting threads, only ever on a track
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_agent_starts_a_thread_at_the_app_level() {
+fn an_agent_starts_a_thread_on_the_track_named_in_the_body_of_the_project_route() {
     let (f, client) = ready();
     let project = new_project(f, client);
+    let track = new_track(f, client, &project);
     let question = unique("Which hero layout?");
     let created = must(
         start_thread(
@@ -925,10 +920,10 @@ fn an_agent_starts_a_thread_at_the_app_level() {
             &moderator(f),
             &project,
             None,
-            &json!({ "question": question }),
+            &json!({ "question": question, "track_id": track }),
         ),
         201,
-        "start a thread at the app level",
+        "start a thread on the track named in the body",
     );
     let thread = &created["thread"];
     let id = id_of(thread);
@@ -940,12 +935,12 @@ fn an_agent_starts_a_thread_at_the_app_level() {
     );
     assert_eq!(thread["conclusion"], Value::Null, "{thread}");
     assert_eq!(thread["run_tag"], "run-1", "the starter's run: {thread}");
-    assert_live_thread(thread, None);
+    assert_live_thread(thread, &track);
 
     for auth in [moderator(f), scout(f), human(f)] {
         let read = read_thread(f, client, &auth, &project, &id);
         assert_eq!(read["thread"]["question"], question.as_str(), "{read}");
-        assert_live_thread(&read["thread"], None);
+        assert_live_thread(&read["thread"], &track);
         assert_eq!(
             read["thread"]["posts"],
             json!([]),
@@ -957,9 +952,67 @@ fn an_agent_starts_a_thread_at_the_app_level() {
     assert!(
         replayed.iter().any(|e| e["event"] == "thread.created"
             && e["data"]["thread_id"] == id.as_str()
-            && e["data"]["track_id"].is_null()),
-        "starting the thread emitted thread.created at the app level: {replayed:?}"
+            && e["data"]["track_id"] == track.as_str()),
+        "starting the thread emitted thread.created on the track: {replayed:?}"
     );
+}
+
+#[test]
+fn the_project_route_refuses_a_thread_without_a_track_with_422_track_required() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = new_track(f, client, &project);
+    for body in [
+        json!({ "question": "Which hero layout?" }),
+        json!({ "question": "Which hero layout?", "track_id": null }),
+        json!({ "question": "Which hero layout?", "sealed": true }),
+        // With no track, a bad question is still a missing track.
+        json!({}),
+        json!({ "question": "   " }),
+    ] {
+        let response = start_thread(f, client, &moderator(f), &project, None, &body);
+        assert_eq!(response.status, 422, "{body}: {}", response.text());
+        assert_eq!(
+            response.json(),
+            json!({ "error": "track_required" }),
+            "{body}"
+        );
+    }
+
+    let other_project = new_project(f, client);
+    let elsewhere = new_track(f, client, &other_project);
+    for (missing, what) in [
+        (UNKNOWN_ID.to_string(), "a track that does not exist"),
+        (elsewhere, "a track of another project"),
+    ] {
+        let response = start_thread(
+            f,
+            client,
+            &moderator(f),
+            &project,
+            None,
+            &json!({ "question": "Lost?", "track_id": missing }),
+        );
+        assert_eq!(response.status, 404, "{what}: {}", response.text());
+        assert_eq!(response.json()["error"], "not_found", "{what}");
+    }
+    assert_eq!(threads_in(&project), 0, "no thread was started");
+    assert_eq!(threads_in(&other_project), 0, "nor in the other project");
+
+    let listed = must(
+        call(
+            client,
+            "GET",
+            &format!("{}/threads", project_base(f, &project)),
+            &human(f),
+            None,
+        ),
+        200,
+        "list the threads",
+    );
+    assert_eq!(listed["threads"], json!([]), "{listed}");
+    let started = new_thread(f, client, &project, &track, false);
+    assert_live_thread(&started, &track);
 }
 
 #[test]
@@ -967,12 +1020,12 @@ fn an_agent_starts_a_thread_in_a_track_of_the_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
-    let thread = new_thread(f, client, &project, Some(&track), true);
+    let thread = new_thread(f, client, &project, &track, true);
     let id = id_of(&thread);
     assert_eq!(thread["sealed"], true, "{thread}");
-    assert_live_thread(&thread, Some(&track));
+    assert_live_thread(&thread, &track);
     let read = read_thread(f, client, &human(f), &project, &id);
-    assert_live_thread(&read["thread"], Some(&track));
+    assert_live_thread(&read["thread"], &track);
     let replayed = follow(f, client, &human(f), &project, Some(0)).drain();
     assert!(
         replayed.iter().any(|e| e["event"] == "thread.created"
@@ -1005,6 +1058,13 @@ fn starting_a_thread_needs_a_question_and_an_agent() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
+    // The project-level route takes the track in the body.
+    let with_track = |mut body: Value, scope: Option<&str>| {
+        if scope.is_none() {
+            body["track_id"] = json!(track);
+        }
+        body
+    };
     for scope in [None, Some(track.as_str())] {
         for body in [
             json!({}),
@@ -1013,6 +1073,7 @@ fn starting_a_thread_needs_a_question_and_an_agent() {
             json!({ "question": 7 }),
             json!({ "question": "Which?", "sealed": "yes" }),
         ] {
+            let body = with_track(body, scope);
             let response = start_thread(f, client, &moderator(f), &project, scope, &body);
             assert_eq!(response.status, 400, "{body}: {}", response.text());
             assert_eq!(response.json()["error"], "invalid_request", "{body}");
@@ -1023,7 +1084,7 @@ fn starting_a_thread_needs_a_question_and_an_agent() {
             &human(f),
             &project,
             scope,
-            &json!({ "question": "Which hero layout?" }),
+            &with_track(json!({ "question": "Which hero layout?" }), scope),
         );
         assert_eq!(
             response.status,
@@ -1036,12 +1097,13 @@ fn starting_a_thread_needs_a_question_and_an_agent() {
 }
 
 #[test]
-fn the_thread_list_has_the_threads_of_every_scope() {
+fn the_thread_list_has_the_threads_of_every_track_each_with_its_track_id() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
-    let app = id_of(&new_thread(f, client, &project, None, false));
-    let in_track = id_of(&new_thread(f, client, &project, Some(&track), true));
+    let other = new_track(f, client, &project);
+    let in_other = id_of(&new_thread(f, client, &project, &other, false));
+    let in_track = id_of(&new_thread(f, client, &project, &track, true));
     for auth in [scout(f), human(f)] {
         let listed = must(
             call(
@@ -1064,8 +1126,8 @@ fn the_thread_list_has_the_threads_of_every_scope() {
                 .find(|t| t["id"] == id)
                 .unwrap_or_else(|| panic!("thread {id} is listed: {listed}"))
         };
-        assert_live_thread(of(&app), None);
-        assert_live_thread(of(&in_track), Some(&track));
+        assert_live_thread(of(&in_other), &other);
+        assert_live_thread(of(&in_track), &track);
         assert_eq!(of(&in_track)["sealed"], true, "{listed}");
     }
 }
@@ -1108,61 +1170,59 @@ fn agents_and_the_human_post_in_a_thread() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let track = new_track(f, client, &project);
-    for scope in [None, Some(track.as_str())] {
-        let thread = id_of(&new_thread(f, client, &project, scope, false));
-        let posts = format!("{}/posts", thread_path(f, &project, &thread));
+    let thread = id_of(&new_thread(f, client, &project, &track, false));
+    let posts = format!("{}/posts", thread_path(f, &project, &thread));
 
-        let by_agent = must(
-            call(
-                client,
-                "POST",
-                &posts,
-                &critic(f),
-                Some(&json!({ "summary": "Pick the left layout", "body": "It reads **better**." })),
-            ),
-            201,
-            "an agent posts with its API key",
-        )["post"]
-            .clone();
-        assert_eq!(by_agent["thread_id"], thread.as_str(), "{by_agent}");
-        assert_eq!(by_agent["summary"], "Pick the left layout", "{by_agent}");
-        assert_eq!(by_agent["body"], "It reads **better**.", "{by_agent}");
-        assert_eq!(by_agent["author"]["kind"], "agent", "{by_agent}");
-        assert_eq!(by_agent["author"]["run"], "run-1", "{by_agent}");
-        assert_eq!(by_agent["author"]["role"], "critic", "{by_agent}");
+    let by_agent = must(
+        call(
+            client,
+            "POST",
+            &posts,
+            &critic(f),
+            Some(&json!({ "summary": "Pick the left layout", "body": "It reads **better**." })),
+        ),
+        201,
+        "an agent posts with its API key",
+    )["post"]
+        .clone();
+    assert_eq!(by_agent["thread_id"], thread.as_str(), "{by_agent}");
+    assert_eq!(by_agent["summary"], "Pick the left layout", "{by_agent}");
+    assert_eq!(by_agent["body"], "It reads **better**.", "{by_agent}");
+    assert_eq!(by_agent["author"]["kind"], "agent", "{by_agent}");
+    assert_eq!(by_agent["author"]["run"], "run-1", "{by_agent}");
+    assert_eq!(by_agent["author"]["role"], "critic", "{by_agent}");
 
-        let by_human = must(
-            call(
-                client,
-                "POST",
-                &posts,
-                &human(f),
-                Some(&json!({ "summary": "Left it is", "body": "Agreed." })),
-            ),
-            201,
-            "the human posts with a browser session",
-        )["post"]
-            .clone();
-        assert_eq!(by_human["author"]["kind"], "human", "{by_human}");
-        assert_eq!(by_human["summary"], "Left it is", "{by_human}");
-        assert_eq!(by_human["body"], "Agreed.", "{by_human}");
+    let by_human = must(
+        call(
+            client,
+            "POST",
+            &posts,
+            &human(f),
+            Some(&json!({ "summary": "Left it is", "body": "Agreed." })),
+        ),
+        201,
+        "the human posts with a browser session",
+    )["post"]
+        .clone();
+    assert_eq!(by_human["author"]["kind"], "human", "{by_human}");
+    assert_eq!(by_human["summary"], "Left it is", "{by_human}");
+    assert_eq!(by_human["body"], "Agreed.", "{by_human}");
 
-        for post in [&by_agent, &by_human] {
-            for removed in ["type", "phase"] {
-                assert!(
-                    post.get(removed).is_none(),
-                    "a post has no `{removed}` any more: {post}"
-                );
-            }
-        }
-
-        for auth in [scout(f), critic(f), human(f)] {
-            assert_eq!(
-                seen_in_thread(f, client, &auth, &project, &thread),
-                vec![id_of(&by_agent), id_of(&by_human)],
-                "both posts, oldest first"
+    for post in [&by_agent, &by_human] {
+        for removed in ["type", "phase"] {
+            assert!(
+                post.get(removed).is_none(),
+                "a post has no `{removed}` any more: {post}"
             );
         }
+    }
+
+    for auth in [scout(f), critic(f), human(f)] {
+        assert_eq!(
+            seen_in_thread(f, client, &auth, &project, &thread),
+            vec![id_of(&by_agent), id_of(&by_human)],
+            "both posts, oldest first"
+        );
     }
 }
 
