@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Boxes, ChevronRight, Database, FileText, FlaskConical, MessagesSquare, Network, Palette, SquareKanban, type LucideIcon } from "lucide-react";
 import type { HomeResponse } from "@/api/generated";
-import { PILLARS, trackNames } from "@/components/project/items";
+import { PILLARS, isProjectLevel, trackNames } from "@/components/project/items";
 import { inOrder } from "@/components/project/scope-page";
 import { useUiStep } from "@/lib/show-ui";
 import { cn } from "@/lib/utils";
@@ -123,7 +123,7 @@ export function ScopeTree({
 }) {
   const params = { workspaceId, projectId };
   const own = (item: { track_id?: string | null }) => (item.track_id ?? "app") === scope;
-  const docs = home.docs.filter(own);
+  const docs = home.docs.filter((doc) => (scope === "app" ? isProjectLevel(doc) : doc.track_id === scope));
   const threads = home.threads.filter(own).length;
   const openStories = home.tracks?.find((summary) => summary.track.id === scope)?.stories?.open ?? 0;
   const name = scope === "app" ? "App" : (trackNames(home).get(scope) ?? "");

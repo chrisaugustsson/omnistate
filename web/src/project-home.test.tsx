@@ -335,6 +335,27 @@ describe("the scope pages", () => {
     expect(rowTitles(await section(main, /^ui\b/i))).toEqual(["Tokens", "account screens", "Cart screens"]);
   });
 
+  test("the App page and the sidebar's App tree leave out the docs of parts and features, and their chips do not count them", async () => {
+    const { home } = seededHome();
+    const onPart = { ...doc("architecture", "html", "Wision architecture"), part_id: PART_ID };
+    const tables = { ...doc("db", "html", "Wision tables"), part_id: PART_ID };
+    const onFeature = { ...doc("architecture", "html", "How Analyze works"), feature_id: newId() };
+    home.docs = [...home.docs, onPart, tables, onFeature];
+    fakeApi(home);
+    renderAt(APP_PATH);
+    const main = await page();
+    const architecture = await section(main, /^architecture\b/i);
+    expect(architecture.textContent).toContain("No docs yet");
+    expect(rowTitles(await section(main, /^db\b/i))).toEqual(["Orders schema"]);
+    const chips = within(main).getByRole("navigation", { name: /^pillars$/i });
+    expect(within(chips).getByRole("link", { name: /^architecture/i }).textContent).toMatch(/0$/);
+    expect(within(chips).getByRole("link", { name: /^db/i }).textContent).toMatch(/1$/);
+    await waitFor(() => expect(screen.getAllByText("Orders schema").length).toBeGreaterThan(1));
+    for (const title of ["Wision architecture", "Wision tables", "How Analyze works"]) {
+      expect(screen.queryByText(title), `${title} is not on the page nor in the sidebar`).toBeNull();
+    }
+  });
+
   test("a doc's row shows its kind, the role that last wrote it and how many comments wait, and opens the doc", async () => {
     const { home, docs } = seededHome();
     fakeApi(home);

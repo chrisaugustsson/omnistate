@@ -12,6 +12,14 @@ type ProjectParams = { workspaceId: string; projectId: string };
 
 type Scoped = { track_id?: string | null };
 
+/**
+ * Whether a doc sits at the project level: on no track, feature or part, as
+ * `omni doc list --global` lists them. The home holds every doc of the project.
+ */
+export function isProjectLevel(doc: { track_id?: string | null; feature_id?: string | null; part_id?: string | null }): boolean {
+  return !doc.track_id && !doc.feature_id && !doc.part_id;
+}
+
 /** The names of the project's tracks by ID, for tagging the items that belong to one. */
 export type TrackNames = ReadonlyMap<string, string>;
 

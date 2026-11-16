@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Link } from "@tanstack/react-router";
 import { Check, Lock } from "lucide-react";
 import type { HomeDoc, HomeResponse, HomeThread } from "@/api/generated";
-import { Empty, List, PILLARS } from "@/components/project/items";
+import { Empty, List, PILLARS, isProjectLevel } from "@/components/project/items";
 import { PageHeader } from "@/components/page-header";
 import { PartsSection } from "@/components/project/parts-section";
 import { ProjectDecisions, TrackDecisions } from "@/components/project/decisions";
@@ -158,11 +158,11 @@ function Skeleton() {
   );
 }
 
-/** The scope's docs and threads out of `home`: a track's, or the app level's when `trackId` is null. */
+/** The scope's docs and threads out of `home`: a track's, or the project level's (no track, feature or part) when `trackId` is null. */
 function inScope(home: HomeResponse, trackId: string | null) {
   const own = (item: { track_id?: string | null }) => (item.track_id ?? null) === trackId;
   return {
-    docs: home.docs.filter(own),
+    docs: home.docs.filter((doc) => (trackId ? doc.track_id === trackId : isProjectLevel(doc))),
     threads: home.threads
       .filter(own)
       .sort((a, b) => threadTime(b).localeCompare(threadTime(a))),
