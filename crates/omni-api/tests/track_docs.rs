@@ -21,6 +21,10 @@
 //!   project oldest first; `?track=<id>` lists that track's docs only and
 //!   `?track=global` the global ones only. Another value is 400, an unknown
 //!   project 404 `not_found`.
+//! - US-308: `POST /docs` takes `feature_id` for a doc on a feature, which
+//!   `?feature=<id>` lists and the track and global lists leave out. A design
+//!   may sit on a feature, a design system may not; a feature and a track
+//!   together are 422 `one_scope_only`.
 
 mod common;
 
@@ -691,4 +695,140 @@ fn the_doc_list_has_every_doc_of_the_project_and_filters_by_track_or_global() {
     // A project without docs lists none.
     let empty = new_project(f, client);
     assert!(list_docs(client, &agent(f), &docs_path(f, &empty)).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Docs on features (US-308)
+// ---------------------------------------------------------------------------
+
+/// Creates a part and the feature "Analyze" on it; returns the feature's ID.
+fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
+    let part = new_part(f, client, project);
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/parts/{part}/features", project_base(f, project)),
+                &agent(f),
+                Some(&json!({ "name": "Analyze", "description": "Charts per channel" })),
+            ),
+            201,
+            "create a feature",
+        )["feature"],
+    )
+}
+
+fn create_on_feature(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    feature: &str,
+    kind: &str,
+    pillar: &str,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &docs_path(f, project),
+        &agent(f),
+        Some(&json!({
+            "kind": kind,
+            "pillar": pillar,
+            "title": "How Analyze works",
+            "feature_id": feature,
+        })),
+    )
+}
+
+#[test]
+fn a_doc_on_a_feature_is_listed_by_its_feature_and_not_by_a_track_or_global() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = new_track(f, client, &project, "Wision");
+    let analyze = new_feature(f, client, &project);
+    let global = id_of(&create_live(f, client, &project, None, "html", "spec"));
+    let in_track = id_of(&create_live(
+        f,
+        client,
+        &project,
+        Some(&track),
+        "html",
+        "spec",
+    ));
+    let created = must(
+        create_on_feature(f, client, &project, &analyze, "html", "architecture"),
+        201,
+        "create a doc on the feature",
+    )["doc"]
+        .clone();
+    let on_feature = id_of(&created);
+    assert_eq!(created["feature_id"], analyze.as_str(), "{created}");
+    assert_track_id(&created, &Value::Null, "a doc on a feature");
+
+    let path = docs_path(f, &project);
+    for auth in [agent(f), human(f)] {
+        assert_eq!(
+            ids(&list_docs(
+                client,
+                &auth,
+                &format!("{path}?feature={analyze}")
+            )),
+            [on_feature.clone()],
+            "?feature=<id> lists that feature's docs only"
+        );
+        assert_eq!(
+            ids(&list_docs(client, &auth, &format!("{path}?track={track}"))),
+            [in_track.clone()],
+            "a track's list leaves out the feature's doc"
+        );
+        assert_eq!(
+            ids(&list_docs(client, &auth, &format!("{path}?track=global"))),
+            [global.clone()],
+            "the global list leaves out the feature's doc"
+        );
+    }
+}
+
+#[test]
+fn a_design_doc_may_sit_on_a_feature_and_a_design_system_may_not() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let analyze = new_feature(f, client, &project);
+    let design = must(
+        create_on_feature(f, client, &project, &analyze, "design", "ui"),
+        201,
+        "create a design on the feature",
+    )["doc"]
+        .clone();
+    assert_eq!(design["feature_id"], analyze.as_str(), "{design}");
+
+    let response = create_on_feature(f, client, &project, &analyze, "design-system", "ui");
+    assert_error(&response, 422, "design_system_is_global");
+}
+
+#[test]
+fn a_doc_with_both_a_feature_and_a_track_is_422_one_scope_only() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = new_track(f, client, &project, "Wision");
+    let analyze = new_feature(f, client, &project);
+    let response = call(
+        client,
+        "POST",
+        &docs_path(f, &project),
+        &agent(f),
+        Some(&json!({
+            "kind": "html",
+            "pillar": "architecture",
+            "title": "How Analyze works",
+            "feature_id": analyze,
+            "track_id": track,
+        })),
+    );
+    assert_error(&response, 422, "one_scope_only");
+    assert!(
+        list_docs(client, &agent(f), &docs_path(f, &project)).is_empty(),
+        "the refused doc was not created"
+    );
 }

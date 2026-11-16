@@ -29,6 +29,8 @@ const SEARCH: &str = "01900000-0000-7000-8000-0000000000f2";
 const NEW_DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const NEW_DESIGN: &str = "01900000-0000-7000-8000-0000000000d2";
 const PAGE: &str = "p4ge0001";
+const WISION: &str = "01900000-0000-7000-8000-0000000000a1";
+const ANALYZE: &str = "01900000-0000-7000-8000-0000000000a2";
 
 fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
@@ -60,8 +62,9 @@ fn page_tags() -> String {
     format!("<Page id=\"{PAGE}\" name=\"Page 1\"/>")
 }
 
-/// An API with the features "Checkout" and "Search", which creates docs at
-/// the app level and in either feature, and reads `NEW_DOC` (an empty HTML
+/// An API with the tracks "Checkout" and "Search" and the part "Wision" with
+/// the feature "Analyze", which creates docs at the app level, on a feature
+/// (422 `one_scope_only` with a track too) and in either track, and reads `NEW_DOC` (an empty HTML
 /// doc) and `NEW_DESIGN` (an empty design with one page).
 fn mock() -> MockServer {
     MockServer::start(|request| {
@@ -84,6 +87,20 @@ fn mock() -> MockServer {
                     feature_json(SEARCH, "Search")
                 ] }),
             ),
+            ("GET", "/parts") => Reply::json(
+                200,
+                &json!({ "parts": [{ "id": WISION, "project_id": PROJECT, "name": "Wision", "kind": "app" }] }),
+            ),
+            ("GET", r) if r == format!("/parts/{WISION}/features") => Reply::json(
+                200,
+                &json!({ "features": [{ "id": ANALYZE, "part_id": WISION, "name": "Analyze", "description": "" }] }),
+            ),
+            ("GET", r) if r.starts_with("/docs?") => Reply::json(200, &json!({ "docs": [] })),
+            ("POST", "/docs")
+                if body.get("track_id").is_some() && body.get("feature_id").is_some() =>
+            {
+                Reply::json(422, &json!({ "error": "one_scope_only" }))
+            }
             ("POST", "/docs") => created(None),
             ("POST", r) if r == format!("/tracks/{CHECKOUT}/docs") => created(Some(CHECKOUT)),
             ("POST", r) if r == format!("/tracks/{SEARCH}/docs") => created(Some(SEARCH)),
@@ -333,6 +350,89 @@ fn doc_create_takes_every_pillar() {
         assert_eq!(body["kind"], kind, "{body}");
         assert_eq!(body["pillar"], pillar, "{body}");
     }
+}
+
+#[test]
+fn an_explicit_feature_beats_omni_track_for_doc_create_and_doc_list() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let with_env = |args: &[&str]| {
+        omni(&home.path)
+            .args(args)
+            .args(&["--project", PROJECT, "--as", "run-7/author"])
+            .env("OMNI_TRACK", "Checkout")
+            .run()
+    };
+    let out = with_env(&[
+        "doc",
+        "create",
+        "--feature",
+        "Analyze",
+        "--kind",
+        "html",
+        "--pillar",
+        "architecture",
+        "--title",
+        "How Analyze works",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let sent = posts(&server);
+    assert_eq!(sent.len(), 1, "{:?}", server.requests());
+    assert_eq!(sent[0].path, format!("{}/docs", base()), "{:?}", sent[0]);
+    assert_eq!(
+        body_of(&sent[0]),
+        json!({
+            "kind": "html",
+            "pillar": "architecture",
+            "title": "How Analyze works",
+            "feature_id": ANALYZE
+        }),
+        "the doc goes on the feature, not on OMNI_TRACK's track"
+    );
+
+    let out = with_env(&["doc", "list", "--feature", "Analyze"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let lists: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "GET" && r.path.starts_with(&format!("{}/docs?", base())))
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(
+        lists,
+        [format!("{}/docs?feature={ANALYZE}", base())],
+        "the list asks for the feature's docs only"
+    );
+}
+
+#[test]
+fn doc_create_with_a_feature_and_an_explicit_track_sends_both_and_reports_one_scope_only() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "doc",
+            "create",
+            "--feature",
+            "Analyze",
+            "--track",
+            "Checkout",
+            "--kind",
+            "html",
+            "--pillar",
+            "architecture",
+            "--title",
+            "How Analyze works",
+        ],
+    );
+    assert_ne!(out.code, 0, "stdout: {:?}", out.stdout);
+    assert!(out.stderr.contains("one_scope_only"), "{:?}", out.stderr);
+    let sent = posts(&server);
+    assert_eq!(sent.len(), 1, "{:?}", server.requests());
+    let body = body_of(&sent[0]);
+    assert_eq!(body["feature_id"], ANALYZE, "{body}");
+    assert_eq!(body["track_id"], CHECKOUT, "{body}");
 }
 
 // ---------------------------------------------------------------------------
