@@ -59,6 +59,10 @@
 //!   created the key. `GET /tracks?owner=me` lists only the caller's tracks;
 //!   any other `owner` is 422 `{"error": "invalid_owner"}`, checked before
 //!   the project. No create or edit body sets the owner.
+//! - US-314: the owner, with a session or any key the owner made, makes
+//!   every state move. An admin who is not the owner may move planning and
+//!   building both ways and drop; done, and any move by another member, is
+//!   403 `{"error": "not_track_owner"}`, checked before the move itself.
 
 mod common;
 
@@ -137,10 +141,15 @@ struct Fixture {
     alice_user: String,
     /// A key that alice minted with her session.
     key: String,
+    /// Another key that alice minted.
+    alice_second_key: String,
     /// bob, a second member of the workspace, with a key he minted.
     bob_token: String,
     bob_user: String,
     bob_key: String,
+    /// carol, an admin of the workspace, with a key she minted.
+    carol_token: String,
+    carol_key: String,
     server: TestServer,
 }
 
@@ -182,7 +191,7 @@ fn fixture() -> &'static Fixture {
             )
             .await;
             let mut users = Vec::new();
-            for name in ["alice", "bob"] {
+            for (name, role) in [("alice", "member"), ("bob", "member"), ("carol", "admin")] {
                 let user = text(
                     "insert into users (email) values ($1) returning id::text",
                     &[&format!("{name}@example.test")],
@@ -196,9 +205,9 @@ fn fixture() -> &'static Fixture {
                 )
                 .await;
                 text(
-                    "insert into memberships (workspace_id, user_id) \
-                     values ($1::uuid, $2::uuid) returning id::text",
-                    &[&workspace, &user],
+                    "insert into memberships (workspace_id, user_id, role) \
+                     values ($1::uuid, $2::uuid, $3) returning id::text",
+                    &[&workspace, &user, role],
                 )
                 .await;
                 users.push(user);
@@ -222,14 +231,19 @@ fn fixture() -> &'static Fixture {
         };
         let key = mint("alice");
         let bob_key = mint("bob");
+        let alice_second_key = mint("alice");
+        let carol_key = mint("carol");
         Fixture {
             workspace,
             alice_token: session_token("alice"),
             alice_user: users[0].clone(),
             key,
+            alice_second_key,
             bob_token: session_token("bob"),
             bob_user: users[1].clone(),
             bob_key,
+            carol_token: session_token("carol"),
+            carol_key,
             server,
         }
     })
@@ -1230,4 +1244,92 @@ fn edits_to_a_track_never_change_its_owner() {
         "?owner=me",
     );
     assert_eq!(alices["tracks"], json!([]), "alice owns none: {alices}");
+}
+
+// ---------------------------------------------------------------------------
+// Only the owner changes a track (US-314)
+// ---------------------------------------------------------------------------
+
+fn state_as(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    track: &str,
+    to: &str,
+) -> Response {
+    call(
+        client,
+        "POST",
+        &format!("{}/state", track_path(f, project, track)),
+        auth,
+        Some(&json!({ "state": to })),
+    )
+}
+
+#[test]
+fn the_owner_makes_every_state_move_with_a_session_or_any_key_they_created() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    for (auth, who) in [
+        (human(f), "alice's session"),
+        (agent(f), "alice's key"),
+        (Auth::Agent(&f.alice_second_key), "alice's second key"),
+    ] {
+        for moves in [
+            &["building", "planning", "building", "done"][..],
+            &["dropped"][..],
+            &["building", "dropped"][..],
+        ] {
+            // Made with alice's key, so alice owns the track.
+            let track = track_in(f, client, &project, &[]);
+            for to in moves {
+                let moved = must(
+                    state_as(f, client, &auth, &project, &track, to),
+                    200,
+                    &format!("the owner moves the track to {to} with {who}"),
+                );
+                assert_eq!(moved["track"]["state"], *to, "{moved}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_admin_who_is_not_the_owner_moves_and_drops_a_track_but_cannot_mark_it_done() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    for (auth, who) in [
+        (Auth::Session(&f.carol_token), "carol's session"),
+        (Auth::Agent(&f.carol_key), "carol's key"),
+    ] {
+        // Made with alice's key, so alice owns the track.
+        let track = track_in(f, client, &project, &[]);
+        for to in ["building", "planning", "building", "dropped"] {
+            let moved = must(
+                state_as(f, client, &auth, &project, &track, to),
+                200,
+                &format!("the admin moves the track to {to} with {who}"),
+            );
+            assert_eq!(moved["track"]["state"], to, "{moved}");
+        }
+
+        // Done is refused for the admin, also from a state done is no move from.
+        for (moves, current) in [(&["building"][..], "building"), (&[][..], "planning")] {
+            let track = track_in(f, client, &project, moves);
+            let response = state_as(f, client, &auth, &project, &track, "done");
+            assert_error(&response, 403, "not_track_owner");
+            assert_eq!(state_of(f, client, &project, &track), current, "{who}");
+        }
+    }
+
+    // A member who is neither the owner nor an admin makes no move at all.
+    let track = track_in(f, client, &project, &[]);
+    for auth in [Auth::Session(&f.bob_token), Auth::Agent(&f.bob_key)] {
+        for to in ["building", "dropped"] {
+            let response = state_as(f, client, &auth, &project, &track, to);
+            assert_error(&response, 403, "not_track_owner");
+        }
+    }
+    assert_eq!(state_of(f, client, &project, &track), "planning");
 }

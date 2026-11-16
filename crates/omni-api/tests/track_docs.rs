@@ -25,6 +25,10 @@
 //!   `?feature=<id>` lists and the track and global lists leave out. A design
 //!   may sit on a feature, a design system may not; a feature and a track
 //!   together are 422 `one_scope_only`.
+//! - US-314: only a track's owner (with a session or a key the owner made)
+//!   adds a story to it; another member's is 403 `{"error":
+//!   "not_track_owner"}`. Every member reads the board and comments on the
+//!   track's docs.
 
 mod common;
 
@@ -143,7 +147,11 @@ async fn admin_connection() -> PgConnection {
 struct Fixture {
     workspace: String,
     alice_token: String,
+    /// A key that alice minted with her session.
     key: String,
+    /// bob, a second member of the workspace, with a key he minted.
+    bob_token: String,
+    bob_key: String,
     server: TestServer,
 }
 
@@ -185,43 +193,51 @@ fn fixture() -> &'static Fixture {
                 &[],
             )
             .await;
-            let user = text(
-                "insert into users (email) values ('alice@example.test') returning id::text",
-                &[],
-            )
-            .await;
-            text(
-                "insert into sessions (user_id, token_hash, expires_at) \
-                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
-                 returning id::text",
-                &[&user, &session_token("alice")],
-            )
-            .await;
-            text(
-                "insert into memberships (workspace_id, user_id) \
-                 values ($1::uuid, $2::uuid) returning id::text",
-                &[&workspace, &user],
-            )
-            .await;
+            for name in ["alice", "bob"] {
+                let user = text(
+                    "insert into users (email) values ($1) returning id::text",
+                    &[&format!("{name}@example.test")],
+                )
+                .await;
+                text(
+                    "insert into sessions (user_id, token_hash, expires_at) \
+                     values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+                     returning id::text",
+                    &[&user, &session_token(name)],
+                )
+                .await;
+                text(
+                    "insert into memberships (workspace_id, user_id) \
+                     values ($1::uuid, $2::uuid) returning id::text",
+                    &[&workspace, &user],
+                )
+                .await;
+            }
             workspace
         });
         let server = TestServer::start(&config());
-        let response = call(
-            &server.client,
-            "POST",
-            &format!("/api/v1/w/{workspace}/api-keys"),
-            &Auth::Session(&session_token("alice")),
-            Some(&json!({})),
-        );
-        assert_eq!(response.status, 201, "mint a key: {}", response.text());
-        let key = response.json()["secret"]
-            .as_str()
-            .expect("the new key has a secret")
-            .to_string();
+        let mint = |name: &str| -> String {
+            let response = call(
+                &server.client,
+                "POST",
+                &format!("/api/v1/w/{workspace}/api-keys"),
+                &Auth::Session(&session_token(name)),
+                Some(&json!({})),
+            );
+            assert_eq!(response.status, 201, "mint a key: {}", response.text());
+            response.json()["secret"]
+                .as_str()
+                .expect("the new key has a secret")
+                .to_string()
+        };
+        let key = mint("alice");
+        let bob_key = mint("bob");
         Fixture {
             workspace,
             alice_token: session_token("alice"),
             key,
+            bob_token: session_token("bob"),
+            bob_key,
             server,
         }
     })
@@ -831,4 +847,84 @@ fn a_doc_with_both_a_feature_and_a_track_is_422_one_scope_only() {
         list_docs(client, &agent(f), &docs_path(f, &project)).is_empty(),
         "the refused doc was not created"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Only the owner changes a track (US-314)
+// ---------------------------------------------------------------------------
+
+/// Adds a paragraph to an HTML doc's head as the agent; returns its node ID.
+fn paragraph(f: &Fixture, client: &Client, project: &str, doc: &str) -> String {
+    let answer = must(
+        call(
+            client,
+            "POST",
+            &format!("{}/docs/{doc}/ops", project_base(f, project)),
+            &agent(f),
+            Some(&json!({ "ops": [{
+                "op": "insert",
+                "parent": null,
+                "position": { "after": null },
+                "content": "<p>Orders ship in two days.</p>",
+            }] })),
+        ),
+        200,
+        "apply a batch to the head",
+    );
+    answer["results"][0]["node"]
+        .as_str()
+        .unwrap_or_else(|| panic!("an insert names its node: {answer}"))
+        .to_string()
+}
+
+#[test]
+fn only_the_owner_adds_a_story_and_every_member_reads_the_board_and_comments() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    // Made with alice's key, so alice owns the track.
+    let track = new_track(f, client, &project, "Long windows");
+    let doc = id_of(&create_live(
+        f,
+        client,
+        &project,
+        Some(&track),
+        "html",
+        "spec",
+    ));
+    let node = paragraph(f, client, &project, &doc);
+    let stories = format!("{}/tracks/{track}/stories", project_base(f, &project));
+    let story = |title: &str| json!({ "title": title, "text": "", "topic": "", "criteria": [] });
+
+    for (auth, who) in [
+        (Auth::Session(&f.bob_token), "bob's session"),
+        (Auth::Agent(&f.bob_key), "bob's key"),
+    ] {
+        let response = call(client, "POST", &stories, &auth, Some(&story("Not mine")));
+        assert_error(&response, 403, "not_track_owner");
+        let board = must(
+            call(client, "GET", &stories, &auth, None),
+            200,
+            &format!("{who} reads the board"),
+        );
+        assert_eq!(board["stories"], json!([]), "{who} added no story: {board}");
+        must(
+            call(
+                client,
+                "POST",
+                &format!("{}/docs/{doc}/comments", project_base(f, &project)),
+                &auth,
+                Some(&json!({ "node": node, "text": format!("A comment from {who}") })),
+            ),
+            201,
+            &format!("{who} comments on the track's doc"),
+        );
+    }
+
+    for (auth, who) in [(human(f), "alice's session"), (agent(f), "alice's key")] {
+        must(
+            call(client, "POST", &stories, &auth, Some(&story(who))),
+            201,
+            &format!("the owner adds a story with {who}"),
+        );
+    }
 }
