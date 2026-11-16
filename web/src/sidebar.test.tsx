@@ -301,7 +301,7 @@ describe("the project sidebar", () => {
   });
 
   describe("its places", () => {
-    test("Inbox with what waits, App, Tracks with their number, and every scope's Threads, and no track", async () => {
+    test("Inbox with what waits, App, Tracks with their number, My tracks, and every scope's Threads, and no track", async () => {
       fakeApi({
         home: home({
           tracks: [track(CHECKOUT, "Checkout"), track(WALLETS, "Wallets"), track(SEARCH, "Search")],
@@ -315,6 +315,7 @@ describe("the project sidebar", () => {
         { text: "Inbox2", href: `${PROJECT_PATH}/inbox` },
         { text: "App", href: `${PROJECT_PATH}/app` },
         { text: "Tracks3", href: `${PROJECT_PATH}/tracks` },
+        { text: "My tracks", href: `${PROJECT_PATH}/my-tracks` },
         { text: "Threads", href: `${PROJECT_PATH}/threads` },
       ]);
     });
@@ -324,7 +325,7 @@ describe("the project sidebar", () => {
       renderAt(`${PROJECT_PATH}/app`);
       const nav = await projectNav();
       await waitFor(() => expect(links(nav)[2]?.text).toBe("Tracks0"));
-      expect(links(places(nav)).map((link) => link.text)).toEqual(["Inbox", "App", "Tracks0", "Threads"]);
+      expect(links(places(nav)).map((link) => link.text)).toEqual(["Inbox", "App", "Tracks0", "My tracks", "Threads"]);
     });
 
     test("the Inbox count follows the comments as their events come in", async () => {
