@@ -7,6 +7,7 @@ import {
   Inbox,
   KeyRound,
   Layers,
+  UserRound,
   LayoutGrid,
   LogOut,
   MessagesSquare,
@@ -115,6 +116,16 @@ function ProjectNav({
         <Layers />
         Tracks
         <Count value={home ? (home.tracks ?? []).length : undefined} zero />
+      </Link>
+      <Link
+        to="/w/$workspaceId/projects/$projectId/my-tracks"
+        params={params}
+        activeOptions={activeLink}
+        activeProps={{ className: activeClass }}
+        className={itemClass}
+      >
+        <UserRound />
+        My tracks
       </Link>
       <Link
         to="/w/$workspaceId/projects/$projectId/threads"

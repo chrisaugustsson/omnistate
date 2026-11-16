@@ -20,7 +20,15 @@ export function orderTracks(tracks: TrackSummary[]): TrackSummary[] {
   ];
 }
 
-export function TrackRow({ summary, params }: { summary: TrackSummary; params: { workspaceId: string; projectId: string } }) {
+export function TrackRow({
+  summary,
+  params,
+  showPart,
+}: {
+  summary: TrackSummary;
+  params: { workspaceId: string; projectId: string };
+  showPart?: boolean;
+}) {
   const { track, last_activity } = summary;
   return (
     <li>
@@ -35,6 +43,12 @@ export function TrackRow({ summary, params }: { summary: TrackSummary; params: {
             <span className="mt-0.5 block truncate text-[13px] text-muted-foreground">{track.description.split(/\r?\n/, 1)[0]}</span>
           )}
         </span>
+        {showPart && (
+          <span className="hidden max-w-40 shrink-0 truncate text-xs text-muted-foreground sm:inline">
+            {summary.part_name}
+            {summary.part_deleted && " (deleted)"}
+          </span>
+        )}
         <StateLabel state={track.state} />
         <span className="hidden w-28 shrink-0 text-right text-xs text-muted-foreground sm:inline">
           {last_activity ? timeAgo(last_activity) : "No activity yet"}
