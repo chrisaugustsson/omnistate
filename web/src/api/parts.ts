@@ -5,6 +5,7 @@ const list = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/part
 const created = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/parts"];
 const renamed = operations["PATCH /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}"];
 const createdTrack = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks"];
+const movedTrack = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state"];
 
 const base = (workspaceId: string, projectId: string) => `/api/v1/w/${workspaceId}/projects/${projectId}`;
 
@@ -49,6 +50,15 @@ export async function createTrack(
   const answer = await callApi("POST", `${base(workspaceId, projectId)}/tracks`, {
     body: track,
     response: createdTrack.responses["201"],
+  });
+  return answer.track;
+}
+
+/** Moves a track to another state; the API refuses a move that is not allowed (US-311). */
+export async function setTrackState(workspaceId: string, projectId: string, trackId: string, state: string): Promise<TrackBody> {
+  const answer = await callApi("POST", `${base(workspaceId, projectId)}/tracks/${trackId}/state`, {
+    body: { state },
+    response: movedTrack.responses["200"],
   });
   return answer.track;
 }

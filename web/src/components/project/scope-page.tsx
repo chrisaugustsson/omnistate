@@ -8,6 +8,7 @@ import { PartsSection } from "@/components/project/parts-section";
 import { ProjectDecisions, TrackDecisions } from "@/components/project/decisions";
 import { TrackFeatures } from "@/components/project/track-features";
 import { TrackOwner } from "@/components/project/track-owner";
+import { TrackStatus } from "@/components/project/track-status";
 import { RenameTitle } from "@/components/project/rename-title";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -202,6 +203,9 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
       <p className="mt-2 text-xs text-muted-foreground" title={lastActivity ? new Date(lastActivity).toLocaleString() : undefined}>
         {lastActivity ? `Last change ${timeAgo(lastActivity)}` : "No activity yet"}
       </p>
+      {summary && (
+        <TrackStatus workspaceId={workspaceId} projectId={projectId} summary={summary} tracks={home?.tracks ?? []} />
+      )}
     </>
   );
 
