@@ -5,6 +5,9 @@
 // building) first, then the done and dropped ones, each group with the most
 // recently updated first, each row with its state. A track created there goes
 // on that part. Both pages read GET .../parts and GET .../home.
+// US-310: the part page creates, renames and deletes its features; a feature's
+// page, .../parts/<part>/features/<feature>, shows its name, description, docs
+// and linked tracks; a track's page lists the features it changes, read-only.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -50,9 +53,32 @@ function track(name: string, partId: string, state: string, lastActivity: string
 
 type Track = ReturnType<typeof track>;
 
-/** A fake of the API that keeps the parts, and records every write. */
-function fakeApi(fields: { parts: ReturnType<typeof part>[]; tracks?: Track[] }) {
-  const api = { parts: fields.parts, writes: [] as Call[] };
+function feature(id: string, partId: string, name: string, description = "") {
+  return { id, project_id: PROJECT_ID, part_id: partId, name, description, created_at: AT };
+}
+
+type Feature = ReturnType<typeof feature>;
+
+function doc(id: string, featureId: string, kind: string, title: string) {
+  return { id, project_id: PROJECT_ID, track_id: null, feature_id: featureId, kind, pillar: "spec", title, created_at: AT };
+}
+
+/** A fake of the API that keeps the parts and features, and records every write. */
+function fakeApi(fields: {
+  parts: ReturnType<typeof part>[];
+  tracks?: Track[];
+  features?: Feature[];
+  /** The docs answered for GET .../docs?feature=<id>. */
+  featureDocs?: ReturnType<typeof doc>[];
+  /** The tracks answered for GET .../features/<id>/tracks. */
+  featureTracks?: Track["track"][];
+  /** The features answered for GET .../tracks/<id>/features. */
+  trackFeatures?: Feature[];
+  /** A write path that answers 409 name_taken once. */
+  nameTakenOnce?: string;
+}) {
+  const api = { parts: fields.parts, features: fields.features ?? [], writes: [] as Call[] };
+  let nameTaken = fields.nameTakenOnce;
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
@@ -61,9 +87,27 @@ function fakeApi(fields: { parts: ReturnType<typeof part>[]; tracks?: Track[] })
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       const path = new URL(url, "http://localhost:3000").pathname;
       const method = (init?.method ?? "GET").toUpperCase();
+      const featureAt = path.match(/\/parts\/([^/]+)\/features(?:\/([^/]+))?(\/tracks)?$/);
       if (method !== "GET") {
         const body = init?.body ? JSON.parse(String(init.body)) : null;
         api.writes.push({ method, path, body });
+        if (nameTaken === path) {
+          nameTaken = undefined;
+          return json(409, { error: "name_taken" });
+        }
+        if (featureAt && method === "POST") {
+          const created = feature("0192d7a0-5555-7000-8000-0000000000ff", featureAt[1], body.name, body.description);
+          api.features = [...api.features, created];
+          return json(201, { feature: created });
+        }
+        if (featureAt && method === "PATCH") {
+          api.features = api.features.map((f) => (f.id === featureAt[2] ? { ...f, name: body.name } : f));
+          return json(200, { feature: api.features.find((f) => f.id === featureAt[2]) });
+        }
+        if (featureAt && method === "DELETE") {
+          api.features = api.features.filter((f) => f.id !== featureAt[2]);
+          return new Response(null, { status: 204 });
+        }
         if (method === "POST" && path === `${API}/parts`) {
           const created = part("0192d7a0-3333-7000-8000-0000000000ff", body.name, body.kind);
           api.parts = [...api.parts, created];
@@ -73,6 +117,18 @@ function fakeApi(fields: { parts: ReturnType<typeof part>[]; tracks?: Track[] })
           return json(201, { track: { ...track(body.name, body.part_id, "planning", null).track } });
         if (method === "PATCH") return json(200, { part: { ...api.parts[0], name: body.name } });
         return new Response(null, { status: 204 });
+      }
+      if (featureAt?.[3]) return json(200, { tracks: fields.featureTracks ?? [] });
+      if (featureAt?.[2]) {
+        const one = api.features.find((f) => f.id === featureAt[2]);
+        return one ? json(200, { feature: one }) : json(404, { error: "not_found" });
+      }
+      if (featureAt) return json(200, { features: api.features.filter((f) => f.part_id === featureAt[1]) });
+      const trackAt = path.match(/\/tracks\/([^/]+)(\/features)?$/);
+      if (trackAt?.[2]) return json(200, { features: fields.trackFeatures ?? [] });
+      if (trackAt) {
+        const one = (fields.tracks ?? []).find((summary) => summary.track.id === trackAt[1]);
+        return one ? json(200, { track: one.track }) : json(404, { error: "not_found" });
       }
       switch (path) {
         case "/api/v1/auth/me":
@@ -92,6 +148,12 @@ function fakeApi(fields: { parts: ReturnType<typeof part>[]; tracks?: Track[] })
             threads: [],
             waiting: { comments: [] },
           });
+        case `${API}/docs`:
+          return json(200, { docs: fields.featureDocs ?? [] });
+        case `${API}/tracks`:
+          return json(200, { tracks: (fields.tracks ?? []).map((summary) => summary.track) });
+        case `${API}/comments`:
+          return json(200, { project_id: PROJECT_ID, comments: [] });
         default:
           return json(404, { error: "not_found" });
       }
@@ -216,6 +278,47 @@ describe("the part page", () => {
     ]);
   });
 
+  test("New feature creates one with a name and a description, a feature is renamed by name only, and deleted once confirmed", async () => {
+    const ANALYZE = "0192d7a0-5555-7000-8000-000000000001";
+    const FEATURES = `${API}/parts/${WISION}/features`;
+    const api = fakeApi({
+      parts: [part(WISION, "Wision", "app")],
+      features: [feature(ANALYZE, WISION, "Analyze", "Look at long windows of data")],
+      nameTakenOnce: FEATURES,
+    });
+    renderAt(`${PROJECT_PATH}/parts/${WISION}`);
+    const features = await region("Features");
+    const analyze = await within(features).findByRole("link", { name: /Analyze/ });
+    expect(analyze.getAttribute("href")).toBe(`${PROJECT_PATH}/parts/${WISION}/features/${ANALYZE}`);
+
+    fireEvent.click(within(features).getByRole("button", { name: "New feature" }));
+    fireEvent.change(within(features).getByRole("textbox", { name: "Feature name" }), { target: { value: "Alarms" } });
+    fireEvent.change(within(features).getByRole("textbox", { name: "Feature description" }), { target: { value: "Warn on thresholds" } });
+    fireEvent.click(within(features).getByRole("button", { name: "Create feature" }));
+    expect(await within(features).findByRole("alert"), "a 409 name_taken is shown").toBeTruthy();
+    expect(within(features).getByRole("textbox", { name: "Feature name" }), "and the form stays open").toBeTruthy();
+    fireEvent.click(within(features).getByRole("button", { name: "Create feature" }));
+    await within(features).findByRole("link", { name: /Alarms/ });
+    expect(api.writes.map((w) => [w.method, w.path, w.body])).toEqual([
+      ["POST", FEATURES, { name: "Alarms", description: "Warn on thresholds" }],
+      ["POST", FEATURES, { name: "Alarms", description: "Warn on thresholds" }],
+    ]);
+
+    api.writes = [];
+    fireEvent.click(within(features).getByRole("button", { name: "Rename Analyze" }));
+    expect(within(features).queryByRole("textbox", { name: "Feature description" }), "no description editing").toBeNull();
+    fireEvent.change(within(features).getByRole("textbox", { name: "Feature name" }), { target: { value: "Analyse" } });
+    fireEvent.click(within(features).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.writes).toEqual([{ method: "PATCH", path: `${FEATURES}/${ANALYZE}`, body: { name: "Analyse" } }]));
+
+    api.writes = [];
+    fireEvent.click(await within(features).findByRole("button", { name: "Delete Analyse" }));
+    expect(api.writes, "asking first sends nothing").toEqual([]);
+    fireEvent.click(within(features).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(api.writes).toEqual([{ method: "DELETE", path: `${FEATURES}/${ANALYZE}`, body: null }]));
+    await waitFor(() => expect(within(features).queryByRole("link", { name: /Analyse/ })).toBeNull());
+  });
+
   test("New track puts the track on the page's part without asking for one", async () => {
     const api = fakeApi({ parts: [part(WISION, "Wision", "app"), part(IOT, "iot-service", "service")] });
     renderAt(`${PROJECT_PATH}/parts/${IOT}`);
@@ -227,5 +330,67 @@ describe("the part page", () => {
     await waitFor(() =>
       expect(api.writes).toEqual([{ method: "POST", path: `${API}/tracks`, body: { name: "Gateway", description: "", part_id: IOT } }]),
     );
+  });
+});
+
+describe("the feature page", () => {
+  const ANALYZE = "0192d7a0-5555-7000-8000-000000000001";
+  const FEATURE_PATH = `${PROJECT_PATH}/parts/${WISION}/features/${ANALYZE}`;
+
+  test("shows the feature's name, description and docs, each opening the doc viewer, and its linked tracks, active first, each with its state, opening the track page", async () => {
+    const DOC = "0192d7a0-6666-7000-8000-000000000001";
+    const tracks = [
+      track("Old charts", WISION, "done", "2026-10-21T14:00:00Z"),
+      track("Long windows", WISION, "building", "2026-10-21T12:00:00Z"),
+      track("Exports", WISION, "planning", "2026-10-21T13:00:00Z"),
+    ];
+    fakeApi({
+      parts: [part(WISION, "Wision", "app")],
+      tracks,
+      features: [feature(ANALYZE, WISION, "Analyze", "Look at long windows of data")],
+      featureDocs: [doc(DOC, ANALYZE, "html", "Analyze overview")],
+      featureTracks: tracks.map((summary) => summary.track),
+    });
+    renderAt(FEATURE_PATH);
+    const page = await main();
+    expect(await within(page).findByRole("heading", { level: 1, name: "Analyze" })).toBeTruthy();
+    expect(page.textContent).toContain("Look at long windows of data");
+
+    const docLink = await within(page).findByRole("link", { name: "Analyze overview" });
+    expect(docLink.getAttribute("href")).toBe(`${PROJECT_PATH}/docs/${DOC}`);
+
+    const linked = await region("Tracks");
+    await within(linked).findByText("Long windows");
+    const rows = within(linked)
+      .getAllByRole("link")
+      .map((row) => [row.querySelector("span span")?.textContent, within(row).getByText(/^(planning|building|done|dropped)$/).textContent, row.getAttribute("href")]);
+    expect(rows).toEqual([
+      ["Exports", "planning", `${PROJECT_PATH}/tracks/${tracks[2].track.id}`],
+      ["Long windows", "building", `${PROJECT_PATH}/tracks/${tracks[1].track.id}`],
+      ["Old charts", "done", `${PROJECT_PATH}/tracks/${tracks[0].track.id}`],
+    ]);
+  });
+});
+
+describe("the features on a track page", () => {
+  test("lists the features the track changes, each opening its feature page, with no way to link or unlink one", async () => {
+    const ANALYZE = "0192d7a0-5555-7000-8000-000000000001";
+    const ALARMS = "0192d7a0-5555-7000-8000-000000000002";
+    const windows = track("Long windows", WISION, "building", "2026-10-21T12:00:00Z");
+    windows.part_name = "Wision";
+    const api = fakeApi({
+      parts: [part(WISION, "Wision", "app")],
+      tracks: [windows],
+      trackFeatures: [feature(ANALYZE, WISION, "Analyze"), feature(ALARMS, WISION, "Alarms")],
+    });
+    renderAt(`${PROJECT_PATH}/tracks/${windows.track.id}`);
+    const features = await region("Features");
+    await within(features).findByText("Analyze");
+    expect(within(features).getAllByRole("link").map((link) => [shownText(link), link.getAttribute("href")])).toEqual([
+      ["Analyze", `${PROJECT_PATH}/parts/${WISION}/features/${ANALYZE}`],
+      ["Alarms", `${PROJECT_PATH}/parts/${WISION}/features/${ALARMS}`],
+    ]);
+    expect(within(features).queryAllByRole("button"), "read-only: linking stays in the CLI").toEqual([]);
+    expect(api.writes).toEqual([]);
   });
 });
