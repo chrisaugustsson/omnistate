@@ -21,7 +21,7 @@ fn unreadable() -> CliError {
 fn stories_path(args: &Args, agent: &Agent) -> Result<String> {
     let project = project_id(args, agent)?;
     let Some(track) = creation_track(args, agent, &project)? else {
-        bail!("no track: pass --track <name or id>, or put track = \"name\" in .omni.toml");
+        bail!("no track: pass --track <name or id> or set OMNI_TRACK");
     };
     Ok(format!(
         "/api/v1/w/{}/projects/{project}/tracks/{track}/stories",

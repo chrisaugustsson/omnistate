@@ -1008,6 +1008,37 @@ fn the_feature_flag_picks_no_track_for_the_story_list() {
 }
 
 #[test]
+fn with_no_track_story_and_behaviour_commands_say_pass_track_or_set_omni_track() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for args in [
+        vec!["story", "list", "--project", PROJECT],
+        vec![
+            "behaviour",
+            "add",
+            "--title",
+            "Sign in",
+            "--project",
+            PROJECT,
+        ],
+    ] {
+        let out = run(&home, &args);
+        assert_ne!(out.code, 0, "{args:?}: no track is picked: {}", out.stdout);
+        assert!(
+            out.stderr
+                .contains("no track: pass --track <name or id> or set OMNI_TRACK"),
+            "{args:?}: {:?}",
+            out.stderr
+        );
+        assert!(
+            !out.stderr.contains(".omni.toml"),
+            "{args:?}: .omni.toml picks no track: {:?}",
+            out.stderr
+        );
+    }
+}
+
+#[test]
 fn help_lists_the_track_commands_and_names_omni_track_not_omni_feature() {
     let home = Scratch::new("home");
     let help = omni(&home.path).args(&["--help"]).run();
