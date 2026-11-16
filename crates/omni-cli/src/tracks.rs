@@ -6,6 +6,7 @@
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
+use crate::features::{Found, resolve_feature};
 use crate::json::{Value, quote};
 use crate::projects::{is_uuid, project_id, projects_path, resolve_track};
 
@@ -204,6 +205,101 @@ pub fn show(args: &Args, track: Option<&str>) -> Result<()> {
             say(&format!("  {line}"));
         }
     }
+    let id = track.str_at("id").unwrap_or(given);
+    let features = parsed(
+        &agent
+            .request("GET", &format!("{path}/{id}/features"), None)?
+            .text(),
+        "the track's features",
+    )?;
+    let features = features
+        .get("features")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if !features.is_empty() {
+        say("features:");
+        for feature in features {
+            say(&format!(
+                "  {}  {}",
+                feature.str_at("id").unwrap_or("?"),
+                feature.str_at("name").unwrap_or("?")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The feature `given` names for a track: among the features of the track's
+/// own part first, then anywhere in the project (so that a name only on
+/// another part reaches the API, which refuses it).
+fn resolve_track_feature(
+    agent: &Agent,
+    project: &str,
+    track_id: &str,
+    given: &str,
+) -> Result<Found> {
+    let response = agent.request(
+        "GET",
+        &format!("{}/{track_id}", tracks_path(agent, project)),
+        None,
+    )?;
+    let body = parsed(&response.text(), "the track")?;
+    let track = body.get("track").unwrap_or(&body);
+    if let Some(part_id) = track.str_at("part_id")
+        && let Ok(found) = resolve_feature(agent, project, given, Some(part_id))
+    {
+        return Ok(found);
+    }
+    resolve_feature(agent, project, given, None)
+}
+
+/// `omni track link-feature <track> <feature>` and
+/// `omni track unlink-feature <track> <feature>`
+pub fn link_feature(
+    args: &Args,
+    track: Option<&str>,
+    feature: Option<&str>,
+    unlink: bool,
+) -> Result<()> {
+    let usage = if unlink {
+        "omni track unlink-feature <track> <feature>"
+    } else {
+        "omni track link-feature <track> <feature>"
+    };
+    let (Some(given), Some(feature)) = (track, feature) else {
+        bail!("a track needs its track and its feature: {usage}");
+    };
+    let agent = agent(args)?;
+    let project = project_id(args, &agent)?;
+    let id = resolve_track(&agent, &project, given)?;
+    let found = resolve_track_feature(&agent, &project, &id, feature)?;
+    let path = format!("{}/{id}/features", tracks_path(&agent, &project));
+    if unlink {
+        agent.request("DELETE", &format!("{path}/{}", found.id()), None)?;
+        if args.json {
+            say(&format!("{{\"unlinked\":{}}}", quote(found.id())));
+        } else {
+            say(&format!("unlinked feature {}", found.id()));
+        }
+        return Ok(());
+    }
+    let response = agent.request(
+        "POST",
+        &path,
+        Some(format!("{{\"feature_id\":{}}}", quote(found.id())).as_bytes()),
+    )?;
+    let text = response.text();
+    if args.json {
+        print_json(&text);
+        return Ok(());
+    }
+    let body = parsed(&text, "the linked feature")?;
+    let linked = body.get("feature").unwrap_or(&body);
+    say(&format!(
+        "{}  {}",
+        linked.str_at("id").unwrap_or(found.id()),
+        linked.str_at("name").unwrap_or(feature)
+    ));
     Ok(())
 }
 

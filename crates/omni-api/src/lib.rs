@@ -42,7 +42,7 @@ use axum::http::header::{CONTENT_SECURITY_POLICY, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use s3::creds::Credentials;
 use s3::{Bucket, BucketConfiguration, Region};
@@ -311,6 +311,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state",
             post(tracks::set_track_state),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features",
+            get(tracks::list_track_features).post(tracks::link_feature),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features/{feature_id}",
+            delete(tracks::unlink_feature),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks",
+            get(tracks::list_feature_tracks),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/home",

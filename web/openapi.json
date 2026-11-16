@@ -2112,6 +2112,14 @@
         ],
         "type": "object"
       },
+      "LinkFeatureRequest": {
+        "properties": {
+          "feature_id": {
+            "description": "The feature to link: an undeleted feature of the track's own part.\nMissing or null is 422 `feature_required`; any other value that does\nnot name one is 422 `feature_not_on_part`."
+          }
+        },
+        "type": "object"
+      },
       "LiveClientMessage": {
         "description": "The message a client sends over the socket. It exists to put the protocol\nin the OpenAPI document, from which the web app generates its types and Zod\nschemas; the socket parses the text frames itself (`parse_subscribe`).",
         "oneOf": [
@@ -2175,6 +2183,8 @@
           "track.deleted",
           "track.renamed",
           "track.moved",
+          "track.feature_linked",
+          "track.feature_unlinked",
           "feature.created",
           "feature.deleted",
           "feature.renamed",
@@ -8182,6 +8192,86 @@
         "x-omni-access": "both"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks": {
+      "get": {
+        "operationId": "list_feature_tracks",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackListResponse"
+                }
+              }
+            },
+            "description": "The tracks that change the feature"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature on this part, or it or its part was deleted"
+          }
+        },
+        "summary": "The tracks linked to a feature, in the order they were created.",
+        "tags": [
+          "crate::tracks"
+        ],
+        "x-omni-access": "both"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}": {
       "get": {
         "operationId": "show_post",
@@ -11221,6 +11311,269 @@
         "x-omni-access": "agent"
       }
     },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features": {
+      "get": {
+        "operationId": "list_track_features",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureListResponse"
+                }
+              }
+            },
+            "description": "The features the track changes"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or it was deleted"
+          }
+        },
+        "summary": "The features a track is linked to, in the order they were created.",
+        "tags": [
+          "crate::tracks"
+        ],
+        "x-omni-access": "both"
+      },
+      "post": {
+        "operationId": "link_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkFeatureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureResponse"
+                }
+              }
+            },
+            "description": "The feature, linked to the track"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The body is not readable"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or it was deleted"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`feature_required` for a missing or null `feature_id`, `feature_not_on_part` for one that is not an undeleted feature of the track's part"
+          }
+        },
+        "summary": "Links a track to a feature of its own part, which the track changes.\nLinking a feature that is linked already changes nothing: the answer is\nthe same and no event goes out.",
+        "tags": [
+          "crate::tracks"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features/{feature_id}": {
+      "delete": {
+        "operationId": "unlink_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The track's UUID",
+            "in": "path",
+            "name": "track_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The track is not linked to the feature"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with a session; agents only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such track in this project and workspace, or it was deleted"
+          }
+        },
+        "summary": "Ends the link between a track and a feature. A feature that is not linked\nis no error.",
+        "tags": [
+          "crate::tracks"
+        ],
+        "x-omni-access": "agent"
+      }
+    },
     "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move": {
       "post": {
         "operationId": "move_track",
@@ -11325,7 +11678,7 @@
             "description": "`part_required` for a missing or null `part_id`, `invalid_part` for one that is no undeleted part of the project; the track stays where it was"
           }
         },
-        "summary": "Puts a track on another part of its project. Moving it to the part it is\non changes nothing.",
+        "summary": "Puts a track on another part of its project. Moving it to the part it is\non changes nothing; moving it to another part ends its links to the features\nof the old part.",
         "tags": [
           "crate::tracks"
         ],

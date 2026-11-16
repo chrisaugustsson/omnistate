@@ -8,6 +8,7 @@
 
 use crate::AppState;
 use crate::docs::{AgentIdentity, Tx, empty_head, log_change};
+use crate::features::{FEATURE_COLUMNS, FeatureBody, FeatureListResponse, FeatureResponse};
 use crate::live;
 use crate::projects::{non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
@@ -296,7 +297,8 @@ pub struct MoveTrackRequest {
 }
 
 /// Puts a track on another part of its project. Moving it to the part it is
-/// on changes nothing.
+/// on changes nothing; moving it to another part ends its links to the features
+/// of the old part.
 #[utoipa::path(
     post,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move",
@@ -327,6 +329,16 @@ pub async fn move_track(
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     lock_track(&mut tx, &project_id, &track_id).await?;
     let part_id = require_part(&mut tx, &project_id, new?.part_id.as_ref()).await?;
+    sqlx::query(
+        "UPDATE track_features SET deleted_at = clock_timestamp() \
+         WHERE track_id = $1::uuid AND deleted_at IS NULL \
+         AND feature_id IN (SELECT id FROM features WHERE part_id <> $2::uuid)",
+    )
+    .bind(&track_id)
+    .bind(&part_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
     let track = sqlx::query_as::<_, TrackBody>(&format!(
         "UPDATE tracks SET part_id = $2::uuid WHERE id = $1::uuid RETURNING {TRACK_COLUMNS}"
     ))
@@ -346,6 +358,274 @@ pub async fn move_track(
     tx.commit().await.map_err(ApiError::database)?;
     state.live.announce(&request.workspace_id, &project_id);
     Ok(Json(TrackResponse { track }))
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct LinkFeatureRequest {
+    /// The feature to link: an undeleted feature of the track's own part.
+    /// Missing or null is 422 `feature_required`; any other value that does
+    /// not name one is 422 `feature_not_on_part`.
+    pub feature_id: Option<serde_json::Value>,
+}
+
+/// The features a track is linked to, in the order they were created.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+    ),
+    responses(
+        (status = 200, description = "The features the track changes", body = FeatureListResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or it was deleted", body = ErrorBody),
+    )
+)]
+pub async fn list_track_features(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
+) -> Result<Json<FeatureListResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    track_part(&mut tx, &project_id, &track_id, false).await?;
+    let features = sqlx::query_as(&format!(
+        "SELECT {FEATURE_COLUMNS} FROM features WHERE deleted_at IS NULL \
+         AND id IN (SELECT feature_id FROM track_features \
+                    WHERE track_id = $1::uuid AND deleted_at IS NULL) \
+         ORDER BY created_at, id"
+    ))
+    .bind(&track_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(FeatureListResponse { features }))
+}
+
+/// The tracks linked to a feature, in the order they were created.
+#[utoipa::path(
+    get,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("part_id" = String, Path, description = "The part's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+    ),
+    responses(
+        (status = 200, description = "The tracks that change the feature", body = TrackListResponse),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 404, description = "No such feature on this part, or it or its part was deleted", body = ErrorBody),
+    )
+)]
+pub async fn list_feature_tracks(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, part_id, feature_id)): Path<(String, String, String, String)>,
+) -> Result<Json<TrackListResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let part_id = parse_uuid(&part_id).ok_or(ApiError::NotFound)?;
+    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT f.id::text FROM features f JOIN parts p ON p.id = f.part_id \
+         WHERE f.id = $1::uuid AND f.part_id = $2::uuid AND f.project_id = $3::uuid \
+         AND f.deleted_at IS NULL AND p.deleted_at IS NULL",
+    )
+    .bind(&feature_id)
+    .bind(&part_id)
+    .bind(&project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    found.ok_or(ApiError::NotFound)?;
+    let tracks = sqlx::query_as(&format!(
+        "SELECT {TRACK_COLUMNS} FROM tracks WHERE deleted_at IS NULL \
+         AND id IN (SELECT track_id FROM track_features \
+                    WHERE feature_id = $1::uuid AND deleted_at IS NULL) \
+         ORDER BY created_at, id"
+    ))
+    .bind(&feature_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(TrackListResponse { tracks }))
+}
+
+/// The part of a track of the project that is not deleted, 404 when there is
+/// none; `lock` holds the track's row for the rest of the transaction.
+async fn track_part(
+    tx: &mut Tx,
+    project_id: &str,
+    track_id: &str,
+    lock: bool,
+) -> Result<String, ApiError> {
+    let found: Option<(String,)> = sqlx::query_as(&format!(
+        "SELECT part_id::text FROM tracks \
+         WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL{}",
+        if lock { " FOR UPDATE" } else { "" }
+    ))
+    .bind(track_id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?;
+    found.map(|(part_id,)| part_id).ok_or(ApiError::NotFound)
+}
+
+/// Links a track to a feature of its own part, which the track changes.
+/// Linking a feature that is linked already changes nothing: the answer is
+/// the same and no event goes out.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+    ),
+    request_body = LinkFeatureRequest,
+    responses(
+        (status = 200, description = "The feature, linked to the track", body = FeatureResponse),
+        (status = 400, description = "The body is not readable", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or it was deleted", body = ErrorBody),
+        (status = 422, description = "`feature_required` for a missing or null `feature_id`, `feature_not_on_part` for one that is not an undeleted feature of the track's part", body = ErrorBody),
+    )
+)]
+pub async fn link_feature(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Json<FeatureResponse>, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let new = parse_body::<LinkFeatureRequest>(&body);
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let part_id = track_part(&mut tx, &project_id, &track_id, true).await?;
+    let unprocessable = StatusCode::UNPROCESSABLE_ENTITY;
+    let given = match new?.feature_id {
+        None | Some(serde_json::Value::Null) => {
+            return Err(ApiError::Refused(unprocessable, "feature_required"));
+        }
+        Some(given) => given,
+    };
+    let not_on_part = || ApiError::Refused(unprocessable, "feature_not_on_part");
+    let feature_id = given
+        .as_str()
+        .and_then(parse_uuid)
+        .ok_or_else(not_on_part)?;
+    let feature: FeatureBody = sqlx::query_as(&format!(
+        "SELECT {FEATURE_COLUMNS} FROM features \
+         WHERE id = $1::uuid AND part_id = $2::uuid AND deleted_at IS NULL"
+    ))
+    .bind(&feature_id)
+    .bind(&part_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(not_on_part)?;
+    let linked: Option<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM track_features \
+         WHERE track_id = $1::uuid AND feature_id = $2::uuid AND deleted_at IS NULL",
+    )
+    .bind(&track_id)
+    .bind(&feature_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    if linked.is_some() {
+        tx.commit().await.map_err(ApiError::database)?;
+        return Ok(Json(FeatureResponse { feature }));
+    }
+    sqlx::query(
+        "INSERT INTO track_features (workspace_id, track_id, feature_id) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid)",
+    )
+    .bind(&request.workspace_id)
+    .bind(&track_id)
+    .bind(&feature_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "track.feature_linked",
+        &json!({ "track_id": track_id, "feature_id": feature_id }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(FeatureResponse { feature }))
+}
+
+/// Ends the link between a track and a feature. A feature that is not linked
+/// is no error.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features/{feature_id}",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+        ("feature_id" = String, Path, description = "The feature's UUID"),
+    ),
+    responses(
+        (status = 204, description = "The track is not linked to the feature"),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "Called with a session; agents only", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace, or it was deleted", body = ErrorBody),
+    )
+)]
+pub async fn unlink_feature(
+    State(state): State<AppState>,
+    request: AgentRequest,
+    Path((_, project_id, track_id, feature_id)): Path<(String, String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    track_part(&mut tx, &project_id, &track_id, true).await?;
+    let ended = match parse_uuid(&feature_id) {
+        Some(feature_id) => {
+            sqlx::query(
+                "UPDATE track_features SET deleted_at = clock_timestamp() \
+                 WHERE track_id = $1::uuid AND feature_id = $2::uuid AND deleted_at IS NULL",
+            )
+            .bind(&track_id)
+            .bind(&feature_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(ApiError::database)?
+            .rows_affected()
+                > 0
+        }
+        None => false,
+    };
+    if ended {
+        live::emit(
+            &mut tx,
+            &request.workspace_id,
+            &project_id,
+            "track.feature_unlinked",
+            &json!({ "track_id": track_id, "feature_id": feature_id }),
+        )
+        .await?;
+    }
+    tx.commit().await.map_err(ApiError::database)?;
+    if ended {
+        state.live.announce(&request.workspace_id, &project_id);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize, ToSchema)]

@@ -751,6 +751,11 @@ export const KeyResponseSchema = z.object({
 });
 export type KeyResponse = z.infer<typeof KeyResponseSchema>;
 
+export const LinkFeatureRequestSchema = z.object({
+  feature_id: z.unknown().optional(),
+});
+export type LinkFeatureRequest = z.infer<typeof LinkFeatureRequestSchema>;
+
 export const LiveClientMessageSchema = z.object({
     after: z.number().int().nullable().optional(),
     project_id: z.string(),
@@ -761,7 +766,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "track.feature_linked", "track.feature_unlinked", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -1290,6 +1295,7 @@ export const schemas = {
   InvalidTokensBody: InvalidTokensBodySchema,
   KeyListResponse: KeyListResponseSchema,
   KeyResponse: KeyResponseSchema,
+  LinkFeatureRequest: LinkFeatureRequestSchema,
   LiveClientMessage: LiveClientMessageSchema,
   LiveErrorCode: LiveErrorCodeSchema,
   LiveEventName: LiveEventNameSchema,
@@ -1725,6 +1731,13 @@ export const operations = {
       "409": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks": {
+    responses: {
+      "200": TrackListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/posts/{post_id}": {
     responses: {
       "200": SinglePostResponseSchema,
@@ -1980,6 +1993,31 @@ export const operations = {
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features": {
+    responses: {
+      "200": FeatureListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features": {
+    request: LinkFeatureRequestSchema,
+    responses: {
+      "200": FeatureResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features/{feature_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move": {

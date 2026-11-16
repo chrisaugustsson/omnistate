@@ -217,6 +217,30 @@ pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
             say(&format!("  {line}"));
         }
     }
+    let response = agent.request(
+        "GET",
+        &format!(
+            "{}/{}/tracks",
+            features_path(&agent, &project, &found.part_id),
+            found.id()
+        ),
+        None,
+    )?;
+    let tracks = parsed(&response.text(), "the feature's tracks")?;
+    let tracks = tracks
+        .get("tracks")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if !tracks.is_empty() {
+        say("tracks:");
+        for track in tracks {
+            say(&format!(
+                "  {}  {}",
+                track.str_at("id").unwrap_or("?"),
+                track.str_at("name").unwrap_or("?")
+            ));
+        }
+    }
     Ok(())
 }
 
