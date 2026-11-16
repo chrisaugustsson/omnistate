@@ -4,6 +4,7 @@ import { Boxes, ChevronRight, Database, FileText, FlaskConical, MessagesSquare, 
 import type { HomeResponse } from "@/api/generated";
 import { PILLARS, trackNames } from "@/components/project/items";
 import { inOrder } from "@/components/project/scope-page";
+import { useUiStep } from "@/lib/show-ui";
 import { cn } from "@/lib/utils";
 
 // The part of the sidebar that shows one scope: its name, its five pillars
@@ -126,6 +127,9 @@ export function ScopeTree({
   const threads = home.threads.filter(own).length;
   const openStories = home.tracks?.find((summary) => summary.track.id === scope)?.stories?.open ?? 0;
   const name = scope === "app" ? "App" : (trackNames(home).get(scope) ?? "");
+  const track = home.tracks?.find((summary) => summary.track.id === scope)?.track;
+  const { hidden: uiHidden } = useUiStep(workspaceId, projectId, track);
+  const pillars = uiHidden ? PILLARS.filter(({ pillar }) => pillar !== "ui") : PILLARS;
   const headClass = cn(rowClass, "h-[30px] text-[13px] font-semibold text-foreground");
   return (
     <div className="space-y-0.5">
@@ -151,7 +155,7 @@ export function ScopeTree({
           <span className="ml-auto text-[11px] font-medium text-muted-foreground">Track</span>
         </Link>
       )}
-      {PILLARS.map(({ pillar, title }) => (
+      {pillars.map(({ pillar, title }) => (
         <Pillar
           key={pillar}
           workspaceId={workspaceId}

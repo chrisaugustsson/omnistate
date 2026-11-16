@@ -12,8 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/format";
 import { useHome, useProjectName } from "@/lib/use-home";
-import { useParts } from "@/lib/use-parts";
-import { useShowUi } from "@/lib/show-ui";
+import { useUiStep } from "@/lib/show-ui";
 import { useVisit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 
@@ -183,10 +182,8 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
   const { home, failed } = useHome(workspaceId, projectId);
   const projectName = useProjectName(workspaceId, projectId);
   const summary = trackId ? home?.tracks?.find((candidate) => candidate.track.id === trackId) : undefined;
-  const { parts } = useParts(workspaceId, projectId);
-  const [showUi, setShowUi] = useShowUi(trackId);
-  const onService = parts?.find((part) => part.id === summary?.track.part_id)?.kind === "service";
-  const pillars = onService && !showUi ? PILLARS.filter(({ pillar }) => pillar !== "ui") : PILLARS;
+  const { onService, shown: showUi, setShown: setShowUi, hidden: uiHidden } = useUiStep(workspaceId, projectId, summary?.track);
+  const pillars = uiHidden ? PILLARS.filter(({ pillar }) => pillar !== "ui") : PILLARS;
   const missing = home !== null && trackId !== null && !summary;
   const ready = home !== null && !missing;
   useScrollToHash(ready);
