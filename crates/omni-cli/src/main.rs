@@ -17,6 +17,7 @@ mod design;
 mod docs;
 mod error;
 mod export;
+mod features;
 mod http;
 mod identity;
 mod import;
@@ -55,6 +56,17 @@ Usage:
   omni part rename <name|id> <new name>
                                       rename a part; its ID stays
   omni part delete <name|id>          delete a part (it is kept, hidden; the name can be
+                                      used again)
+  omni feature create <name> --part <name|id>
+                                      create a feature, a capability of a part
+                                      [--description <text>]; prints its ID and name
+  omni feature list [--part <name|id>]
+                                      list the project's features: ID, name and part
+  omni feature show <name|id>         show a feature; a name on several parts needs
+                                      --part <name|id> (ambiguous_feature otherwise)
+  omni feature rename <name|id> <new name>
+                                      rename a feature; its ID stays
+  omni feature delete <name|id>       delete a feature (it is kept, hidden; the name can be
                                       used again)
   omni track create <name> --part <name|id>
                                       create a track on a part of the project

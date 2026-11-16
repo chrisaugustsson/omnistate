@@ -30,6 +30,9 @@ use crate::docs::{
     EditRequest, EditResponse, HeadHtmlResponse, InvalidOperationBody, OpResultBody,
     RenameDocRequest,
 };
+use crate::features::{
+    CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse, RenameFeatureRequest,
+};
 use crate::home::{HomeResponse, StoryCounts, TrackSummary, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
 use crate::parts::{
@@ -84,6 +87,11 @@ use utoipa::OpenApi;
         crate::api_keys::create,
         crate::api_keys::revoke,
         crate::home::show,
+        crate::features::list_features,
+        crate::features::create_feature,
+        crate::features::show_feature,
+        crate::features::rename_feature,
+        crate::features::delete_feature,
         crate::parts::list_parts,
         crate::parts::create_part,
         crate::parts::show_part,
@@ -183,6 +191,11 @@ use utoipa::OpenApi;
         ProjectListResponse,
         CreateProjectRequest,
         RenameProjectRequest,
+        CreateFeatureRequest,
+        FeatureBody,
+        FeatureListResponse,
+        FeatureResponse,
+        RenameFeatureRequest,
         PartBody,
         PartResponse,
         RenamePartRequest,

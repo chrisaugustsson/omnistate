@@ -307,6 +307,12 @@ export const CreateDocRequestSchema = z.object({
 });
 export type CreateDocRequest = z.infer<typeof CreateDocRequestSchema>;
 
+export const CreateFeatureRequestSchema = z.object({
+  description: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+});
+export type CreateFeatureRequest = z.infer<typeof CreateFeatureRequestSchema>;
+
 export const CreateNodeRequestSchema = z.object({
   handoff: z.string().nullable().optional(),
   parent_id: z.string().nullable().optional(),
@@ -453,6 +459,26 @@ export const ErrorBodySchema = z.object({
   error: z.string(),
 });
 export type ErrorBody = z.infer<typeof ErrorBodySchema>;
+
+export const FeatureBodySchema = z.object({
+  created_at: z.string(),
+  description: z.string(),
+  id: z.string(),
+  name: z.string(),
+  part_id: z.string(),
+  project_id: z.string(),
+});
+export type FeatureBody = z.infer<typeof FeatureBodySchema>;
+
+export const FeatureListResponseSchema = z.object({
+  features: z.array(FeatureBodySchema),
+});
+export type FeatureListResponse = z.infer<typeof FeatureListResponseSchema>;
+
+export const FeatureResponseSchema = z.object({
+  feature: FeatureBodySchema,
+});
+export type FeatureResponse = z.infer<typeof FeatureResponseSchema>;
 
 export const FilesRequestSchema = z.object({
   expected_version: z.number().int(),
@@ -732,7 +758,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -977,6 +1003,11 @@ export const RenameDocRequestSchema = z.object({
 });
 export type RenameDocRequest = z.infer<typeof RenameDocRequestSchema>;
 
+export const RenameFeatureRequestSchema = z.object({
+  name: z.string().nullable().optional(),
+});
+export type RenameFeatureRequest = z.infer<typeof RenameFeatureRequestSchema>;
+
 export const RenamePartRequestSchema = z.object({
   name: z.string().nullable().optional(),
 });
@@ -1208,6 +1239,7 @@ export const schemas = {
   ConflictDetails: ConflictDetailsSchema,
   CreateCommentRequest: CreateCommentRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
+  CreateFeatureRequest: CreateFeatureRequestSchema,
   CreateNodeRequest: CreateNodeRequestSchema,
   CreatePartRequest: CreatePartRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
@@ -1226,6 +1258,9 @@ export const schemas = {
   EditRequest: EditRequestSchema,
   EditResponse: EditResponseSchema,
   ErrorBody: ErrorBodySchema,
+  FeatureBody: FeatureBodySchema,
+  FeatureListResponse: FeatureListResponseSchema,
+  FeatureResponse: FeatureResponseSchema,
   FilesRequest: FilesRequestSchema,
   FindingRequest: FindingRequestSchema,
   HeadBoard: HeadBoardSchema,
@@ -1291,6 +1326,7 @@ export const schemas = {
   ReachRuleBody: ReachRuleBodySchema,
   ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
+  RenameFeatureRequest: RenameFeatureRequestSchema,
   RenamePartRequest: RenamePartRequestSchema,
   RenameProjectRequest: RenameProjectRequestSchema,
   RenameTrackRequest: RenameTrackRequestSchema,
@@ -1639,6 +1675,46 @@ export const operations = {
     request: RenamePartRequestSchema,
     responses: {
       "200": PartResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features": {
+    responses: {
+      "200": FeatureListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features": {
+    request: CreateFeatureRequestSchema,
+    responses: {
+      "201": FeatureResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}": {
+    responses: {
+      "200": FeatureResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}": {
+    request: RenameFeatureRequestSchema,
+    responses: {
+      "200": FeatureResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,

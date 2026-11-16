@@ -806,6 +806,24 @@
         },
         "type": "object"
       },
+      "CreateFeatureRequest": {
+        "properties": {
+          "description": {
+            "description": "Defaults to the empty text.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "CreateNodeRequest": {
         "properties": {
           "handoff": {
@@ -1287,6 +1305,63 @@
         },
         "required": [
           "error"
+        ],
+        "type": "object"
+      },
+      "FeatureBody": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "description": "Unique in the part ignoring case; the omni CLI accepts it where it\ntakes a feature.",
+            "type": "string"
+          },
+          "part_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "part_id",
+          "name",
+          "description",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "FeatureListResponse": {
+        "properties": {
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureBody"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "features"
+        ],
+        "type": "object"
+      },
+      "FeatureResponse": {
+        "properties": {
+          "feature": {
+            "$ref": "#/components/schemas/FeatureBody"
+          }
+        },
+        "required": [
+          "feature"
         ],
         "type": "object"
       },
@@ -2079,6 +2154,9 @@
           "track.deleted",
           "track.renamed",
           "track.moved",
+          "feature.created",
+          "feature.deleted",
+          "feature.renamed",
           "part.created",
           "part.deleted",
           "part.renamed",
@@ -3345,6 +3423,18 @@
         "properties": {
           "title": {
             "description": "The doc's new title; not blank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RenameFeatureRequest": {
+        "properties": {
+          "name": {
+            "description": "The feature's new name; not blank, and not the name of another\nfeature of the part, ignoring case.",
             "type": [
               "string",
               "null"
@@ -7619,6 +7709,435 @@
         "summary": "Renames a part. Its ID stays.",
         "tags": [
           "crate::parts"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features": {
+      "get": {
+        "operationId": "list_features",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureListResponse"
+                }
+              }
+            },
+            "description": "The part's features"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such part in this project and workspace, or it was deleted"
+          }
+        },
+        "summary": "The features of a part, in the order they were created.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "both"
+      },
+      "post": {
+        "operationId": "create_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateFeatureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureResponse"
+                }
+              }
+            },
+            "description": "The new feature"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such part in this project and workspace, or it was deleted"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The part has a feature of this name, ignoring case (`name_taken`)"
+          }
+        },
+        "summary": "Creates a feature on a part.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "both"
+      }
+    },
+    "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}": {
+      "delete": {
+        "operationId": "delete_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The feature is deleted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature on this part, or it or its part was deleted already"
+          }
+        },
+        "summary": "Deletes a feature. Nothing is erased: the row gets `deleted_at` and every\nlist and read leaves it out. The feature's name can be used again.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "both"
+      },
+      "get": {
+        "operationId": "show_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureResponse"
+                }
+              }
+            },
+            "description": "The feature"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature on this part, or it or its part was deleted"
+          }
+        },
+        "summary": "One feature of a part.",
+        "tags": [
+          "crate::features"
+        ],
+        "x-omni-access": "both"
+      },
+      "patch": {
+        "operationId": "rename_feature",
+        "parameters": [
+          {
+            "description": "The workspace's UUID",
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The project's UUID",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's UUID",
+            "in": "path",
+            "name": "part_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The feature's UUID",
+            "in": "path",
+            "name": "feature_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameFeatureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeatureResponse"
+                }
+              }
+            },
+            "description": "The renamed feature"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name is missing or blank"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid API key or session"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such feature on this part, or it or its part was deleted"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The part has a feature of this name, ignoring case (`name_taken`)"
+          }
+        },
+        "summary": "Renames a feature. Its ID stays.",
+        "tags": [
+          "crate::features"
         ],
         "x-omni-access": "both"
       }

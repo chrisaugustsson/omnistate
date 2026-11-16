@@ -32,7 +32,7 @@ fn summary(part: &Value) -> String {
 
 /// The ID of the part `given` names: an ID as it is, a name among the parts
 /// that are not deleted, ignoring case.
-fn resolve_part(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
+pub(crate) fn resolve_part(agent: &Agent, project_id: &str, given: &str) -> Result<String> {
     if is_uuid(given) {
         return Ok(given.to_ascii_lowercase());
     }

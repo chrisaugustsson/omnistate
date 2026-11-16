@@ -18,6 +18,7 @@ pub mod delete_workspace;
 mod design;
 mod docs;
 mod exports;
+mod features;
 mod home;
 pub mod live;
 pub mod openapi;
@@ -282,6 +283,16 @@ pub fn router(state: AppState) -> Router {
             get(parts::show_part)
                 .patch(parts::rename_part)
                 .delete(parts::delete_part),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features",
+            get(features::list_features).post(features::create_feature),
+        )
+        .route(
+            "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}",
+            get(features::show_feature)
+                .patch(features::rename_feature)
+                .delete(features::delete_feature),
         )
         .route(
             "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
