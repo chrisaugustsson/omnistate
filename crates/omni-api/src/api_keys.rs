@@ -63,6 +63,7 @@ pub struct CreatedKeyResponse {
 /// matches and it is not revoked.
 pub struct ResolvedKey {
     pub workspace_id: String,
+    pub created_by_membership_id: Option<String>,
 }
 
 /// A new key: its prefix, the secret and the hash to store.
@@ -105,16 +106,17 @@ pub async fn authenticate(state: &AppState, secret: &str) -> Result<Option<Resol
     {
         return Ok(None);
     }
-    let row: Option<(String, String, String, bool, bool)> = sqlx::query_as(
+    let row: Option<(String, String, String, bool, bool, Option<String>)> = sqlx::query_as(
         "SELECT id::text, workspace_id::text, key_hash, revoked_at IS NOT NULL, \
-                last_used_at IS NULL OR last_used_at < now() - interval '1 minute' \
+                last_used_at IS NULL OR last_used_at < now() - interval '1 minute', \
+                created_by_membership_id::text \
          FROM resolve_api_key($1)",
     )
     .bind(prefix)
     .fetch_optional(&state.pool)
     .await
     .map_err(ApiError::database)?;
-    let Some((id, workspace_id, key_hash, revoked, stale)) = row else {
+    let Some((id, workspace_id, key_hash, revoked, stale, created_by_membership_id)) = row else {
         return Ok(None);
     };
     let matches = constant_time_eq(key_hash.as_bytes(), sha256_hex(secret).as_bytes());
@@ -124,7 +126,10 @@ pub async fn authenticate(state: &AppState, secret: &str) -> Result<Option<Resol
     if stale {
         record_use(state.clone(), id, workspace_id.clone());
     }
-    Ok(Some(ResolvedKey { workspace_id }))
+    Ok(Some(ResolvedKey {
+        workspace_id,
+        created_by_membership_id,
+    }))
 }
 
 /// Writes `last_used_at` in the background, in a transaction of the key's

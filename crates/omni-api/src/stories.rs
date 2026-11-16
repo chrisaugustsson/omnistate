@@ -1712,6 +1712,7 @@ pub async fn check_criterion(
     .map_err(ApiError::database)?;
     let request = AgentRequest {
         workspace_id: request.workspace_id,
+        is_admin: request.is_admin,
     };
     finish_story_write(&state, tx, &request, &project_id, row, &["criteria"]).await
 }

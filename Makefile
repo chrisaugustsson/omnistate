@@ -44,15 +44,18 @@ test-stack-down:
 # A workspace with one user, a live session and an API key on the test stack,
 # for a verifier that exercises a story there (docs/delivery-stack.md). NAME
 # names the workspace and the user; the lines printed are the workspace id,
-# the value of the omni_session cookie and the API key secret.
+# the value of the omni_session cookie and the API key secret. ROLE is the
+# member's role, member (the default) or admin. WORKSPACE=<id> joins that
+# workspace instead of making one, for a second member (use another NAME).
 PSQL_TEST := $(TEST_STACK) exec -T postgres psql -qAt -v ON_ERROR_STOP=1 -U omni -d omni
 test-stack-seed:
 	@test -n "$(NAME)" || { echo "pass NAME=<a short name>"; exit 2; }
-	@token=$$(openssl rand -hex 24); \
-	ws=$$($(PSQL_TEST) -c "insert into workspaces (name) values ('$(NAME)') returning id") && \
+	@case "$(or $(ROLE),member)" in member|admin) ;; *) echo "ROLE is member or admin"; exit 2;; esac; \
+	token=$$(openssl rand -hex 24); \
+	ws=$(if $(WORKSPACE),"$(WORKSPACE)",$$($(PSQL_TEST) -c "insert into workspaces (name) values ('$(NAME)') returning id")) && \
 	user=$$($(PSQL_TEST) -c "insert into users (email) values ('$(NAME)@example.com') returning id") && \
 	$(PSQL_TEST) -c "insert into sessions (user_id, token_hash, expires_at) values ('$$user', sha256(convert_to('$$token', 'UTF8')), now() + interval '1 day')" >/dev/null && \
-	$(PSQL_TEST) -c "insert into memberships (workspace_id, user_id) values ('$$ws', '$$user')" >/dev/null && \
+	$(PSQL_TEST) -c "insert into memberships (workspace_id, user_id, role) values ('$$ws', '$$user', '$(or $(ROLE),member)')" >/dev/null && \
 	key=$$(curl -sf -X POST -H 'Content-Type: application/json' -b "omni_session=$$token" -d '{}' http://localhost:$${OMNI_PORT:-8421}/api/v1/w/$$ws/api-keys | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p') && \
 	echo "workspace=$$ws" && echo "session=$$token" && echo "api_key=$$key"
 

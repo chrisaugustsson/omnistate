@@ -32,6 +32,8 @@ pub struct WorkspaceRequest {
     /// The workspace of the path, as a lowercase UUID.
     pub workspace_id: String,
     pub actor: Actor,
+    /// Whether the member, or the member who created the key, is an admin.
+    pub is_admin: bool,
 }
 
 impl FromRequestParts<AppState> for WorkspaceRequest {
@@ -50,6 +52,7 @@ impl FromRequestParts<AppState> for WorkspaceRequest {
 pub struct HumanRequest {
     pub workspace_id: String,
     pub membership_id: String,
+    pub is_admin: bool,
 }
 
 impl FromRequestParts<AppState> for HumanRequest {
@@ -64,6 +67,7 @@ impl FromRequestParts<AppState> for HumanRequest {
             Actor::Human { membership_id, .. } => Ok(Self {
                 workspace_id: request.workspace_id,
                 membership_id,
+                is_admin: request.is_admin,
             }),
             Actor::Agent => Err(ApiError::Forbidden),
         }
@@ -75,6 +79,9 @@ impl FromRequestParts<AppState> for HumanRequest {
 /// workspace of the path was checked (a session of another workspace is 404).
 pub struct AgentRequest {
     pub workspace_id: String,
+    /// Read by the track owner guard (US-314); nothing reads it yet.
+    #[allow(dead_code)]
+    pub is_admin: bool,
 }
 
 impl FromRequestParts<AppState> for AgentRequest {
@@ -88,6 +95,7 @@ impl FromRequestParts<AppState> for AgentRequest {
         match request.actor {
             Actor::Agent => Ok(Self {
                 workspace_id: request.workspace_id,
+                is_admin: request.is_admin,
             }),
             Actor::Human { .. } => Err(ApiError::Forbidden),
         }
@@ -164,23 +172,32 @@ async fn resolve(
         .and_then(|(_, value)| parse_uuid(value))
         .ok_or(ApiError::NotFound)?;
 
+    let is_admin;
     let actor = match caller {
         Caller::Key(key) => {
             if key.workspace_id != workspace_id {
                 return Err(ApiError::NotFound);
             }
+            is_admin = key_is_admin(
+                state,
+                &workspace_id,
+                key.created_by_membership_id.as_deref(),
+            )
+            .await?;
             Actor::Agent
         }
         Caller::Session { user, .. } => {
-            let membership: Option<(String,)> = sqlx::query_as(
-                "SELECT id::text FROM user_memberships($1::uuid) WHERE workspace_id = $2::uuid",
+            let membership: Option<(String, bool)> = sqlx::query_as(
+                "SELECT id::text, role = 'admin' FROM user_memberships($1::uuid) \
+                 WHERE workspace_id = $2::uuid",
             )
             .bind(&user.id)
             .bind(&workspace_id)
             .fetch_optional(&state.pool)
             .await
             .map_err(ApiError::database)?;
-            let (membership_id,) = membership.ok_or(ApiError::NotFound)?;
+            let (membership_id, admin) = membership.ok_or(ApiError::NotFound)?;
+            is_admin = admin;
             Actor::Human {
                 user_id: user.id,
                 membership_id,
@@ -190,7 +207,30 @@ async fn resolve(
     Ok(WorkspaceRequest {
         workspace_id,
         actor,
+        is_admin,
     })
+}
+
+/// Whether the member who created a key is an admin, read now so a change of
+/// role takes effect at once. A key without a creator, or whose creator's
+/// membership is gone, acts as a plain member.
+async fn key_is_admin(
+    state: &AppState,
+    workspace_id: &str,
+    membership_id: Option<&str>,
+) -> Result<bool, ApiError> {
+    let Some(membership_id) = membership_id else {
+        return Ok(false);
+    };
+    let mut tx = state.workspace_tx(workspace_id).await?;
+    let admin: Option<bool> =
+        sqlx::query_scalar("SELECT role = 'admin' FROM memberships WHERE id = $1::uuid")
+            .bind(membership_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(admin.unwrap_or(false))
 }
 
 /// The secret of an `Authorization: Bearer <secret>` header value.

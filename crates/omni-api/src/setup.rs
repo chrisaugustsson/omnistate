@@ -125,7 +125,7 @@ async fn create_first_user(
         .bind(&args.workspace)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO memberships (workspace_id, user_id) VALUES ($1::uuid, $2::uuid)")
+    sqlx::query("INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1::uuid, $2::uuid, 'admin')")
         .bind(&workspace_id)
         .bind(&user_id)
         .execute(&mut *tx)
