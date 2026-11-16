@@ -487,6 +487,18 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .await
     .expect("link the track to the feature");
     sqlx::query(
+        "INSERT INTO decisions (workspace_id, project_id, track_id, feature_id, question, decision, why, author) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'deletion test', 'deletion test', 'deletion test', \
+         '{\"kind\":\"agent\"}'::jsonb)",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .bind(&track_id)
+    .bind(&feature_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a decision");
+    sqlx::query(
         "INSERT INTO stories (workspace_id, project_id, track_id, number, title, text, topic, criteria) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'deletion test', '', '', '[]'::jsonb)",
     )

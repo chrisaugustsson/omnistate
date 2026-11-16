@@ -669,6 +669,24 @@ const CASES: &[Case] = &[
     ),
     case(
         "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions",
+        Some(r#"{"question":"intruder","decision":"intruder","why":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/decisions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
         "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
         None,
         Kind::Workspace,
@@ -1321,6 +1339,26 @@ fn fixture() -> &'static Fixture {
                 ),
                 200,
                 "link the track to the feature",
+            );
+            // A decision on the track about the feature, so the decisions
+            // table has rows of the workspace.
+            let body = json!({
+                "question": unique(&format!("{name}-question")),
+                "decision": "decided",
+                "why": "because",
+                "feature_id": feature_id
+            })
+            .to_string();
+            must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/tracks/{track_id}/decisions"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "record a decision on the track",
             );
             let body = json!({
                 "kind": "html",

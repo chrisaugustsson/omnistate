@@ -38,15 +38,16 @@ const GLOBAL_TABLES: [&str; 3] = ["users", "login_identities", "sessions"];
 const TENANT_TABLES: [&str; 3] = ["workspaces", "memberships", "api_keys"];
 /// The tenant tables whose rows are never changed: the API role may not UPDATE
 /// them. They are the node index, the chunk index of US-030, the forum's posts
-/// (US-033), the replies to comments (US-038) and the log of the writes to docs
-/// (US-102).
-const APPEND_ONLY_TABLES: [&str; 6] = [
+/// (US-033), the replies to comments (US-038), the log of the writes to docs
+/// (US-102) and the decisions of a track (US-322).
+const APPEND_ONLY_TABLES: [&str; 7] = [
     "node_index",
     "chunks",
     "posts",
     "comment_replies",
     "doc_changes",
     "behaviour_answers",
+    "decisions",
 ];
 /// A UUIDv4, which the database must refuse as a record ID.
 const V4_ID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";

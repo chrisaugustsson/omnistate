@@ -657,3 +657,150 @@ fn a_track_is_linked_to_a_feature_of_its_part_from_the_command_line() {
         shown.stdout
     );
 }
+
+// US-322: a decision is recorded on the current track, about a feature, and
+// listed for the track and for the feature; a later decision replaces it.
+#[test]
+fn a_decision_is_recorded_on_the_track_and_listed_with_the_one_that_replaces_it() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("monitoring");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let out = run(
+        &home,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "part create: {}", out.stderr);
+    let out = run(
+        &home,
+        &[
+            "feature",
+            "create",
+            "Analyze",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "feature create: {}", out.stderr);
+    let out = run(
+        &home,
+        &[
+            "track",
+            "create",
+            "Long windows",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "track create: {}", out.stderr);
+    // The current track comes from OMNI_TRACK.
+    let on_track = |args: &[&str]| {
+        omni(&home.path)
+            .args(args)
+            .args(&["--project", &project, "--as", "run-7/planner"])
+            .env("OMNI_TRACK", "Long windows")
+            .run()
+    };
+
+    let added = on_track(&[
+        "decision",
+        "add",
+        "--question",
+        "Raw or aggregated?",
+        "--decision",
+        "Aggregate per hour",
+        "--why",
+        "Two years raw is too slow",
+        "--feature",
+        "Analyze",
+        "--json",
+    ]);
+    assert_eq!(added.code, 0, "decision add: {}", added.stderr);
+    let first = added.json()["decision"].clone();
+    assert_eq!(first["author"]["kind"], "agent", "{first}");
+    assert_eq!(first["author"]["run"], "run-7", "{first}");
+    assert_eq!(first["author"]["role"], "planner", "{first}");
+    let first = first["id"].as_str().expect("an id").to_string();
+
+    for filter in [&[][..], &["--feature", "Analyze"][..]] {
+        let listed = on_track(&[&["decision", "list"][..], filter].concat());
+        assert_eq!(
+            listed.code, 0,
+            "decision list {filter:?}: {}",
+            listed.stderr
+        );
+        let lines = non_empty_lines(&listed.stdout);
+        assert_eq!(
+            lines.len(),
+            1,
+            "decision list {filter:?}: {:?}",
+            listed.stdout
+        );
+        for needle in [
+            first.as_str(),
+            "Analyze",
+            "Raw or aggregated?",
+            "Aggregate per hour",
+            "Two years raw is too slow",
+        ] {
+            assert!(
+                lines[0].contains(needle),
+                "decision list {filter:?} prints {needle:?}: {:?}",
+                lines[0]
+            );
+        }
+    }
+
+    // Without --feature, the new decision takes the replaced one's feature.
+    let added = on_track(&[
+        "decision",
+        "add",
+        "--question",
+        "Raw or aggregated?",
+        "--decision",
+        "Aggregate per quarter hour",
+        "--why",
+        "An hour hides the peaks",
+        "--replaces",
+        &first,
+        "--json",
+    ]);
+    assert_eq!(added.code, 0, "decision add --replaces: {}", added.stderr);
+    let second = added.json()["decision"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+
+    let listed = on_track(&["decision", "list", "--feature", "Analyze"]);
+    assert_eq!(listed.code, 0, "decision list --feature: {}", listed.stderr);
+    let lines = non_empty_lines(&listed.stdout);
+    assert_eq!(lines.len(), 2, "both decisions: {:?}", listed.stdout);
+    assert!(
+        lines[0].starts_with(&second)
+            && lines[0].contains("Aggregate per quarter hour")
+            && lines[0].contains(&format!("replaces {first}"))
+            && !lines[0].contains("replaced by"),
+        "the newer decision comes first, marked as replacing the older: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with(&first)
+            && lines[1].contains(&format!("replaced by {second}"))
+            && !lines[1].contains("replaces "),
+        "the older decision is marked as replaced by the newer: {:?}",
+        lines[1]
+    );
+}

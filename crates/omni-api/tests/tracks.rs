@@ -79,6 +79,15 @@
 //!   keeps its number, fields and blockers. A track of another project is 422
 //!   `{"error": "invalid_track"}`; a caller who does not own both tracks is
 //!   403 `{"error": "not_track_owner"}`; a refused move changes nothing.
+//! - US-322: `POST /tracks/{track_id}/decisions` takes `{question, decision,
+//!   why, feature_id?, replaces_decision_id?}` and answers 201 `{"decision":
+//!   Decision}` with the caller as `author`. Only the track's owner records
+//!   one; anyone else, an admin included, is 403 `{"error":
+//!   "not_track_owner"}`, while every member reads `GET
+//!   /tracks/{track_id}/decisions`, newest first. A feature or a replaced
+//!   decision of another project is 422 `{"error": "feature_not_in_project"}`
+//!   / `{"error": "replaces_not_in_project"}`, an unknown ID 404; a refused
+//!   decision records nothing.
 
 mod common;
 
@@ -2080,5 +2089,214 @@ fn the_board_lists_the_linked_tasks_of_other_tracks_and_a_dropped_blocker_keeps_
         story_keys(f, client, &project, &wision, "pickable=true"),
         vec![blocked["key"].clone()],
         "the blocker done on the dropped track releases the story"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Decisions on a track (US-322)
+// ---------------------------------------------------------------------------
+
+fn decisions_path(f: &Fixture, project: &str, track: &str) -> String {
+    format!("{}/decisions", track_path(f, project, track))
+}
+
+/// Creates a feature on a part as the agent; returns its ID.
+fn new_feature(f: &Fixture, client: &Client, project: &str, part: &str, name: &str) -> String {
+    must(
+        call(
+            client,
+            "POST",
+            &format!(
+                "/api/v1/w/{}/projects/{project}/parts/{part}/features",
+                f.workspace
+            ),
+            &agent(f),
+            Some(&json!({ "name": name })),
+        ),
+        201,
+        "create a feature",
+    )["feature"]["id"]
+        .as_str()
+        .expect("the feature has an id")
+        .to_string()
+}
+
+fn decision_body(decided: &str) -> Value {
+    json!({
+        "question": "Raw or aggregated?",
+        "decision": decided,
+        "why": "Two years raw is too slow"
+    })
+}
+
+/// How many rows the `decisions` table has for a project.
+fn decision_rows(project: &str) -> i64 {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar("select count(*) from decisions where project_id = $1::uuid")
+            .bind(project)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap_or_else(|e| panic!("count the decisions: {e}"))
+    })
+}
+
+#[test]
+fn only_the_owner_records_a_decision_and_every_member_reads_them() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    // alice's key creates the track, so alice owns it.
+    let track = create_track(f, client, &project, "Long windows")["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let path = decisions_path(f, &project, &track);
+
+    for (who, auth) in [
+        ("bob's key", Auth::Agent(&f.bob_key)),
+        ("bob's session", Auth::Session(&f.bob_token)),
+        ("admin carol's key", Auth::Agent(&f.carol_key)),
+        ("admin carol's session", Auth::Session(&f.carol_token)),
+    ] {
+        let refused = call(
+            client,
+            "POST",
+            &path,
+            &auth,
+            Some(&decision_body("Aggregate per hour")),
+        );
+        assert_eq!(refused.status, 403, "{who}: {}", refused.text());
+        assert_error(&refused, 403, "not_track_owner");
+    }
+    assert_eq!(
+        decision_rows(&project),
+        0,
+        "a refused decision records nothing"
+    );
+    assert_eq!(
+        events_of(&project, "decision.recorded"),
+        Vec::<Value>::new(),
+        "a refused decision emits nothing"
+    );
+
+    let by_human = must(
+        call(
+            client,
+            "POST",
+            &path,
+            &human(f),
+            Some(&decision_body("Aggregate per day")),
+        ),
+        201,
+        "the owner's session records a decision",
+    )["decision"]
+        .clone();
+    assert_eq!(
+        by_human["author"],
+        json!({ "kind": "human", "user_id": f.alice_user }),
+        "{by_human}"
+    );
+    let by_agent = must(
+        call(
+            client,
+            "POST",
+            &path,
+            &agent(f),
+            Some(&decision_body("Aggregate per hour")),
+        ),
+        201,
+        "the owner's key records a decision",
+    )["decision"]
+        .clone();
+    assert_eq!(by_agent["author"]["kind"], "agent", "{by_agent}");
+    assert_eq!(by_agent["author"]["run"], "run-1", "{by_agent}");
+    assert_eq!(by_agent["author"]["role"], "planner", "{by_agent}");
+    assert_eq!(by_agent["track_id"], track.as_str(), "{by_agent}");
+    assert_eq!(by_agent["question"], "Raw or aggregated?", "{by_agent}");
+    assert_eq!(by_agent["why"], "Two years raw is too slow", "{by_agent}");
+
+    for (who, auth) in [
+        ("bob's key", Auth::Agent(&f.bob_key)),
+        ("bob's session", Auth::Session(&f.bob_token)),
+    ] {
+        let listed = must(
+            call(client, "GET", &path, &auth, None),
+            200,
+            &format!("{who} reads the decisions"),
+        );
+        let decided: Vec<&Value> = listed["decisions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("`decisions` is a list: {listed}"))
+            .iter()
+            .map(|decision| &decision["decision"])
+            .collect();
+        assert_eq!(
+            decided,
+            [&json!("Aggregate per hour"), &json!("Aggregate per day")],
+            "{who}: the track's decisions, newest first"
+        );
+    }
+}
+
+#[test]
+fn a_feature_or_a_replaced_decision_of_another_project_is_422_and_records_nothing() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = create_track(f, client, &project, "Long windows")["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let other = new_project(f, client);
+    let other_track = create_track(f, client, &other, "Ingest")["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let other_part = part_of(f, client, &other, &other_track);
+    let other_feature = new_feature(
+        f,
+        client,
+        &other,
+        other_part.as_str().expect("a part id"),
+        "Analyze",
+    );
+    let other_decision = must(
+        call(
+            client,
+            "POST",
+            &decisions_path(f, &other, &other_track),
+            &agent(f),
+            Some(&decision_body("Aggregate per hour")),
+        ),
+        201,
+        "record a decision in the other project",
+    )["decision"]["id"]
+        .clone();
+
+    let path = decisions_path(f, &project, &track);
+    let with = |field: &str, value: &Value| {
+        let mut body = decision_body("Aggregate per day");
+        body[field] = value.clone();
+        call(client, "POST", &path, &agent(f), Some(&body))
+    };
+    assert_error(
+        &with("feature_id", &json!(other_feature)),
+        422,
+        "feature_not_in_project",
+    );
+    assert_error(
+        &with("replaces_decision_id", &other_decision),
+        422,
+        "replaces_not_in_project",
+    );
+    assert_error(&with("feature_id", &json!(UNKNOWN_ID)), 404, "not_found");
+    assert_error(
+        &with("replaces_decision_id", &json!(UNKNOWN_ID)),
+        404,
+        "not_found",
+    );
+    assert_eq!(
+        decision_rows(&project),
+        0,
+        "a refused decision records nothing"
     );
 }
