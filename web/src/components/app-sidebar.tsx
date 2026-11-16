@@ -26,6 +26,7 @@ import { ScopeTree, useFold } from "@/components/scope-tree";
 import { useProjectEvents } from "@/live/context";
 import { useReloading } from "@/lib/reloading";
 import { useHome } from "@/lib/use-home";
+import { useInboxScope } from "@/lib/inbox-scope";
 import { useVisits, type Visit } from "@/lib/visits";
 import { cn } from "@/lib/utils";
 
@@ -78,6 +79,9 @@ function ProjectNav({
   onSearch: () => void;
 }) {
   const params = { workspaceId, projectId };
+  // The Inbox counts what the inbox lists: the member's own tracks, or everyone's when its switch is on.
+  const { scoped } = useInboxScope(workspaceId);
+  const inbox = home ? scoped(home) : null;
   return (
     <div className="space-y-0.5">
       <button type="button" aria-keyshortcuts={isMac() ? "Meta+K" : "Control+K"} onClick={onSearch} className={cn(itemClass, "w-full text-left")}>
@@ -94,7 +98,7 @@ function ProjectNav({
       >
         <Inbox />
         Inbox
-        <Count value={home ? waitingCount(home) : undefined} signal />
+        <Count value={inbox ? waitingCount(inbox) : undefined} signal />
       </Link>
       <Link
         to="/w/$workspaceId/projects/$projectId/app"

@@ -1,14 +1,12 @@
-import { useCallback, useSyncExternalStore } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { PartyPopper } from "lucide-react";
 import type { CommentBody, HomeDoc, HomeResponse } from "@/api/generated";
-import { loadMyUserId } from "@/api/members";
 import { AgentChip } from "@/components/agent-chip";
 import { PILLARS, trackNames, waitingCount } from "@/components/project/items";
 import { SectionPage } from "@/components/project/section-page";
 import { ElementSnapshot } from "@/components/viewer/comments";
 import { authorName, timeAgo } from "@/lib/format";
-import { useReloading } from "@/lib/reloading";
+import { useInboxScope } from "@/lib/inbox-scope";
 import { cn } from "@/lib/utils";
 
 // The project's inbox: the comments whose latest reply is an agent's, and
@@ -18,45 +16,6 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/inbox")({
   component: Inbox,
 });
-
-const EVERYONE_KEY = "omni.inbox.everyone";
-const listeners = new Set<() => void>();
-let everyone = false;
-try {
-  everyone = sessionStorage.getItem(EVERYONE_KEY) === "1";
-} catch {
-  // No session storage: the choice lives in memory only.
-}
-
-/** The switch's choice: kept in memory and in this tab's session storage, so it survives navigation and reloads. */
-function useEveryone(): [boolean, (value: boolean) => void] {
-  const value = useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => everyone,
-  );
-  const set = useCallback((next: boolean) => {
-    everyone = next;
-    try {
-      sessionStorage.setItem(EVERYONE_KEY, next ? "1" : "0");
-    } catch {
-      // Memory only.
-    }
-    for (const listener of listeners) listener();
-  }, []);
-  return [value, set];
-}
-
-/** The home with only the waiting comments on tracks the member owns (owner=me). */
-function mineOf(home: HomeResponse, me: string): HomeResponse {
-  const owned = new Set(
-    (home.tracks ?? []).filter(({ track }) => track.owner_user_id === me).map(({ track }) => track.id),
-  );
-  const comments = home.waiting.comments.filter((comment) => comment.track_id && owned.has(comment.track_id));
-  return { ...home, waiting: { ...home.waiting, comments } };
-}
 
 /** A comment that waits, with the agent reply that makes it wait and the doc it is on. */
 type Entry = {
@@ -94,11 +53,7 @@ function groupsOf(home: HomeResponse): Group[] {
 
 function Inbox() {
   const { workspaceId, projectId } = Route.useParams();
-  const [everyone, setEveryone] = useEveryone();
-  const loadMe = useCallback(() => loadMyUserId(workspaceId), [workspaceId]);
-  const { value: me } = useReloading(loadMe);
-  // Until the member is known, wait rather than flash everyone's questions.
-  const scoped = (home: HomeResponse): HomeResponse | null => (everyone ? home : me ? mineOf(home, me) : null);
+  const { everyone, setEveryone, scoped } = useInboxScope(workspaceId);
 
   return (
     <SectionPage
