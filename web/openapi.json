@@ -870,6 +870,13 @@
               "null"
             ]
           },
+          "part_id": {
+            "description": "The part to create the doc on, on `POST .../docs`. With a track or a\nfeature too, the answer is 422 `one_scope_only`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "pillar": {
             "description": "`spec`, `ui`, `architecture`, `db` or `research`; the design kinds only go in `ui`.",
             "type": [
@@ -1388,6 +1395,13 @@
           "kind": {
             "description": "`html`, `design` or `design-system`.",
             "type": "string"
+          },
+          "part_id": {
+            "description": "The part the doc belongs to; `null` for a doc of a track, of a feature\nor at the app level. Fixed when the doc is created.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pillar": {
             "description": "`spec`, `ui`, `architecture`, `db` or `research`.",
@@ -6306,9 +6320,18 @@
             }
           },
           {
-            "description": "A feature's UUID lists that feature's docs only; not with `track`",
+            "description": "A feature's UUID lists that feature's docs only; not with `track` or `part`",
             "in": "query",
             "name": "feature",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A part's UUID lists the docs of that part only, not those of its features or tracks; not with `track` or `feature`",
+            "in": "query",
+            "name": "part",
             "required": false,
             "schema": {
               "type": "string"
@@ -6373,7 +6396,7 @@
                 }
               }
             },
-            "description": "Both `track` and `feature` given (`one_scope_only`)"
+            "description": "More than one of `track`, `feature` and `part` given (`one_scope_only`)"
           }
         },
         "summary": "The docs of a project, oldest first, each as `GET .../docs/{doc_id}` answers it.",
@@ -6531,7 +6554,7 @@
                 }
               }
             },
-            "description": "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), a design system in a track or on a feature (`design_system_is_global`), or both `track_id` and `feature_id` given (`one_scope_only`)"
+            "description": "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), a design system in a track or on a feature (`design_system_is_global`), or more than one of `track_id`, `feature_id` and `part_id` given (`one_scope_only`)"
           }
         },
         "summary": "Creates a doc at the app level of a project. The doc is readable at once, as\nthe empty doc of its kind.",

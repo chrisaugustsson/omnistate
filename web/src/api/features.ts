@@ -86,6 +86,14 @@ export async function loadFeatureDocs(workspaceId: string, projectId: string, fe
   return answer.docs;
 }
 
+/** The docs that sit on a part itself, not those of its features or tracks. */
+export async function loadPartDocs(workspaceId: string, projectId: string, partId: string): Promise<DocBody[]> {
+  const answer = await callApi("GET", `${base(workspaceId, projectId)}/docs?part=${partId}`, {
+    response: docs.responses["200"],
+  });
+  return answer.docs;
+}
+
 /** The features that a track is linked to. */
 export async function loadTrackFeatures(workspaceId: string, projectId: string, trackId: string): Promise<FeatureBody[]> {
   const answer = await callApi("GET", `${base(workspaceId, projectId)}/tracks/${trackId}/features`, {

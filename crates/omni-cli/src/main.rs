@@ -108,16 +108,16 @@ Usage:
   omni decision list [--track <name|id> | --feature <name|id>]
                                       list a track's or a feature's decisions, newest first, with
                                       what each replaces and what replaced it
-  omni doc create [--track <name|id> | --feature <name|id>] --kind html|design|design-system
+  omni doc create [--track <name|id> | --feature <name|id> | --part <name|id>] --kind html|design|design-system
                 --pillar spec|ui|architecture|db|research --title <text>
-                                      create a doc at the app level, in a track or on a
-                                      feature of a part (--part narrows the name); it is
-                                      readable at once
+                                      create a doc at the app level, in a track, on a
+                                      feature of a part (--part narrows the name) or on a
+                                      part (--part alone); it is readable at once
   omni doc list                       list the project's docs: ID, scope (project or the
-                                      track's or feature's name), kind, pillar and title;
-                                      one of --track <name|id>, --feature <name|id> or
-                                      --global lists one scope only; --pillar <pillar>
-                                      lists one pillar only
+                                      track's, feature's or part's name), kind, pillar and
+                                      title; one of --track <name|id>, --feature <name|id>,
+                                      --part <name|id> or --global lists one scope only;
+                                      --pillar <pillar> lists one pillar only
   omni doc read <doc> [--node <id>]...
                                       print the doc's head: HTML with data-omni-id and
                                       data-rev (a design's tags). --node prints only that
@@ -380,6 +380,7 @@ Options (before or after the command):
   --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link)
   --track <name|id>   the track that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_TRACK)
   --feature <name|id>   the feature that `omni doc create` creates a doc on and `omni doc list` shows; replaces OMNI_TRACK
+  --part <name|id>      without --feature: the part that `omni doc create` creates a doc on and `omni doc list` shows; replaces OMNI_TRACK
   --global              `omni doc create` creates an app-level doc, whatever OMNI_TRACK says;
                         `omni doc list` shows those only
   --body-file <path>    send this file as the request body (for `doc edit` and `design

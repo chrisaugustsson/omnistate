@@ -1,16 +1,20 @@
+import { useCallback } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
+import { loadPartDocs } from "@/api/features";
 import { PageHeader } from "@/components/page-header";
 import { FeaturesSection } from "@/components/project/features-section";
 import { NewTrack } from "@/components/project/new-track";
 import { KindLabel } from "@/components/project/parts-section";
-import { Empty, List } from "@/components/project/items";
+import { DocRow, Empty, List } from "@/components/project/items";
 import { TrackRow, orderTracks } from "@/components/project/track-row";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useReloading } from "@/lib/reloading";
 import { useHome } from "@/lib/use-home";
 import { useParts } from "@/lib/use-parts";
+import { useProjectEvents } from "@/live/context";
 
 // A part's page: what the part is (its description), its features (the
-// capabilities of the part) and its tracks, the active ones first, then
+// capabilities of the part), the docs that sit on the part itself and its tracks, the active ones first, then
 // done and dropped, each group with the most recently updated first.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/parts/$partId")({
   component: PartPage,
@@ -19,6 +23,9 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId_/parts
 function PartPage() {
   const { workspaceId, projectId, partId } = Route.useParams();
   const params = { workspaceId, projectId };
+  const loadDocs = useCallback(() => loadPartDocs(workspaceId, projectId, partId), [workspaceId, projectId, partId]);
+  const docs = useReloading(loadDocs);
+  useProjectEvents(projectId, docs.reload);
   const { parts, failed: partsFailed } = useParts(workspaceId, projectId);
   const { home, failed: homeFailed, reload } = useHome(workspaceId, projectId);
   const part = parts?.find((candidate) => candidate.id === partId);
@@ -28,7 +35,7 @@ function PartPage() {
 
   return (
     <main className="mx-auto max-w-6xl px-5 py-8 md:px-10 md:py-12">
-      {(partsFailed || homeFailed) && (
+      {(partsFailed || homeFailed || docs.failed) && (
         <Alert variant="destructive">
           <AlertDescription>The page could not be loaded. Try again in a moment.</AlertDescription>
         </Alert>
@@ -68,6 +75,24 @@ function PartPage() {
           />
           <div className="mt-10 space-y-12">
             <FeaturesSection workspaceId={workspaceId} projectId={projectId} partId={part.id} />
+            <section aria-labelledby="docs-title" className="space-y-3">
+              <div className="flex items-baseline gap-2.5">
+                <h2 id="docs-title" className="text-[15px] font-semibold tracking-tight">
+                  Docs
+                </h2>
+                <span className="text-sm text-muted-foreground tabular-nums">{docs.value?.length ?? 0}</span>
+              </div>
+              {docs.value &&
+                (docs.value.length === 0 ? (
+                  <Empty>No docs yet</Empty>
+                ) : (
+                  <List>
+                    {docs.value.map((doc) => (
+                      <DocRow key={doc.id} doc={doc} params={params} />
+                    ))}
+                  </List>
+                ))}
+            </section>
             <section aria-labelledby="tracks-title" className="space-y-3">
               <div className="flex flex-wrap items-center gap-2.5">
                 <h2 id="tracks-title" className="text-[15px] font-semibold tracking-tight">

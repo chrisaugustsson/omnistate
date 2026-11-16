@@ -39,7 +39,7 @@ pub(crate) type Tx = Transaction<'static, Postgres>;
 /// The columns of a doc; `created_at` is ISO 8601 text in UTC.
 const DOC_COLUMNS: &str = "id::text, project_id::text, kind, pillar, title, \
      to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, \
-     track_id::text, feature_id::text, head";
+     track_id::text, feature_id::text, part_id::text, head";
 
 /// The alphabet of node IDs: Crockford's base32 in lowercase.
 const NODE_ID_ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
@@ -54,6 +54,7 @@ pub(crate) struct DocRow {
     created_at: String,
     pub(crate) track_id: Option<String>,
     pub(crate) feature_id: Option<String>,
+    part_id: Option<String>,
     /// The chunk of the doc's content now; `None` for a doc without one, which
     /// reads as empty.
     pub(crate) head: Option<String>,
@@ -75,6 +76,9 @@ pub struct DocBody {
     /// The feature the doc belongs to; `null` for a doc of a track or at the
     /// app level. Fixed when the doc is created.
     pub feature_id: Option<String>,
+    /// The part the doc belongs to; `null` for a doc of a track, of a feature
+    /// or at the app level. Fixed when the doc is created.
+    pub part_id: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -148,6 +152,9 @@ pub struct CreateDocRequest {
     /// The feature to create the doc on, on `POST .../docs`. With a track too,
     /// the answer is 422 `one_scope_only`.
     pub feature_id: Option<String>,
+    /// The part to create the doc on, on `POST .../docs`. With a track or a
+    /// feature too, the answer is 422 `one_scope_only`.
+    pub part_id: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -356,6 +363,8 @@ pub(crate) enum Scope<'a> {
     Track(&'a str),
     /// Only the ones of this feature (a UUID).
     Feature(&'a str),
+    /// Only the ones of this part (a UUID), not those of its features or tracks.
+    Part(&'a str),
 }
 
 /// The docs of a project in the scope, oldest first, each as `show_doc` answers
@@ -375,10 +384,15 @@ pub(crate) async fn docs_of_project(
         Scope::Feature(id) => Some(id),
         _ => None,
     };
+    let part = match scope {
+        Scope::Part(id) => Some(id),
+        _ => None,
+    };
     let rows: Vec<DocRow> = sqlx::query_as(&format!(
         "SELECT {DOC_COLUMNS} FROM docs WHERE project_id = $1::uuid AND deleted_at IS NULL \
          AND ($2::bool OR (track_id IS NOT DISTINCT FROM $3::uuid \
-                           AND feature_id IS NOT DISTINCT FROM $5::uuid)) \
+                           AND feature_id IS NOT DISTINCT FROM $5::uuid \
+                           AND part_id IS NOT DISTINCT FROM $6::uuid)) \
          AND ($4::text IS NULL OR pillar = $4) ORDER BY created_at, id"
     ))
     .bind(project_id)
@@ -386,6 +400,7 @@ pub(crate) async fn docs_of_project(
     .bind(track)
     .bind(pillar)
     .bind(feature)
+    .bind(part)
     .fetch_all(&mut **tx)
     .await
     .map_err(ApiError::database)?;
@@ -402,6 +417,7 @@ fn doc_body(row: DocRow) -> DocBody {
         created_at: row.created_at,
         track_id: row.track_id,
         feature_id: row.feature_id,
+        part_id: row.part_id,
     }
 }
 
@@ -592,13 +608,14 @@ async fn insert_doc(
     project_id: &str,
     track_id: Option<&str>,
     feature_id: Option<&str>,
+    part_id: Option<&str>,
     new: &NewDoc,
     empty: &EmptyHead,
     agent: &Value,
 ) -> Result<DocRow, ApiError> {
     let row: DocRow = sqlx::query_as(&format!(
-        "INSERT INTO docs (workspace_id, project_id, track_id, feature_id, kind, pillar, title, head) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $8::uuid, $4, $5, $6, $7) RETURNING {DOC_COLUMNS}"
+        "INSERT INTO docs (workspace_id, project_id, track_id, feature_id, part_id, kind, pillar, title, head) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $8::uuid, $9::uuid, $4, $5, $6, $7) RETURNING {DOC_COLUMNS}"
     ))
     .bind(workspace_id)
     .bind(project_id)
@@ -608,6 +625,7 @@ async fn insert_doc(
     .bind(&new.title)
     .bind(&empty.name)
     .bind(feature_id)
+    .bind(part_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(|error| {
@@ -633,6 +651,7 @@ async fn insert_doc(
             "title": new.title,
             "track_id": track_id,
             "feature_id": feature_id,
+            "part_id": part_id,
         }]),
         None,
         &empty.name,
@@ -647,6 +666,7 @@ async fn insert_doc(
             "doc_id": row.id,
             "track_id": track_id,
             "feature_id": feature_id,
+            "part_id": part_id,
             "kind": new.kind,
             "pillar": new.pillar,
             "title": new.title,
@@ -688,7 +708,13 @@ async fn create_live_doc(
         None => scope_id(&new.track_id)?,
     };
     let feature_id = scope_id(&new.feature_id)?;
-    if track_id.is_some() && feature_id.is_some() {
+    let part_id = scope_id(&new.part_id)?;
+    if [track_id.is_some(), feature_id.is_some(), part_id.is_some()]
+        .into_iter()
+        .filter(|set| *set)
+        .count()
+        > 1
+    {
         return Err(ApiError::Refused(
             StatusCode::UNPROCESSABLE_ENTITY,
             "one_scope_only",
@@ -696,6 +722,7 @@ async fn create_live_doc(
     }
     let track_id = track_id.as_deref();
     let feature_id = feature_id.as_deref();
+    let part_id = part_id.as_deref();
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, project_id).await?;
     if let Some(track_id) = track_id {
@@ -723,7 +750,22 @@ async fn create_live_doc(
         .map_err(ApiError::database)?;
         found.ok_or(ApiError::NotFound)?;
     }
-    let new = check_new_doc(new, track_id.is_some() || feature_id.is_some())?;
+    if let Some(part_id) = part_id {
+        let found: Option<(String,)> = sqlx::query_as(
+            "SELECT id::text FROM parts \
+             WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL",
+        )
+        .bind(part_id)
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        found.ok_or(ApiError::NotFound)?;
+    }
+    let new = check_new_doc(
+        new,
+        track_id.is_some() || feature_id.is_some() || part_id.is_some(),
+    )?;
     require_no_design_system(&mut tx, project_id, &new).await?;
     tx.commit().await.map_err(ApiError::database)?;
 
@@ -753,12 +795,25 @@ async fn create_live_doc(
         .map_err(ApiError::database)?;
         found.ok_or(ApiError::NotFound)?;
     }
+    if let Some(part_id) = part_id {
+        // A part that is deleted in between takes no new doc.
+        let found: Option<(String,)> = sqlx::query_as(
+            "SELECT id::text FROM parts \
+             WHERE id = $1::uuid AND deleted_at IS NULL FOR SHARE",
+        )
+        .bind(part_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        found.ok_or(ApiError::NotFound)?;
+    }
     let row = insert_doc(
         &mut tx,
         &request.workspace_id,
         project_id,
         track_id,
         feature_id,
+        part_id,
         &new,
         &empty,
         &identity.to_json(),
@@ -793,7 +848,7 @@ async fn create_live_doc(
         (status = 403, description = "Called with a session; agents only", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
         (status = 409, description = "The project has a design system doc already (`design_system_exists`)", body = ErrorBody),
-        (status = 422, description = "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), a design system in a track or on a feature (`design_system_is_global`), or both `track_id` and `feature_id` given (`one_scope_only`)", body = ErrorBody),
+        (status = 422, description = "A design or design-system doc outside the `ui` pillar (`design_needs_ui_pillar`), a design system in a track or on a feature (`design_system_is_global`), or more than one of `track_id`, `feature_id` and `part_id` given (`one_scope_only`)", body = ErrorBody),
     )
 )]
 pub async fn create_app_doc(
@@ -859,7 +914,8 @@ pub async fn create_track_doc(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("track" = Option<String>, Query, description = "A track's UUID lists that track's docs only; `global` lists the project's global docs only; without it, every doc of the project"),
-        ("feature" = Option<String>, Query, description = "A feature's UUID lists that feature's docs only; not with `track`"),
+        ("feature" = Option<String>, Query, description = "A feature's UUID lists that feature's docs only; not with `track` or `part`"),
+        ("part" = Option<String>, Query, description = "A part's UUID lists the docs of that part only, not those of its features or tracks; not with `track` or `feature`"),
         ("pillar" = Option<String>, Query, description = "`spec`, `ui`, `architecture`, `db` or `research` lists that pillar's docs only; without it, every pillar"),
     ),
     responses(
@@ -867,7 +923,7 @@ pub async fn create_track_doc(
         (status = 400, description = "`track` is neither `global` nor a UUID, or `pillar` is none of the five pillars", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
-        (status = 422, description = "Both `track` and `feature` given (`one_scope_only`)", body = ErrorBody),
+        (status = 422, description = "More than one of `track`, `feature` and `part` given (`one_scope_only`)", body = ErrorBody),
     )
 )]
 pub async fn list_docs(
@@ -888,14 +944,27 @@ pub async fn list_docs(
         None => None,
         Some(id) => Some(parse_uuid(id).ok_or_else(|| ApiError::bad_request("invalid_request"))?),
     };
-    if track.is_some() && feature.is_some() {
+    let part = match query.get("part") {
+        None => None,
+        Some(id) => Some(parse_uuid(id).ok_or_else(|| ApiError::bad_request("invalid_request"))?),
+    };
+    if [track.is_some(), feature.is_some(), part.is_some()]
+        .into_iter()
+        .filter(|set| *set)
+        .count()
+        > 1
+    {
         return Err(ApiError::Refused(
             StatusCode::UNPROCESSABLE_ENTITY,
             "one_scope_only",
         ));
     }
     let scope = match &track {
-        None => feature.as_deref().map_or(Scope::Project, Scope::Feature),
+        None => match (feature.as_deref(), part.as_deref()) {
+            (Some(id), _) => Scope::Feature(id),
+            (None, Some(id)) => Scope::Part(id),
+            (None, None) => Scope::Project,
+        },
         Some(None) => Scope::Global,
         Some(Some(id)) => Scope::Track(id),
     };

@@ -27,7 +27,9 @@ pub struct Args {
     /// `omni track list --mine`: only the tracks the key's member owns.
     pub mine: bool,
     /// `--part <name or id>`: the part `omni track create` and `omni track
-    /// move` put a track on, and the one `omni track list` keeps to.
+    /// move` put a track on, and the one `omni track list` keeps to; without
+    /// `--feature`, also the part `omni doc create` creates a doc on and `omni
+    /// doc list` shows.
     pub part: Option<String>,
     /// Every `--part` given, in order: `omni link` takes it repeatedly, as
     /// `<name>[=<path>]`.

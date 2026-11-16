@@ -322,6 +322,7 @@ export type CreateDecisionRequest = z.infer<typeof CreateDecisionRequestSchema>;
 export const CreateDocRequestSchema = z.object({
   feature_id: z.string().nullable().optional(),
   kind: z.string().nullable().optional(),
+  part_id: z.string().nullable().optional(),
   pillar: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
   track_id: z.string().nullable().optional(),
@@ -467,6 +468,7 @@ export const DocBodySchema = z.object({
   feature_id: z.string().nullable().optional(),
   id: z.string(),
   kind: z.string(),
+  part_id: z.string().nullable().optional(),
   pillar: z.string(),
   project_id: z.string(),
   title: z.string(),
