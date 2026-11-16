@@ -20,9 +20,10 @@ import { cn } from "@/lib/utils";
 // The scope page: the app level of a project or one of its tracks, on one
 // layout. A header with the name, the description and the last activity, a
 // row of chips that jump to the five pillars, a section per pillar with a row
-// for each doc, and the scope's threads, newest post first. It loads the
-// project's home and loads it again on every live event of the project, so docs
-// and posts appear as agents write them.
+// for each doc, and on a track page the track's threads, newest post first
+// (threads live only on tracks, US-325). It loads the project's home and loads
+// it again on every live event of the project, so docs and posts appear as
+// agents write them.
 
 type Params = { workspaceId: string; projectId: string };
 
@@ -312,23 +313,25 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
                 </section>
               );
             })}
-            <section id="threads" aria-labelledby="threads-title" className="scroll-mt-6 space-y-3">
-              <div className="flex items-baseline gap-2.5">
-                <h2 id="threads-title" className="text-[15px] font-semibold tracking-tight">
-                  Threads
-                </h2>
-                <span className="text-sm text-muted-foreground tabular-nums">{threads.length}</span>
-              </div>
-              {threads.length === 0 ? (
-                <Empty>No threads yet</Empty>
-              ) : (
-                <List>
-                  {threads.map((thread) => (
-                    <ThreadRow key={thread.id} thread={thread} params={params} />
-                  ))}
-                </List>
-              )}
-            </section>
+            {trackId && (
+              <section id="threads" aria-labelledby="threads-title" className="scroll-mt-6 space-y-3">
+                <div className="flex items-baseline gap-2.5">
+                  <h2 id="threads-title" className="text-[15px] font-semibold tracking-tight">
+                    Threads
+                  </h2>
+                  <span className="text-sm text-muted-foreground tabular-nums">{threads.length}</span>
+                </div>
+                {threads.length === 0 ? (
+                  <Empty>No threads yet</Empty>
+                ) : (
+                  <List>
+                    {threads.map((thread) => (
+                      <ThreadRow key={thread.id} thread={thread} params={params} />
+                    ))}
+                  </List>
+                )}
+              </section>
+            )}
           </div>
         </>
       )}

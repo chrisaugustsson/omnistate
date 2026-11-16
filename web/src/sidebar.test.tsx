@@ -638,13 +638,13 @@ async function recent() {
 }
 
 /**
- * The rows of the scope tree, from its name down to its Threads row: a link,
+ * The rows of the scope tree, from its name down to its last row: a link,
  * a pillar's fold button, or an empty pillar's row, each as its shown text and
  * its href when it has one.
  */
 async function treeRows() {
   const nav = await projectNav();
-  const tree = (await within(nav).findByRole("link", { name: /^Threads \(\d+\)$/ })).parentElement as HTMLElement;
+  const tree = (await within(nav).findByText("Spec", { exact: true })).closest(".space-y-0\\.5") as HTMLElement;
   return Array.from(tree.querySelectorAll<HTMLElement>("a, button, div"))
     .filter((row) => row.matches("a, button") || (row.childElementCount > 0 && !row.querySelector("a, button, div")))
     .map((row) => ({ text: shownText(row), href: row.getAttribute("href") }));
@@ -783,7 +783,7 @@ describe("the sidebar's scope tree", () => {
     localStorage.clear();
   });
 
-  test("App's tree: its name, the five pillars with their doc counts and docs by title, the design system first, what waits, and its Threads", async () => {
+  test("App's tree: its name, the five pillars with their doc counts and docs by title, the design system first, what waits, and no Threads row", async () => {
     fakeApi({ home: appTree });
     renderAt(`${PROJECT_PATH}/app`);
     await waitFor(async () => expect((await treeRows())[1]?.text).toBe("Spec3"));
@@ -800,7 +800,6 @@ describe("the sidebar's scope tree", () => {
       { text: "DBempty", href: null },
       { text: "Research1", href: null },
       docRow(LOAD_TEST, "Load test"),
-      { text: "Threads (2)", href: `${PROJECT_PATH}/threads?scope=app` },
     ]);
   });
 

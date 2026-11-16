@@ -8,7 +8,7 @@ import { useUiStep } from "@/lib/show-ui";
 import { cn } from "@/lib/utils";
 
 // The part of the sidebar that shows one scope: its name, its five pillars
-// with their docs, and its threads.
+// with their docs, and for a track its threads (threads live only on tracks).
 
 const PILLAR_ICONS: Record<string, LucideIcon> = {
   spec: FileText,
@@ -108,7 +108,7 @@ function Pillar({
 /**
  * One scope's tree: `scope` is "app" or a track's ID. It starts with the
  * scope's name, linking to its page, then the five pillars with their docs,
- * and last the scope's threads.
+ * and for a track its threads, board and behaviour.
  */
 export function ScopeTree({
   workspaceId,
@@ -166,17 +166,19 @@ export function ScopeTree({
           docs={docs.filter((doc) => doc.pillar === pillar)}
         />
       ))}
-      <Link
-        to="/w/$workspaceId/projects/$projectId/threads"
-        params={params}
-        search={{ scope }}
-        activeOptions={{ exact: true, includeSearch: true }}
-        activeProps={{ className: activeClass }}
-        className={cn(rowClass, "mt-0.5 h-7 text-xs font-medium")}
-      >
-        <MessagesSquare aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-        Threads ({threads})
-      </Link>
+      {scope !== "app" && (
+        <Link
+          to="/w/$workspaceId/projects/$projectId/threads"
+          params={params}
+          search={{ scope }}
+          activeOptions={{ exact: true, includeSearch: true }}
+          activeProps={{ className: activeClass }}
+          className={cn(rowClass, "mt-0.5 h-7 text-xs font-medium")}
+        >
+          <MessagesSquare aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+          Threads ({threads})
+        </Link>
+      )}
       {scope !== "app" && (
         <Link
           to="/w/$workspaceId/projects/$projectId/tracks/$trackId/board"

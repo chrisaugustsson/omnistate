@@ -300,12 +300,13 @@ describe("the scope pages", () => {
     expect(main.textContent).not.toContain("The app as intended now.");
   });
 
-  test("the parts, the decisions and then the five pillars come in order, an empty one saying No docs yet", async () => {
+  test("the parts, the decisions and then the five pillars come in order, an empty one saying No docs yet, and no threads (they live on tracks)", async () => {
     fakeApi(seededHome().home);
     renderAt(APP_PATH);
     const main = await page();
     await section(main, /^spec\b/i);
-    expect(sectionNames(main)).toEqual(["Parts", "Decisions", "Spec", "UI", "Architecture", "DB", "Research", "Threads"]);
+    expect(sectionNames(main)).toEqual(["Parts", "Decisions", "Spec", "UI", "Architecture", "DB", "Research"]);
+    expect(main.textContent).not.toContain("No threads yet");
     const architecture = await section(main, /^architecture\b/i);
     expect(architecture.textContent).toContain("No docs yet");
     expect(within(architecture).queryAllByRole("listitem")).toEqual([]);
@@ -377,14 +378,16 @@ describe("the scope pages", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`${PROJECT_PATH}/docs/${docs.returns.id}`));
   });
 
-  test("the threads come newest post first, a thread without posts at its start, each with its count and one flag", async () => {
+  test("a track's threads come newest post first, a thread without posts at its start, each with its count and one flag", async () => {
     const { home, threads } = seededHome();
+    // Wallets is left out; the other four move onto the track.
+    home.threads = home.threads.filter((listed) => listed.track_id === null).map((listed) => ({ ...listed, track_id: TRACK_ID }));
     fakeApi(home);
-    renderAt(APP_PATH);
+    renderAt(TRACK_PATH);
     const main = await page();
     const listed = await section(main, /^threads\b/i);
     await within(listed).findByText("Which hero layout?");
-    expect(rowTitles(listed), "the track's thread is not the app's").toEqual([
+    expect(rowTitles(listed)).toEqual([
       "Which hero layout?",
       "Do we need search?",
       "What goes in the footer?",
