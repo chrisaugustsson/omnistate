@@ -536,3 +536,123 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     let again = create("Express checkout");
     assert_ne!(again, checkout, "a new track takes the name");
 }
+
+// US-309: a track points at the features of its part that it changes (D15).
+#[test]
+fn a_track_is_linked_to_a_feature_of_its_part_from_the_command_line() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("monitoring");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    for (part, kind) in [("Wision", "app"), ("iot-service", "service")] {
+        let out = run(
+            &home,
+            &[
+                "part",
+                "create",
+                part,
+                "--kind",
+                kind,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(out.code, 0, "part create {part}: {}", out.stderr);
+    }
+    for (feature, part) in [("Analyze", "Wision"), ("Uplinks", "iot-service")] {
+        let out = run(
+            &home,
+            &[
+                "feature",
+                "create",
+                feature,
+                "--part",
+                part,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(out.code, 0, "feature create {feature}: {}", out.stderr);
+    }
+    let out = run(
+        &home,
+        &[
+            "track",
+            "create",
+            "Long windows",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(out.code, 0, "track create: {}", out.stderr);
+
+    // Linking the same feature twice is a no-op, not an error.
+    for attempt in ["first", "second"] {
+        let out = run(
+            &home,
+            &[
+                "track",
+                "link-feature",
+                "Long windows",
+                "Analyze",
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(out.code, 0, "{attempt} link-feature: {}", out.stderr);
+    }
+
+    let shown = run(
+        &home,
+        &["track", "show", "Long windows", "--project", &project],
+    );
+    assert_eq!(shown.code, 0, "track show: {}", shown.stderr);
+    assert_eq!(
+        shown.stdout.matches("Analyze").count(),
+        1,
+        "track show lists the linked feature once: {:?}",
+        shown.stdout
+    );
+    let shown = run(
+        &home,
+        &["feature", "show", "Analyze", "--project", &project],
+    );
+    assert_eq!(shown.code, 0, "feature show: {}", shown.stderr);
+    assert!(
+        shown.stdout.contains("Long windows"),
+        "feature show lists the linked track: {:?}",
+        shown.stdout
+    );
+
+    // A feature of another part is refused by the API.
+    let refused = run(
+        &home,
+        &[
+            "track",
+            "link-feature",
+            "Long windows",
+            "Uplinks",
+            "--project",
+            &project,
+        ],
+    );
+    assert_ne!(refused.code, 0, "{:?}", refused.stdout);
+    assert!(
+        refused.stderr.contains("feature_not_on_part"),
+        "the error names the code: {:?}",
+        refused.stderr
+    );
+    let shown = run(
+        &home,
+        &["track", "show", "Long windows", "--project", &project],
+    );
+    assert_eq!(shown.code, 0, "track show: {}", shown.stderr);
+    assert!(
+        !shown.stdout.contains("Uplinks"),
+        "the refused feature is not linked: {:?}",
+        shown.stdout
+    );
+}

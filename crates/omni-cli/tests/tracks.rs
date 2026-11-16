@@ -122,7 +122,7 @@ fn part_json(id: &str, name: &str, kind: &str) -> Value {
 /// An API that knows two projects, `brand-site` and `other`, each with the
 /// parts "Wision" and "iot-service" and the tracks "Checkout" (on Wision) and
 /// "Wish list" (on iot-service), in that order; Checkout is planning and Wish
-/// list is building. A new track named "checkout"
+/// list is building; neither is linked to a feature. A new track named "checkout"
 /// in any case is refused as taken, and so is a rename to it. A track created
 /// or moved to `GONE_PART` is 422 `invalid_part`. A rename answers the track
 /// with its new name, a move answers it on its new part, and a delete answers
@@ -203,6 +203,12 @@ fn mock() -> MockServer {
                 }
                 ("GET", rest) if rest == format!("/{WISH_LIST}") => {
                     Reply::json(200, &json!({ "track": wish_list(project) }))
+                }
+                ("GET", rest)
+                    if rest == format!("/{TRACK}/features")
+                        || rest == format!("/{WISH_LIST}/features") =>
+                {
+                    Reply::json(200, &json!({ "features": [] }))
                 }
                 ("PATCH", rest)
                     if rest == format!("/{TRACK}") || rest == format!("/{WISH_LIST}") =>

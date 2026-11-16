@@ -454,14 +454,14 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .expect("insert a part");
 
     // A feature of the part.
-    sqlx::query(
+    let feature_id: String = sqlx::query_scalar(
         "INSERT INTO features (workspace_id, project_id, part_id, name) \
-         VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test')",
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test') RETURNING id::text",
     )
     .bind(workspace)
     .bind(&project_id)
     .bind(&part_id)
-    .execute(&mut *conn)
+    .fetch_one(&mut *conn)
     .await
     .expect("insert a feature");
 
@@ -476,6 +476,16 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .fetch_one(&mut *conn)
     .await
     .expect("insert a track");
+    sqlx::query(
+        "INSERT INTO track_features (workspace_id, track_id, feature_id) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid)",
+    )
+    .bind(workspace)
+    .bind(&track_id)
+    .bind(&feature_id)
+    .execute(&mut *conn)
+    .await
+    .expect("link the track to the feature");
     sqlx::query(
         "INSERT INTO stories (workspace_id, project_id, track_id, number, title, text, topic, criteria) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'deletion test', '', '', '[]'::jsonb)",

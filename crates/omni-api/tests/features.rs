@@ -22,6 +22,11 @@
 //!   are 404 `not_found`.
 //! - Any member creates, renames and deletes any feature, with a session or
 //!   an API key (D14).
+//! - US-309: `POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/
+//!   {track_id}/features` with `{"feature_id"}` links a track to a feature of
+//!   its own part; any other feature (of another part or project, or deleted)
+//!   is 422 `feature_not_on_part`. A second link of the same feature answers
+//!   as the first and emits no live event.
 
 mod common;
 
@@ -502,4 +507,151 @@ fn a_member_with_a_session_renames_and_deletes_a_feature_that_another_member_cre
         deleted.text()
     );
     assert_eq!(listed(f, client, &project, &wision), vec![]);
+}
+
+// ---------------------------------------------------------------------------
+// The features a track changes (US-309, D15)
+// ---------------------------------------------------------------------------
+
+/// Creates a track on a part; returns its ID.
+fn create_track(f: &Fixture, client: &Client, project: &str, part: &str, name: &str) -> String {
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
+            &agent(f),
+            Some(&json!({ "name": name, "part_id": part })),
+        ),
+        201,
+        "create a track",
+    );
+    created["track"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the track has an id: {created}"))
+        .to_string()
+}
+
+fn track_features_path(f: &Fixture, project: &str, track: &str) -> String {
+    format!(
+        "/api/v1/w/{}/projects/{project}/tracks/{track}/features",
+        f.workspace
+    )
+}
+
+/// The IDs of the records under `key` that `GET path` lists, in its order.
+fn ids_at(f: &Fixture, client: &Client, path: &str, key: &str) -> Vec<String> {
+    let listed = must(call(client, "GET", path, &agent(f), None), 200, path);
+    listed[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("`{key}` is a list: {listed}"))
+        .iter()
+        .map(|record| record["id"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn live_events_of(project: &str) -> i64 {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar("SELECT count(*) FROM live_events WHERE project_id = $1::uuid")
+            .bind(project)
+            .fetch_one(&mut conn)
+            .await
+            .expect("count the live events of the project")
+    })
+}
+
+#[test]
+fn linking_the_same_feature_twice_answers_the_same_and_adds_no_second_link_or_event() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let analyze = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    let track = create_track(f, client, &project, &wision, "Long windows");
+    let path = track_features_path(f, &project, &track);
+    let link = json!({ "feature_id": analyze });
+
+    let first = call(client, "POST", &path, &agent(f), Some(&link));
+    assert!(
+        (200..300).contains(&first.status),
+        "the first link succeeds: {}",
+        first.text()
+    );
+    let events = live_events_of(&project);
+    let second = call(client, "POST", &path, &agent(f), Some(&link));
+    assert_eq!(second.status, first.status, "{}", second.text());
+    assert_eq!(
+        second.json(),
+        first.json(),
+        "the second link answers the same"
+    );
+    assert_eq!(
+        live_events_of(&project),
+        events,
+        "the second link emits no live event"
+    );
+
+    assert_eq!(ids_at(f, client, &path, "features"), vec![analyze.clone()]);
+    assert_eq!(
+        ids_at(
+            f,
+            client,
+            &format!("{}/tracks", feature_path(f, &project, &wision, &analyze)),
+            "tracks"
+        ),
+        vec![track]
+    );
+}
+
+#[test]
+fn linking_a_feature_that_is_not_an_undeleted_feature_of_the_tracks_part_is_422_feature_not_on_part()
+ {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let iot = create_part(f, client, &project, "iot-service", "service");
+    let track = create_track(f, client, &project, &wision, "Long windows");
+
+    let on_other_part = create_feature(f, client, &agent(f), &project, &iot, "Uplinks");
+    let other_project = new_project(f, client);
+    let other_wision = create_part(f, client, &other_project, "Wision", "app");
+    let in_other_project = create_feature(
+        f,
+        client,
+        &agent(f),
+        &other_project,
+        &other_wision,
+        "Analyze",
+    );
+    let deleted = create_feature(f, client, &agent(f), &project, &wision, "Alarms");
+    let gone = call(
+        client,
+        "DELETE",
+        &feature_path(f, &project, &wision, &deleted),
+        &agent(f),
+        None,
+    );
+    assert_eq!(gone.status, 204, "delete the feature: {}", gone.text());
+
+    let path = track_features_path(f, &project, &track);
+    for (what, feature) in [
+        ("a feature of another part", &on_other_part),
+        ("a feature of another project", &in_other_project),
+        ("a deleted feature of the track's part", &deleted),
+    ] {
+        let refused = call(
+            client,
+            "POST",
+            &path,
+            &agent(f),
+            Some(&json!({ "feature_id": feature })),
+        );
+        assert_eq!(refused.status, 422, "{what}: {}", refused.text());
+        assert_error(&refused, 422, "feature_not_on_part");
+    }
+    assert_eq!(
+        ids_at(f, client, &path, "features"),
+        Vec::<String>::new(),
+        "no refused feature is linked"
+    );
 }

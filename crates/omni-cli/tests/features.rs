@@ -58,8 +58,8 @@ fn feature_json(id: &str, part: &str, name: &str, description: &str) -> Value {
 
 /// An API whose project has the parts Wision (app) and iot-service
 /// (service). Wision has the features Analyze and Alarms, iot-service has
-/// Alarms. A new feature is answered with the name and description it was
-/// sent.
+/// Alarms. No track is linked to a feature. A new feature is answered with
+/// the name and description it was sent.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -83,6 +83,9 @@ fn mock() -> MockServer {
                 200,
                 &json!({ "features": [feature_json(IOT_ALARMS, IOT_SERVICE, "Alarms", "")] }),
             ),
+            "GET" if path.starts_with(&parts_path()) && path.ends_with("/tracks") => {
+                Reply::json(200, &json!({ "tracks": [] }))
+            }
             "POST" if path == features_path(WISION) || path == features_path(IOT_SERVICE) => {
                 let part = if path == features_path(WISION) {
                     WISION
