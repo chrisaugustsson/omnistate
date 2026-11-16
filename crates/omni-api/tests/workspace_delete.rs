@@ -453,6 +453,18 @@ async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &s
     .await
     .expect("insert a part");
 
+    // A feature of the part.
+    sqlx::query(
+        "INSERT INTO features (workspace_id, project_id, part_id, name) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'deletion test')",
+    )
+    .bind(workspace)
+    .bind(&project_id)
+    .bind(&part_id)
+    .execute(&mut *conn)
+    .await
+    .expect("insert a feature");
+
     // A track on the part, a story in it and the root of its behaviour tree.
     let track_id: String = sqlx::query_scalar(
         "INSERT INTO tracks (workspace_id, project_id, name, part_id) \

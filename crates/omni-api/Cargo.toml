@@ -105,6 +105,10 @@ name = "parts"
 required-features = ["stack-tests"]
 
 [[test]]
+name = "features"
+required-features = ["stack-tests"]
+
+[[test]]
 name = "tracks"
 required-features = ["stack-tests"]
 

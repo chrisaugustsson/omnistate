@@ -33,12 +33,12 @@
 //!   new name) each is a one-line error that sends nothing; an API error is
 //!   one line with its code.
 //! - US-302: `omni track` replaces `omni feature` for work, with no aliases
-//!   (D12): `omni feature create` is an `unknown command` that sends
-//!   nothing, `--feature` picks no track, and `omni --help` has no `omni
-//!   feature` line. `OMNI_TRACK` replaces `OMNI_FEATURE`: a non-empty
-//!   `OMNI_FEATURE` picks no track, and omni says it was renamed in one line
-//!   on standard error, leaving standard output as it is without it. An
-//!   empty `OMNI_FEATURE`, `--help` and `--version` print no notice.
+//!   (D12): `omni feature create` makes no track (since US-307 it makes a
+//!   feature and, without `--part`, is `part_required` and sends nothing),
+//!   and `--feature` picks no track. `OMNI_TRACK` replaces `OMNI_FEATURE`:
+//!   a non-empty `OMNI_FEATURE` picks no track, and omni says it was renamed
+//!   in one line on standard error, leaving standard output as it is without
+//!   it. An empty `OMNI_FEATURE`, `--help` and `--version` print no notice.
 //! - US-305: every track sits on one part. `omni track create <name> --part
 //!   <name|id>` sends the part's ID as `part_id`; without `--part` it fails
 //!   with `part_required` and sends nothing. `omni track list` prints
@@ -924,11 +924,11 @@ fn run_with_env(home: &Scratch, args: &[&str], name: &str, value: &str) -> Out {
 }
 
 #[test]
-fn feature_create_is_an_unknown_command_and_creates_no_track() {
+fn feature_create_without_a_part_is_part_required_and_creates_no_track() {
     let server = mock();
     let home = logged_in(&server.url);
     let out = run(&home, &["feature", "create", "A", "--project", PROJECT]);
-    assert_one_line_error(&out, &["unknown command"]);
+    assert_one_line_error(&out, &["part_required"]);
     assert!(
         server.requests().is_empty(),
         "nothing is sent: {:?}",
@@ -963,7 +963,7 @@ fn the_feature_flag_picks_no_track_for_the_story_list() {
 }
 
 #[test]
-fn help_lists_the_track_commands_and_no_feature_command() {
+fn help_lists_the_track_commands_and_names_omni_track_not_omni_feature() {
     let home = Scratch::new("home");
     let help = omni(&home.path).args(&["--help"]).run();
     assert_eq!(help.code, 0, "{}", help.stderr);
@@ -980,11 +980,6 @@ fn help_lists_the_track_commands_and_no_feature_command() {
             "omni --help lists {command:?}"
         );
     }
-    assert!(
-        !help.stdout.contains("omni feature"),
-        "omni --help has no omni feature command until US-307: {}",
-        help.stdout
-    );
     assert!(
         !help.stdout.contains("OMNI_FEATURE"),
         "omni --help names OMNI_TRACK, not OMNI_FEATURE: {}",
