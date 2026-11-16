@@ -242,10 +242,10 @@ describe("the Tracks page", () => {
     fakeApi(home({ tracks }));
     renderAt(`${PROJECT_PATH}/tracks`);
     await waitFor(() => expect(rows()).toHaveLength(5));
-    expect(shownText(rows()[0])).toBe("CheckoutPay in one step.Wisionbuilding1/3 stories22 h ago");
+    expect(shownText(rows()[0])).toBe("CheckoutPay in one step.Wisionbuilding1/3 stories done22 h ago");
     expect(rows()[0].getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${CHECKOUT}`);
     expect(shownText(rows()[1]), "a track on a deleted part stays, its part marked deleted").toBe(
-      "WalletsApple Pay and Google Pay.Old app (deleted)planning0/0 storiesNo activity yet",
+      "WalletsApple Pay and Google Pay.Old app (deleted)planning0/0 stories doneNo activity yet",
     );
   });
 

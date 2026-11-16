@@ -242,7 +242,7 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
                 params={{ ...params, trackId }}
                 className="inline-flex h-7 items-center rounded-lg border px-2.5 text-[12.5px] text-foreground/80 transition-colors hover:bg-accent"
               >
-                Stories {summary?.stories?.open ?? 0}/{summary?.stories?.total ?? 0}
+                Stories {summary?.stories?.done ?? 0}/{summary?.stories?.total ?? 0} done
               </Link>
             )}
             {trackId && (

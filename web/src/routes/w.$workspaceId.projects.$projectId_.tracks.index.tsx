@@ -54,7 +54,7 @@ function TrackRow({ summary, params }: { summary: TrackSummary; params: { worksp
         </span>
         <StateLabel state={track.state} />
         <span className="hidden shrink-0 text-xs text-muted-foreground tabular-nums sm:inline">
-          {stories.done}/{stories.total} stories
+          {stories.done}/{stories.total} stories done
         </span>
         <span className="flex w-8 shrink-0 justify-end">
           {waiting > 0 && (

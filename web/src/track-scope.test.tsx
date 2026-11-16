@@ -250,11 +250,11 @@ describe("track scope", () => {
     vi.unstubAllGlobals();
   });
 
-  test("a track's header has a chip with its open of total stories that opens its board", async () => {
+  test("a track's header has a chip with its done of total stories, as the Tracks list counts them, that opens its board", async () => {
     fakeApi(seeded());
     renderAt(trackPath(WISHLIST));
     const chips = await screen.findByRole("navigation", { name: /^pillars$/i });
-    const chip = await within(chips).findByRole("link", { name: "Stories 2/3" });
+    const chip = await within(chips).findByRole("link", { name: "Stories 1/3 done" });
     expect(chip.getAttribute("href")).toBe(trackPath(WISHLIST, "board"));
   });
 
