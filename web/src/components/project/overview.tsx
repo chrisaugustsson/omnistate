@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { Box, Layers, Plus } from "lucide-react";
 import type { HomeResponse, PartBody, TrackSummary } from "@/api/generated";
 import { describeProject } from "@/api/home";
+import { describePart } from "@/api/parts";
 import { PartIcon, ProjectMark } from "@/components/shell/part-icon";
 import { PageColumns, PageHead } from "@/components/shell/page";
 import { PanelSection, PropertiesPanel, PropertyRow } from "@/components/shell/properties-panel";
@@ -162,9 +163,6 @@ export function ProjectOverview({ workspaceId, projectId }: Params) {
   const questions = useOpenQuestions(workspaceId, projectId, home?.tracks ?? null);
   const [opened, setOpened] = useState<Opened>(null);
   const [renaming, setRenaming] = useState(false);
-  // The description just saved, shown until the project is loaded again with it.
-  const [saved, setSaved] = useState<{ was: string | null | undefined; text: string } | null>(null);
-  const description = saved && saved.was === project?.description ? saved.text : project?.description;
 
   const parts = map?.parts ?? [];
   const decisions = groups ? currentDecisions(groups) : null;
@@ -237,10 +235,9 @@ export function ProjectOverview({ workspaceId, projectId }: Params) {
         {(projectsFailed || homeFailed || mapFailed) && <Failed />}
         {project && (
           <Intro
-            text={description}
+            text={project.description}
             onSave={async (text) => {
               await describeProject(workspaceId, projectId, text);
-              setSaved({ was: project.description, text });
               reloadProjects();
             }}
           />
@@ -466,7 +463,15 @@ export function PartOverview({ workspaceId, projectId, partId }: Params & { part
           />
         )}
         {(homeFailed || mapFailed) && <Failed />}
-        {part && <Intro text={part.description} />}
+        {part && (
+          <Intro
+            text={part.description}
+            onSave={async (text) => {
+              await describePart(workspaceId, projectId, partId, text);
+              reloadMap();
+            }}
+          />
+        )}
         {home && part && (
           <InFlight
             tracks={tracks}

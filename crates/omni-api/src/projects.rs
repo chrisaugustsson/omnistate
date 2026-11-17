@@ -82,6 +82,23 @@ pub(crate) fn non_blank(text: Option<String>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+/// The name and the description a PATCH of a part or a feature sets: at least
+/// one of them, else 400 `invalid_request`. A name is trimmed and not blank
+/// (400 otherwise); a description is trimmed, and blank clears it to the empty
+/// text. `None` keeps the stored value.
+pub(crate) fn name_and_description(
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(Option<String>, Option<String>), ApiError> {
+    if name.is_none() && description.is_none() {
+        return Err(ApiError::bad_request("invalid_request"));
+    }
+    let name = name
+        .map(|name| non_blank(Some(name)).ok_or_else(|| ApiError::bad_request("invalid_request")))
+        .transpose()?;
+    Ok((name, description.map(|text| text.trim().to_string())))
+}
+
 /// Creates a project.
 #[utoipa::path(
     post,

@@ -61,6 +61,21 @@ export async function renameFeature(
   return answer.feature;
 }
 
+/** Sets what a feature does now, the text its Overview shows; an empty one clears it. */
+export async function describeFeature(
+  workspaceId: string,
+  projectId: string,
+  partId: string,
+  featureId: string,
+  description: string,
+): Promise<FeatureBody> {
+  const answer = await callApi("PATCH", `${at(workspaceId, projectId, partId)}/${featureId}`, {
+    body: { description },
+    response: renamed.responses["200"],
+  });
+  return answer.feature;
+}
+
 /** Deletes (hides) a feature. */
 export function deleteFeature(workspaceId: string, projectId: string, partId: string, featureId: string): Promise<void> {
   return callApi("DELETE", `${at(workspaceId, projectId, partId)}/${featureId}`);

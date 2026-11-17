@@ -36,6 +36,15 @@ export async function renamePart(workspaceId: string, projectId: string, partId:
   return answer.part;
 }
 
+/** Sets a part's description, the intro its Overview shows; an empty one clears it. */
+export async function describePart(workspaceId: string, projectId: string, partId: string, description: string): Promise<PartBody> {
+  const answer = await callApi("PATCH", `${base(workspaceId, projectId)}/parts/${partId}`, {
+    body: { description },
+    response: renamed.responses["200"],
+  });
+  return answer.part;
+}
+
 /** Deletes (hides) a part; its tracks stay. */
 export function deletePart(workspaceId: string, projectId: string, partId: string): Promise<void> {
   return callApi("DELETE", `${base(workspaceId, projectId)}/parts/${partId}`);

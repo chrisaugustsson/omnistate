@@ -1109,11 +1109,13 @@ export const RenameDocRequestSchema = z.object({
 export type RenameDocRequest = z.infer<typeof RenameDocRequestSchema>;
 
 export const RenameFeatureRequestSchema = z.object({
+  description: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
 });
 export type RenameFeatureRequest = z.infer<typeof RenameFeatureRequestSchema>;
 
 export const RenamePartRequestSchema = z.object({
+  description: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
 });
 export type RenamePartRequest = z.infer<typeof RenamePartRequestSchema>;

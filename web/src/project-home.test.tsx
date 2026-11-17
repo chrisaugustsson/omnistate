@@ -237,6 +237,25 @@ describe("a part's Overview", () => {
     expect(rows(features)).toEqual(["Dashboards Widgets for latest readings Added 10 Nov", "Analyze Time-series chart per channel Being changed"]);
     expect(rows(await region("In flight"))).toEqual(["Long time windows changes Analyze 0 of 2"]);
   });
+
+  test("its intro is edited in place: Edit opens the text, Save sends the new description and shows it", async () => {
+    const wision = part("Wision", "app", { description: "The web app customers log in to." });
+    const api = fakeScopeApi({ parts: [wision] });
+    renderAt(`${PROJECT_PATH}/parts/${wision.id}`);
+
+    const page = await main();
+    fireEvent.click(await within(page).findByRole("button", { name: "Edit the description" }));
+    const text = screen.getByRole("textbox", { name: "Description" }) as HTMLTextAreaElement;
+    expect(text.value).toBe("The web app customers log in to.");
+    fireEvent.change(text, { target: { value: "Where customers watch their sensors." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(api.writes).toEqual([{ method: "PATCH", path: `${API}/parts/${wision.id}`, body: { description: "Where customers watch their sensors." } }]),
+    );
+    expect(await within(page).findByText("Where customers watch their sensors.")).toBeTruthy();
+    expect(within(page).queryByText("The web app customers log in to.")).toBeNull();
+  });
 });
 
 describe("the Docs tabs", () => {

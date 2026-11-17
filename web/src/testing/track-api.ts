@@ -181,6 +181,12 @@ export function fakeTrackApi(fixture: Fixture) {
           fixture.trackDecisions = { ...fixture.trackDecisions, [recorded.id]: [created, ...(fixture.trackDecisions?.[recorded.id] ?? [])] };
           return json(201, { decision: created });
         }
+        const described = (fixture.features ?? []).find((one) => method === "PATCH" && path === `${API}/parts/${one.part_id}/features/${one.id}`);
+        if (described) {
+          const after = { ...described, ...body, description: body.description?.trim() ?? described.description };
+          fixture.features = (fixture.features ?? []).map((one) => (one.id === described.id ? after : one));
+          return json(200, { feature: after });
+        }
         const posted = path.match(/\/threads\/([^/]+)\/posts$/);
         if (posted) {
           return json(201, {

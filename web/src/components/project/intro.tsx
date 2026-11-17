@@ -3,8 +3,8 @@ import { Pencil, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { btn, btnPrimary, field } from "./rows";
 
-// The written intro of an Overview, as plain page text: the project's or the
-// part's description, its paragraphs split on blank lines. An editable intro
+// The written intro of an Overview, as plain page text: the project's, the
+// part's or the feature's description, its paragraphs split on blank lines. An editable intro
 // has an Edit link at its top right that shows on hover; an empty one is a
 // quiet "Add a description" link. Editing happens in place.
 
@@ -25,16 +25,25 @@ function Paragraphs({ text }: { text: string }) {
 }
 
 /**
- * The intro. With `onSave` it can be edited (the project's); without, it is
- * shown as it is and an empty one shows nothing (a part's, which the API does
- * not let the page change).
+ * The intro. With `onSave` it can be edited; without, it is shown as it is and
+ * an empty one shows nothing. A saved text shows until `text` changes, so the
+ * old one does not flash back while the page reloads it.
  */
-export function Intro({ text, onSave }: { text: string | null | undefined; onSave?: (text: string) => Promise<void> }) {
+export function Intro({
+  text,
+  onSave,
+  className,
+}: {
+  text: string | null | undefined;
+  onSave?: (text: string) => Promise<void>;
+  className?: string;
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
-  const current = text?.trim() ?? "";
+  const [saved, setSaved] = useState<{ was: string | null | undefined; text: string } | null>(null);
+  const current = (saved && saved.was === text ? saved.text : text)?.trim() ?? "";
 
   function open() {
     setDraft(current);
@@ -48,6 +57,7 @@ export function Intro({ text, onSave }: { text: string | null | undefined; onSav
     setFailed(false);
     try {
       await onSave(draft.trim());
+      setSaved({ was: text, text: draft.trim() });
       setEditing(false);
     } catch {
       setFailed(true);
@@ -60,7 +70,7 @@ export function Intro({ text, onSave }: { text: string | null | undefined; onSav
     return (
       <form
         aria-label="Edit the description"
-        className="mt-4 max-w-[680px] space-y-2"
+        className={cn("mt-4 max-w-[680px] space-y-2", className)}
         onSubmit={(event) => {
           event.preventDefault();
           if (!saving) void save();
@@ -105,7 +115,7 @@ export function Intro({ text, onSave }: { text: string | null | undefined; onSav
       <button
         type="button"
         onClick={open}
-        className="mt-3 -ml-1.5 inline-flex h-6 items-center gap-1.5 rounded-badge px-1.5 font-medium text-ink-3 transition-colors duration-(--t-fast) hover:bg-hover hover:text-ink focus-visible:shadow-focus focus-visible:outline-none"
+        className={cn("mt-3 -ml-1.5 inline-flex h-6 items-center gap-1.5 rounded-badge px-1.5 font-medium text-ink-3 transition-colors duration-(--t-fast) hover:bg-hover hover:text-ink focus-visible:shadow-focus focus-visible:outline-none", className)}
       >
         <Plus aria-hidden className="size-3" />
         Add a description
@@ -114,7 +124,7 @@ export function Intro({ text, onSave }: { text: string | null | undefined; onSav
   }
 
   return (
-    <div className="group/intro relative mt-4 max-w-[680px] text-em leading-[1.6] text-ink">
+    <div className={cn("group/intro relative mt-4 max-w-[680px] text-em leading-[1.6] text-ink", className)}>
       {onSave && (
         <button
           type="button"

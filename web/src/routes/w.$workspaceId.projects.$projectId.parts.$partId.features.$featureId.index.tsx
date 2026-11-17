@@ -1,10 +1,12 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
+import { describeFeature } from "@/api/features";
+import { Intro } from "@/components/project/intro";
 import { DecisionLog, foldReplaced } from "@/components/track/decision-log";
 import { useFeature } from "@/components/track/feature-data";
 import { SectionHead, buttonClass } from "@/components/track/ui";
 
-// A feature's Overview: what it does now (its description) and its three
-// newest current decisions, each saying which track recorded it.
+// A feature's Overview: what it does now (its description, edited in place)
+// and its three newest current decisions, each saying which track recorded it.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/")({
   component: Overview,
 });
@@ -17,11 +19,13 @@ function Overview() {
     <div className="space-y-8">
       <section aria-labelledby="now-title">
         <SectionHead id="now-title" title="What it does now" />
-        {feature.description.trim() ? (
-          <p className="max-w-(--main-max) text-em whitespace-pre-line text-ink">{feature.description}</p>
-        ) : (
-          <p className="text-ink-3">Nothing is written about what it does yet. Agents describe it when a track that changes it lands.</p>
-        )}
+        <Intro
+          className="mt-0"
+          text={feature.description}
+          onSave={async (text) => {
+            await describeFeature(workspaceId, projectId, partId, featureId, text);
+          }}
+        />
       </section>
       <section aria-labelledby="recent-title">
         <SectionHead id="recent-title" title="Recent decisions" count={decisions && current > 3 ? `3 of ${current}` : undefined}>

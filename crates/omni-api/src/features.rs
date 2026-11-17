@@ -8,7 +8,7 @@
 use crate::AppState;
 use crate::docs::Tx;
 use crate::live;
-use crate::projects::{non_blank, parse_body};
+use crate::projects::{name_and_description, non_blank, parse_body};
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{WorkspaceRequest, parse_uuid};
 use axum::Json;
@@ -241,11 +241,14 @@ pub async fn show_feature(
 #[derive(Deserialize, ToSchema)]
 pub struct RenameFeatureRequest {
     /// The feature's new name; not blank, and not the name of another
-    /// feature of the part, ignoring case.
+    /// feature of the part, ignoring case. Missing keeps the name.
     pub name: Option<String>,
+    /// What the feature does now, trimmed; blank clears it. Missing or null
+    /// keeps it.
+    pub description: Option<String>,
 }
 
-/// Renames a feature. Its ID stays.
+/// Renames a feature, sets its description, or both. Its ID stays.
 #[utoipa::path(
     patch,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}",
@@ -257,8 +260,8 @@ pub struct RenameFeatureRequest {
     ),
     request_body = RenameFeatureRequest,
     responses(
-        (status = 200, description = "The renamed feature", body = FeatureResponse),
-        (status = 400, description = "The name is missing or blank", body = ErrorBody),
+        (status = 200, description = "The changed feature", body = FeatureResponse),
+        (status = 400, description = "Neither a name nor a description, or a blank name", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such feature on this part, or it or its part was deleted", body = ErrorBody),
         (status = 409, description = "The part has a feature of this name, ignoring case (`name_taken`)", body = ErrorBody),
@@ -276,12 +279,15 @@ pub async fn rename_feature(
     let new = parse_body::<RenameFeatureRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     lock_feature(&mut tx, &project_id, &part_id, &feature_id).await?;
-    let name = non_blank(new?.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let new = new?;
+    let (name, description) = name_and_description(new.name, new.description)?;
     let renamed = sqlx::query_as::<_, FeatureBody>(&format!(
-        "UPDATE features SET name = $2 WHERE id = $1::uuid RETURNING {FEATURE_COLUMNS}"
+        "UPDATE features SET name = COALESCE($2, name), description = COALESCE($3, description) \
+         WHERE id = $1::uuid RETURNING {FEATURE_COLUMNS}"
     ))
     .bind(&feature_id)
     .bind(&name)
+    .bind(&description)
     .fetch_one(&mut *tx)
     .await;
     let feature = match renamed {

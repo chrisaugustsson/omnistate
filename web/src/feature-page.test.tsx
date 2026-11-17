@@ -18,14 +18,14 @@ const FEATURE_PATH = `${PROJECT_PATH}/parts/${WISION}/features/${ANALYZE}`;
 
 const analyze = featureBody(ANALYZE, "Analyze", { description: "Time-series chart per channel, compare devices, radar view, export." });
 
-function featureApi(fields: { docs?: ReturnType<typeof docBody>[] } = {}) {
+function featureApi(fields: { docs?: ReturnType<typeof docBody>[]; feature?: ReturnType<typeof featureBody> } = {}) {
   return fakeTrackApi({
     tracks: [
       track(WINDOWS, "Long time windows", { description: "Adds 90 d and 1 y windows. Readings aggregate per hour." }),
       track(CHART, "First chart", { state: "done" }),
     ],
     stories: { [WINDOWS]: { done: 0, total: 2 } },
-    features: [analyze],
+    features: [fields.feature ?? analyze],
     featureTracks: { [ANALYZE]: [WINDOWS, CHART] },
     docs: fields.docs,
   });
@@ -66,6 +66,23 @@ describe("a feature's Overview", () => {
     expect(banner.textContent).toContain("Being changed by Long time windows: Adds 90 d and 1 y windows. Not on main yet.");
     expect(banner.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${WINDOWS}`);
     expect(screen.getAllByRole("link", { name: /Being changed by/ })).toHaveLength(1);
+  });
+
+  test("with nothing written it offers Add a description; the text saved is what it does now", async () => {
+    const api = featureApi({ feature: featureBody(ANALYZE, "Analyze") });
+    renderAt(FEATURE_PATH);
+    const now = (await screen.findByRole("heading", { name: "What it does now" })).closest("section") as HTMLElement;
+    fireEvent.click(await within(now).findByRole("button", { name: "Add a description" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value: "Charts each channel over time." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(api.calls.filter((call) => call.method !== "GET")).toEqual([
+        { method: "PATCH", path: `${API}/parts/${WISION}/features/${ANALYZE}`, body: { description: "Charts each channel over time." } },
+      ]),
+    );
+    expect(await within(now).findByText("Charts each channel over time.")).toBeTruthy();
+    expect(within(now).queryByRole("button", { name: "Add a description" })).toBeNull();
   });
 });
 

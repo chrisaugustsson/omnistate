@@ -22,6 +22,9 @@
 //!   session or an API key (D14).
 //! - Creating, renaming and deleting a part emit `part.created`,
 //!   `part.renamed` and `part.deleted` on the project's live channel.
+//! - `PATCH /parts/{part_id}` takes `{"name"?, "description"?}`, at least one
+//!   of them (decision U8): the description is trimmed and a blank one clears
+//!   it; a body with neither is 400 `invalid_request` and changes nothing.
 
 mod common;
 
@@ -504,6 +507,108 @@ fn a_member_with_a_session_renames_and_deletes_a_part_that_another_member_create
         deleted.text()
     );
     assert_eq!(listed(f, client, &project), vec![]);
+}
+
+// ---------------------------------------------------------------------------
+// Description (decision U8)
+// ---------------------------------------------------------------------------
+
+/// The `(name, description)` of a part as `GET /parts/{part_id}` reads it.
+fn name_and_description(f: &Fixture, client: &Client, project: &str, part: &str) -> (Value, Value) {
+    let read = must(
+        call(client, "GET", &part_path(f, project, part), &agent(f), None),
+        200,
+        "read the part",
+    );
+    (
+        read["part"]["name"].clone(),
+        read["part"]["description"].clone(),
+    )
+}
+
+#[test]
+fn a_member_or_an_agent_sets_a_parts_description_and_a_blank_one_clears_it() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let part = create_part(f, client, &alice(f), &project, "Wision", "app");
+
+    for (auth, text) in [
+        (bob(f), "The app operators watch the fleet in."),
+        (agent(f), "Where operators watch the fleet."),
+    ] {
+        let changed = must(
+            call(
+                client,
+                "PATCH",
+                &part_path(f, &project, &part),
+                &auth,
+                Some(&json!({ "description": format!("  {text}\n") })),
+            ),
+            200,
+            "describe the part",
+        );
+        assert_eq!(changed["part"]["description"], text, "{changed}");
+        assert_eq!(changed["part"]["name"], "Wision", "the name stays");
+        assert_eq!(
+            name_and_description(f, client, &project, &part),
+            (json!("Wision"), json!(text))
+        );
+    }
+
+    let cleared = must(
+        call(
+            client,
+            "PATCH",
+            &part_path(f, &project, &part),
+            &alice(f),
+            Some(&json!({ "description": "  " })),
+        ),
+        200,
+        "clear the description",
+    );
+    assert_eq!(cleared["part"]["description"], "", "{cleared}");
+}
+
+#[test]
+fn a_part_patch_with_neither_name_nor_description_or_a_blank_name_is_400_and_changes_nothing() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let part = create_part(f, client, &agent(f), &project, "Wision", "app");
+    must(
+        call(
+            client,
+            "PATCH",
+            &part_path(f, &project, &part),
+            &agent(f),
+            Some(&json!({ "name": "Wision web", "description": "Watch the fleet" })),
+        ),
+        200,
+        "rename and describe the part in one request",
+    );
+
+    for body in [
+        json!({}),
+        json!({ "description": null }),
+        json!({ "description": 7 }),
+        json!({ "name": " ", "description": "Ship" }),
+    ] {
+        assert_error(
+            &call(
+                client,
+                "PATCH",
+                &part_path(f, &project, &part),
+                &agent(f),
+                Some(&body),
+            ),
+            400,
+            "invalid_request",
+        );
+        assert_eq!(
+            name_and_description(f, client, &project, &part),
+            (json!("Wision web"), json!("Watch the fleet")),
+            "{body} changes nothing"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

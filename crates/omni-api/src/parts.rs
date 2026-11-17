@@ -7,7 +7,7 @@
 use crate::AppState;
 use crate::docs::Tx;
 use crate::live;
-use crate::projects::{non_blank, parse_body, require_project};
+use crate::projects::{name_and_description, non_blank, parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
 use crate::workspace::{WorkspaceRequest, parse_uuid};
 use axum::Json;
@@ -214,11 +214,14 @@ pub async fn show_part(
 #[derive(Deserialize, ToSchema)]
 pub struct RenamePartRequest {
     /// The part's new name; not blank, and not the name of another part of
-    /// the project, ignoring case.
+    /// the project, ignoring case. Missing keeps the name.
     pub name: Option<String>,
+    /// The part's intro text, trimmed; blank clears it. Missing or null keeps
+    /// it.
+    pub description: Option<String>,
 }
 
-/// Renames a part. Its ID stays.
+/// Renames a part, sets its description, or both. Its ID stays.
 #[utoipa::path(
     patch,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
@@ -229,8 +232,8 @@ pub struct RenamePartRequest {
     ),
     request_body = RenamePartRequest,
     responses(
-        (status = 200, description = "The renamed part", body = PartResponse),
-        (status = 400, description = "The name is missing or blank", body = ErrorBody),
+        (status = 200, description = "The changed part", body = PartResponse),
+        (status = 400, description = "Neither a name nor a description, or a blank name", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such part in this project and workspace, or it was deleted", body = ErrorBody),
         (status = 409, description = "The project has a part of this name, ignoring case (`name_taken`)", body = ErrorBody),
@@ -247,12 +250,15 @@ pub async fn rename_part(
     let new = parse_body::<RenamePartRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     lock_part(&mut tx, &project_id, &part_id).await?;
-    let name = non_blank(new?.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let new = new?;
+    let (name, description) = name_and_description(new.name, new.description)?;
     let renamed = sqlx::query_as::<_, PartBody>(&format!(
-        "UPDATE parts SET name = $2 WHERE id = $1::uuid RETURNING {PART_COLUMNS}"
+        "UPDATE parts SET name = COALESCE($2, name), description = COALESCE($3, description) \
+         WHERE id = $1::uuid RETURNING {PART_COLUMNS}"
     ))
     .bind(&part_id)
     .bind(&name)
+    .bind(&description)
     .fetch_one(&mut *tx)
     .await;
     let part = match renamed {

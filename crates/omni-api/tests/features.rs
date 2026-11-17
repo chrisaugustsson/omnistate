@@ -22,6 +22,10 @@
 //!   are 404 `not_found`.
 //! - Any member creates, renames and deletes any feature, with a session or
 //!   an API key (D14).
+//! - `PATCH /features/{feature_id}` takes `{"name"?, "description"?}`, at
+//!   least one of them (decision U8): the description is trimmed and a blank
+//!   one clears it; a body with neither is 400 `invalid_request` and changes
+//!   nothing.
 //! - US-309: `POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/
 //!   {track_id}/features` with `{"feature_id"}` links a track to a feature of
 //!   its own part; any other feature (of another part or project, or deleted)
@@ -507,6 +511,125 @@ fn a_member_with_a_session_renames_and_deletes_a_feature_that_another_member_cre
         deleted.text()
     );
     assert_eq!(listed(f, client, &project, &wision), vec![]);
+}
+
+// ---------------------------------------------------------------------------
+// Description (decision U8)
+// ---------------------------------------------------------------------------
+
+/// The `(name, description)` of a feature as `GET /features/{feature_id}` reads it.
+fn name_and_description(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    part: &str,
+    feature: &str,
+) -> (Value, Value) {
+    let read = must(
+        call(
+            client,
+            "GET",
+            &feature_path(f, project, part, feature),
+            &agent(f),
+            None,
+        ),
+        200,
+        "read the feature",
+    );
+    (
+        read["feature"]["name"].clone(),
+        read["feature"]["description"].clone(),
+    )
+}
+
+#[test]
+fn a_member_or_an_agent_sets_what_a_feature_does_and_a_blank_one_clears_it() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let feature = create_feature(f, client, &alice(f), &project, &wision, "Analyze");
+
+    for (auth, text) in [
+        (
+            bob(f),
+            "Shows a chart of each channel over a chosen period.",
+        ),
+        (agent(f), "Charts each channel over time."),
+    ] {
+        let changed = must(
+            call(
+                client,
+                "PATCH",
+                &feature_path(f, &project, &wision, &feature),
+                &auth,
+                Some(&json!({ "description": format!("\n {text} ") })),
+            ),
+            200,
+            "describe the feature",
+        );
+        assert_eq!(changed["feature"]["description"], text, "{changed}");
+        assert_eq!(changed["feature"]["name"], "Analyze", "the name stays");
+        assert_eq!(
+            name_and_description(f, client, &project, &wision, &feature),
+            (json!("Analyze"), json!(text))
+        );
+    }
+
+    let cleared = must(
+        call(
+            client,
+            "PATCH",
+            &feature_path(f, &project, &wision, &feature),
+            &alice(f),
+            Some(&json!({ "description": "" })),
+        ),
+        200,
+        "clear the description",
+    );
+    assert_eq!(cleared["feature"]["description"], "", "{cleared}");
+}
+
+#[test]
+fn a_feature_patch_with_neither_name_nor_description_or_a_blank_name_is_400_and_changes_nothing() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let feature = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    must(
+        call(
+            client,
+            "PATCH",
+            &feature_path(f, &project, &wision, &feature),
+            &agent(f),
+            Some(&json!({ "name": "Analyze channels", "description": "Charts" })),
+        ),
+        200,
+        "rename and describe the feature in one request",
+    );
+
+    for body in [
+        json!({}),
+        json!({ "description": null }),
+        json!({ "description": 7 }),
+        json!({ "name": "", "description": "Tables" }),
+    ] {
+        assert_error(
+            &call(
+                client,
+                "PATCH",
+                &feature_path(f, &project, &wision, &feature),
+                &agent(f),
+                Some(&body),
+            ),
+            400,
+            "invalid_request",
+        );
+        assert_eq!(
+            name_and_description(f, client, &project, &wision, &feature),
+            (json!("Analyze channels"), json!("Charts")),
+            "{body} changes nothing"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

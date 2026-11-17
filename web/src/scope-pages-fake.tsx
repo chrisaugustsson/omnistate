@@ -188,7 +188,7 @@ export function fakeScopeApi(initial: World) {
           world.parts = world.parts.filter((one) => one.id !== id);
           return new Response(null, { status: 204 });
         }
-        world.parts = world.parts.map((one) => (one.id === id ? { ...one, name: body.name } : one));
+        world.parts = world.parts.map((one) => (one.id === id ? { ...one, name: body.name ?? one.name, description: body.description?.trim() ?? one.description } : one));
         return json(200, { part: world.parts.find((one) => one.id === id) });
       }
       if ((at = path.match(new RegExp(`^${API}/parts/([^/]+)/features$`))) && method === "POST") {
@@ -202,7 +202,7 @@ export function fakeScopeApi(initial: World) {
           world.features = world.features.filter((one) => one.id !== id);
           return new Response(null, { status: 204 });
         }
-        world.features = world.features.map((one) => (one.id === id ? { ...one, name: body.name } : one));
+        world.features = world.features.map((one) => (one.id === id ? { ...one, name: body.name ?? one.name, description: body.description?.trim() ?? one.description } : one));
         return json(200, { feature: world.features.find((one) => one.id === id) });
       }
       if (method === "POST" && path === `${API}/tracks`) {
