@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { cn } from "@/lib/utils";
 
 const webDir = fileURLToPath(new URL("..", import.meta.url));
 const srcDir = join(webDir, "src");
@@ -101,5 +102,19 @@ describe("the v2 tokens", () => {
     ["--ring", "var(--brand)"],
   ])("shadcn's %s is %s", (name, value) => {
     expect(token(name)).toBe(value);
+  });
+});
+
+describe("merging class names", () => {
+  // A component's text size must survive the colour a caller adds, and a
+  // caller's radius or shadow must replace the component's, not sit beside it.
+  test.each([
+    [["text-meta text-ink-3"], "text-meta text-ink-3"],
+    [["text-em leading-[1.6] text-ink"], "text-em leading-[1.6] text-ink"],
+    [["text-meta", "text-body"], "text-body"],
+    [["rounded-control", "rounded-full"], "rounded-full"],
+    [["shadow-pop", "shadow-none"], "shadow-none"],
+  ])("cn(%j) is %s", (inputs, merged) => {
+    expect(cn(...inputs)).toBe(merged);
   });
 });

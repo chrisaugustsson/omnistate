@@ -1,4 +1,8 @@
 @import "tailwindcss";
+/* The build writes the client bundle to .output before it builds the server; without a .gitignore
+   (the Docker build has none) Tailwind would scan that bundle too, and the server would link a
+   stylesheet of another hash than the one the client build wrote. */
+@source not "../.output";
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
