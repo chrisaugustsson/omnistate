@@ -280,16 +280,6 @@ describe("the scope pages", () => {
     vi.unstubAllGlobals();
   });
 
-  test("a project opens at its App page", async () => {
-    fakeApi(seededHome().home);
-    const router = renderAt(`/w/${WORKSPACE_ID}`);
-    const project = await screen.findByRole("link", { name: "Storefront" });
-    expect(project.getAttribute("href")).toBe(PROJECT_PATH);
-    fireEvent.click(project);
-    await waitFor(() => expect(router.state.location.pathname).toBe(APP_PATH));
-    expect(await within(await page()).findByRole("heading", { level: 1, name: "Storefront" })).toBeTruthy();
-  });
-
   test("the App page's header has the project's name and no description, and says when nothing happened yet", async () => {
     fakeApi(seededHome().home);
     renderAt(APP_PATH);
@@ -336,7 +326,7 @@ describe("the scope pages", () => {
     expect(rowTitles(await section(main, /^ui\b/i))).toEqual(["Tokens", "account screens", "Cart screens"]);
   });
 
-  test("the App page and the sidebar's App tree leave out the docs of parts and features, and their chips do not count them", async () => {
+  test("the App page leaves out the docs of parts and features, and its chips do not count them", async () => {
     const { home } = seededHome();
     const onPart = { ...doc("architecture", "html", "Wision architecture"), part_id: PART_ID };
     const tables = { ...doc("db", "html", "Wision tables"), part_id: PART_ID };
@@ -351,9 +341,8 @@ describe("the scope pages", () => {
     const chips = within(main).getByRole("navigation", { name: /^pillars$/i });
     expect(within(chips).getByRole("link", { name: /^architecture/i }).textContent).toMatch(/0$/);
     expect(within(chips).getByRole("link", { name: /^db/i }).textContent).toMatch(/1$/);
-    await waitFor(() => expect(screen.getAllByText("Orders schema").length).toBeGreaterThan(1));
     for (const title of ["Wision architecture", "Wision tables", "How Analyze works"]) {
-      expect(screen.queryByText(title), `${title} is not on the page nor in the sidebar`).toBeNull();
+      expect(screen.queryByText(title), `${title} is not on the page`).toBeNull();
     }
   });
 
@@ -403,7 +392,7 @@ describe("the scope pages", () => {
     expect(rowLink(listed, "Which hero layout?").textContent).toMatch(/\b3 posts/);
     expect(within(rowLink(listed, "Which hero layout?")).getByText(/^3 h ago$/).getAttribute("title"), "the absolute time in a tooltip").toContain("2026");
     expect(rowLink(listed, "Do we need search?").textContent).toMatch(/\b0 posts/);
-    expect(rowLink(listed, "Which hero layout?").getAttribute("href")).toBe(`${PROJECT_PATH}/threads/${threads.hero.id}`);
+    expect(rowLink(listed, "Which hero layout?").getAttribute("href")).toBe(`${TRACK_PATH}/threads/${threads.hero.id}`);
   });
 
   test("a track's page has the track's name and description, and only its own docs and threads", async () => {

@@ -10,6 +10,7 @@ import { TrackFeatures } from "@/components/project/track-features";
 import { TrackOwner } from "@/components/project/track-owner";
 import { TrackStatus } from "@/components/project/track-status";
 import { RenameTitle } from "@/components/project/rename-title";
+import { docLink, threadLink } from "@/components/shell/scope";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/format";
@@ -61,7 +62,7 @@ function DocRow({ doc, params }: { doc: HomeDoc; params: Params }) {
   const waiting = doc.waiting ?? 0;
   return (
     <li>
-      <Link to="/w/$workspaceId/projects/$projectId/docs/$docId" params={{ ...params, docId: doc.id }} className={rowClass}>
+      <Link {...docLink(params.workspaceId, params.projectId, doc)} className={rowClass}>
         <span className="min-w-0 flex-1 truncate font-medium">{doc.title}</span>
         <span className="hidden w-28 shrink-0 text-xs text-muted-foreground sm:inline">
           {KIND_LABELS[doc.kind] ?? "HTML doc"}
@@ -107,11 +108,7 @@ export function ThreadRow({
   const posts = thread.post_count ?? 0;
   return (
     <li>
-      <Link
-        to="/w/$workspaceId/projects/$projectId/threads/$threadId"
-        params={{ ...params, threadId: thread.id }}
-        className={rowClass}
-      >
+      <Link {...threadLink(params.workspaceId, params.projectId, thread)} className={rowClass}>
         <span className="min-w-0 flex-1 truncate font-medium">{thread.question}</span>
         {scopeName && (
           <span className="hidden max-w-40 shrink-0 truncate text-xs text-muted-foreground sm:inline">{scopeName}</span>
@@ -222,7 +219,7 @@ export function ScopePage({ workspaceId, projectId, trackId }: Params & { trackI
           <p className="text-[15px] text-muted-foreground">
             The project has no such track, or it was deleted.{" "}
             <Link
-              to="/w/$workspaceId/projects/$projectId/app"
+              to="/w/$workspaceId/projects/$projectId"
               params={params}
               className="font-medium text-foreground underline underline-offset-4"
             >

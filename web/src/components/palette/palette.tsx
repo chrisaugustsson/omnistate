@@ -20,7 +20,7 @@ const ICONS: Record<PlaceKind, LucideIcon> = { app: LayoutGrid, track: Layers, d
 function linkOf(place: Place, params: Params) {
   switch (place.kind) {
     case "app":
-      return { to: "/w/$workspaceId/projects/$projectId/app", params } as const;
+      return { to: "/w/$workspaceId/projects/$projectId", params } as const;
     case "track":
       return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId", params: { ...params, trackId: place.id } } as const;
     case "doc":

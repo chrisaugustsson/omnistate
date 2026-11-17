@@ -13,7 +13,8 @@
 //
 // The login page is /login: a form with "Email" and "Password" fields and a
 // "Log in" button, built from shadcn/ui components. A workspace's pages are
-// under /w/<workspace id>/ and have a "Log out" button.
+// under /w/<workspace id>/; Log out is in the account menu at the right of the
+// top bar.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -141,7 +142,8 @@ describe("login, logout and the workspace in the URL", () => {
     const login = api.calls.filter((c) => c.method === "POST" && c.path === "/api/v1/auth/login");
     expect(login).toHaveLength(1);
     expect(login[0].body).toEqual({ email: USER.email, password: PASSWORD });
-    expect(await screen.findByRole("button", { name: /log ?out|sign ?out/i })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /account/i }));
+    expect(screen.getByRole("menuitem", { name: /log ?out|sign ?out/i })).toBeTruthy();
   });
 
   test("a wrong password shows the refusal and stays on the login page", async () => {
@@ -167,7 +169,8 @@ describe("login, logout and the workspace in the URL", () => {
   test("logging out ends the session through the API and returns to the login page", async () => {
     const api = fakeApi({ loggedIn: true });
     const router = renderAt(`/w/${WORKSPACE_ID}`);
-    fireEvent.click(await screen.findByRole("button", { name: /log ?out|sign ?out/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /account/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /log ?out|sign ?out/i }));
 
     await expectPath(router, atLogin, "the login page");
     expect(
@@ -208,6 +211,6 @@ describe("an old /features URL after the rename to tracks", () => {
 
     expect(await screen.findByText("Not Found")).toBeTruthy();
     expect(screen.queryByText("Something went wrong!")).toBeNull();
-    expect(screen.queryByRole("button", { name: /log ?out|sign ?out/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /account/i })).toBeNull();
   });
 });

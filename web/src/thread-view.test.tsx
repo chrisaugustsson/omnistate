@@ -272,11 +272,6 @@ function rowQuestions(main: HTMLElement) {
     .map((item) => (item.querySelector("a span")?.textContent ?? "").trim());
 }
 
-/** The Threads page's track groups, in order. */
-function trackGroups(main: HTMLElement) {
-  return within(main).queryAllByRole("region");
-}
-
 describe("threads in the web app", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -449,7 +444,7 @@ describe("threads in the web app", () => {
         `${PROJECT_PATH}/tracks/${CHECKOUT_ID}`,
       );
       expect(within(trail).getByRole("link", { name: "Threads" }).getAttribute("href")).toBe(
-        `${THREADS_PATH}?scope=${CHECKOUT_ID}`,
+        `${PROJECT_PATH}/tracks/${CHECKOUT_ID}/threads`,
       );
     });
 
@@ -472,7 +467,9 @@ describe("threads in the web app", () => {
     });
   });
 
-  describe("the Threads page", () => {
+  describe("a track's Threads tab", () => {
+    const TRACK_THREADS_PATH = `${PROJECT_PATH}/tracks/${CHECKOUT_ID}/threads`;
+
     test("a sealed thread with a conclusion shows both Sealed and Concluded", async () => {
       const both = thread("Sealed and concluded?", {
         track: CHECKOUT_ID,
@@ -482,7 +479,7 @@ describe("threads in the web app", () => {
         conclusion: "We pick sealed and concluded.",
       });
       fakeApi([both]);
-      renderAt(THREADS_PATH);
+      renderAt(TRACK_THREADS_PATH);
       const main = await screen.findByRole("main");
 
       const row = await waitFor(() => threadRow(main, "Sealed and concluded?"));
@@ -490,72 +487,11 @@ describe("threads in the web app", () => {
       expect(within(row).getByText("Concluded")).toBeTruthy();
     });
 
-    test("threads are grouped by track in the project's track order, each heading opening its track, and nothing starts a thread", async () => {
-      const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
-      const footer = thread("What goes in the footer?", { track: CHECKOUT_ID, createdAt: "2026-10-21T12:00:00.000Z" });
-      const ranking = thread("How do we rank results?", {
-        track: SEARCH_ID,
-        createdAt: "2026-10-21T07:00:00.000Z",
-        posts: 2,
-        lastPostAt: "2026-10-21T14:00:00.000Z",
-      });
-      const login = thread("Do we keep passwords?", { track: ACCOUNTS_ID, posts: 3, lastPostAt: "2026-10-21T11:00:00.000Z" });
-      fakeApi([login, footer, ranking, wallets]);
-      renderAt(THREADS_PATH);
-      const main = await screen.findByRole("main");
-
-      await waitFor(() => expect(trackGroups(main)).toHaveLength(3));
-      const groups = trackGroups(main);
-      expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Checkout", "Search", "Accounts"]);
-      groups.forEach((group, index) => {
-        const id = [CHECKOUT_ID, SEARCH_ID, ACCOUNTS_ID][index];
-        const heading = within(group).getByRole("heading", { level: 2 });
-        expect(within(heading).getByRole("link").getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${id}`);
-      });
-      const [checkout, search, accounts] = groups;
-      expect(rowQuestions(checkout)).toEqual(["Which wallets?", "What goes in the footer?"]);
-      expect(rowQuestions(search)).toEqual(["How do we rank results?"]);
-      expect(rowQuestions(accounts)).toEqual(["Do we keep passwords?"]);
-      expect(threadRow(checkout, "Which wallets?").textContent).toContain("1 post");
-      expect(threadRow(checkout, "What goes in the footer?").textContent).toContain("0 posts");
-      expect(threadRow(accounts, "Do we keep passwords?").textContent).toContain("3 posts");
-      expect(threadRow(checkout, "Which wallets?").getAttribute("href")).toBe(`${THREADS_PATH}/${wallets.id}`);
-      expect(within(main).queryByText("App")).toBeNull();
-
-      expect(within(main).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Scope"]);
-      expect(within(main).queryAllByRole("textbox")).toEqual([]);
-      expect(main.querySelector("form")).toBeNull();
-    });
-
-    test("choosing a track in the scope filter narrows the list and keeps it in ?scope=, All scopes takes it out", async () => {
-      const fonts = thread("Which fonts?", { track: ACCOUNTS_ID, posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
-      const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
-      const ranking = thread("How do we rank results?", { track: SEARCH_ID, posts: 1, lastPostAt: "2026-10-21T10:00:00.000Z" });
-      fakeApi([fonts, wallets, ranking]);
-      const router = renderAt(THREADS_PATH);
-      const main = await screen.findByRole("main");
-      await waitFor(() => expect(rowQuestions(main)).toHaveLength(3));
-
-      fireEvent.click(within(main).getByRole("button", { name: "Scope" }));
-      fireEvent.change(within(main).getByRole("combobox", { name: "Search scopes" }), { target: { value: "check" } });
-      expect(within(main).getAllByRole("option").map((option) => option.textContent)).toEqual(["Checkout"]);
-      fireEvent.click(within(main).getByRole("option", { name: "Checkout" }));
-
-      await waitFor(() => expect(router.state.location.search).toEqual({ scope: CHECKOUT_ID }));
-      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?"]));
-
-      fireEvent.click(within(main).getByRole("button", { name: "Scope" }));
-      fireEvent.click(within(main).getByRole("option", { name: "All scopes" }));
-      await waitFor(() => expect(router.state.location.search).toEqual({}));
-      expect(router.state.location.href).not.toContain("scope=");
-      await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?", "How do we rank results?", "Which fonts?"]));
-    });
-
     test("a new post moves its thread to the top of its track and counts it", async () => {
-      const fonts = thread("Which fonts?", { posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
+      const fonts = thread("Which fonts?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T11:00:00.000Z" });
       const wallets = thread("Which wallets?", { track: CHECKOUT_ID, posts: 1, lastPostAt: "2026-10-21T13:00:00.000Z" });
       const api = fakeApi([fonts, wallets]);
-      renderAt(THREADS_PATH);
+      renderAt(TRACK_THREADS_PATH);
       const main = await screen.findByRole("main");
       await waitFor(() => expect(rowQuestions(main)).toEqual(["Which wallets?", "Which fonts?"]));
       const socket = await openSocket();

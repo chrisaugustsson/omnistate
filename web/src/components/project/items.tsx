@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronRight, FileText, Layers, PenTool, type LucideIcon } from "lucide-react";
 import type { DocBody, HomeResponse } from "@/api/generated";
+import { docLink } from "@/components/shell/scope";
 import { cn } from "@/lib/utils";
 
 // The rows that the project's pages list: docs, threads and what waits for the
@@ -120,8 +121,7 @@ export function DocRow({
   return (
     <li>
       <Link
-        to="/w/$workspaceId/projects/$projectId/docs/$docId"
-        params={{ ...params, docId: doc.id }}
+        {...docLink(params.workspaceId, params.projectId, doc)}
         aria-label={doc.title}
         className={rowClass}
       >

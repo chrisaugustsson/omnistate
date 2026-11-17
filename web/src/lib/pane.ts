@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** The key of the app sidebar's pane. */
-export const SIDEBAR_PANE = "omni:pane:sidebar";
 /** The key of the review pane beside a doc or a design. */
 export const REVIEW_PANE = "omni:pane:review";
 

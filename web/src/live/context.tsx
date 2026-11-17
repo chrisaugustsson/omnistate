@@ -26,3 +26,18 @@ export function useProjectEvents(projectId: string, onEvent: (event: LiveEvent) 
     [client, projectId],
   );
 }
+
+/** Calls `onEvent` for every live event of each of the projects `projectIds` while the component is mounted. */
+export function useProjectsEvents(projectIds: readonly string[], onEvent: (event: LiveEvent) => void) {
+  const client = useContext(LiveContext);
+  const latest = useRef(onEvent);
+  useEffect(() => {
+    latest.current = onEvent;
+  });
+  const key = projectIds.join(",");
+  useEffect(() => {
+    if (!client || !key) return;
+    const stops = key.split(",").map((projectId) => client.subscribe(projectId, (event) => latest.current(event)));
+    return () => stops.forEach((stop) => stop());
+  }, [client, key]);
+}

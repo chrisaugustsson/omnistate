@@ -51,7 +51,7 @@ export function ViewerToolbar({
         to: "/w/$workspaceId/projects/$projectId/tracks/$trackId",
         params: { workspaceId, projectId, trackId },
       }
-    : { to: "/w/$workspaceId/projects/$projectId/app", params: { workspaceId, projectId } };
+    : { to: "/w/$workspaceId/projects/$projectId", params: { workspaceId, projectId } };
   const pillar = PILLARS.find((candidate) => candidate.pillar === doc?.pillar);
   const link =
     "block max-w-48 truncate rounded transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none";

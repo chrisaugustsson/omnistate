@@ -353,8 +353,8 @@ describe("the part page", () => {
     const docs = await region("Docs");
     await within(docs).findByRole("link", { name: "Architecture" });
     expect(within(docs).getAllByRole("link").map((row) => [shownText(row), row.getAttribute("href")])).toEqual([
-      ["ArchitecturearchitectureDoc", `${PROJECT_PATH}/docs/${ARCHITECTURE}`],
-      ["TablesdbDoc", `${PROJECT_PATH}/docs/${TABLES}`],
+      ["ArchitecturearchitectureDoc", `${PROJECT_PATH}/parts/${IOT}/docs/${ARCHITECTURE}`],
+      ["TablesdbDoc", `${PROJECT_PATH}/parts/${IOT}/docs/${TABLES}`],
     ]);
   });
 

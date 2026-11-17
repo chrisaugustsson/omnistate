@@ -69,9 +69,8 @@ export function NewTrack({
         <span className="text-sm text-muted-foreground">
           A track goes on a part.{" "}
           <Link
-            to="/w/$workspaceId/projects/$projectId/app"
+            to="/w/$workspaceId/projects/$projectId/parts"
             params={{ workspaceId, projectId }}
-            hash="parts"
             className="font-medium text-foreground underline underline-offset-4"
           >
             Create a part on the project page

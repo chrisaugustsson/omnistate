@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // US-125: the Tracks page, .../projects/<project>/tracks, and the palette
-// that the sidebar's Search item or ⌘K (Ctrl+K off macOS) opens. Both read the
+// that the top bar's Search button or ⌘K (Ctrl+K off macOS) opens. Both read the
 // project home, GET .../projects/<project>/home. The app is rendered into the
 // document, as in the browser: the palette's portal on the body then sees the
 // same events as there.
@@ -278,7 +278,7 @@ describe("the Tracks page", () => {
     const create = (await within(main()).findByRole("button", { name: "New track" })) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
     const hint = within(main()).getByRole("link", { name: "Create a part on the project page" });
-    expect(hint.getAttribute("href")).toBe(`${PROJECT_PATH}/app#parts`);
+    expect(hint.getAttribute("href")).toBe(`${PROJECT_PATH}/parts`);
   });
 
   test("the filter narrows the list as you type to the names and full descriptions holding the trimmed query, in the same order, and says N of M", async () => {
@@ -345,13 +345,13 @@ describe("the palette", () => {
     threads: [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")],
   });
 
-  /** Renders the Tracks page on `platform`, and waits until the sidebar has the project home. */
+  /** Renders the Tracks page on `platform`, and waits until the top bar has the project home. */
   async function renderOn(platform: string, projectHome: Home) {
     Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
     fakeApi(projectHome);
     const router = renderAt(`${PROJECT_PATH}/tracks`);
-    const nav = await screen.findByRole("navigation", { name: "Project" });
-    await within(nav).findByRole("link", { name: /^Tracks\d/ });
+    const pills = await screen.findByRole("navigation", { name: "Storefront" });
+    await within(pills).findByRole("link", { name: /^Tracks\d/ });
     return router;
   }
 
@@ -382,12 +382,12 @@ describe("the palette", () => {
     expect(palette()).toBeTruthy();
   });
 
-  test("the Search item opens it on the places visited last, a doc with its scope and pillar, a thread with its scope", async () => {
+  test("the Search button opens it on the places visited last, a doc with its scope and pillar, a thread with its scope", async () => {
     const visits = [{ scope: CHECKOUT, doc: CHECKOUT_DOC }, { scope: CHECKOUT, thread: CHECKOUT_THREAD }, { scope: "app" }];
     localStorage.setItem(VISITS_KEY, JSON.stringify(visits.map((visit, n) => ({ ...visit, at: Date.parse(AT) - n * 60_000 }))));
     await renderOn("MacIntel", home({ tracks: [track(CHECKOUT, "Checkout")], docs: [doc(CHECKOUT_DOC, CHECKOUT, "Pay in one step")], threads: [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")] }));
 
-    fireEvent.click(within(screen.getByRole("navigation", { name: "Project" })).getByRole("button", { name: /^Search/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Search/ }));
 
     expect(options().map(shownText)).toEqual(["Pay in one stepCheckout · Spec", "Which wallets?Checkout", "App"]);
   });

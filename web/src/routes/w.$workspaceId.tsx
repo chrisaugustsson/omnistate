@@ -1,10 +1,6 @@
-import { useCallback, useState } from "react";
-import { Outlet, createFileRoute, notFound, redirect, useMatches } from "@tanstack/react-router";
-import { Menu } from "lucide-react";
+import { Outlet, createFileRoute, notFound, redirect } from "@tanstack/react-router";
 import { loadSession } from "@/api/auth";
-import { AppSidebar } from "@/components/app-sidebar";
-import { useShortcut } from "@/components/palette/palette";
-import { SIDEBAR_PANE, usePane } from "@/lib/pane";
+import { TopBar } from "@/components/shell/top-bar";
 import { LiveProvider } from "@/live/context";
 
 // Every page of a workspace is under /w/<workspace id>/. The layout checks the
@@ -22,59 +18,18 @@ export const Route = createFileRoute("/w/$workspaceId")({
   notFoundComponent: WorkspaceNotFound,
 });
 
-// The shell: the sidebar on the stone canvas, and the page on a white panel
-// inset next to it. The panel is the page's scroll container, so the viewers
-// can fill its height. From the md width up the reader can fold the sidebar
-// to a rail, with its button or ⌘B, to give the page the width.
+// The shell (navigation D): the top bar, and under it the page on one white
+// surface. The page area is the page's scroll container, so the viewers and
+// the Behaviour screen can fill its height. The routes say which scope the
+// bar shows and which pill is lit (components/shell/scope.ts).
 function WorkspaceLayout() {
   const { user, workspace, workspaces } = Route.useRouteContext();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [sidebar, setSidebar] = usePane(SIDEBAR_PANE);
-  useShortcut("b", useCallback(() => setSidebar(!sidebar), [sidebar, setSidebar]));
-  // The Behaviour screen takes the whole window: no sidebar, no panel.
-  const wholeWindow = useMatches({
-    select: (matches) => matches.some((match) => match.routeId === "/w/$workspaceId/projects/$projectId_/tracks/$trackId/behaviour"),
-  });
-
-  if (wholeWindow)
-    return (
-      <LiveProvider workspaceId={workspace.id}>
-        <div className="h-dvh bg-background">
-          <Outlet />
-        </div>
-      </LiveProvider>
-    );
-
   return (
     <LiveProvider workspaceId={workspace.id}>
-      <div className="flex h-dvh bg-canvas">
-        <AppSidebar
-          workspace={workspace}
-          workspaces={workspaces}
-          user={user}
-          open={menuOpen}
-          onClose={() => setMenuOpen(false)}
-          shown={sidebar}
-          onShown={setSidebar}
-        />
-        <div className="flex min-w-0 flex-1 flex-col md:py-2 md:pr-2">
-          <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 md:hidden">
-            <button
-              type="button"
-              aria-label="Open the menu"
-              className="flex size-8 items-center justify-center rounded-md hover:bg-accent"
-              onClick={() => setMenuOpen(true)}
-            >
-              <Menu className="size-4" />
-            </button>
-            <span className="text-sm font-semibold">{workspace.name}</span>
-          </div>
-          <div
-            data-slot="page"
-            className="relative min-h-0 flex-1 overflow-auto bg-background md:rounded-xl md:shadow-panel"
-          >
-            <Outlet />
-          </div>
+      <div className="flex h-dvh flex-col bg-sheet">
+        <TopBar workspace={workspace} workspaces={workspaces} user={user} />
+        <div data-slot="page" className="relative min-h-0 flex-1 overflow-y-auto">
+          <Outlet />
         </div>
       </div>
     </LiveProvider>
@@ -84,10 +39,8 @@ function WorkspaceLayout() {
 function WorkspaceNotFound() {
   return (
     <main className="mx-auto max-w-md p-8">
-      <h1 className="font-display text-3xl">Workspace not found</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        There is no such workspace, or your account is not a member of it.
-      </p>
+      <h1 className="text-title font-semibold">Workspace not found</h1>
+      <p className="mt-2 text-ink-2">There is no such workspace, or your account is not a member of it.</p>
     </main>
   );
 }

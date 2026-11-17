@@ -1,8 +1,9 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { Outlet, createFileRoute } from "@tanstack/react-router";
 
-// A project opens at its App scope page (V26).
+// A project's pages. The bar shows the project (its mark, the workspace above
+// it) with its pills: Overview, Parts, Docs, Tracks, Decisions. A part's pages
+// and the project's objects (features, tracks) under it set their own scope.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId")({
-  beforeLoad: ({ params }) => {
-    throw redirect({ to: "/w/$workspaceId/projects/$projectId/app", params, replace: true });
-  },
+  staticData: { scope: "project" },
+  component: Outlet,
 });
