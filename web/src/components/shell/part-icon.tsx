@@ -45,8 +45,10 @@ export function PartIcon({
       aria-hidden
       data-part-tone={tone}
       className={cn(
-        "inline-grid shrink-0 place-items-center leading-none font-semibold tracking-normal text-on-fill",
+        "inline-grid shrink-0 place-items-center font-semibold tracking-normal text-on-fill",
         SIZES[size],
+        // After the size: tailwind-merge drops a leading-* that a text-* size follows.
+        "leading-none",
         kind === "app" ? APP_RADIUS[size] : "rounded-full",
         partFill(tone),
         className,
@@ -87,9 +89,10 @@ export function ProjectMark({
       <span
         aria-hidden
         className={cn(
-          "inline-grid shrink-0 place-items-center bg-hover leading-none font-semibold text-ink-2 ring-1 ring-line ring-inset",
+          "inline-grid shrink-0 place-items-center bg-hover font-semibold text-ink-2 ring-1 ring-line ring-inset",
           measures.box,
           measures.text,
+          "leading-none",
           className,
         )}
       >

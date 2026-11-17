@@ -119,7 +119,7 @@ function PartResource({ part, parts, params }: { part: PartBody; parts: readonly
       {...partLink(params.workspaceId, params.projectId, part.id, "overview")}
       className="-ml-1 flex h-7 w-full items-center gap-2 rounded-control px-1 font-medium text-ink transition-colors duration-(--t-fast) hover:bg-hover"
     >
-      <PartIcon name={part.name} kind={part.kind} tone={partTone(parts, part.id)} size="sm" className="leading-none" />
+      <PartIcon name={part.name} kind={part.kind} tone={partTone(parts, part.id)} size="sm" />
       <span className="min-w-0 truncate">{part.name}</span>
       <span className="ml-auto text-meta font-normal text-ink-3">{part.kind}</span>
     </Link>
@@ -437,7 +437,7 @@ export function PartOverview({ workspaceId, projectId, partId }: Params & { part
         }
       >
         <PageHead
-          mark={part ? <PartIcon name={part.name} kind={part.kind} tone={tone} size="lg" className="leading-none" /> : undefined}
+          mark={part ? <PartIcon name={part.name} kind={part.kind} tone={tone} size="lg" /> : undefined}
           title={part?.name ?? " "}
           actions={part && <HeadActions secondary="feature" opened={opened} onOpen={setOpened} />}
         />

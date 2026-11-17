@@ -87,7 +87,7 @@ function PartRow({
     }
   }
 
-  const icon = <PartIcon name={part.name} kind={part.kind} tone={partTone(parts, part.id)} className="mt-0.5 leading-none" />;
+  const icon = <PartIcon name={part.name} kind={part.kind} tone={partTone(parts, part.id)} className="mt-0.5" />;
 
   if (mode === "rename") {
     const trimmed = text.trim();

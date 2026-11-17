@@ -76,9 +76,11 @@ export function Avatar({
       aria-hidden
       title={title}
       className={cn(
-        "inline-grid shrink-0 place-items-center rounded-full leading-none font-semibold",
+        "inline-grid shrink-0 place-items-center rounded-full font-semibold",
         TINTS[personTone(tintKey ?? name) - 1],
         measures.box,
+        // After the size: tailwind-merge drops a leading-* that a text-* size follows.
+        "leading-none",
         className,
       )}
     >

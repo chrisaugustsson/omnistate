@@ -55,7 +55,7 @@ function About({ subject, context, withPart }: { subject: Subject; context: Deci
       </Link>
     );
   }
-  const icon = <PartIcon name={subject.part.name} kind={subject.part.kind} tone={partTone(parts, subject.part.id)} size="sm" className="leading-none" />;
+  const icon = <PartIcon name={subject.part.name} kind={subject.part.kind} tone={partTone(parts, subject.part.id)} size="sm" />;
   if (subject.kind === "part") {
     return (
       <Link to="/w/$workspaceId/projects/$projectId/parts/$partId" params={{ ...params, partId: subject.id }} className={fromClass}>
@@ -220,7 +220,7 @@ function SubjectIcon({ subject, parts }: { subject: Subject; parts: readonly Par
   if (subject.kind === "project") {
     return <ProjectMark name={subject.name} parts={parts?.map((part) => ({ kind: part.kind, tone: partTone(parts, part.id) }))} className="size-(--icon-sm) rounded-[3px] grid-cols-[repeat(2,3px)] grid-rows-[repeat(2,3px)]" />;
   }
-  if (subject.kind === "part") return <PartIcon name={subject.name} kind={subject.part.kind} tone={partTone(parts, subject.id)} size="sm" className="leading-none" />;
+  if (subject.kind === "part") return <PartIcon name={subject.name} kind={subject.part.kind} tone={partTone(parts, subject.id)} size="sm" />;
   return <Box aria-hidden className="size-(--icon-sm) text-ink-2" strokeWidth={1.75} />;
 }
 

@@ -36,7 +36,7 @@ export function trackFacts(summary: TrackSummary, map: ProjectMap | null, all: r
 export function PartChip({ name, kind, tone, deleted, className }: { name: string; kind: string; tone: number; deleted?: boolean; className?: string }) {
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-1.5 font-medium whitespace-nowrap text-ink-2", className)}>
-      <PartIcon name={name} kind={kind} tone={tone} size="sm" className="leading-none" />
+      <PartIcon name={name} kind={kind} tone={tone} size="sm" />
       <span className="truncate">
         {name}
         {deleted && <span className="font-normal text-ink-3"> (deleted)</span>}

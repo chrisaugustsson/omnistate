@@ -57,7 +57,7 @@
   --color-part-7: var(--part-7);
   --color-part-8: var(--part-8);
 
-  /* People: a pale tint and its dark ink, chosen by name (lib/identity.ts); agents on --agent */
+  /* People: a pale tint and its dark ink, chosen by name (lib/identity.ts) */
   --color-person-1: var(--person-1);
   --color-person-1-ink: var(--person-1-ink);
   --color-person-2: var(--person-2);
@@ -70,8 +70,6 @@
   --color-person-5-ink: var(--person-5-ink);
   --color-person-6: var(--person-6);
   --color-person-6-ink: var(--person-6-ink);
-  --color-agent: var(--agent);
-  --color-agent-ink: var(--agent-ink);
 
   --color-mark: var(--mark);
   --color-mark-line: var(--mark-line);
@@ -212,8 +210,6 @@
   --person-5-ink: #a14a07; /* amber */
   --person-6: #e6e9ef;
   --person-6-ink: #3f4a5c; /* slate */
-  --agent: #eef1fd; /* agent mark ground: a pale cobalt */
-  --agent-ink: #2f5bea; /* the agent's spark */
 
   /* Highlight of commented text in a doc */
   --mark: #fdf3c4;
