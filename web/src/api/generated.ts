@@ -894,6 +894,7 @@ export const ManifestSchema = z.object({
 export type Manifest = z.infer<typeof ManifestSchema>;
 
 export const MemberBodySchema = z.object({
+  email: z.string(),
   membership_id: z.string(),
   role: z.string(),
   user_id: z.string(),
@@ -1070,6 +1071,7 @@ export type PostResponse = z.infer<typeof PostResponseSchema>;
 
 export const ProjectBodySchema = z.object({
   created_at: z.string(),
+  description: z.string().nullable().optional(),
   id: z.string(),
   name: z.string(),
 });
@@ -1117,6 +1119,7 @@ export const RenamePartRequestSchema = z.object({
 export type RenamePartRequest = z.infer<typeof RenamePartRequestSchema>;
 
 export const RenameProjectRequestSchema = z.object({
+  description: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
 });
 export type RenameProjectRequest = z.infer<typeof RenameProjectRequestSchema>;

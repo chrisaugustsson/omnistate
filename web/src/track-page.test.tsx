@@ -23,7 +23,7 @@ const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const AT = "2026-10-21T08:00:00Z";
 
-type Member = { membership_id: string; user_id: string; role: string };
+type Member = { membership_id: string; user_id: string; email: string; role: string };
 type Track = {
   id: string;
   project_id: string;
@@ -54,6 +54,7 @@ function track(id: string, name: string, fields: Partial<Track> = {}): Track {
 const member = (membershipId: string, userId: string, role = "member"): Member => ({
   membership_id: membershipId,
   user_id: userId,
+  email: `${userId}@example.com`,
   role,
 });
 

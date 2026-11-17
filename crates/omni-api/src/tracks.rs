@@ -910,8 +910,10 @@ pub async fn hand_over_track(
 pub struct MemberBody {
     /// The membership's UUID, what a hand-over takes.
     pub membership_id: String,
-    /// The member's user UUID; no name or email.
+    /// The member's user UUID.
     pub user_id: String,
+    /// The member's email, what the web app names a member by.
+    pub email: String,
     /// `member` or `admin`.
     pub role: String,
 }
@@ -921,7 +923,7 @@ pub struct MemberListResponse {
     pub members: Vec<MemberBody>,
 }
 
-/// The members of the workspace, by user ID, in the order they joined.
+/// The members of the workspace, with their emails, in the order they joined.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/members",
@@ -937,8 +939,9 @@ pub async fn list_members(
     request: WorkspaceRequest,
 ) -> Result<Json<MemberListResponse>, ApiError> {
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT id::text, user_id::text, role FROM memberships ORDER BY created_at, id",
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT m.id::text, m.user_id::text, u.email, m.role FROM memberships m \
+         JOIN users u ON u.id = m.user_id ORDER BY m.created_at, m.id",
     )
     .fetch_all(&mut *tx)
     .await
@@ -946,9 +949,10 @@ pub async fn list_members(
     tx.commit().await.map_err(ApiError::database)?;
     let members = rows
         .into_iter()
-        .map(|(membership_id, user_id, role)| MemberBody {
+        .map(|(membership_id, user_id, email, role)| MemberBody {
             membership_id,
             user_id,
+            email,
             role,
         })
         .collect();

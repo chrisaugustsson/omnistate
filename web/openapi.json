@@ -2684,6 +2684,10 @@
       },
       "MemberBody": {
         "properties": {
+          "email": {
+            "description": "The member's email, what the web app names a member by.",
+            "type": "string"
+          },
           "membership_id": {
             "description": "The membership's UUID, what a hand-over takes.",
             "type": "string"
@@ -2693,13 +2697,14 @@
             "type": "string"
           },
           "user_id": {
-            "description": "The member's user UUID; no name or email.",
+            "description": "The member's user UUID.",
             "type": "string"
           }
         },
         "required": [
           "membership_id",
           "user_id",
+          "email",
           "role"
         ],
         "type": "object"
@@ -3607,6 +3612,13 @@
           "created_at": {
             "type": "string"
           },
+          "description": {
+            "description": "The project's intro text; null when it has none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -3837,7 +3849,15 @@
       },
       "RenameProjectRequest": {
         "properties": {
+          "description": {
+            "description": "The project's intro text, trimmed; blank clears it. Missing or null\nkeeps it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
+            "description": "The project's new name; not blank. Missing keeps the name.",
             "type": [
               "string",
               "null"
@@ -5419,7 +5439,7 @@
             "description": "The caller cannot reach this workspace"
           }
         },
-        "summary": "The members of the workspace, by user ID, in the order they joined.",
+        "summary": "The members of the workspace, with their emails, in the order they joined.",
         "tags": [
           "crate::tracks"
         ],
@@ -5612,7 +5632,7 @@
                 }
               }
             },
-            "description": "The renamed project"
+            "description": "The changed project"
           },
           "400": {
             "content": {
@@ -5622,7 +5642,7 @@
                 }
               }
             },
-            "description": "The name is missing or blank"
+            "description": "Neither a name nor a description, or a blank name"
           },
           "401": {
             "content": {
@@ -5655,7 +5675,7 @@
             "description": "The workspace has another project of this name (`name_taken`)"
           }
         },
-        "summary": "Renames a project. Its ID, tracks, docs and threads stay.",
+        "summary": "Renames a project, sets its description, or both. Its ID, tracks, docs and\nthreads stay. Any member or agent may.",
         "tags": [
           "crate::projects"
         ],

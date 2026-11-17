@@ -1,5 +1,6 @@
 //! US-11: `PATCH /api/v1/w/{workspace_id}/projects/{project_id}` renames a
-//! project for sessions and API keys. Run with `--features stack-tests` in the
+//! project for sessions and API keys, and sets its description (decision U8):
+//! `{"name"?, "description"?}`, at least one of them. Run with `--features stack-tests` in the
 //! Compose test container, which reaches Postgres at `postgres:5432` and RustFS
 //! at `rustfs:9000`.
 //!
@@ -377,6 +378,7 @@ fn renaming_a_project_trims_the_name_and_keeps_its_id_and_contents() {
             json!({ "project": {
                 "id": id,
                 "name": new_name,
+                "description": null,
                 "created_at": project["created_at"],
             } })
         );
@@ -446,6 +448,128 @@ fn an_unknown_project_gets_404_before_the_blank_name_is_checked() {
         404,
         "not_found",
     );
+}
+
+fn description_in_list(f: &Fixture, client: &Client, id: &str) -> Value {
+    listed(f, client)
+        .iter()
+        .find(|p| p["id"] == id)
+        .map(|p| p["description"].clone())
+        .expect("the project is listed")
+}
+
+#[test]
+fn a_new_project_has_no_description() {
+    let (f, client) = ready();
+    let project = new_project(f, client, &unique("Shop"));
+    assert_eq!(project["description"], Value::Null);
+    let id = project["id"].as_str().unwrap();
+    assert_eq!(description_in_list(f, client, id), Value::Null);
+}
+
+#[test]
+fn a_member_or_an_agent_sets_the_description_and_the_list_shows_it() {
+    let (f, client) = ready();
+    let name = unique("Shop");
+    let id = new_project(f, client, &name)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for (auth, text) in [
+        (human(f), "Where the shop's tracks live."),
+        (agent(f), "The shop, its app and its services."),
+    ] {
+        let body = json!({ "description": format!("  {text}\n") });
+        let changed = must(rename(f, client, &auth, &id, &body), 200, "describe");
+        assert_eq!(changed["project"]["description"], text);
+        assert_eq!(changed["project"]["name"], name.as_str(), "the name stays");
+        assert_eq!(description_in_list(f, client, &id), json!(text));
+    }
+
+    // A blank description clears it.
+    let cleared = must(
+        rename(f, client, &human(f), &id, &json!({ "description": " " })),
+        200,
+        "clear",
+    );
+    assert_eq!(cleared["project"]["description"], Value::Null);
+    assert_eq!(description_in_list(f, client, &id), Value::Null);
+}
+
+#[test]
+fn a_name_only_patch_renames_and_keeps_the_description() {
+    let (f, client) = ready();
+    let id = new_project(f, client, &unique("Shop"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    must(
+        rename(
+            f,
+            client,
+            &human(f),
+            &id,
+            &json!({ "description": "Pay and ship" }),
+        ),
+        200,
+        "describe",
+    );
+    let new_name = unique("Shop v2");
+    let renamed = must(
+        rename(f, client, &agent(f), &id, &json!({ "name": new_name })),
+        200,
+        "rename",
+    );
+    assert_eq!(renamed["project"]["name"], new_name.as_str());
+    assert_eq!(renamed["project"]["description"], "Pay and ship");
+    assert_eq!(name_in_list(f, client, &id), Some(new_name));
+    assert_eq!(description_in_list(f, client, &id), json!("Pay and ship"));
+
+    // Name and description in one request change both.
+    let both_name = unique("Shop v3");
+    let both = must(
+        rename(
+            f,
+            client,
+            &human(f),
+            &id,
+            &json!({ "name": both_name, "description": "Only pay" }),
+        ),
+        200,
+        "rename and describe",
+    );
+    assert_eq!(both["project"]["name"], both_name.as_str());
+    assert_eq!(both["project"]["description"], "Only pay");
+}
+
+#[test]
+fn a_refused_description_change_changes_nothing() {
+    let (f, client) = ready();
+    let name = unique("Shop");
+    let id = new_project(f, client, &name)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    must(
+        rename(f, client, &human(f), &id, &json!({ "description": "Pay" })),
+        200,
+        "describe",
+    );
+
+    for body in [
+        json!({ "description": 7 }),
+        json!({ "name": "  ", "description": "Ship" }),
+        json!({ "description": null }),
+    ] {
+        assert_error(
+            &rename(f, client, &human(f), &id, &body),
+            400,
+            "invalid_request",
+        );
+        assert_eq!(name_in_list(f, client, &id), Some(name.clone()));
+        assert_eq!(description_in_list(f, client, &id), json!("Pay"));
+    }
 }
 
 /// The `(seq, data)` of the `project.renamed` events of a project, oldest first,

@@ -1547,6 +1547,44 @@ fn handing_a_track_to_someone_who_is_not_a_member_of_the_workspace_is_422_not_a_
     assert!(events_of(&project, "track.owner_changed").is_empty());
 }
 
+#[test]
+fn the_member_list_gives_each_members_email_in_the_order_they_joined() {
+    let (f, client) = ready();
+    let carol_user = block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar::<_, String>(
+            "select user_id::text from memberships where workspace_id = $1::uuid \
+             and role = 'admin'",
+        )
+        .bind(&f.workspace)
+        .fetch_one(&mut conn)
+        .await
+        .expect("read carol's user")
+    });
+    let expected = json!([
+        { "membership_id": membership_of(f, &f.alice_user), "user_id": f.alice_user,
+          "email": "alice@example.test", "role": "member" },
+        { "membership_id": membership_of(f, &f.bob_user), "user_id": f.bob_user,
+          "email": "bob@example.test", "role": "member" },
+        { "membership_id": membership_of(f, &carol_user), "user_id": carol_user,
+          "email": "carol@example.test", "role": "admin" },
+    ]);
+    for auth in [human(f), agent(f)] {
+        let listed = must(
+            call(
+                client,
+                "GET",
+                &format!("/api/v1/w/{}/members", f.workspace),
+                &auth,
+                None,
+            ),
+            200,
+            "list the members",
+        );
+        assert_eq!(listed["members"], expected);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Split a track off and move stories to it (US-320)
 // ---------------------------------------------------------------------------
