@@ -92,7 +92,7 @@ function PartRow({
   if (mode === "rename") {
     const trimmed = text.trim();
     return (
-      <li className={cn(columns, "border-t border-line px-3 py-2")}>
+      <li className={cn(columns, "border-t border-line py-2")}>
         {icon}
         <form
           className="col-span-4 flex flex-wrap items-center gap-2 max-md:col-span-2"
@@ -132,7 +132,7 @@ function PartRow({
 
   if (mode === "delete") {
     return (
-      <li className={cn(columns, "border-t border-line bg-danger-tint/40 px-3 py-2")}>
+      <li className={cn(columns, "border-t border-line bg-danger-tint/40 py-2")}>
         {icon}
         <div className="col-span-4 flex flex-wrap items-center gap-2 max-md:col-span-2">
           <span className="min-w-0 flex-1">
@@ -160,7 +160,7 @@ function PartRow({
   }
 
   return (
-    <li className={cn(columns, "group/part relative border-t border-line px-3 py-2.5 transition-colors duration-(--t-fast) hover:bg-frame")}>
+    <li className={cn(columns, "group/part relative border-t border-line py-2.5 transition-colors duration-(--t-fast) hover:bg-frame hover:shadow-[-8px_0_0_var(--frame),8px_0_0_var(--frame)]")}>
       {icon}
       <div className="min-w-0">
         <Link
@@ -251,8 +251,8 @@ export function PartsPage({ workspaceId, projectId }: Params) {
         </p>
       )}
       {parts && (
-        <div className="-mx-3 mt-6">
-          <div aria-hidden className={cn(columns, "h-8 items-center px-3 text-meta font-medium text-ink-3")}>
+        <div className="mt-6">
+          <div aria-hidden className={cn(columns, "h-8 items-center text-meta font-medium text-ink-3")}>
             <span />
             <span>Part</span>
             <span className="max-md:hidden">Features</span>
@@ -261,7 +261,7 @@ export function PartsPage({ workspaceId, projectId }: Params) {
           </div>
           <ul aria-label="Parts" className="border-b border-line">
             {parts.length === 0 ? (
-              <EmptyRow inset>No parts yet. A part is an app or a service of the project; create one to start tracks on it.</EmptyRow>
+              <EmptyRow>No parts yet. A part is an app or a service of the project; create one to start tracks on it.</EmptyRow>
             ) : (
               parts.map((part) => (
                 <PartRow

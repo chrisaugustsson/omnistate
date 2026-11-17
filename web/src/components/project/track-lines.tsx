@@ -1,12 +1,15 @@
 import { Link } from "@tanstack/react-router";
+import { MessageSquare } from "lucide-react";
 import type { PartBody, TrackSummary } from "@/api/generated";
 import { Avatar } from "@/components/shell/avatar";
 import { PartIcon } from "@/components/shell/part-icon";
 import { StateIcon, stateLabel } from "@/components/shell/state-icon";
 import { partTone } from "@/lib/identity";
 import { cn } from "@/lib/utils";
+import { Flags } from "@/components/home/rows";
+import type { TrackFlags } from "@/components/home/use-home-data";
 import type { ProjectMap } from "./project-data";
-import { Badge, Progress, RowLead, rowClass, shortWhen } from "./rows";
+import { Progress, RowLead, rowClass, shortWhen } from "./rows";
 
 // A track as a row: in an Overview's In flight (two lines: the name over what
 // it changes and where it split) and in a Tracks list (one line). Both show
@@ -71,18 +74,14 @@ export function OwnerAvatar({ userId, names }: { userId?: string | null; names: 
   );
 }
 
-function Questions({ count }: { count: number | undefined }) {
-  if (!count) return null;
-  return <Badge tone="brand">{count === 1 ? "1 question" : `${count} questions`}</Badge>;
-}
-
 type RowProps = {
   summary: TrackSummary;
   all: readonly TrackSummary[];
   params: Params;
   map: ProjectMap | null;
   names: ReadonlyMap<string, string> | null;
-  questions: ReadonlyMap<string, number> | null | undefined;
+  /** Each track's questions and blocked mark (useRowFlags). */
+  questions: ReadonlyMap<string, TrackFlags> | null | undefined;
   /** Show the track's part (on the project's pages). */
   showPart: boolean;
 };
@@ -107,7 +106,7 @@ export function FlightRow({ summary, all, params, map, names, questions, showPar
           {facts && <span className="truncate text-ink-3">{facts}</span>}
         </span>
         <span className="flex min-h-5 shrink-0 items-center gap-3">
-          <Questions count={questions?.get(track.id)} />
+          <Flags flags={questions?.get(track.id)} />
           {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
           <Progress done={stories.done} total={stories.total} className="w-24" />
           <OwnerAvatar userId={track.owner_user_id} names={names} />
@@ -117,8 +116,8 @@ export function FlightRow({ summary, all, params, map, names, questions, showPar
   );
 }
 
-/** A track in a Tracks list: state, name, what it changes, then questions, part, progress, owner and when it last moved. */
-export function TrackLine({ summary, all, params, map, names, questions, showPart }: RowProps) {
+/** A track in a Tracks list: state, name, what it changes, then questions, open threads, part, progress, owner and when it last moved. */
+export function TrackLine({ summary, all, params, map, names, questions, showPart, openThreads = 0 }: RowProps & { openThreads?: number }) {
   const { track, last_activity } = summary;
   const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
   const facts = trackFacts(summary, map, all);
@@ -138,7 +137,14 @@ export function TrackLine({ summary, all, params, map, names, questions, showPar
           {facts && <span className="min-w-0 flex-1 truncate text-ink-3">{facts}</span>}
         </span>
         <span className="flex shrink-0 items-center gap-3">
-          <Questions count={questions?.get(track.id)} />
+          <Flags flags={questions?.get(track.id)} />
+          {openThreads > 0 && (
+            <span title={openThreads === 1 ? "1 open thread" : `${openThreads} open threads`} className="inline-flex shrink-0 items-center gap-1 text-meta text-ink-3 tabular-nums">
+              <MessageSquare aria-hidden className="size-(--icon-sm)" strokeWidth={2} />
+              {openThreads}
+              <span className="sr-only">{openThreads === 1 ? " open thread" : " open threads"}</span>
+            </span>
+          )}
           {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
           <Progress done={stories.done} total={stories.total} className="w-24" />
           <OwnerAvatar userId={track.owner_user_id} names={names} />

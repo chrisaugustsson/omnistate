@@ -106,11 +106,14 @@ export function DocPage({
   projectId,
   docId,
   search,
+  embedded = false,
 }: {
   workspaceId: string;
   projectId: string;
   docId: string;
   search: DocSearch;
+  /** Shown inside a track's tab: the review pane starts hidden. */
+  embedded?: boolean;
 }) {
   const go = useNavigate();
   const navigate = useCallback(
@@ -165,6 +168,7 @@ export function DocPage({
         comment={comment}
         onOpened={opened}
         onPlace={place}
+        embedded={embedded}
       />
     );
   }
@@ -193,6 +197,7 @@ export function DocPage({
       comment={comment}
       onOpened={opened}
       onPlace={place}
+      embedded={embedded}
     />
   );
 }
@@ -206,6 +211,7 @@ function HtmlDocViewer({
   comment,
   onOpened,
   onPlace,
+  embedded,
 }: {
   workspaceId: string;
   projectId: string;
@@ -215,6 +221,7 @@ function HtmlDocViewer({
   comment: string | undefined;
   onOpened: () => void;
   onPlace: (place: Place) => void;
+  embedded: boolean;
 }) {
   const head = useReloading(useCallback(() => loadHeadHtml(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
   const comments = useReloading(
@@ -228,7 +235,7 @@ function HtmlDocViewer({
     selectedRef.current = selected;
   });
   const [openComment, setOpenComment] = useState<string | null>(null);
-  const [review, setReview] = useReviewPane(selected, comments.value ?? null);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, embedded);
 
   // A link to another block of the doc selects that block and scrolls to it.
   useEffect(() => {
@@ -603,6 +610,7 @@ function DesignViewer({
   comment,
   onOpened,
   onPlace,
+  embedded,
 }: {
   workspaceId: string;
   projectId: string;
@@ -616,6 +624,7 @@ function DesignViewer({
   comment: string | undefined;
   onOpened: () => void;
   onPlace: (place: Place) => void;
+  embedded: boolean;
 }) {
   const outline = useReloading(
     useCallback(() => loadHeadOutline(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
@@ -659,7 +668,7 @@ function DesignViewer({
   // The board play mode was left on, which the address bar names once instead of the selection's board.
   const leftOn = useRef<string | null>(null);
   const [openComment, setOpenComment] = useState<string | null>(null);
-  const [review, setReview] = useReviewPane(selected, comments.value ?? null);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, embedded);
   // The modes the reader chose: the shared Mode select under '', each own-list collection under its name.
   const [chosenModes, setChosenModes] = useState<Record<string, string>>({});
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.

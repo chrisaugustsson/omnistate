@@ -4,6 +4,7 @@ import { Box, Layers, Plus } from "lucide-react";
 import type { HomeResponse, PartBody, TrackSummary } from "@/api/generated";
 import { describeProject } from "@/api/home";
 import { describePart } from "@/api/parts";
+import type { TrackFlags } from "@/components/home/use-home-data";
 import { PartIcon, ProjectMark } from "@/components/shell/part-icon";
 import { PageColumns, PageHead } from "@/components/shell/page";
 import { PanelSection, PropertiesPanel, PropertyRow } from "@/components/shell/properties-panel";
@@ -17,7 +18,7 @@ import { DocTiles, byRecent, partDocs, projectDocs } from "./docs-pane";
 import { CreateFeatureForm, CreatePartForm, StartTrackForm } from "./forms";
 import { Intro } from "./intro";
 import { ProjectMenu, ProjectTitle } from "./project-title";
-import { currentDecisions, useDecisionGroups, useMemberNames, useOpenQuestions, useProjectMap, type ProjectMap } from "./project-data";
+import { currentDecisions, useDecisionGroups, useMemberNames, useRowFlags, useProjectMap, type ProjectMap } from "./project-data";
 import { btn, btnGhostSm, btnPrimary, ColumnList, CountLink, Counts, EmptyRow, rowClass, RowLead, ScopePage, Section, Sep, shortDate } from "./rows";
 import { FlightRow } from "./track-lines";
 
@@ -81,7 +82,7 @@ function InFlight({
   params: Params;
   map: ProjectMap | null;
   names: ReadonlyMap<string, string> | null;
-  questions: ReadonlyMap<string, number> | null;
+  questions: ReadonlyMap<string, TrackFlags> | null;
   showPart: boolean;
   allLink: ReactNode;
   empty: ReactNode;
@@ -160,7 +161,7 @@ export function ProjectOverview({ workspaceId, projectId }: Params) {
   const { groups } = useDecisionGroups(workspaceId, projectId, project?.name, map);
   const names = useMemberNames(workspaceId);
   const tracks = home?.tracks ?? [];
-  const questions = useOpenQuestions(workspaceId, projectId, home?.tracks ?? null);
+  const questions = useRowFlags(workspaceId, home?.tracks ?? null);
   const [opened, setOpened] = useState<Opened>(null);
   const [renaming, setRenaming] = useState(false);
 
@@ -364,7 +365,7 @@ export function PartOverview({ workspaceId, projectId, partId }: Params & { part
   const names = useMemberNames(workspaceId);
   const all = home?.tracks ?? [];
   const tracks = all.filter(({ track }) => track.part_id === partId);
-  const questions = useOpenQuestions(workspaceId, projectId, home ? tracks : null);
+  const questions = useRowFlags(workspaceId, home ? tracks : null);
   const [opened, setOpened] = useState<Opened>(null);
 
   const part = map?.parts.find((candidate) => candidate.id === partId);

@@ -1,5 +1,9 @@
+import { useMemo } from "react";
 import { Link } from "@tanstack/react-router";
 import type { TrackSummary } from "@/api/generated";
+import { Flags } from "@/components/home/rows";
+import { useTrackFlags, type TrackFlags } from "@/components/home/use-home-data";
+import { Band, rowClass } from "@/components/project/rows";
 import { Avatar } from "@/components/shell/avatar";
 import { StateIcon, TRACK_STATES, stateLabel } from "@/components/shell/state-icon";
 import { timeAgo } from "@/lib/format";
@@ -7,11 +11,22 @@ import { firstLine } from "./feature-parts";
 import { nameOf, type People } from "./people";
 import { Progress } from "./ui";
 
-// The tracks of a feature as its Tracks tab lists them: grouped by state
-// (Planning, Building, Done, Dropped) under a band each, every row the track's
-// state, name and what it changes, its progress, owner and last change.
+// The tracks of a feature as its Tracks tab lists them, like a part's Tracks:
+// grouped by state (Planning, Building, Done, Dropped) under a band each, every
+// row the track's state, name and what it changes, its questions and blocked
+// mark, progress, owner and last change.
 
-function Row({ summary, params, people }: { summary: TrackSummary; params: { workspaceId: string; projectId: string }; people: People | null }) {
+function Row({
+  summary,
+  params,
+  people,
+  flags,
+}: {
+  summary: TrackSummary;
+  params: { workspaceId: string; projectId: string };
+  people: People | null;
+  flags: TrackFlags | undefined;
+}) {
   const { track } = summary;
   const owner = nameOf(people, track.owner_user_id);
   const verb = track.state === "done" ? "Changed it" : track.state === "dropped" ? "Was to change it" : "Changing it";
@@ -22,7 +37,7 @@ function Row({ summary, params, people }: { summary: TrackSummary; params: { wor
       <Link
         to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
         params={{ ...params, trackId: track.id }}
-        className="flex items-start gap-3 border-t border-line px-3 py-2.5 transition-colors duration-(--t-fast) hover:bg-frame"
+        className={rowClass({ two: true, link: true, inset: true })}
       >
         <span className="grid h-5 w-(--avatar) shrink-0 place-items-center">
           <StateIcon state={track.state} />
@@ -35,6 +50,7 @@ function Row({ summary, params, people }: { summary: TrackSummary; params: { wor
           </span>
         </span>
         <span className="flex h-5 shrink-0 items-center gap-3">
+          <Flags flags={flags} />
           {summary.stories && summary.stories.total > 0 && <Progress done={summary.stories.done} total={summary.stories.total} />}
           <Avatar name={owner} tintKey={track.owner_user_id ?? undefined} title={owner} />
           <span title={new Date(when).toLocaleString()} className="w-16 text-right text-meta whitespace-nowrap text-ink-3">
@@ -58,20 +74,20 @@ export function TracksByState({
   const groups = TRACK_STATES.map((state) => ({ state, tracks: tracks.filter((summary) => summary.track.state === state) })).filter(
     (group) => group.tracks.length > 0,
   );
+  const bodies = useMemo(() => tracks.map(({ track }) => track), [tracks]);
+  const flags = useTrackFlags(params.workspaceId, bodies);
   return (
-    <div className="overflow-hidden rounded-card border border-line">
-      {groups.map((group, at) => (
-        <section key={group.state} aria-label={stateLabel(group.state)} className={at > 0 ? "border-t border-line" : undefined}>
-          <h2 className="flex h-(--band-h) items-center gap-2 bg-band px-3 font-medium text-ink">
-            <span className="grid w-(--avatar) place-items-center">
-              <StateIcon state={group.state} />
-            </span>
-            {stateLabel(group.state)}
-            <span className="font-medium text-ink-3 tabular-nums">{group.tracks.length}</span>
+    <div className="-mx-3">
+      {groups.map((group) => (
+        <section key={group.state} aria-label={stateLabel(group.state)} className="mb-2">
+          <h2>
+            <Band icon={<StateIcon state={group.state} />} count={group.tracks.length}>
+              {stateLabel(group.state)}
+            </Band>
           </h2>
-          <ul>
+          <ul className="border-b border-line [&>li:first-child>a]:border-t-0">
             {group.tracks.map((summary) => (
-              <Row key={summary.track.id} summary={summary} params={params} people={people} />
+              <Row key={summary.track.id} summary={summary} params={params} people={people} flags={flags.get(summary.track.id)} />
             ))}
           </ul>
         </section>

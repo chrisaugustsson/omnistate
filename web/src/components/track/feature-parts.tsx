@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, Box, FileText, Palette, PenTool } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { linkTrackFeature } from "@/api/features";
 import type { HomeDoc, TrackSummary } from "@/api/generated";
 import { createTrack } from "@/api/parts";
+import { Flags } from "@/components/home/rows";
+import { useTrackFlags } from "@/components/home/use-home-data";
 import { Avatar } from "@/components/shell/avatar";
 import { PartIcon } from "@/components/shell/part-icon";
 import { PanelSection, PropertiesPanel, PropertyRow } from "@/components/shell/properties-panel";
@@ -113,9 +115,11 @@ export function StartTrack({ data }: { data: FeatureData }) {
   );
 }
 
-/** The quiet row under the lede for each track in flight that changes the feature: its name, what it changes, its progress and owner. */
+/** The quiet row under the lede for each track in flight that changes the feature: its name, what it changes, its questions, progress and owner. */
 export function BeingChanged({ data }: { data: FeatureData }) {
   const { changing, workspaceId, projectId, people } = data;
+  const bodies = useMemo(() => changing.map(({ track }) => track), [changing]);
+  const flags = useTrackFlags(workspaceId, bodies);
   if (changing.length === 0) return null;
   return (
     <div className="mt-5 space-y-2 min-[960px]:max-w-[calc(100%-var(--panel-w)-3rem)]">
@@ -135,6 +139,7 @@ export function BeingChanged({ data }: { data: FeatureData }) {
               Being changed by <b className="font-semibold">{track.name}</b>
               {what && `: ${what.replace(/\.$/, "")}`}. Not on main yet.
             </p>
+            <Flags flags={flags.get(track.id)} />
             {summary.stories && <Progress done={summary.stories.done} total={summary.stories.total} />}
             <Avatar name={owner} tintKey={track.owner_user_id ?? undefined} title={owner} />
             <ArrowRight aria-hidden strokeWidth={2.25} className="size-(--icon-sm) shrink-0 text-brand transition-transform group-hover:translate-x-0.5" />

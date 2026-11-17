@@ -66,9 +66,9 @@ export function EmptyLine({ children, className }: { children: ReactNode; classN
 /** The empty state of a tab: a short heading and one line on who fills it. */
 export function EmptyTab({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
-    <div className="rounded-card border border-line bg-frame px-6 py-10 text-center">
-      <p className="font-medium text-ink">{title}</p>
-      <p className="mx-auto mt-1 max-w-[440px] text-ink-2">{children}</p>
+    <div className="border-y border-line py-3">
+      <p className="font-medium text-ink-2">{title}</p>
+      <p className="mt-0.5 max-w-[560px] text-ink-3">{children}</p>
     </div>
   );
 }

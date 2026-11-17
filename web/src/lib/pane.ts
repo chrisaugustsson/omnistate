@@ -2,14 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 /** The key of the review pane beside a doc or a design. */
 export const REVIEW_PANE = "omni:pane:review";
+/** The key of the review pane of a doc shown inside a track's tab, beside the track's panel. */
+export const EMBEDDED_REVIEW_PANE = "omni:pane:review:embedded";
 
-/** Whether the pane under `key` is shown: shown until the reader hides it, and kept in localStorage. */
-export function usePane(key: string): [boolean, (shown: boolean) => void] {
+/**
+ * Whether the pane under `key` is shown: `shownByDefault` until the reader
+ * shows or hides it, and the reader's choice is kept in localStorage.
+ */
+export function usePane(key: string, shownByDefault = true): [boolean, (shown: boolean) => void] {
   const [shown, setShown] = useState(() => {
     try {
-      return localStorage.getItem(key) !== "closed";
+      const kept = localStorage.getItem(key);
+      return kept === null ? shownByDefault : kept !== "closed";
     } catch {
-      return true;
+      return shownByDefault;
     }
   });
   const set = useCallback(
@@ -29,14 +35,17 @@ export function usePane(key: string): [boolean, (shown: boolean) => void] {
 /**
  * The review pane beside a viewer. A reader who newly selects something that
  * has comments asked for its discussion, so a hidden pane is shown again; what
- * stays selected does not bring back a pane the reader then hides.
+ * stays selected does not bring back a pane the reader then hides. Inside a
+ * track's tab (`embedded`) the pane starts hidden, so the doc keeps its width
+ * beside the track's panel.
  */
 export function useReviewPane(
   selected: string | null,
   /** The doc's comments; `null` while they load. */
   comments: { node: string; orphaned?: boolean }[] | null,
+  embedded = false,
 ): [boolean, (shown: boolean) => void] {
-  const [shown, setShown] = usePane(REVIEW_PANE);
+  const [shown, setShown] = usePane(embedded ? EMBEDDED_REVIEW_PANE : REVIEW_PANE, !embedded);
   const answered = useRef<string | null>(null);
   useEffect(() => {
     if (selected === null) answered.current = null;

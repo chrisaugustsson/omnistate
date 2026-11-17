@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronsUpDown, Inbox, Search } from "lucide-react";
 import type { HomeResponse, PartBody, ProjectBody } from "@/api/generated";
 import { Palette, isMac, useSearchShortcut } from "@/components/palette/palette";
+import { partDocs } from "@/components/project/docs-pane";
 import { isProjectLevel } from "@/components/project/items";
 import { partTones, personName } from "@/lib/identity";
 import { useFeatures } from "@/lib/use-features";
@@ -121,7 +122,8 @@ function PartPills({
   const { features } = useFeatures(scope.workspaceId, projectId, part.id);
   const counts: Partial<Record<Tab, number | undefined>> = {
     features: features?.length,
-    docs: home?.docs.filter((doc) => doc.part_id === part.id && !doc.track_id && !doc.feature_id).length,
+    // As the part's Docs tab lists them: on the part and on its features.
+    docs: home && features ? partDocs(home.docs, part.id, new Set(features.map((feature) => feature.id))).length : undefined,
     tracks: tracksInFlight(home, part.id),
   };
   return (

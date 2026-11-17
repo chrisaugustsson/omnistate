@@ -1,10 +1,10 @@
 import { useCallback, useMemo } from "react";
-import { loadOpenQuestions } from "@/api/behaviour";
 import { loadFeatureDecisions, loadPartDecisions, loadProjectDecisions } from "@/api/decisions";
 import { loadFeatureTracks, loadFeatures } from "@/api/features";
 import type { DecisionBody, FeatureBody, PartBody, TrackSummary } from "@/api/generated";
 import { loadMembers } from "@/api/members";
 import { loadParts } from "@/api/parts";
+import { useTrackFlags, type TrackFlags } from "@/components/home/use-home-data";
 import { personName } from "@/lib/identity";
 import { useReloading } from "@/lib/reloading";
 import { useProjectEvents } from "@/live/context";
@@ -138,25 +138,12 @@ export function authorOf(author: Record<string, unknown>, names: ReadonlyMap<str
   return { name: name.charAt(0).toUpperCase() + name.slice(1), agent: true, key: name };
 }
 
-/** How many questions wait on a person in each of `tracks`' trees, by track ID; tracks not in flight are not asked. */
-export function useOpenQuestions(workspaceId: string, projectId: string, tracks: readonly TrackSummary[] | null) {
-  const ids = (tracks ?? [])
-    .filter(({ track }) => track.state === "planning" || track.state === "building")
-    .map(({ track }) => track.id)
-    .join(",");
-  const load = useCallback(async () => {
-    const list = ids ? ids.split(",") : [];
-    const counts = await Promise.all(
-      list.map((trackId) =>
-        loadOpenQuestions(workspaceId, projectId, trackId).then(
-          (questions) => questions.filter((question) => question.asked_by.kind !== "human").length,
-          () => 0,
-        ),
-      ),
-    );
-    return new Map(list.map((trackId, at) => [trackId, counts[at]]));
-  }, [workspaceId, projectId, ids]);
-  const { value, reload } = useReloading(load);
-  useProjectEvents(projectId, reload);
-  return value;
+/**
+ * The flags of each of `tracks`' rows, by track ID, as Home's rows show them:
+ * the questions that wait on a person in its tree and the first story that
+ * waits on another track's. Tracks not in flight have none.
+ */
+export function useRowFlags(workspaceId: string, tracks: readonly TrackSummary[] | null): ReadonlyMap<string, TrackFlags> {
+  const bodies = useMemo(() => (tracks ? tracks.map(({ track }) => track) : null), [tracks]);
+  return useTrackFlags(workspaceId, bodies);
 }

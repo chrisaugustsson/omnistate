@@ -15,8 +15,8 @@ import { linkClass } from "@/components/track/ui";
 // actions (the properties toggle, the "…" menu and its next state move), its
 // description, a quiet Next row while behaviour questions wait, and its tabs:
 // Spec, Behaviour, Design, How, Board, Threads, Decisions. The tab's content
-// sits beside the properties panel; Behaviour and Board take the full width
-// until the panel is asked for. A doc opened full view fills the view instead
+// sits beside the properties panel; Behaviour, Design (the canvas viewer) and
+// Board take the full width until the panel is asked for. A doc opened full view fills the view instead
 // (staticData.bleed). The layout loads the track's data once for every tab.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId")({
   staticData: { scope: "track", tab: "tracks" },
@@ -26,7 +26,7 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks
 const TRACK = "/w/$workspaceId/projects/$projectId/tracks/$trackId";
 
 /** The tabs that want the full width: the panel stays closed there until it is asked for. */
-const WIDE = new Set(["behaviour", "board"]);
+const WIDE = new Set(["behaviour", "design", "board"]);
 
 function TrackLayout() {
   const { workspaceId, projectId, trackId } = Route.useParams();

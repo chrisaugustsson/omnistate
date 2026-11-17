@@ -90,7 +90,7 @@ export function TrackDocTab({ tab, search }: { tab: DocTab; search: DocSearch })
       </div>
       <div className="relative mt-3 min-h-[560px] flex-1 overflow-hidden rounded-card border border-line">
         <div className="absolute inset-0 overflow-auto">
-          <DocPage key={doc.id} workspaceId={workspaceId} projectId={projectId} docId={doc.id} search={search} />
+          <DocPage key={doc.id} workspaceId={workspaceId} projectId={projectId} docId={doc.id} search={search} embedded />
         </div>
       </div>
     </div>

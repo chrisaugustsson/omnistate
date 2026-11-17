@@ -8,7 +8,7 @@ import { useProjects } from "@/lib/use-workspace";
 import { cn } from "@/lib/utils";
 import { StartTrackForm } from "./forms";
 import { PartNotFound } from "./overview";
-import { useMemberNames, useOpenQuestions, useProjectMap } from "./project-data";
+import { useMemberNames, useRowFlags, useProjectMap } from "./project-data";
 import { Band, btnPrimary, ScopePage } from "./rows";
 import { TrackLine } from "./track-lines";
 
@@ -70,7 +70,7 @@ export function TracksPage({ workspaceId, projectId, partId }: Params & { partId
 
   const all = home?.tracks ?? [];
   const scoped = partId ? all.filter(({ track }) => track.part_id === partId) : all;
-  const questions = useOpenQuestions(workspaceId, projectId, home ? scoped : null);
+  const questions = useRowFlags(workspaceId, home ? scoped : null);
   const thePart = partId ? map?.parts.find((candidate) => candidate.id === partId) : undefined;
   if (partId && map && !thePart) return <PartNotFound params={params} />;
 
@@ -178,6 +178,7 @@ export function TracksPage({ workspaceId, projectId, partId }: Params & { partId
                           names={names}
                           questions={questions}
                           showPart={!partId}
+                          openThreads={home?.threads.filter((thread) => thread.track_id === summary.track.id && !thread.conclusion).length}
                         />
                       ))}
                     </ul>

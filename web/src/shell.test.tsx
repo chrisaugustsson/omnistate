@@ -72,6 +72,7 @@ function monitoringHome() {
     docs: [
       { id: "0192d7a0-7777-7000-8000-000000000002", project_id: MONITORING, kind: "html", pillar: "architecture", title: "Architecture overview", created_at: AT },
       { id: TRACK_DOC, project_id: MONITORING, track_id: LONG_WINDOWS, kind: "html", pillar: "spec", title: "Long windows spec", created_at: AT },
+      { id: "0192d7a0-7777-7000-8000-000000000003", project_id: MONITORING, feature_id: ANALYZE, kind: "html", pillar: "spec", title: "How Analyze works", created_at: AT },
     ],
     threads: [],
     // One comment waits on Christopher's track, one on Sara's.
@@ -173,7 +174,7 @@ describe("the top bar", () => {
     expect(within(nav).getByRole("link", { name: /^Parts/ }).getAttribute("href")).toBe(`${P}/parts`);
   });
 
-  test("a part page shows the part under its project, its features counted and only its tracks in flight", async () => {
+  test("a part page shows the part under its project, its features counted, its docs as its Docs tab lists them (its features' too) and only its tracks in flight", async () => {
     renderAt(`${P}/parts/${WISION}/features`);
     const nav = await pills("Wision");
 
@@ -181,7 +182,7 @@ describe("the top bar", () => {
       expect(pillStates(nav)).toEqual([
         ["Overview", false],
         ["Features1", true],
-        ["Docs", false],
+        ["Docs1", false],
         ["Tracks1", false],
         ["Decisions", false],
       ]),
