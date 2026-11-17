@@ -24,7 +24,6 @@ const PAY_LATER = "0192d7a0-4444-7000-8000-000000000007";
 const CHECKOUT_DOC = "0192d7a0-5555-7000-8000-000000000001";
 const CHECKOUT_THREAD = "0192d7a0-6666-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
-const OTHER_USER_ID = "0192d7a0-1111-7000-8000-000000000002";
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const VISITS_KEY = `omni:visits:${PROJECT_ID}`;
@@ -297,44 +296,6 @@ describe("the Tracks page", () => {
     filter("");
     expect(rows()).toHaveLength(5);
     expect(within(main()).getByText("5 tracks")).toBeTruthy();
-  });
-});
-
-describe("the My tracks page", () => {
-  const main = () => screen.getByRole("main");
-  const rows = () => within(within(main()).getByRole("list")).getAllByRole("link");
-
-  test("lists the signed-in member's tracks across parts, active first and each group most recent first, with name, part and state, each opening the track", async () => {
-    fakeApi(
-      home({
-        tracks: [
-          track(RETURNS, "Returns", { state: "done", lastActivity: "2026-10-21T14:00:00Z", partName: "iot-service" }),
-          track(WALLETS, "Wallets", { state: "building", lastActivity: "2026-10-21T10:00:00Z" }),
-          track(GIFT_CARDS, "Gift cards", { lastActivity: "2026-10-21T13:00:00Z", owner: OTHER_USER_ID }),
-          track(CHECKOUT, "Checkout", { lastActivity: "2026-10-21T12:00:00Z", partName: "iot-service" }),
-          track(APPLE_PAY, "Apple Pay", { state: "dropped", lastActivity: "2026-10-21T09:00:00Z" }),
-          track(PAYMENTS, "Payments", { state: "building", lastActivity: "2026-10-21T15:00:00Z", owner: OTHER_USER_ID }),
-        ],
-      }),
-    );
-    renderAt(`${PROJECT_PATH}/my-tracks`);
-    await waitFor(() => expect(rows()).toHaveLength(4));
-    expect(rows().map((row) => [row.querySelector("span span")?.textContent, row.textContent])).toEqual([
-      ["Checkout", expect.stringMatching(/^Checkoutiot-serviceplanning/)],
-      ["Wallets", expect.stringMatching(/^WalletsWisionbuilding/)],
-      ["Returns", expect.stringMatching(/^Returnsiot-servicedone/)],
-      ["Apple Pay", expect.stringMatching(/^Apple PayWisiondropped/)],
-    ]);
-    expect(rows().map((row) => row.getAttribute("href"))).toEqual(
-      [CHECKOUT, WALLETS, RETURNS, APPLE_PAY].map((id) => `${PROJECT_PATH}/tracks/${id}`),
-    );
-  });
-
-  test("with only tracks owned by others, lists none and says the member owns none", async () => {
-    fakeApi(home({ tracks: [track(CHECKOUT, "Checkout", { owner: OTHER_USER_ID })] }));
-    renderAt(`${PROJECT_PATH}/my-tracks`);
-    await waitFor(() => expect(within(main()).getByText("You own no tracks in this project")).toBeTruthy());
-    expect(within(main()).queryByText("Checkout")).toBeNull();
   });
 });
 

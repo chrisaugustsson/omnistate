@@ -1,4 +1,3 @@
-import { Sparkle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { initial, personTone } from "@/lib/identity";
 
@@ -21,6 +20,18 @@ const SIZES = {
   md: { box: "size-(--mark-md) text-[11px]", spark: "size-3.5", agent: "rounded-control" },
   lg: { box: "size-7 text-[12px]", spark: "size-4", agent: "rounded-control" },
 } as const;
+
+/** The agent's spark: a four-pointed star, filled. */
+function Spark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden className={className}>
+      <path
+        d="M12 2.8c.6 5 2.6 7.6 8.2 9.2-5.6 1.6-7.6 4.2-8.2 9.2-.6-5-2.6-7.6-8.2-9.2 5.6-1.6 7.6-4.2 8.2-9.2Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
 
 /**
  * A person's or an agent's avatar: 20px in rows and panels, 16px inline (sm),
@@ -50,13 +61,13 @@ export function Avatar({
         aria-hidden
         title={title}
         className={cn(
-          "inline-grid shrink-0 place-items-center bg-agent text-agent-ink ring-1 ring-agent-ink/15 ring-inset",
+          "inline-grid shrink-0 place-items-center bg-ink text-on-fill",
           measures.box,
           measures.agent,
           className,
         )}
       >
-        <Sparkle className={cn(measures.spark, "fill-current")} strokeWidth={0} />
+        <Spark className={measures.spark} />
       </span>
     );
   }

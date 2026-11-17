@@ -1,22 +1,24 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ProjectInbox } from "@/components/home/project-inbox";
-import { useProjects } from "@/lib/use-workspace";
+import { Inbox } from "@/components/home/inbox";
 
-// Home's Inbox: the comments whose latest reply is an agent's. Until S4 builds
-// it across the workspace, each project's inbox as it was, one after another.
+// Home's Inbox: the comments waiting on you, as a list and the open one
+// (components/home/inbox.tsx). `?comment=` is the open comment.
 export const Route = createFileRoute("/w/$workspaceId/_home/inbox")({
   staticData: { tab: "inbox" },
-  component: Inbox,
+  validateSearch: (search: Record<string, unknown>): { comment?: string } =>
+    typeof search.comment === "string" && search.comment ? { comment: search.comment } : {},
+  component: Page,
 });
 
-function Inbox() {
+function Page() {
   const { workspaceId } = Route.useParams();
-  const { projects } = useProjects(workspaceId);
+  const { comment } = Route.useSearch();
+  const navigate = Route.useNavigate();
   return (
-    <>
-      {projects?.map((project) => (
-        <ProjectInbox key={project.id} workspaceId={workspaceId} projectId={project.id} />
-      ))}
-    </>
+    <Inbox
+      workspaceId={workspaceId}
+      selected={comment}
+      onSelect={(id) => void navigate({ search: { comment: id }, replace: true })}
+    />
   );
 }

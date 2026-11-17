@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronsUpDown, Inbox, Search } from "lucide-react";
 import type { HomeResponse, PartBody, ProjectBody } from "@/api/generated";
@@ -295,8 +295,13 @@ export function TopBar({
   const [searching, setSearching] = useState(false);
   const closeSearch = useCallback(() => setSearching(false), []);
   useSearchShortcut(useCallback(() => setSearching((open) => !open), []));
-  // The palette searches the open project; on Home, the workspace's first.
-  const searched = scope.projectId ?? projects?.[0]?.id;
+  // The palette searches the open project; on Home, every project of the workspace.
+  const searched = useMemo(() => {
+    if (!homes) return null;
+    if (!scope.projectId) return [...homes.values()];
+    const open = homes.get(scope.projectId);
+    return open ? [open] : null;
+  }, [homes, scope.projectId]);
   const home = scope.projectId ? homes?.get(scope.projectId) : undefined;
 
   return (
@@ -346,15 +351,7 @@ export function TopBar({
         </Link>
         <AccountMenu user={user} workspace={workspace} workspaces={workspaces} />
       </div>
-      {searched && (
-        <Palette
-          home={homes?.get(searched) ?? null}
-          workspaceId={workspace.id}
-          projectId={searched}
-          open={searching}
-          onClose={closeSearch}
-        />
-      )}
+      <Palette homes={searched} workspaceId={workspace.id} open={searching} onClose={closeSearch} />
     </header>
   );
 }

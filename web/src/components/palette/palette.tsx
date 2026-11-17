@@ -3,21 +3,22 @@ import { createPortal } from "react-dom";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { FileText, Layers, LayoutGrid, MessagesSquare, Search, type LucideIcon } from "lucide-react";
 import type { HomeResponse } from "@/api/generated";
-import { buildIndex, recentPlaces, search, type Place, type PlaceKind } from "@/components/palette/search";
+import { buildIndex, mergeIndexes, recentPlaces, search, type Place, type PlaceKind } from "@/components/palette/search";
 import { cn } from "@/lib/utils";
-import { useVisits } from "@/lib/visits";
+import { readVisits } from "@/lib/visits";
 
-// The ⌘K palette: finds a track, doc or thread of the project by name or
-// title, and with nothing typed lists the places visited last. It is a
-// combobox over the project home; the search itself is in ./search, and
-// no fuzzy matching is done here.
+// The ⌘K palette: finds a track, doc or thread by name or title, and with
+// nothing typed lists the places visited last. It is a combobox over the open
+// project's home, or on Home over every project's; the search itself is in
+// ./search, and no fuzzy matching is done here.
 
 type Params = { workspaceId: string; projectId: string };
 
 const ICONS: Record<PlaceKind, LucideIcon> = { app: LayoutGrid, track: Layers, doc: FileText, thread: MessagesSquare };
 
-/** The `to` and `params` that open a place. */
-function linkOf(place: Place, params: Params) {
+/** The `to` and `params` that open a place, in its project. */
+function linkOf(place: Place, workspaceId: string) {
+  const params: Params = { workspaceId, projectId: place.projectId };
   switch (place.kind) {
     case "app":
       return { to: "/w/$workspaceId/projects/$projectId", params } as const;
@@ -57,18 +58,18 @@ export function useSearchShortcut(toggle: () => void) {
 
 type Group = { label: string; places: Place[]; count?: string };
 
-function Row({ place, id, active, params, onOpen, onHover }: {
+function Row({ place, id, active, workspaceId, onOpen, onHover }: {
   place: Place;
   id: string;
   active: boolean;
-  params: Params;
+  workspaceId: string;
   onOpen: () => void;
   onHover: () => void;
 }) {
   const Icon = ICONS[place.kind];
   return (
     <Link
-      {...linkOf(place, params)}
+      {...linkOf(place, workspaceId)}
       id={id}
       role="option"
       aria-selected={active}
@@ -86,10 +87,17 @@ function Row({ place, id, active, params, onOpen, onHover }: {
   );
 }
 
-function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: Params; onClose: () => void }) {
+function PaletteDialog({ homes, workspaceId, onClose }: { homes: readonly HomeResponse[]; workspaceId: string; onClose: () => void }) {
   const navigate = useNavigate();
-  const visits = useVisits(params.projectId);
-  const index = useMemo(() => buildIndex(home), [home]);
+  const index = useMemo(() => mergeIndexes(homes.map(buildIndex)), [homes]);
+  // Every searched project's visits, newest first; read when the palette opens.
+  const visits = useMemo(
+    () =>
+      homes
+        .flatMap((home) => readVisits(home.project_id).map((visit) => ({ ...visit, project: home.project_id })))
+        .sort((a, b) => b.at - a.at),
+    [homes],
+  );
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listId = useId();
@@ -134,7 +142,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
       setActive((current + step + flat.length) % flat.length);
     } else if (event.key === "Enter" && flat[current]) {
       event.preventDefault();
-      void navigate(linkOf(flat[current], params));
+      void navigate(linkOf(flat[current], workspaceId));
       onClose();
     }
   }
@@ -197,7 +205,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
                     place={place}
                     id={`${listId}-${at}`}
                     active={at === current}
-                    params={params}
+                    workspaceId={workspaceId}
                     onOpen={onClose}
                     onHover={() => setActive(at)}
                   />
@@ -217,8 +225,18 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
   );
 }
 
-/** The palette, shown while `open`; it searches `home`, the project's items. */
-export function Palette({ home, workspaceId, projectId, open, onClose }: Params & { home: HomeResponse | null; open: boolean; onClose: () => void }) {
-  if (!open || !home) return null;
-  return createPortal(<PaletteDialog home={home} params={{ workspaceId, projectId }} onClose={onClose} />, document.body);
+/** The palette, shown while `open`; it searches the items of `homes`: the open project's, or on Home every project's. */
+export function Palette({
+  homes,
+  workspaceId,
+  open,
+  onClose,
+}: {
+  homes: readonly HomeResponse[] | null;
+  workspaceId: string;
+  open: boolean;
+  onClose: () => void;
+}) {
+  if (!open || !homes || homes.length === 0) return null;
+  return createPortal(<PaletteDialog homes={homes} workspaceId={workspaceId} onClose={onClose} />, document.body);
 }

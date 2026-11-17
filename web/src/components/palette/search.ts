@@ -2,8 +2,9 @@ import type { HomeResponse } from "@/api/generated";
 import { PILLARS } from "@/components/project/items";
 import type { Visit } from "@/lib/visits";
 
-// The palette's search: pure functions over the project home. Items are found
-// by track name, doc title and thread question, never by what a doc says.
+// The palette's search: pure functions over the project home, or over every
+// project's home on Home (mergeIndexes). Items are found by track name, doc
+// title and thread question, never by what a doc says.
 
 export const MOST_TRACKS = 5;
 export const MOST_DOCS = 6;
@@ -17,6 +18,8 @@ export type Place = {
   kind: PlaceKind;
   /** The track, doc or thread ID; "app" for the App page. */
   id: string;
+  /** The project the place is in. */
+  projectId: string;
   name: string;
   /** "Checkout · UI" for a doc, the scope's name for a thread, empty for a scope. */
   context: string;
@@ -32,6 +35,8 @@ export type Index = {
   docs: Entry[];
   threads: Entry[];
   places: Map<string, Entry>;
+  /** Each project's App page, by project ID. */
+  apps: Map<string, Entry>;
 };
 
 export type Results = { tracks: Group; docs: Group; threads: Group };
@@ -77,6 +82,7 @@ export function buildIndex(home: HomeResponse): Index {
   const entry = (kind: PlaceKind, id: string, name: string, context: string, at: number): Entry => ({
     kind,
     id,
+    projectId: home.project_id,
     name,
     context,
     lower: name.toLowerCase(),
@@ -99,9 +105,23 @@ export function buildIndex(home: HomeResponse): Index {
     const scope = scopes.get(thread.track_id ?? "app") ?? "";
     add(threads, entry("thread", thread.id, thread.question, scope, time(thread.last_post_at, thread.created_at)));
   }
-  places.set(entryKey("app", "app"), entry("app", "app", "App", "", 0));
+  const apps = new Map([[home.project_id, entry("app", "app", "App", "", 0)]]);
   for (const list of [tracks, docs, threads]) list.sort(byRecent);
-  return { tracks, docs, threads, places };
+  return { tracks, docs, threads, places, apps };
+}
+
+/** One index over several projects' indexes, each list again ordered by activity. */
+export function mergeIndexes(indexes: readonly Index[]): Index {
+  const merged: Index = { tracks: [], docs: [], threads: [], places: new Map(), apps: new Map() };
+  for (const index of indexes) {
+    merged.tracks.push(...index.tracks);
+    merged.docs.push(...index.docs);
+    merged.threads.push(...index.threads);
+    for (const [key, place] of index.places) merged.places.set(key, place);
+    for (const [key, app] of index.apps) merged.apps.set(key, app);
+  }
+  for (const list of [merged.tracks, merged.docs, merged.threads]) list.sort(byRecent);
+  return merged;
 }
 
 function find(list: Entry[], query: string, most: number): Group {
@@ -129,15 +149,23 @@ export function search(index: Index, query: string): Results {
   };
 }
 
-/** The places of the newest visits that the project still has: the App page, tracks, docs and threads. */
-export function recentPlaces(index: Index, visits: Visit[], most = MOST_RECENT): Place[] {
+/**
+ * The places of the newest visits that the project still has: the App page,
+ * tracks, docs and threads. A visit from a merged index names its `project`, so
+ * that its App page is that project's.
+ */
+export function recentPlaces(index: Index, visits: (Visit & { project?: string })[], most = MOST_RECENT): Place[] {
   const places: Place[] = [];
   for (const visit of visits) {
     const found = visit.doc
       ? index.places.get(entryKey("doc", visit.doc))
       : visit.thread
         ? index.places.get(entryKey("thread", visit.thread))
-        : index.places.get(entryKey(visit.scope === "app" ? "app" : "track", visit.scope));
+        : visit.scope === "app"
+          ? visit.project
+            ? index.apps.get(visit.project)
+            : index.apps.values().next().value
+          : index.places.get(entryKey("track", visit.scope));
     if (found) places.push(found);
     if (places.length === most) break;
   }
