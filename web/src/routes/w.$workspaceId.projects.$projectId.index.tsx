@@ -1,14 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ScopePage } from "@/components/project/scope-page";
+import { ProjectOverview } from "@/components/project/overview";
 
-// The project's Overview. Until S2 builds it, the project's scope page as it
-// was at /app: the project's name, its parts, decisions and project-level docs.
+// The project's Overview: its name and intro, the tracks in flight, the latest
+// decisions and docs, and the properties panel with its parts and counts.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/")({
   staticData: { tab: "overview" },
-  component: ProjectOverview,
+  component: Overview,
 });
 
-function ProjectOverview() {
+function Overview() {
   const { workspaceId, projectId } = Route.useParams();
-  return <ScopePage workspaceId={workspaceId} projectId={projectId} trackId={null} />;
+  return <ProjectOverview workspaceId={workspaceId} projectId={projectId} />;
 }

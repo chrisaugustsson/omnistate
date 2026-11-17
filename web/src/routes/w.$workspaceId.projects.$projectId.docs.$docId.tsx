@@ -2,11 +2,13 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { loadDoc } from "@/api/docs";
 import { loadFeatures } from "@/api/features";
 import { loadParts } from "@/api/parts";
-import { DocPage, validateDocSearch } from "@/components/viewer/doc-page";
+import { ScopeDocs } from "@/components/project/docs-pane";
+import { validateDocSearch } from "@/components/viewer/doc-page";
 
-// A project-level doc, open in the project's Docs tab. This was the URL of
-// every doc; a doc that belongs to a track, a feature or a part is sent to its
-// place (the address keeps where in the doc to be) before the page shows.
+// A project-level doc, open in the project's Docs tab beside the list of the
+// project's docs. This was the URL of every doc; a doc that belongs to a
+// track, a feature or a part is sent to its place (the address keeps where in
+// the doc to be) before the page shows.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/docs/$docId")({
   staticData: { tab: "docs", bleed: true },
   validateSearch: validateDocSearch,
@@ -54,5 +56,5 @@ async function partOfFeature(workspaceId: string, projectId: string, featureId: 
 
 function ProjectDoc() {
   const { workspaceId, projectId, docId } = Route.useParams();
-  return <DocPage workspaceId={workspaceId} projectId={projectId} docId={docId} search={Route.useSearch()} />;
+  return <ScopeDocs workspaceId={workspaceId} projectId={projectId} docId={docId} search={Route.useSearch()} />;
 }

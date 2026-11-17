@@ -1,13 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { PlaceholderPage } from "@/components/shell/page";
+import { ScopeDocs } from "@/components/project/docs-pane";
 
-// A part's Docs: the docs on the part, grouped by pillar, beside the open doc.
-// Slice S2 builds it; a doc opens at docs/$docId.
+// A part's Docs with no doc open: the list of the part's and its features'
+// docs, and the most recently updated one opens (or the tab says there are none).
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/docs/")({
-  staticData: { tab: "docs" },
+  staticData: { tab: "docs", bleed: true },
   component: Docs,
 });
 
 function Docs() {
-  return <PlaceholderPage title="Docs">The part&rsquo;s docs, grouped by pillar, beside the open doc.</PlaceholderPage>;
+  const { workspaceId, projectId, partId } = Route.useParams();
+  return <ScopeDocs workspaceId={workspaceId} projectId={projectId} partId={partId} />;
 }

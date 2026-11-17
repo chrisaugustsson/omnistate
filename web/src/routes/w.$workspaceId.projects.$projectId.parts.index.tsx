@@ -1,10 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { PartsSection } from "@/components/project/parts-section";
-import { Page, PageHead } from "@/components/shell/page";
+import { PartsPage } from "@/components/project/parts-list";
 
-// The project's Parts. Until S2 builds it, the parts section of the old project
-// page: each part with its kind and description, and creating, renaming and
-// deleting one.
+// The project's Parts: a row per part with its kind, what it is, its features
+// and what is in flight on it; creating, renaming and deleting a part.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/")({
   staticData: { tab: "parts" },
   component: Parts,
@@ -12,12 +10,5 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/
 
 function Parts() {
   const { workspaceId, projectId } = Route.useParams();
-  return (
-    <Page>
-      <PageHead title="Parts" />
-      <div className="mt-6">
-        <PartsSection workspaceId={workspaceId} projectId={projectId} />
-      </div>
-    </Page>
-  );
+  return <PartsPage workspaceId={workspaceId} projectId={projectId} />;
 }

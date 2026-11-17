@@ -29,3 +29,12 @@ export async function renameProject(workspaceId: string, projectId: string, name
   });
   return answer.project;
 }
+
+/** Sets a project's description, the intro its Overview shows; an empty one clears it. */
+export async function describeProject(workspaceId: string, projectId: string, description: string): Promise<ProjectBody> {
+  const answer = await callApi("PATCH", `/api/v1/w/${workspaceId}/projects/${projectId}`, {
+    body: { description },
+    response: renamed.responses["200"],
+  });
+  return answer.project;
+}

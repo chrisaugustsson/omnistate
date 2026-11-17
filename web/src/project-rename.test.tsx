@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-// US-14: the App page of a project renames it inline. The pencil (Rename
-// project) turns the title into an input with Save and Cancel; Save sends
+// US-14: a project's Overview renames it inline. "Rename project" in its "…"
+// menu (More actions) turns the title into an input with Save and Cancel; Save sends
 // PATCH /api/v1/w/<ws>/projects/<id> {name}. A 409 name_taken shows "Another
 // project has this name", any other failure "The project could not be
-// renamed. Try again.", both under the input. A track's page has no pencil.
+// renamed. Try again.", both under the input. A track's page has no such action.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -90,12 +90,13 @@ const fail = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, headers: { "content-type": "application/json" } });
 
 async function startEditing() {
-  renderAt(`/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/app`);
-  fireEvent.click(await screen.findByRole("button", { name: "Rename project" }));
+  renderAt(`/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`);
+  fireEvent.click(await screen.findByRole("button", { name: "More actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Rename project" }));
   return (await screen.findByRole("textbox")) as HTMLInputElement;
 }
 
-describe("rename a project on its App page", () => {
+describe("rename a project on its Overview", () => {
   beforeEach(() => {
     vi.stubGlobal("scrollTo", () => {});
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -105,7 +106,7 @@ describe("rename a project on its App page", () => {
     vi.unstubAllGlobals();
   });
 
-  test("the pencil opens a focused input with the name; Save is disabled while blank or unchanged", async () => {
+  test("Rename project opens a focused input with the name; Save is disabled while blank or unchanged", async () => {
     fakeApi(() => ok("x"));
     const input = await startEditing();
     expect(input.value).toBe("Storefront");
@@ -136,7 +137,8 @@ describe("rename a project on its App page", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Storefront");
     expect(patches).toEqual([]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename project" }));
     const again = await screen.findByRole("textbox");
     fireEvent.change(again, { target: { value: "Shop v2" } });
     fireEvent.submit(again.closest("form")!);

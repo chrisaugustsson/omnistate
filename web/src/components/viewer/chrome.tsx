@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode, type SelectHTMLAttributes } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, PanelRightClose, PanelRightOpen, TriangleAlert } from "lucide-react";
 import { PILLARS } from "@/components/project/items";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -15,8 +15,9 @@ export type CrumbedDoc = { track_id?: string | null; pillar: string; title: stri
 
 /**
  * The slim bar over a viewer: the doc's breadcrumb, scope › pillar › title, and
- * the viewer's controls on the right. The scope links to its page and the
- * pillar to the pillar's section on it; the app level reads "App".
+ * the viewer's controls on the right. A track's doc names the track and links
+ * the pillar to its section on the track's page; any other doc reads "Docs",
+ * linking to the Docs tab it is open in.
  */
 export function ViewerToolbar({
   workspaceId,
@@ -43,15 +44,24 @@ export function ViewerToolbar({
 }) {
   const { home } = useHome(workspaceId, projectId);
   const trackId = doc?.track_id ?? null;
-  const scopeName = trackId
-    ? (home?.tracks?.find((summary) => summary.track.id === trackId)?.track.name ?? "Track")
-    : "App";
+  // A doc that is not a track's opens in the Docs tab of the scope in the address: a feature's, a part's or the project's.
+  const where = useParams({ strict: false }) as { partId?: string; featureId?: string };
+  const scopeName = trackId ? (home?.tracks?.find((summary) => summary.track.id === trackId)?.track.name ?? "Track") : "Docs";
+  const docsTab =
+    where.partId && where.featureId
+      ? ({
+          to: "/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs",
+          params: { workspaceId, projectId, partId: where.partId, featureId: where.featureId },
+        } as const)
+      : where.partId
+        ? ({ to: "/w/$workspaceId/projects/$projectId/parts/$partId/docs", params: { workspaceId, projectId, partId: where.partId } } as const)
+        : ({ to: "/w/$workspaceId/projects/$projectId/docs", params: { workspaceId, projectId } } as const);
   const scope = trackId
-    ? {
+    ? ({
         to: "/w/$workspaceId/projects/$projectId/tracks/$trackId",
         params: { workspaceId, projectId, trackId },
-      }
-    : { to: "/w/$workspaceId/projects/$projectId", params: { workspaceId, projectId } };
+      } as const)
+    : docsTab;
   const pillar = PILLARS.find((candidate) => candidate.pillar === doc?.pillar);
   const link =
     "block max-w-48 truncate rounded transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none";
@@ -68,7 +78,7 @@ export function ViewerToolbar({
               </Link>
             </li>
             <Crumb>
-              <Link {...scope} hash={doc.pillar} className={link}>
+              <Link {...scope} hash={trackId ? doc.pillar : undefined} className={link}>
                 {pillar?.title ?? doc.pillar}
               </Link>
             </Crumb>

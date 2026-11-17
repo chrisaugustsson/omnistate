@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { PlaceholderPage } from "@/components/shell/page";
+import { TracksPage } from "@/components/project/tracks-list";
 
-// A part's Tracks: its tracks grouped by state. Slice S2 builds it.
+// A part's Tracks, grouped by state, with a filter on state and owner.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/tracks")({
   staticData: { tab: "tracks" },
   component: Tracks,
 });
 
 function Tracks() {
-  return <PlaceholderPage title="Tracks">The part&rsquo;s tracks, grouped by state.</PlaceholderPage>;
+  const { workspaceId, projectId, partId } = Route.useParams();
+  return <TracksPage workspaceId={workspaceId} projectId={projectId} partId={partId} />;
 }

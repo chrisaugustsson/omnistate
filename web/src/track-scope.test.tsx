@@ -283,12 +283,12 @@ describe("track scope", () => {
       await expectDocTrail(["Wishlist", "UI", "Saved items screens"], [trackPath(WISHLIST), `${trackPath(WISHLIST)}#ui`]);
     });
 
-    test("an app-level doc: App › pillar › title, linking the project's Overview", async () => {
+    test("a project-level doc: Docs › pillar › title, linking the project's Docs tab", async () => {
       const seed = seeded();
       fakeApi(seed);
       renderAt(`${PROJECT_PATH}/docs/${seed.docs.shopPrd.id}`);
       await screen.findByRole("heading", { level: 1, name: "Shop PRD" });
-      await expectDocTrail(["App", "Spec", "Shop PRD"], [PROJECT_PATH, `${PROJECT_PATH}#spec`]);
+      await expectDocTrail(["Docs", "Spec", "Shop PRD"], [`${PROJECT_PATH}/docs`, `${PROJECT_PATH}/docs`]);
     });
   });
 });

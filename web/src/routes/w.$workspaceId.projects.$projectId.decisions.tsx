@@ -1,9 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ProjectDecisions } from "@/components/project/decisions";
-import { Page, PageHead } from "@/components/shell/page";
+import { DecisionsPage } from "@/components/project/decisions-page";
 
-// The project's Decisions. Until S2 builds the decision log, the project's
-// decisions section as it was on the old project page.
+// The project's Decisions: the decision log of the project, its parts and their
+// features, grouped by what each decision is about.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/decisions")({
   staticData: { tab: "decisions" },
   component: Decisions,
@@ -11,12 +10,5 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/decisi
 
 function Decisions() {
   const { workspaceId, projectId } = Route.useParams();
-  return (
-    <Page>
-      <PageHead title="Decisions" />
-      <div className="mt-6">
-        <ProjectDecisions workspaceId={workspaceId} projectId={projectId} />
-      </div>
-    </Page>
-  );
+  return <DecisionsPage workspaceId={workspaceId} projectId={projectId} />;
 }

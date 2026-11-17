@@ -4,12 +4,15 @@
 // when, with a note on one that replaces another; a feature's page lists only the
 // decisions nobody replaced, each with the ones it replaced nested under it; the
 // track's owner, and nobody else, adds a decision from the track page.
-// US-329: a part's page and the project's page list the decisions about that
-// level the same way, and one replaced from another level is marked replaced.
+// The Decisions tabs of the project and of a part (slice S2; prototype
+// tasks/ui-redesign/v2/decisions.html, part-wision-decisions.html): the log of
+// the level and the levels under it, grouped by what each decision is about,
+// with the ones a decision replaced folded under it (US-329).
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import * as scope from "./scope-pages-fake";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
@@ -317,53 +320,92 @@ describe("decisions on a feature page", () => {
   });
 });
 
-describe("decisions on a part page and on the project page", () => {
-  test("a part page lists the decisions about the part, newest first, a replaced one under its replacer, and marks one that a project decision replaced", async () => {
-    fakeApi({
-      owner: USER.id,
-      me: USER.id,
-      partDecisions: {
-        decisions: [
-          decision(21, { question: "Who writes readings?", decision: "Only writer of readings", minutesAgo: 5 }, { about: "part", replaces: 22 }),
-          decision(23, { question: "Theme?", decision: "Dark", why: "Taste", minutesAgo: 60 }, { about: "part", replacedBy: 30 }),
-          decision(22, { question: "Who writes readings?", decision: "Every service", minutesAgo: 120 }, { about: "part", replacedBy: 21 }),
-        ],
-        earlier: [],
-      },
-    });
-    renderAt(`${PROJECT_PATH}/parts/${WISION}`);
-    const section = await decisionsRegion();
-    await waitFor(() => expect(topEntries(section)).toHaveLength(2));
-    const [writer, theme] = topEntries(section);
-    expect(linesOf(writer).slice(0, 2)).toEqual(["Who writes readings?", "Only writer of readings"]);
-    expect(replacedUnder(writer).map((entry) => linesOf(entry)[1])).toEqual(["Every service"]);
-    expect(linesOf(writer).join(" ")).not.toMatch(/replaced/i);
+describe("the Decisions of the project and of a part", () => {
+  const main = () => screen.findByRole("main");
+  /** The groups of the log: each one's name, and its rows as the reader sees them. */
+  const groups = async () =>
+    within(await main())
+      .getAllByRole("region")
+      .map((group): [string | null, string[]] => [group.getAttribute("aria-label"), within(group).getAllByRole("listitem").filter((item) => item.parentElement?.tagName === "UL").map(scope.shownText)]);
 
-    expect(linesOf(theme).slice(0, 3)).toEqual(["Theme?", "Dark", "Taste"]);
-    expect(linesOf(theme)[3], "its replacer is about the project, so it is marked here").toMatch(/replaced/i);
-    expect(replacedUnder(theme)).toEqual([]);
+  test("the project's log groups decisions by what they are about, the project, then each part followed by its features, newest first, and the filter keeps one kind", async () => {
+    const wision = scope.part("Wision", "app");
+    const iot = scope.part("iot-service", "service");
+    const analyze = scope.feature(wision.id, "Analyze");
+    const windows = scope.track("Long windows", wision.id, "planning");
+    scope.fakeScopeApi({
+      parts: [wision, iot],
+      features: [analyze],
+      tracks: [windows],
+      decisions: [
+        scope.decision("Presets only", windows.track.id, { feature: analyze, part: wision }, { question: "Custom ranges?", why: "They hid the switch.", at: "2026-11-14T08:00:00Z" }),
+        scope.decision("Canvas, not SVG", windows.track.id, { part: wision }, { by: "how", question: "How to draw?", at: "2026-03-01T08:00:00Z" }),
+        scope.decision("Per organisation", windows.track.id, { part: wision }, { question: "Where do settings live?", at: "2026-03-03T08:00:00Z" }),
+        scope.decision("Through api-gateway", windows.track.id, { project: true }, { question: "How do apps reach services?", at: "2026-02-11T08:00:00Z" }),
+        scope.decision("Only writer", windows.track.id, { part: iot }, { question: "Who writes readings?", at: "2026-11-13T08:00:00Z" }),
+      ],
+    });
+    scope.renderAt(`${scope.PROJECT_PATH}/decisions`);
+    await within(await main()).findByText("Presets only");
+    expect(await groups()).toEqual([
+      ["Monitoring platform", ["Through api-gateway Christopher · Answers “How do apps reach services?” · from Long windows 11 Feb"]],
+      ["Wision", ["Per organisation Christopher · Answers “Where do settings live?” · from Long windows 3 Mar", "Canvas, not SVG How agent · Answers “How to draw?” · from Long windows 1 Mar"]],
+      ["Analyze", ["Presets only Why: They hid the switch. Christopher · Answers “Custom ranges?” · from Long windows 14 Nov"]],
+      ["iot-service", ["Only writer Christopher · Answers “Who writes readings?” · from Long windows 13 Nov"]],
+    ]);
+
+    const filter = within(await main()).getByRole("radiogroup", { name: "Decisions about" });
+    expect(within(filter).getAllByRole("radio").map(scope.shownText)).toEqual(["All 5", "Project 1", "Parts 3", "Features 1"]);
+    fireEvent.click(within(filter).getByRole("radio", { name: /^Parts/ }));
+    expect((await groups()).map(([name]) => name)).toEqual(["Wision", "iot-service"]);
   });
 
-  test("the project page lists the decisions about the project, newest first, with a part decision one of them replaced nested under it", async () => {
-    fakeApi({
-      owner: USER.id,
-      me: USER.id,
-      projectDecisions: {
-        decisions: [
-          decision(30, { question: "Theme?", decision: "Dark everywhere", why: "One look", minutesAgo: 1 }, { about: "project", replaces: 23 }),
-          decision(31, { question: "Which licence?", decision: "MIT", why: "Open", minutesAgo: 30 }, { about: "project" }),
-        ],
-        earlier: [decision(23, { question: "Theme?", decision: "Dark", why: "Taste", minutesAgo: 60 }, { about: "part", replacedBy: 30 })],
-      },
+  test("a decision that replaced others folds them under Replaces, the latest first; Show replaced gives each its own row too", async () => {
+    const wision = scope.part("Wision", "app");
+    const windows = scope.track("Long windows", wision.id, "planning");
+    const raw = scope.decision("Always raw", windows.track.id, { part: wision }, { at: "2026-01-01T08:00:00Z" });
+    const daily = scope.decision("Daily aggregates", windows.track.id, { part: wision }, { at: "2026-06-01T08:00:00Z", replaces: raw.id });
+    const hourly = scope.decision("Hourly aggregates", windows.track.id, { part: wision }, { at: "2026-11-12T08:00:00Z", replaces: daily.id });
+    raw.replaced_by_decision_id = daily.id;
+    daily.replaced_by_decision_id = hourly.id;
+    scope.fakeScopeApi({ parts: [wision], tracks: [windows], decisions: [raw, daily, hourly] });
+    scope.renderAt(`${scope.PROJECT_PATH}/parts/${wision.id}/decisions`);
+    await within(await main()).findByText("Hourly aggregates");
+
+    const [group] = await groups();
+    expect(group[1]).toHaveLength(1);
+    const replaces = within(await main()).getByRole("list", { name: "Replaced decisions" });
+    expect(scope.shownText(replaces.closest("details")!.querySelector("summary")!)).toBe("Replaces Daily aggregates and 1 before it");
+    expect(within(replaces).getAllByRole("listitem").map((item) => item.querySelector("p")?.textContent)).toEqual(["Daily aggregates", "Always raw"]);
+
+    fireEvent.click(within(await main()).getByRole("checkbox", { name: "Show replaced" }));
+    expect((await groups())[0][1].map((row) => row.split(" Christopher")[0])).toEqual(["Hourly aggregates", "Daily aggregates replaced", "Always raw replaced"]);
+  });
+
+  test("a part's log has the part and its features, filtered one at a time, and keeps the row of one replaced by a decision about the project, marked replaced", async () => {
+    const wision = scope.part("Wision", "app");
+    const dashboards = scope.feature(wision.id, "Dashboards");
+    const analyze = scope.feature(wision.id, "Analyze");
+    const windows = scope.track("Long windows", wision.id, "planning");
+    const dark = scope.decision("Dark theme", windows.track.id, { part: wision }, { at: "2026-02-01T08:00:00Z" });
+    const everywhere = scope.decision("Dark everywhere", windows.track.id, { project: true }, { replaces: dark.id, at: "2026-03-01T08:00:00Z" });
+    dark.replaced_by_decision_id = everywhere.id;
+    scope.fakeScopeApi({
+      parts: [wision],
+      features: [dashboards, analyze],
+      tracks: [windows],
+      decisions: [dark, everywhere, scope.decision("Presets only", windows.track.id, { feature: analyze, part: wision })],
     });
-    renderAt(`${PROJECT_PATH}/app`);
-    const section = await decisionsRegion();
-    await waitFor(() => expect(topEntries(section)).toHaveLength(2));
-    const top = topEntries(section);
-    expect(top.map((entry) => linesOf(entry)[1])).toEqual(["Dark everywhere", "MIT"]);
-    expect(replacedUnder(top[0]).map((entry) => linesOf(entry)[1])).toEqual(["Dark"]);
-    expect(replacedUnder(top[1])).toEqual([]);
-    expect(section.querySelectorAll("li"), "each decision shows once").toHaveLength(3);
+    scope.renderAt(`${scope.PROJECT_PATH}/parts/${wision.id}/decisions`);
+    await within(await main()).findByText("Presets only");
+    const filter = within(await main()).getByRole("radiogroup", { name: "Decisions about" });
+    expect(within(filter).getAllByRole("radio").map(scope.shownText)).toEqual(["All 2", "Wision 1", "Dashboards 0", "Analyze 1"]);
+    expect((await groups()).map(([name, rows]) => [name, rows.map((row) => row.split(" Christopher")[0])])).toEqual([
+      ["Wision", ["Dark theme replaced"]],
+      ["Analyze", ["Presets only"]],
+    ]);
+    fireEvent.click(within(filter).getByRole("radio", { name: /^Analyze/ }));
+    expect((await groups()).map(([name]) => name)).toEqual(["Analyze"]);
   });
 });
 

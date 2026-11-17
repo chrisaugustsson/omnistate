@@ -1,24 +1,22 @@
 // @vitest-environment jsdom
-// US-125: the Tracks page, .../projects/<project>/tracks, and the palette
-// that the top bar's Search button or ⌘K (Ctrl+K off macOS) opens. Both read the
-// project home, GET .../projects/<project>/home. The app is rendered into the
+// The Tracks of a project and of a part (slice S2; prototype
+// tasks/ui-redesign/v2/tracks.html): grouped by state like Linear, a filter on
+// state, owner and part, and Start track. Then the palette that the top bar's
+// Search button or ⌘K (Ctrl+K off macOS) opens (US-125). Both read the project
+// home, GET .../projects/<project>/home. The app is rendered into the
 // document, as in the browser: the palette's portal on the body then sees the
 // same events as there.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import * as scope from "./scope-pages-fake";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
 /** The part every track of the fixtures is on (US-305). */
 const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
-const OTHER_PART_ID = "0192d7a0-3333-7000-8000-000000000002";
 const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
-const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
-const RETURNS = "0192d7a0-4444-7000-8000-000000000003";
-const GIFT_CARDS = "0192d7a0-4444-7000-8000-000000000004";
-const APPLE_PAY = "0192d7a0-4444-7000-8000-000000000005";
 const PAYMENTS = "0192d7a0-4444-7000-8000-000000000006";
 const PAY_LATER = "0192d7a0-4444-7000-8000-000000000007";
 const CHECKOUT_DOC = "0192d7a0-5555-7000-8000-000000000001";
@@ -199,103 +197,135 @@ afterEach(() => {
 });
 
 describe("the Tracks page", () => {
-  const tracks = [
-    track(RETURNS, "Returns", { lastActivity: "2026-10-21T11:00:00Z" }),
-    track(WALLETS, "Wallets", {
-      description: "Apple Pay and Google Pay.",
-      lastActivity: null,
-      createdAt: "2026-10-21T12:00:00Z",
-      partName: "Old app",
-      partDeleted: true,
-    }),
-    track(GIFT_CARDS, "Gift cards", { lastActivity: "2026-10-21T11:00:00Z" }),
-    track(CHECKOUT, "Checkout", {
-      description: "Pay in one step.\nWorks with saved wallets.",
-      waiting: 2,
-      lastActivity: "2026-10-21T13:00:00Z",
-      stories: { total: 3, open: 2, done: 1 },
-      state: "building",
-    }),
-    track(APPLE_PAY, "apple pay", { lastActivity: "2026-10-21T11:00:00Z" }),
-  ];
-
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-10-21T15:00:00Z"));
+    vi.setSystemTime(new Date("2026-11-17T12:00:00Z"));
   });
 
-  const main = () => screen.getByRole("main");
-  const rows = () => within(within(main()).getByRole("list")).getAllByRole("link");
-  const rowNames = () => rows().map((row) => row.querySelector("span span")?.textContent);
-  const filter = (query: string) => fireEvent.change(within(main()).getByRole("textbox", { name: "Filter tracks" }), { target: { value: query } });
+  const page = () => screen.findByRole("main");
+  /** The bands of the page: each one's name and count, and its rows as the reader sees them. */
+  const bands = async () =>
+    within(await page())
+      .getAllByRole("region")
+      .map((band): [string | null, string[]] => [band.getAttribute("aria-label"), within(band).getAllByRole("listitem").map(scope.shownText)]);
 
-  test("lists every track, the most recent activity first, one without activity at its creation, ties by name", async () => {
-    fakeApi(home({ tracks }));
-    renderAt(`${PROJECT_PATH}/tracks`);
-    await waitFor(() => expect(rows()).toHaveLength(5));
-    expect(rowNames()).toEqual(["Checkout", "Wallets", "apple pay", "Gift cards", "Returns"]);
-    expect(within(main()).getByText("5 tracks")).toBeTruthy();
-  });
-
-  test("a row shows the name, the first line of the description, the part, the state, done of total stories, what waits and the last activity, and opens the track", async () => {
-    fakeApi(home({ tracks }));
-    renderAt(`${PROJECT_PATH}/tracks`);
-    await waitFor(() => expect(rows()).toHaveLength(5));
-    expect(shownText(rows()[0])).toBe("CheckoutPay in one step.Wisionbuilding1/3 stories done22 h ago");
-    expect(rows()[0].getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${CHECKOUT}`);
-    expect(shownText(rows()[1]), "a track on a deleted part stays, its part marked deleted").toBe(
-      "WalletsApple Pay and Google Pay.Old app (deleted)planning0/0 stories doneNo activity yet",
-    );
-  });
-
-  test("New track asks for a part, starting empty, and creates the track on the part picked", async () => {
-    const posted = fakeApi(home({ tracks }), [part(PART_ID, "Wision"), part(OTHER_PART_ID, "iot-service")]);
-    renderAt(`${PROJECT_PATH}/tracks`);
-    await waitFor(() => expect(rows()).toHaveLength(5));
-    fireEvent.click(await within(main()).findByRole("button", { name: "New track" }));
-
-    const picker = within(main()).getByRole("combobox", { name: "Part" }) as HTMLSelectElement;
-    expect(picker.value, "the picker starts empty").toBe("");
-    expect(within(picker).getAllByRole("option").filter((option) => !(option as HTMLOptionElement).disabled).map((option) => option.textContent)).toEqual([
-      "Wision",
-      "iot-service",
+  test("tracks come in bands by state, Planning, Building, Done, Dropped, each with the most recently active first; a state with none has no band", async () => {
+    const wision = scope.part("Wision", "app");
+    scope.fakeScopeApi({
+      parts: [wision],
+      tracks: [
+        scope.track("Charts", wision.id, "done", { lastActivity: "2026-03-06T08:00:00Z" }),
+        scope.track("Alarms", wision.id, "done", { lastActivity: "2026-11-04T08:00:00Z" }),
+        scope.track("Exports", wision.id, "planning", { lastActivity: null, createdAt: "2026-11-17T11:00:00Z" }),
+        scope.track("Long windows", wision.id, "planning", { lastActivity: "2026-11-17T11:48:00Z" }),
+        scope.track("Moves", wision.id, "dropped", { lastActivity: "2026-11-16T08:00:00Z" }),
+      ],
+    });
+    renderAt(`${scope.PROJECT_PATH}/tracks`);
+    await within(await page()).findByText("Long windows");
+    expect((await bands()).map(([name, rows]) => [name, rows.map((row) => row.split(/ change[sd] /)[0])])).toEqual([
+      ["Planning", ["Long windows", "Exports"]],
+      ["Done", ["Alarms", "Charts"]],
+      ["Dropped", ["Moves"]],
     ]);
-    fireEvent.change(within(main()).getByRole("textbox", { name: "Track name" }), { target: { value: "Alarms" } });
-    const create = within(main()).getByRole("button", { name: "Create track" }) as HTMLButtonElement;
-    expect(create.disabled, "no part, no create").toBe(true);
-
-    fireEvent.change(picker, { target: { value: OTHER_PART_ID } });
-    expect(create.disabled).toBe(false);
-    fireEvent.click(create);
-    await waitFor(() => expect(posted).toEqual([{ name: "Alarms", description: "", part_id: OTHER_PART_ID }]));
+    expect(within(await page()).getByText("5 tracks")).toBeTruthy();
   });
 
-  test("with no parts, New track is disabled and points to the project page to create one", async () => {
-    fakeApi(home({ tracks }), []);
-    renderAt(`${PROJECT_PATH}/tracks`);
-    await waitFor(() => expect(rows()).toHaveLength(5));
-    const create = (await within(main()).findByRole("button", { name: "New track" })) as HTMLButtonElement;
-    expect(create.disabled).toBe(true);
-    const hint = within(main()).getByRole("link", { name: "Create a part on the project page" });
-    expect(hint.getAttribute("href")).toBe(`${PROJECT_PATH}/parts`);
+  test("a row shows what the track changes, its part on the project's page, its progress, its owner and when it last moved, and opens the track", async () => {
+    const sara = scope.member("sara.lind@example.com");
+    const wision = scope.part("Wision", "app");
+    const iot = scope.part("iot-service", "service");
+    const readings = scope.feature(iot.id, "Readings query");
+    const windows = scope.track("Long windows", wision.id, "planning", { owner: scope.me.user_id, total: 2, lastActivity: "2026-11-17T11:48:00Z" });
+    const query = scope.track("Aggregated readings", iot.id, "building", {
+      owner: sara.user_id,
+      done: 1,
+      total: 2,
+      lastActivity: "2026-11-04T08:00:00Z",
+      splitFrom: windows.track.id,
+    });
+    scope.fakeScopeApi({
+      members: [scope.me, sara],
+      parts: [wision, iot],
+      features: [readings],
+      tracks: [windows, query],
+      changes: { [readings.id]: [query.track.id] },
+      questions: { [windows.track.id]: 3 },
+    });
+    renderAt(`${scope.PROJECT_PATH}/tracks`);
+    await waitFor(async () => expect((await bands())[0][1][0]).toContain("3 questions"));
+    expect(await bands()).toEqual([
+      ["Planning", ["Long windows changes no feature · split off to Aggregated readings 3 questions Wision 0 of 2 Owned by Christopher 12 min"]],
+      ["Building", ["Aggregated readings changes Readings query · split off from Long windows iot-service 1 of 2 Owned by Sara 4 Nov"]],
+    ]);
+    const row = within(await page()).getByRole("link", { name: /^BuildingAggregated readings/ });
+    expect(row.getAttribute("href")).toBe(`${scope.PROJECT_PATH}/tracks/${query.track.id}`);
+
+    cleanup();
+    renderAt(`${scope.PROJECT_PATH}/parts/${iot.id}/tracks`);
+    await within(await page()).findByText("Aggregated readings");
+    expect(await bands(), "a part's page leaves out the part, and other parts' tracks").toEqual([
+      ["Building", ["Aggregated readings changes Readings query · split off from Long windows 1 of 2 Owned by Sara 4 Nov"]],
+    ]);
   });
 
-  test("the filter narrows the list as you type to the names and full descriptions holding the trimmed query, in the same order, and says N of M", async () => {
-    fakeApi(home({ tracks }));
-    renderAt(`${PROJECT_PATH}/tracks`);
-    await waitFor(() => expect(rows()).toHaveLength(5));
+  test("the filter narrows by state, owner and part, and says N of M tracks", async () => {
+    const sara = scope.member("sara.lind@example.com");
+    const wision = scope.part("Wision", "app");
+    const iot = scope.part("iot-service", "service");
+    scope.fakeScopeApi({
+      members: [scope.me, sara],
+      parts: [wision, iot],
+      tracks: [
+        scope.track("Long windows", wision.id, "planning", { owner: scope.me.user_id }),
+        scope.track("Exports", wision.id, "planning", { owner: sara.user_id }),
+        scope.track("Query", iot.id, "planning", { owner: sara.user_id }),
+        scope.track("Ingest", iot.id, "done", { owner: sara.user_id }),
+      ],
+    });
+    renderAt(`${scope.PROJECT_PATH}/tracks`);
+    const filters = within(await page()).getByRole("group", { name: "Filter" });
+    await within(await page()).findByText("Query");
+    fireEvent.change(within(filters).getByRole("combobox", { name: "State" }), { target: { value: "planning" } });
+    fireEvent.change(within(filters).getByRole("combobox", { name: "Owner" }), { target: { value: sara.user_id } });
+    fireEvent.change(within(filters).getByRole("combobox", { name: "Part" }), { target: { value: wision.id } });
+    expect((await bands()).map(([name, rows]) => [name, rows.map((row) => row.split(" changes")[0])])).toEqual([["Planning", ["Exports"]]]);
+    expect(within(filters).getByText("1 of 4 tracks")).toBeTruthy();
+  });
 
-    filter("  WALLET ");
-    expect(rowNames()).toEqual(["Checkout", "Wallets"]);
-    expect(within(main()).getByText("2 of 5")).toBeTruthy();
+  test("Start track asks for a part, starting empty, and creates the track on the part picked; on a part's Tracks it goes on that part", async () => {
+    const wision = scope.part("Wision", "app");
+    const iot = scope.part("iot-service", "service");
+    const api = scope.fakeScopeApi({ parts: [wision, iot] });
+    renderAt(`${scope.PROJECT_PATH}/tracks`);
+    fireEvent.click(await within(await page()).findByRole("button", { name: "Start track" }));
+    const form = within(await page()).getByRole("form", { name: "Start track" });
+    fireEvent.change(within(form).getByRole("textbox", { name: "Track name" }), { target: { value: "Gateway" } });
+    const part = within(form).getByRole("combobox", { name: "Part" }) as HTMLSelectElement;
+    expect(part.value).toBe("");
+    expect((within(form).getByRole("button", { name: "Start track" }) as HTMLButtonElement).disabled, "no part, no track").toBe(true);
+    fireEvent.change(part, { target: { value: iot.id } });
+    fireEvent.click(within(form).getByRole("button", { name: "Start track" }));
+    await waitFor(() => expect(api.writes).toEqual([{ method: "POST", path: `${scope.API}/tracks`, body: { name: "Gateway", description: "", part_id: iot.id } }]));
+    expect(await within(await page()).findByText("Gateway")).toBeTruthy();
 
-    filter("  WALLETS a");
-    expect(within(main()).queryAllByRole("link")).toEqual([]);
-    expect(within(main()).getByText("0 of 5")).toBeTruthy();
+    cleanup();
+    api.writes.length = 0;
+    renderAt(`${scope.PROJECT_PATH}/parts/${wision.id}/tracks`);
+    fireEvent.click(await within(await page()).findByRole("button", { name: "Start track" }));
+    const onPart = within(await page()).getByRole("form", { name: "Start track" });
+    expect(within(onPart).queryByRole("combobox", { name: "Part" })).toBeNull();
+    fireEvent.change(within(onPart).getByRole("textbox", { name: "Track name" }), { target: { value: "Exports" } });
+    fireEvent.click(within(onPart).getByRole("button", { name: "Start track" }));
+    await waitFor(() => expect(api.writes).toEqual([{ method: "POST", path: `${scope.API}/tracks`, body: { name: "Exports", description: "", part_id: wision.id } }]));
+  });
 
-    filter("");
-    expect(rows()).toHaveLength(5);
-    expect(within(main()).getByText("5 tracks")).toBeTruthy();
+  test("with no parts, Start track says a track goes on a part and points to Parts", async () => {
+    scope.fakeScopeApi({ parts: [] });
+    renderAt(`${scope.PROJECT_PATH}/tracks`);
+    fireEvent.click(await within(await page()).findByRole("button", { name: "Start track" }));
+    const status = await within(await page()).findByRole("status");
+    expect(within(status).getByRole("link", { name: "Create a part" }).getAttribute("href")).toBe(`${scope.PROJECT_PATH}/parts`);
   });
 });
 
