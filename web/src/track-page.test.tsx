@@ -1,148 +1,37 @@
 // @vitest-environment jsdom
-// A track's page shows who owns the track (US-313) and, for the owner and
-// admins, a hand-over control listing the workspace's other members (US-315).
-// Members show as the app shows them elsewhere: "You", or the user ID. Under
-// the name a line shows the part the track is on, its state, its owner and the
-// tracks it was split from and split off to (US-320), and the owner and admins
-// get the state moves US-311 allows; a refused move shows the API's error.
+// A track's page (UI redesign, slice S3): the header's primary action is the
+// first state move the reader may make, the "…" menu holds the other moves and
+// Hand over; only the moves the API allows (planning → building | dropped,
+// building → planning | done | dropped), only for the owner or an admin, and
+// done only for the owner; others see them off with the reason. A final move
+// (dropped, done) asks first. The properties panel shows the track's part,
+// the features it changes, its split links, the stories of other tracks that
+// block its own, and its progress.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import {
+  ALICE,
+  API,
+  BOB,
+  CARA,
+  FakeWebSocket,
+  IOT,
+  MEMBERS,
+  PROJECT_PATH,
+  WISION,
+  fakeTrackApi,
+  featureBody,
+  member,
+  track,
+} from "./testing/track-api";
 
-const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
-const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
-const WISION = "0192d7a0-3333-7000-8000-000000000001";
 const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
-const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
-const OTHER = "0192d7a0-1111-7000-8000-000000000002";
 const SOURCE_ID = "0192d7a0-4444-7000-8000-000000000002";
 const SPLIT_ID = "0192d7a0-4444-7000-8000-000000000003";
-const THIRD = "0192d7a0-1111-7000-8000-000000000003";
-const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
-const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
-const AT = "2026-10-21T08:00:00Z";
-
-type Member = { membership_id: string; user_id: string; email: string; role: string };
-type Track = {
-  id: string;
-  project_id: string;
-  part_id: string;
-  state: string;
-  name: string;
-  description: string;
-  owner_user_id: string | null;
-  split_from_track_id: string | null;
-  created_at: string;
-};
-
-function track(id: string, name: string, fields: Partial<Track> = {}): Track {
-  return {
-    id,
-    project_id: PROJECT_ID,
-    part_id: WISION,
-    state: "planning",
-    name,
-    description: "",
-    owner_user_id: USER.id,
-    split_from_track_id: null,
-    created_at: AT,
-    ...fields,
-  };
-}
-
-const member = (membershipId: string, userId: string, role = "member"): Member => ({
-  membership_id: membershipId,
-  user_id: userId,
-  email: `${userId}@example.com`,
-  role,
-});
-
-/** A fake API: the project's home with `tracks`, the workspace's `members`, and the logged-in user `me`. */
-function fakeApi(fields: { tracks: Track[]; members: Member[]; me?: string; refuse?: { status: number; error: string } }) {
-  const api = { tracks: fields.tracks, posted: [] as { path: string; body: unknown }[] };
-  const json = (status: number, body: unknown) =>
-    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const path = new URL(url, "http://localhost:3000").pathname;
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (method === "POST" && path === `${API}/tracks/${TRACK_ID}/owner`) {
-        const body = JSON.parse(String(init?.body));
-        api.posted.push({ path, body });
-        const to = fields.members.find((one) => one.membership_id === body.membership_id);
-        const moved = { ...api.tracks[0], owner_user_id: to?.user_id ?? null };
-        api.tracks = [moved, ...api.tracks.slice(1)];
-        return json(200, { track: moved });
-      }
-      if (method === "POST" && path === `${API}/tracks/${TRACK_ID}/state`) {
-        const body = JSON.parse(String(init?.body));
-        api.posted.push({ path, body });
-        if (fields.refuse) return json(fields.refuse.status, { error: fields.refuse.error, state: api.tracks[0].state });
-        const moved = { ...api.tracks[0], state: body.state };
-        api.tracks = [moved, ...api.tracks.slice(1)];
-        return json(200, { track: moved });
-      }
-      if (method !== "GET") return new Response(null, { status: 204 });
-      switch (path) {
-        case "/api/v1/auth/me":
-          return json(200, { user: USER });
-        case "/api/v1/auth/workspaces":
-          return json(200, { workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
-        case `/api/v1/w/${WORKSPACE_ID}/whoami`:
-          return json(200, { actor: { kind: "human", user_id: fields.me ?? USER.id }, workspace_id: WORKSPACE_ID });
-        case `/api/v1/w/${WORKSPACE_ID}/members`:
-          return json(200, { members: fields.members });
-        case `/api/v1/w/${WORKSPACE_ID}/projects`:
-          return json(200, { projects: [{ id: PROJECT_ID, name: "Monitoring platform", created_at: AT }] });
-        case `${API}/parts`:
-          return json(200, { parts: [{ id: WISION, project_id: PROJECT_ID, name: "Wision", kind: "app", description: "", created_at: AT }] });
-        case `${API}/home`:
-          return json(200, {
-            project_id: PROJECT_ID,
-            app: { last_activity: null },
-            tracks: api.tracks.map((one) => ({
-              track: one,
-              docs: 0,
-              waiting: 0,
-              stories: { total: 0, open: 0, done: 0 },
-              last_activity: null,
-              part_name: "Wision",
-              part_deleted: false,
-            })),
-            docs: [],
-            threads: [],
-            waiting: { comments: [] },
-          });
-        case `${API}/tracks/${TRACK_ID}/features`:
-          return json(200, { features: [] });
-        case `${API}/tracks/${TRACK_ID}/decisions`:
-          return json(200, { decisions: [], earlier: [] });
-        default:
-          return json(404, { error: "not_found" });
-      }
-    }),
-  );
-  return api;
-}
-
-/** A WebSocket that never opens: these pages are not tested live here. */
-class FakeWebSocket extends EventTarget {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-  readyState = FakeWebSocket.CONNECTING;
-  constructor(readonly url: string) {
-    super();
-  }
-  send() {}
-  close() {
-    this.readyState = FakeWebSocket.CLOSED;
-  }
-}
+const ANALYZE = "0192d7a0-5555-7000-8000-000000000001";
+const TRACK_PATH = `${PROJECT_PATH}/tracks/${TRACK_ID}`;
 
 function renderAt(path: string) {
   const router = getRouter();
@@ -151,10 +40,34 @@ function renderAt(path: string) {
   return router;
 }
 
-const ownerRegion = async () => within(await screen.findByRole("main")).findByRole("region", { name: "Owner" });
+/** The header's buttons once the reader's rights are known: the primary move and the menu's items, each with whether it is on. */
+async function headerMoves() {
+  const actions = await screen.findByRole("group", { name: "Actions" });
+  const more = within(actions).getByRole("button", { name: "More actions" });
+  const primary = within(actions).queryByRole("button", { name: /^(Start building|Mark done|Back to planning)$/ }) as HTMLButtonElement | null;
+  fireEvent.click(more);
+  const menu = await screen.findByRole("menu", { name: "Track actions" });
+  const items = within(menu)
+    .getAllByRole("menuitem")
+    .map((item) => [item.textContent?.replace(/(Owner only|Owner or admin)$/, "").trim(), item.getAttribute("aria-disabled") !== "true"]);
+  fireEvent.click(more);
+  return { primary: primary ? [primary.textContent, !primary.disabled] : null, items };
+}
+
+/** Waits until the members have loaded, so the header shows what the reader may do. */
+async function ready() {
+  const panel = await screen.findByRole("complementary", { name: "Properties" });
+  await waitFor(() => expect(within(panel).queryByText("Nobody")).toBeNull());
+  await waitFor(() => expect(panel.textContent).toMatch(/Alice|Bob|Cara/));
+  return panel;
+}
+
+const stateWrites = (api: ReturnType<typeof fakeTrackApi>) =>
+  api.calls.filter((call) => call.method === "POST" && call.path === `${API}/tracks/${TRACK_ID}/state`).map((call) => call.body);
 
 beforeEach(() => {
   vi.stubGlobal("scrollTo", () => {});
+  FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
 });
 
@@ -163,148 +76,191 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("the owner on a track page", () => {
-  test("the owner sees that they own it and a hand-over control listing the other members, and hands the track over", async () => {
-    const api = fakeApi({
-      tracks: [track(TRACK_ID, "Long windows")],
-      members: [member("m-me", USER.id), member("m-other", OTHER), member("m-third", THIRD, "admin")],
-    });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    const owner = await ownerRegion();
-    await waitFor(() => expect(owner.textContent).toContain("Owned by You"));
-    const picker = (await within(owner).findByLabelText("Hand over to")) as HTMLSelectElement;
-    expect(Array.from(picker.options).map((option) => [option.value, option.textContent])).toEqual([
-      ["", "Hand over to..."],
-      ["m-other", OTHER],
-      ["m-third", `${THIRD} (admin)`],
-    ]);
-    fireEvent.change(picker, { target: { value: "m-other" } });
-    fireEvent.click(within(owner).getByRole("button", { name: "Hand over" }));
-    await waitFor(() => expect(api.posted).toEqual([{ path: `${API}/tracks/${TRACK_ID}/owner`, body: { membership_id: "m-other" } }]));
-  });
-
-  test("an admin who does not own the track sees its owner and may hand it over", async () => {
-    fakeApi({
-      tracks: [track(TRACK_ID, "Long windows", { owner_user_id: OTHER })],
-      members: [member("m-me", USER.id, "admin"), member("m-other", OTHER)],
-    });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    const owner = await ownerRegion();
-    await waitFor(() => expect(owner.textContent).toContain(`Owned by ${OTHER}`));
-    const picker = (await within(owner).findByLabelText("Hand over to")) as HTMLSelectElement;
-    expect(Array.from(picker.options).map((option) => option.value)).toEqual(["", "m-me"]);
-    expect(picker.options[1].textContent).toBe("You (admin)");
-  });
-
-  test("a member who neither owns the track nor is an admin sees the owner and no hand-over control", async () => {
-    fakeApi({
-      tracks: [track(TRACK_ID, "Long windows", { owner_user_id: OTHER })],
-      members: [member("m-me", USER.id), member("m-other", OTHER)],
-    });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    const owner = await ownerRegion();
-    await waitFor(() => expect(owner.textContent).toContain(`Owned by ${OTHER}`));
-    expect(within(owner).queryByLabelText("Hand over to")).toBeNull();
-  });
-
-  test("the only member of the workspace still sees the owner, and that there is nobody to hand it to", async () => {
-    fakeApi({ tracks: [track(TRACK_ID, "Long windows")], members: [member("m-me", USER.id)] });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    const owner = await ownerRegion();
-    await waitFor(() => expect(owner.textContent).toContain("Owned by You"));
-    expect(owner.textContent).toContain("No other member");
-  });
-});
-
-const details = async () => within(await screen.findByRole("main")).findByRole("group", { name: "Track details" });
-
-/** The labels of the state moves offered, once the membership is loaded. */
-async function moves() {
-  await waitFor(async () => expect((await details()).textContent).toContain("Owner"));
-  const group = within(await screen.findByRole("main")).queryByRole("group", { name: "Change state" });
-  return group ? within(group).getAllByRole("button").map((button) => button.textContent) : [];
-}
-
-describe("the line under a track's name", () => {
-  test("shows the part, linking to its page, the state, the owner, and the tracks it was split from and split off to, each linking to it", async () => {
-    fakeApi({
-      tracks: [
-        track(TRACK_ID, "Long windows", { state: "building", split_from_track_id: SOURCE_ID }),
-        track(SOURCE_ID, "Readings"),
-        track(SPLIT_ID, "Aggregated readings", { split_from_track_id: TRACK_ID }),
+describe("the state moves in a track's header", () => {
+  test("the owner of a planning track gets Start building as the primary action, which moves it to building, and Drop track in the menu", async () => {
+    const api = fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
+    renderAt(TRACK_PATH);
+    await ready();
+    expect(await headerMoves()).toEqual({
+      primary: ["Start building", true],
+      items: [
+        ["Hand over…", true],
+        ["Copy link", true],
+        ["Drop track…", true],
       ],
-      members: [member("m-me", USER.id)],
     });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    const line = await details();
-    await waitFor(() => expect(line.textContent).toContain("Owner You"));
-    expect(within(line).getByRole("link", { name: "Wision" }).getAttribute("href")).toBe(`${PROJECT_PATH}/parts/${WISION}`);
-    expect(within(line).getByText("building")).toBeTruthy();
-    expect(line.textContent).toContain("Split from Readings");
-    expect(within(line).getByRole("link", { name: "Readings" }).getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SOURCE_ID}`);
-    expect(line.textContent).toContain("Split off to Aggregated readings");
-    expect(within(line).getByRole("link", { name: "Aggregated readings" }).getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SPLIT_ID}`);
+    fireEvent.click(within(screen.getByRole("group", { name: "Actions" })).getByRole("button", { name: "Start building" }));
+    await waitFor(() => expect(stateWrites(api)).toEqual([{ state: "building" }]));
   });
 
-  test("leaves out the split links of a track that has none", async () => {
-    fakeApi({ tracks: [track(TRACK_ID, "Long windows")], members: [member("m-me", USER.id)] });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    const line = await details();
-    await waitFor(() => expect(line.textContent).toContain("Owner You"));
-    expect(line.textContent).not.toMatch(/split/i);
-  });
-});
-
-describe("the state moves on a track page", () => {
-  test("the owner of a planning track may start building or drop it, and a move goes to the state API", async () => {
-    const api = fakeApi({ tracks: [track(TRACK_ID, "Long windows")], members: [member("m-me", USER.id)] });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    expect(await moves()).toEqual(["Start building", "Drop"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start building" }));
-    await waitFor(() => expect(api.posted).toEqual([{ path: `${API}/tracks/${TRACK_ID}/state`, body: { state: "building" } }]));
-  });
-
-  test("the owner of a building track may move it back to planning, mark it done or drop it", async () => {
-    fakeApi({ tracks: [track(TRACK_ID, "Long windows", { state: "building" })], members: [member("m-me", USER.id)] });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    expect(await moves()).toEqual(["Back to planning", "Mark done", "Drop"]);
-  });
-
-  test("an admin who does not own a building track may make every move but done", async () => {
-    fakeApi({
-      tracks: [track(TRACK_ID, "Long windows", { state: "building", owner_user_id: OTHER })],
-      members: [member("m-me", USER.id, "admin"), member("m-other", OTHER)],
+  test("the owner of a building track gets Mark done first, and Back to planning and Drop track in the menu", async () => {
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows", { state: "building" })] });
+    renderAt(TRACK_PATH);
+    await ready();
+    expect(await headerMoves()).toEqual({
+      primary: ["Mark done", true],
+      items: [
+        ["Hand over…", true],
+        ["Copy link", true],
+        ["Back to planning", true],
+        ["Drop track…", true],
+      ],
     });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    expect(await moves()).toEqual(["Back to planning", "Drop"]);
   });
 
-  test("a member who neither owns the track nor is an admin gets no moves, and neither does a done or dropped track", async () => {
-    fakeApi({
-      tracks: [track(TRACK_ID, "Long windows", { state: "building", owner_user_id: OTHER })],
-      members: [member("m-me", USER.id), member("m-other", OTHER)],
+  test("an admin who does not own a building track may make every move but done, which is off", async () => {
+    fakeTrackApi({
+      tracks: [track(TRACK_ID, "Long windows", { state: "building", owner_user_id: BOB })],
+      members: [member("m-alice", ALICE.id, ALICE.email, "admin"), member("m-bob", BOB, "bob@example.com")],
     });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    expect(await moves()).toEqual([]);
-    cleanup();
+    renderAt(TRACK_PATH);
+    await ready();
+    expect(await headerMoves()).toEqual({
+      primary: ["Back to planning", true],
+      items: [
+        ["Hand over…", true],
+        ["Copy link", true],
+        ["Mark done", false],
+        ["Drop track…", true],
+      ],
+    });
+  });
 
+  test("a member who neither owns the track nor is an admin sees the moves and Hand over off, and why", async () => {
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows", { owner_user_id: BOB })] });
+    renderAt(TRACK_PATH);
+    const panel = await ready();
+    expect(await headerMoves()).toEqual({
+      primary: ["Start building", false],
+      items: [
+        ["Hand over…", false],
+        ["Copy link", true],
+        ["Drop track…", false],
+      ],
+    });
+    expect(within(screen.getByRole("group", { name: "Actions" })).getByRole("button", { name: "Start building" }).getAttribute("title")).toBe(
+      "Only Bob or an admin moves this track",
+    );
+    expect(panel.textContent).toContain("Only Bob or an admin hands it over");
+  });
+
+  test("a done or a dropped track offers no move", async () => {
     for (const state of ["done", "dropped"]) {
-      fakeApi({ tracks: [track(TRACK_ID, "Long windows", { state })], members: [member("m-me", USER.id)] });
-      renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-      expect(await moves(), state).toEqual([]);
+      fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows", { state })] });
+      renderAt(TRACK_PATH);
+      await ready();
+      const { primary, items } = await headerMoves();
+      expect(primary, state).toBeNull();
+      expect(items.map(([label]) => label), state).toEqual(["Hand over…", "Copy link"]);
       cleanup();
     }
   });
 
-  test("a move the API refuses shows its error in place", async () => {
-    fakeApi({
-      tracks: [track(TRACK_ID, "Long windows", { state: "building" })],
-      members: [member("m-me", USER.id)],
-      refuse: { status: 422, error: "invalid_transition" },
+  test("Drop track asks first: Cancel moves nothing, confirming drops it", async () => {
+    const api = fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
+    renderAt(TRACK_PATH);
+    await ready();
+    const drop = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+      fireEvent.click(within(await screen.findByRole("menu")).getByRole("menuitem", { name: "Drop track…" }));
+      return screen.findByRole("dialog", { name: "Drop Long windows?" });
+    };
+    fireEvent.click(within(await drop()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(stateWrites(api)).toEqual([]);
+
+    fireEvent.click(within(await drop()).getByRole("button", { name: "Drop track" }));
+    await waitFor(() => expect(stateWrites(api)).toEqual([{ state: "dropped" }]));
+  });
+
+  test("a move the API refuses shows its error under the title", async () => {
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")], refuse: { status: 422, error: "invalid_transition" } });
+    renderAt(TRACK_PATH);
+    await ready();
+    fireEvent.click(within(await screen.findByRole("group", { name: "Actions" })).getByRole("button", { name: "Start building" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("A track in planning cannot move to building.");
+  });
+});
+
+describe("handing a track over", () => {
+  test("the owner picks another member by name in the dialog, and the track goes to that membership", async () => {
+    const api = fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
+    renderAt(TRACK_PATH);
+    const panel = await ready();
+    fireEvent.click(within(panel).getByRole("button", { name: "Hand over" }));
+    const dialog = await screen.findByRole("dialog", { name: "Hand over" });
+    const group = within(dialog).getByRole("radiogroup", { name: "Hand over to" });
+    expect(within(group).getAllByRole("radio")).toEqual([
+      within(group).getByRole("radio", { name: "Bob" }),
+      within(group).getByRole("radio", { name: "Cara" }),
+    ]);
+    fireEvent.click(within(group).getByRole("radio", { name: "Cara" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Hand over" }));
+    await waitFor(() =>
+      expect(api.calls.filter((call) => call.method === "POST")).toEqual([
+        { method: "POST", path: `${API}/tracks/${TRACK_ID}/owner`, body: { membership_id: "m-cara" } },
+      ]),
+    );
+  });
+});
+
+describe("a track's properties panel", () => {
+  test("shows its part, the features it changes and the tracks it was split from and off to, each linking to its page, and its progress", async () => {
+    fakeTrackApi({
+      tracks: [
+        track(TRACK_ID, "Long windows", { state: "building", split_from_track_id: SOURCE_ID }),
+        track(SOURCE_ID, "Readings"),
+        track(SPLIT_ID, "Aggregated readings", { part_id: IOT, split_from_track_id: TRACK_ID, owner_user_id: CARA }),
+      ],
+      stories: { [TRACK_ID]: { done: 1, total: 3 } },
+      trackFeatures: { [TRACK_ID]: [featureBody(ANALYZE, "Analyze")] },
     });
-    renderAt(`${PROJECT_PATH}/tracks/${TRACK_ID}`);
-    await moves();
-    fireEvent.click(screen.getByRole("button", { name: "Mark done" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("A track in building cannot move to done.");
+    renderAt(TRACK_PATH);
+    const panel = await ready();
+    expect(within(panel).getByRole("link", { name: "Wision" }).getAttribute("href")).toBe(`${PROJECT_PATH}/parts/${WISION}`);
+    expect((await within(panel).findByRole("link", { name: "Analyze" })).getAttribute("href")).toBe(
+      `${PROJECT_PATH}/parts/${WISION}/features/${ANALYZE}`,
+    );
+    expect(panel.textContent).toContain("1 of 3 stories");
+    const from = within(panel).getByRole("link", { name: /Readings.*Split from/ });
+    expect(from.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SOURCE_ID}`);
+    const to = within(panel).getByRole("link", { name: /Aggregated readings.*Split off to/ });
+    expect(to.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SPLIT_ID}`);
+    expect(to.textContent).toContain("iot-service · Cara");
+  });
+
+  test("names a story of another track that blocks one of its own, with both keys, linking to that track's board", async () => {
+    fakeTrackApi({
+      tracks: [track(TRACK_ID, "Long windows"), track(SPLIT_ID, "Aggregated readings", { part_id: IOT })],
+      linked: {
+        [TRACK_ID]: [
+          {
+            id: "s-their",
+            key: "US-3",
+            title: "Readings per hour",
+            track_id: SPLIT_ID,
+            track_name: "Aggregated readings",
+            part_id: IOT,
+            part_name: "iot-service",
+            status: "review",
+            relation: "blocks",
+            story_id: "s-ours",
+            story_key: "US-1",
+            blocker_dropped: false,
+          },
+        ],
+      },
+    });
+    renderAt(TRACK_PATH);
+    const panel = await ready();
+    const blocker = await within(panel).findByRole("link", { name: /Blocked by iot-service US-3/ });
+    expect(blocker.textContent).toContain("Our US-1 waits · theirs is in review");
+    expect(blocker.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SPLIT_ID}/board`);
+  });
+
+  test("a track the project does not have says so", async () => {
+    fakeTrackApi({ tracks: [track(SOURCE_ID, "Readings")], members: MEMBERS });
+    renderAt(TRACK_PATH);
+    expect(await screen.findByRole("heading", { level: 1, name: "Track not found" })).toBeTruthy();
   });
 });

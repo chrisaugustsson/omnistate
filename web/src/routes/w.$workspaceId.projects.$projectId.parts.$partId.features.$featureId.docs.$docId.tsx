@@ -1,14 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { DocPage, validateDocSearch } from "@/components/viewer/doc-page";
+import { FeatureDocs } from "@/components/track/feature-docs";
+import { useFeature } from "@/components/track/feature-data";
+import { validateDocSearch } from "@/components/viewer/doc-page";
 
-// A doc on a feature, open in the feature's Docs tab.
+// A doc on a feature, open in the feature's Docs tab beside the list.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId")({
-  staticData: { bleed: true },
   validateSearch: validateDocSearch,
   component: FeatureDoc,
 });
 
 function FeatureDoc() {
-  const { workspaceId, projectId, docId } = Route.useParams();
-  return <DocPage workspaceId={workspaceId} projectId={projectId} docId={docId} search={Route.useSearch()} />;
+  const { docId } = Route.useParams();
+  const { docs } = useFeature();
+  return (
+    <FeatureDocs
+      docs={docs}
+      current={docId}
+      search={Route.useSearch()}
+      empty={{ title: "No docs yet", body: "Docs written about this feature (how it works, its tables) show here." }}
+    />
+  );
 }

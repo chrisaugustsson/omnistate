@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Page } from "@/components/shell/page";
+import { TrackDocTab } from "@/components/track/track-docs";
+import { validateDocSearch } from "@/components/viewer/doc-page";
 
-// A track's Design tab: its docs in the viewer. Slice S3 builds it; until then
-// the track's docs are listed on its Spec tab and open at docs/$docId.
+// A track's Design tab: its design boards (its UI docs) in the design viewer.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId/design")({
+  validateSearch: validateDocSearch,
   component: Design,
 });
 
 function Design() {
-  return <Page object><p className="text-ink-2">The track&rsquo;s design: its layout options and boards.</p></Page>;
+  return <TrackDocTab tab="design" search={Route.useSearch()} />;
 }

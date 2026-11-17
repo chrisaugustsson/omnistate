@@ -1,13 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ScopePage } from "@/components/project/scope-page";
+import { TrackDocTab } from "@/components/track/track-docs";
+import { validateDocSearch } from "@/components/viewer/doc-page";
 
-// A track's Spec tab. Until S3 builds it, the track's scope page as it was:
-// the same page as the project Overview's, over the track's docs and threads.
+// A track's Spec tab: its spec in the doc viewer, or who writes it while it has none.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId/")({
-  component: TrackScope,
+  validateSearch: validateDocSearch,
+  component: Spec,
 });
 
-function TrackScope() {
-  const { workspaceId, projectId, trackId } = Route.useParams();
-  return <ScopePage workspaceId={workspaceId} projectId={projectId} trackId={trackId} />;
+function Spec() {
+  return <TrackDocTab tab="spec" search={Route.useSearch()} />;
 }

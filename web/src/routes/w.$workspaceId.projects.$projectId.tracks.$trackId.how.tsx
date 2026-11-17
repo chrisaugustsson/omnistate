@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Page } from "@/components/shell/page";
+import { TrackDocTab } from "@/components/track/track-docs";
+import { validateDocSearch } from "@/components/viewer/doc-page";
 
-// A track's How tab: its docs in the viewer. Slice S3 builds it; until then
-// the track's docs are listed on its Spec tab and open at docs/$docId.
+// A track's How tab: how it is built (its architecture and tables docs) in the doc viewer.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId/how")({
+  validateSearch: validateDocSearch,
   component: How,
 });
 
 function How() {
-  return <Page object><p className="text-ink-2">How the track is built: its operations and tables.</p></Page>;
+  return <TrackDocTab tab="how" search={Route.useSearch()} />;
 }

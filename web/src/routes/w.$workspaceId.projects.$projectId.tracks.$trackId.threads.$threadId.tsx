@@ -1,12 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ThreadView } from "@/components/thread/thread-view";
+import { TrackThreads } from "@/components/track/track-threads";
 
-// A thread of the track, open in its Threads tab: followed live, with the form to post.
+// A thread of the track, open in its Threads tab under the list: followed live, with the form to post.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId")({
   component: Thread,
 });
 
 function Thread() {
-  const { workspaceId, projectId, threadId } = Route.useParams();
-  return <ThreadView workspaceId={workspaceId} projectId={projectId} threadId={threadId} />;
+  const { threadId } = Route.useParams();
+  return <TrackThreads threadId={threadId} />;
 }

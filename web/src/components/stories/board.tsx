@@ -5,11 +5,9 @@ import { ApiError } from "@/api/client";
 import { cancelStory, checkCriterion, createStory, loadStories, patchStory } from "@/api/stories";
 import type { LinkedBody, StoryBody } from "@/api/generated";
 import { Button } from "@/components/ui/button";
-import { PageHeader } from "@/components/page-header";
-import { Empty } from "@/components/project/items";
+import { StateIcon } from "@/components/shell/state-icon";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useProjectEvents } from "@/live/context";
-import { useProjectName } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +62,9 @@ type Steer = {
 
 const CONFLICT = "Someone changed this story; it has been reloaded";
 
+/** A card's quiet actions: small, muted, filled on hover. */
+const CARD_ACTION = "h-6 rounded-control px-1.5 text-meta font-medium text-ink-2 hover:bg-hover hover:text-ink";
+
 function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, StoryBody>; steer: Steer }) {
   const holder = story.holder as { run?: string; stage?: string } | null | undefined;
   const findings = unresolved(story);
@@ -78,9 +79,9 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
   };
   const others = steer.stories.filter((other) => other.id !== story.id);
   return (
-    <li className="space-y-2 rounded-xl border bg-card px-3 py-2.5 text-sm">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="font-medium tabular-nums">{story.key}</span>
+    <li className="space-y-2 rounded-control border border-line bg-sheet px-3 py-2.5 shadow-card">
+      <div className="flex items-center gap-2 text-meta text-ink-3">
+        <span className="font-mono text-[12px] tabular-nums">{story.key}</span>
         {(story.status === "implemented" || story.status === "reviewed") && <Badge tone="neutral">Waiting</Badge>}
         {story.priority === 0 ? (
           <span className="ml-auto tabular-nums">P0</span>
@@ -98,7 +99,7 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
           </select>
         )}
       </div>
-      <p className="font-medium">{story.title}</p>
+      <p className="font-medium text-ink">{story.title}</p>
       {holder && (
         <p className="text-xs text-muted-foreground">
           {holder.stage} · {holder.run}
@@ -153,7 +154,7 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
           {message}
         </p>
       )}
-      <div className="flex flex-wrap gap-1.5">
+      <div className="-ml-1.5 flex flex-wrap gap-0.5">
         <Button
           type="button"
           size="sm"
@@ -161,11 +162,12 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
           disabled={isClosed}
           aria-expanded={editing}
           onClick={() => setEditing(!editing)}
+          className={CARD_ACTION}
         >
           Edit blockers
         </Button>
         {!isClosed && !confirming && (
-          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirming(true)}>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirming(true)} className={CARD_ACTION}>
             Cancel story
           </Button>
         )}
@@ -290,15 +292,17 @@ function AddStory({ onAdd, onClose }: { onAdd: (body: Parameters<typeof createSt
 /** The stories of other tracks that block or are blocked by this track's stories: read-only, each opening its own track's board. */
 function LinkedTasks({ workspaceId, projectId, linked }: { workspaceId: string; projectId: string; linked: LinkedBody[] }) {
   return (
-    <section aria-label="Linked tasks" className="space-y-2">
-      <h2 className="text-sm font-medium">Linked tasks</h2>
+    <section aria-label="Linked tasks" className="pt-6">
+      <h2 className="mb-2 flex h-8 items-center gap-2 text-section font-semibold">
+        Linked tasks on other parts <span className="font-medium text-ink-3 tabular-nums">{linked.length}</span>
+      </h2>
       <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {linked.map((task) => (
           <li key={`${task.id}-${task.relation}-${task.story_id}`}>
             <Link
               to="/w/$workspaceId/projects/$projectId/tracks/$trackId/board"
               params={{ workspaceId, projectId, trackId: task.track_id }}
-              className="block space-y-1 rounded-xl border bg-card px-3 py-2.5 text-sm"
+              className="block space-y-1 rounded-control border border-line bg-sheet px-3 py-2.5 transition-colors hover:bg-frame"
             >
               <span className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-medium tabular-nums">{task.key}</span>
@@ -346,7 +350,6 @@ export function Board({
   useProjectEvents(projectId, (event) => {
     if (event.event.startsWith("story.")) reload();
   });
-  const name = useProjectName(workspaceId, projectId);
   const [priority, setPriority] = useState("all");
   const [showCancelled, setShowCancelled] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -400,22 +403,27 @@ export function Board({
   const columns = showCancelled ? [...COLUMNS, CANCELLED] : COLUMNS;
 
   return (
-    <main className="mx-auto max-w-[96rem] px-5 py-8 md:px-10 md:py-12">
-      <PageHeader eyebrow={name ?? "Project"} title="Board" description="The stories of the track, by where they are." />
+    <div>
       {failed && (
-        <Alert variant="destructive" className="mt-6">
+        <Alert variant="destructive">
           <AlertDescription>The board could not be loaded. Try again in a moment.</AlertDescription>
         </Alert>
       )}
       {stories && (
-        <div className="mt-6 space-y-4">
-          <div className="flex flex-wrap items-center gap-4 text-sm">
-            <label className="flex items-center gap-2">
+        <div className="space-y-4">
+          <div className="flex min-h-8 flex-wrap items-center gap-4">
+            <p className="text-ink-3">
+              <span className="font-medium text-ink">
+                {stories.filter((story) => story.status === "done").length} of {stories.filter((story) => story.status !== "cancelled").length}
+              </span>{" "}
+              stories done
+            </p>
+            <label className="ml-auto flex items-center gap-2 text-ink-2">
               Priority
               <select
                 value={priority}
                 onChange={(event) => setPriority(event.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                className="h-(--control-h) rounded-control border border-line-strong bg-sheet px-1.5 text-ink"
               >
                 {PRIORITIES.map((value) => (
                   <option key={value} value={value}>
@@ -424,17 +432,16 @@ export function Board({
                 ))}
               </select>
             </label>
-            <label className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-ink-2">
               <input type="checkbox" checked={showCancelled} onChange={(event) => setShowCancelled(event.target.checked)} />
               Show cancelled
             </label>
-            <Button type="button" size="sm" variant="outline" className="ml-auto" onClick={() => setAdding(!adding)}>
+            <Button type="button" size="sm" variant="outline" className="h-(--control-h) rounded-control border-line-strong px-2.5" onClick={() => setAdding(!adding)}>
               Add story
             </Button>
           </div>
           {adding && <AddStory onAdd={add} onClose={() => setAdding(false)} />}
-          {linked.length > 0 && <LinkedTasks workspaceId={workspaceId} projectId={projectId} linked={linked} />}
-          <div className="flex gap-4 overflow-x-auto pb-2">
+          <div className="flex gap-2 overflow-x-auto pb-2">
             {columns.map((column) => {
               const cards = shown
                 .filter((story) => column.statuses.includes(story.status))
@@ -445,15 +452,16 @@ export function Board({
                     a.number - b.number,
                 );
               return (
-                <section key={column.statuses[0]} aria-label={column.title} className="w-72 shrink-0 space-y-3">
-                  <h2 className="flex items-center gap-2 text-sm font-medium">
+                <section key={column.statuses[0]} aria-label={column.title} className="min-w-[188px] flex-1 basis-0 self-start rounded-card bg-well p-1.5 pb-2">
+                  <h2 className="flex h-8 items-center gap-2 px-1.5 font-medium text-ink">
+                    <StateIcon state={column.statuses[column.statuses.length - 1]} />
                     {column.title}
-                    <span className="text-xs text-muted-foreground tabular-nums">{cards.length}</span>
+                    <span className="font-medium text-ink-3 tabular-nums">{cards.length}</span>
                   </h2>
                   {cards.length === 0 ? (
-                    <Empty>Nothing here</Empty>
+                    <p className="px-1.5 pt-1 text-meta text-ink-3">None yet</p>
                   ) : (
-                    <ul className="space-y-2">
+                    <ul className="space-y-1.5">
                       {cards.map((story) => (
                         <Card key={story.id} story={story} byId={byId} steer={steer} />
                       ))}
@@ -463,8 +471,9 @@ export function Board({
               );
             })}
           </div>
+          {linked.length > 0 && <LinkedTasks workspaceId={workspaceId} projectId={projectId} linked={linked} />}
         </div>
       )}
-    </main>
+    </div>
   );
 }

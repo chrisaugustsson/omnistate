@@ -47,12 +47,15 @@ export async function loadProjectDecisions(workspaceId: string, projectId: strin
   });
 }
 
-/** Records a decision on a track; only the track's owner may. */
+/**
+ * Records a decision on a track; only the track's owner may. It is about the
+ * track, or about one of `feature_id`, `part_id` or the whole project (`about_project`).
+ */
 export async function recordDecision(
   workspaceId: string,
   projectId: string,
   trackId: string,
-  decision: { question: string; decision: string; why: string; feature_id: string | null },
+  decision: { question: string; decision: string; why: string; feature_id: string | null; part_id?: string | null; about_project?: boolean },
 ): Promise<DecisionBody> {
   const answer = await callApi("POST", `${base(workspaceId, projectId)}/tracks/${trackId}/decisions`, {
     body: decision,

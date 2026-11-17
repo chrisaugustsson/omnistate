@@ -1,16 +1,23 @@
-import { Outlet, createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { Link, Outlet, createFileRoute, useLocation } from "@tanstack/react-router";
 import { ObjectHeader } from "@/components/shell/object-header";
 import { TabLink } from "@/components/shell/in-page-tabs";
+import { Page } from "@/components/shell/page";
 import { PathLink } from "@/components/shell/page-path";
 import { partLink, projectLink, useScope } from "@/components/shell/scope";
-import { useHome } from "@/lib/use-home";
+import { NextRow, TrackHeaderActions, useTrackActions } from "@/components/track/track-actions";
+import { TrackProvider, useTrackData } from "@/components/track/track-data";
+import { TrackPanel } from "@/components/track/track-panel";
+import { linkClass } from "@/components/track/ui";
 
 // A track's pages. The bar keeps the track's part with Tracks lit; the page
-// starts with the path (Tracks › the track) and the track's own tabs: Spec,
-// Behaviour, Design, How, Board, Threads, Decisions. Slice S3 builds the tabs'
-// content, the title row and the properties panel; until then each tab's old
-// page brings its own title. The Behaviour screen and an open doc fill the view
-// instead (staticData.bleed).
+// starts with the path (Tracks › the track), the title with the track's
+// actions (the properties toggle, the "…" menu and its next state move), its
+// description, a quiet Next row while behaviour questions wait, and its tabs:
+// Spec, Behaviour, Design, How, Board, Threads, Decisions. The tab's content
+// sits beside the properties panel; Behaviour and Board take the full width
+// until the panel is asked for. A doc opened full view fills the view instead
+// (staticData.bleed). The layout loads the track's data once for every tab.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId")({
   staticData: { scope: "track", tab: "tracks" },
   component: TrackLayout,
@@ -18,22 +25,50 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks
 
 const TRACK = "/w/$workspaceId/projects/$projectId/tracks/$trackId";
 
+/** The tabs that want the full width: the panel stays closed there until it is asked for. */
+const WIDE = new Set(["behaviour", "board"]);
+
 function TrackLayout() {
   const { workspaceId, projectId, trackId } = Route.useParams();
   const { bleed } = useScope();
-  const { home } = useHome(workspaceId, projectId);
-  const summary = home?.tracks?.find((candidate) => candidate.track.id === trackId);
+  const tab = useLocation({ select: (location) => location.pathname.split(`/tracks/${trackId}/`)[1]?.split("/")[0] ?? "" });
+  const data = useTrackData(workspaceId, projectId, trackId, tab === "behaviour");
+  const actions = useTrackActions(data);
+  const wide = WIDE.has(tab);
+  const [panelBeside, setPanelBeside] = useState(true);
+  const [panelWide, setPanelWide] = useState(false);
+  const panel = wide ? panelWide : panelBeside;
   const params = { workspaceId, projectId, trackId };
-  // No header while the page fills the view, nor for a track the project does not have.
-  const header = !bleed && !(home && !summary);
-  const stories = summary?.stories;
-  const threads = home?.threads.filter((thread) => thread.track_id === trackId).length;
+  const { summary, missing, docs, boards, onService, openQuestions, threads, decisions } = data;
   const tracks = summary
     ? partLink(workspaceId, projectId, summary.track.part_id, "tracks")
     : projectLink(workspaceId, projectId, "tracks");
+
+  if (bleed) {
+    return (
+      <TrackProvider value={data}>
+        <Outlet />
+      </TrackProvider>
+    );
+  }
+  if (missing) {
+    return (
+      <Page>
+        <h1 className="text-title font-semibold">Track not found</h1>
+        <p className="mt-2 text-ink-2">
+          The project has no such track, or it was deleted.{" "}
+          <Link {...projectLink(workspaceId, projectId, "tracks")} className={linkClass}>
+            Go to the project&rsquo;s tracks
+          </Link>
+        </p>
+      </Page>
+    );
+  }
+  const stories = summary?.stories;
+  const showDesign = !onService || docs.design.length > 0;
   return (
-    <>
-      {header && (
+    <TrackProvider value={data}>
+      <main className="flex min-h-full flex-col">
         <ObjectHeader
           path={[
             <PathLink key="tracks" {...tracks} activeOptions={{ exact: true }}>
@@ -43,36 +78,70 @@ function TrackLayout() {
               {summary?.track.name ?? ""}
             </PathLink>,
           ]}
+          title={summary?.track.name ?? ""}
+          actions={
+            summary && (
+              <TrackHeaderActions data={data} actions={actions} panel={panel} onPanel={() => (wide ? setPanelWide : setPanelBeside)(!panel)} />
+            )
+          }
+          lede={summary?.track.description ? <span className="whitespace-pre-line">{summary.track.description}</span> : undefined}
+          notice={
+            <>
+              <NextRow data={data} />
+              {actions.error && (
+                <p role="alert" className="mt-3 text-danger-ink">
+                  {actions.error}
+                </p>
+              )}
+            </>
+          }
           tabsLabel="Track"
           tabs={
             <>
               <TabLink to={TRACK} params={params} activeOptions={{ exact: true }}>
                 Spec
               </TabLink>
-              <TabLink to={`${TRACK}/behaviour`} params={params}>
+              <TabLink
+                to={`${TRACK}/behaviour`}
+                params={params}
+                count={
+                  openQuestions > 0 ? (
+                    <span title={`${openQuestions} open ${openQuestions === 1 ? "question" : "questions"}`} className="rounded-badge bg-brand-tint px-1.5 py-px text-meta text-brand-ink">
+                      {openQuestions}
+                    </span>
+                  ) : undefined
+                }
+              >
                 Behaviour
               </TabLink>
-              <TabLink to={`${TRACK}/design`} params={params}>
-                Design
-              </TabLink>
+              {showDesign && (
+                <TabLink to={`${TRACK}/design`} params={params} count={boards || undefined}>
+                  Design
+                </TabLink>
+              )}
               <TabLink to={`${TRACK}/how`} params={params}>
                 How
               </TabLink>
               <TabLink to={`${TRACK}/board`} params={params} count={stories ? `${stories.done}/${stories.total}` : undefined}>
                 Board
               </TabLink>
-              <TabLink to={`${TRACK}/threads`} params={params} count={threads || undefined}>
+              <TabLink to={`${TRACK}/threads`} params={params} count={threads.length || undefined}>
                 Threads
               </TabLink>
-              <TabLink to={`${TRACK}/decisions`} params={params}>
+              <TabLink to={`${TRACK}/decisions`} params={params} count={decisions?.length || undefined}>
                 Decisions
               </TabLink>
             </>
           }
         />
-      )}
-      {/* The outlet keeps its place whether the header shows or not, so the tab's page is not mounted again. */}
-      <Outlet />
-    </>
+        <div className="mx-auto flex w-full max-w-(--page-max) flex-1 flex-col gap-12 px-4 pt-6 pb-10 md:px-(--page-pad) min-[960px]:flex-row">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <Outlet />
+          </div>
+          {panel && summary && <TrackPanel data={data} actions={actions} className="w-full shrink-0 self-start min-[960px]:w-(--panel-w)" />}
+        </div>
+        {actions.dialog}
+      </main>
+    </TrackProvider>
   );
 }

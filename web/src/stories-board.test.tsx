@@ -159,7 +159,15 @@ function fakeApi(stories: Story[], linked: ReturnType<typeof linkedTask>[] = [])
           return json(200, {
             project_id: PROJECT_ID,
             app: { last_activity: null },
-            tracks: [],
+            tracks: [
+              {
+                track: { id: TRACK_ID, project_id: PROJECT_ID, part_id: INGEST_PART_ID, state: "building", name: "Checkout", description: "", created_at: AT },
+                docs: 0,
+                waiting: 0,
+                stories: { total: api.stories.length, open: 0, done: 0 },
+                last_activity: null,
+              },
+            ],
             docs: [],
             threads: [],
             waiting: { comments: [] },

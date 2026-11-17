@@ -8,6 +8,7 @@ const renamed = operations["PATCH /api/v1/w/{workspace_id}/projects/{project_id}
 const linkedTracks =
   operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks"];
 const ofTrack = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features"];
+const linked = operations["POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features"];
 const docs = operations["GET /api/v1/w/{workspace_id}/projects/{project_id}/docs"];
 
 const base = (workspaceId: string, projectId: string) => `/api/v1/w/${workspaceId}/projects/${projectId}`;
@@ -100,4 +101,13 @@ export async function loadTrackFeatures(workspaceId: string, projectId: string, 
     response: ofTrack.responses["200"],
   });
   return answer.features;
+}
+
+/** Links a track to a feature it changes; only the track's owner may. */
+export async function linkTrackFeature(workspaceId: string, projectId: string, trackId: string, featureId: string): Promise<FeatureBody> {
+  const answer = await callApi("POST", `${base(workspaceId, projectId)}/tracks/${trackId}/features`, {
+    body: { feature_id: featureId },
+    response: linked.responses["200"],
+  });
+  return answer.feature;
 }

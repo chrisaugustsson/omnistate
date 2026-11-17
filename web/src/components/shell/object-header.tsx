@@ -11,18 +11,24 @@ import { PagePath } from "./page-path";
  */
 export function ObjectHeader({
   path,
+  mark,
   title,
   actions,
   lede,
+  notice,
   tabsLabel,
   tabs,
 }: {
   /** The steps of the path, PathLinks; the last is the object, marked aria-current. */
   path: ReactNode[];
+  /** A mark before the title (a feature's icon). */
+  mark?: ReactNode;
   /** The object's name as the page title; leave out while the tab's own page still brings one. */
   title?: ReactNode;
   actions?: ReactNode;
   lede?: ReactNode;
+  /** A quiet row under the lede, above the tabs: what comes next, or the track changing a feature. */
+  notice?: ReactNode;
   /** The tabs' name ("Track", "Feature"). */
   tabsLabel: string;
   /** TabLinks. */
@@ -31,8 +37,9 @@ export function ObjectHeader({
   return (
     <div className="mx-auto w-full max-w-(--page-max) px-4 pt-5 md:px-(--page-pad)">
       <PagePath>{path}</PagePath>
-      {(title || actions) && <PageHead title={title} actions={actions} />}
+      {(title || actions) && <PageHead mark={mark} title={title} actions={actions} />}
       {lede && <p className="mt-1.5 max-w-(--main-max) text-em text-ink-2">{lede}</p>}
+      {notice}
       <InPageTabs label={tabsLabel} className="mt-6">
         {tabs}
       </InPageTabs>
