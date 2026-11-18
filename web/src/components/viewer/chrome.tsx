@@ -1,7 +1,8 @@
 import { Fragment, type ReactNode, type SelectHTMLAttributes } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight, PanelRightClose, PanelRightOpen, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, History, MessageSquare, PanelRightClose, PanelRightOpen, TriangleAlert } from "lucide-react";
 import { PILLARS } from "@/components/project/items";
+import { buttonClass } from "@/components/track/ui";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useHome } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
@@ -131,6 +132,61 @@ export function ViewerToolbar({
         </button>
       )}
     </header>
+  );
+}
+
+/**
+ * The one slim bar over a doc that reads as part of a page (a track's Spec, How
+ * and Design tabs, a Docs page): who wrote it and when (`meta`), then on the
+ * right the viewer's own controls (`children`), the doc's Activity, the
+ * comments toggle and the page's `actions` (Full view).
+ */
+export function PageBar({
+  workspaceId,
+  projectId,
+  docId,
+  meta,
+  review,
+  actions,
+  children,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  meta?: ReactNode;
+  review: { shown: boolean; onShown: (shown: boolean) => void };
+  actions?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 text-meta text-ink-3">
+      {meta}
+      <div className="ml-auto flex flex-wrap items-center gap-1">
+        {children}
+        <Link
+          to="/w/$workspaceId/projects/$projectId/docs/$docId/activity"
+          params={{ workspaceId, projectId, docId }}
+          className={buttonClass({ variant: "ghost", size: "sm" })}
+        >
+          <History aria-hidden strokeWidth={2.25} />
+          Activity
+        </Link>
+        <button
+          type="button"
+          aria-label={review.shown ? "Hide the review pane" : "Show the review pane"}
+          aria-expanded={review.shown}
+          aria-controls="review-pane"
+          aria-pressed={review.shown}
+          title={review.shown ? "Hide the comments" : "Show the comments"}
+          className={buttonClass({ variant: "ghost", size: "sm" })}
+          onClick={() => review.onShown(!review.shown)}
+        >
+          <MessageSquare aria-hidden strokeWidth={2.25} />
+          Comments
+        </button>
+        {actions}
+      </div>
+    </div>
   );
 }
 

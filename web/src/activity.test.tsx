@@ -168,7 +168,7 @@ describe("a doc's activity", () => {
     vi.restoreAllMocks();
   });
 
-  test("the doc's viewer has an Activity tab that opens the list of writes", async () => {
+  test("the doc's bar has an Activity link that opens the list of writes", async () => {
     fakeApi(doc("html", "Checkout PRD"), {
       [`${API}/docs/${DOC_ID}/html`]: { doc_id: DOC_ID, html: '<p data-omni-id="p0000001">Ship in a day.</p>' },
       [`${API}/comments?doc=${DOC_ID}`]: { project_id: PROJECT_ID, comments: [] },
@@ -177,8 +177,7 @@ describe("a doc's activity", () => {
     const router = renderAt(DOC_PATH);
     await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
 
-    const tabs = screen.getByRole("navigation", { name: "Doc views" });
-    fireEvent.click(within(tabs).getByRole("link", { name: "Activity" }));
+    fireEvent.click(screen.getByRole("link", { name: "Activity" }));
 
     await waitFor(() => expect(router.state.location.pathname).toBe(ACTIVITY_PATH));
     expect(await screen.findByRole("link", { name: /Created the doc/ })).toBeTruthy();

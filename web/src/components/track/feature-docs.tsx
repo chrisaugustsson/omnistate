@@ -1,14 +1,16 @@
 import { Link } from "@tanstack/react-router";
 import type { HomeDoc } from "@/api/generated";
-import { DocPage, type DocSearch } from "@/components/viewer/doc-page";
+import { OpenDoc } from "@/components/project/docs-pane";
+import type { DocSearch } from "@/components/viewer/doc-page";
 import { cn } from "@/lib/utils";
 import { DocGlyph } from "./feature-parts";
 import { useFeature } from "./feature-data";
 import { EmptyTab } from "./ui";
 
 // A feature's docs, as its Docs and Design tabs show them: the list grouped by
-// pillar on the left, the open doc in the viewer on the right, filling the room
-// under the tabs.
+// pillar on the left, the open doc on the right: page text with its title as
+// a heading, or a design's canvas filling the room under the tabs (the layout
+// then spans the window, featureCanvas).
 
 const PILLARS = [
   { pillar: "spec", title: "Spec" },
@@ -20,6 +22,14 @@ const PILLARS = [
 
 const item =
   "flex h-[30px] w-full items-center gap-2 rounded-control px-2 text-left font-medium whitespace-nowrap text-ink transition-colors duration-(--t-fast) hover:bg-hover focus-visible:shadow-focus focus-visible:outline-none aria-[current=page]:bg-selected aria-pressed:bg-selected";
+
+/** The doc a Docs or Design tab opens: `current`, or the first of the list when none is named. */
+export function openFeatureDoc(docs: HomeDoc[], current: string | undefined): HomeDoc | undefined {
+  const ordered = PILLARS.flatMap(({ pillar }) =>
+    docs.filter((doc) => doc.pillar === pillar).sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase())),
+  );
+  return ordered.find((doc) => doc.id === current) ?? (current ? undefined : ordered[0]);
+}
 
 export function FeatureDocs({
   docs,
@@ -45,9 +55,10 @@ export function FeatureDocs({
   const ordered = groups.flatMap((group) => group.docs);
   const open = ordered.find((doc) => doc.id === current) ?? (current ? undefined : ordered[0]);
   if (ordered.length === 0) return <EmptyTab title={empty.title}>{empty.body}</EmptyTab>;
+  const canvas = open?.kind === "design";
   return (
-    <div className="flex min-h-[560px] flex-1 flex-col overflow-hidden rounded-card border border-line md:flex-row">
-      <nav aria-label="Doc list" className="shrink-0 border-b border-line p-2 md:w-(--doclist-w) md:overflow-y-auto md:border-r md:border-b-0">
+    <div className={cn("flex flex-col gap-8 md:flex-row", canvas ? "min-h-0 flex-1 md:gap-6" : "items-start md:gap-12")}>
+      <nav aria-label="Doc list" className={cn("shrink-0 md:w-(--doclist-w)", canvas ? "md:overflow-y-auto" : "md:sticky md:top-6")}>
         {groups.map((group) => (
           <section key={group.title} aria-label={group.title} className="mt-2 first:mt-0">
             <h3 className="flex h-7 items-center px-2 text-meta font-medium text-ink-3">
@@ -80,14 +91,12 @@ export function FeatureDocs({
           </section>
         ))}
       </nav>
-      <div className={cn("relative min-h-[560px] min-w-0 flex-1")}>
-        <div className="absolute inset-0 overflow-auto">
-          {open ? (
-            <DocPage key={open.id} workspaceId={workspaceId} projectId={projectId} docId={open.id} search={search} />
-          ) : (
-            <p className="p-6 text-ink-2">This doc is not on the feature. Pick one from the list.</p>
-          )}
-        </div>
+      <div className={cn("min-w-0 flex-1", canvas && "flex min-h-0 flex-col")}>
+        {open ? (
+          <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={open.id} doc={open} search={search} heading="h2" />
+        ) : (
+          <p className="text-ink-2">This doc is not on the feature. Pick one from the list.</p>
+        )}
       </div>
     </div>
   );

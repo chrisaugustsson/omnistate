@@ -226,6 +226,7 @@ type Shown = {
   pins?: { node: string; count: number }[];
   selected?: string | null;
   reveal?: string;
+  fit?: boolean;
 };
 
 /** Posts `viewer.show` to the frame. */
@@ -563,6 +564,26 @@ document.getElementById("measured").textContent = "Measured " + window.innerWidt
         { timeout: PATIENCE },
       )
       .toBe(true);
+  });
+
+  test("told to fit, the frame tells the page the doc's height, again when it grows, and a block to reveal by its top", async () => {
+    const target = await openViewer();
+    await show(target, { html: TALL_DOC, fit: true }, "p0000160");
+    const docHeight = () => target.frame.evaluate(() => Math.ceil(document.getElementById("doc")!.getBoundingClientRect().bottom));
+    const sizes = async () => (await got(target)).filter((message) => message.type === "viewer.size") as { height?: number }[];
+    await expect.poll(async () => (await sizes()).at(-1)?.height, { timeout: PATIENCE }).toBe(await docHeight());
+    expect(await docHeight()).toBeGreaterThan(FRAME_HEIGHT);
+
+    const longer = TALL_DOC.replace("</section>", '<p data-omni-id="p0000161">A paragraph an agent added at the end.</p>\n</section>');
+    await show(target, { html: longer, fit: true }, "p0000161");
+    await expect.poll(async () => (await sizes()).at(-1)?.height, { timeout: PATIENCE }).toBe(await docHeight());
+
+    await post(target, { html: longer, fit: true, reveal: "p0000150" });
+    const top = await target.frame.evaluate(() => Math.round(document.querySelector('[data-omni-id="p0000150"]')!.getBoundingClientRect().top));
+    await expect
+      .poll(async () => (await got(target)).filter((message) => message.type === "viewer.reveal").map((message) => (message as { top?: number }).top), { timeout: PATIENCE })
+      .toEqual([top]);
+    expect(await target.frame.evaluate(() => window.scrollY), "the frame itself does not scroll").toBe(0);
   });
 
   test("a new head of the doc is drawn where the reader had scrolled to", async () => {

@@ -26,6 +26,18 @@ body { position: relative; padding: 1.5rem 3.5rem 4rem; }
   background-image: linear-gradient(rgba(9, 105, 218, 0.14), rgba(9, 105, 218, 0.14));
 }
 #pins { position: absolute; top: 0; left: 0; width: 0; height: 0; }
+html.fit, html.fit body { overflow: hidden; }
+html.fit body { padding: 4px 2.5rem 4px 6px; }
+html.fit .omni-doc { display: flow-root; margin: 0; }
+html.fit .omni-doc > :first-child, html.fit .omni-doc > :first-child > :first-child { margin-top: 0; }
+/* Read as page text: the app's type scale, in the default layer so a doc's own styles still win. */
+@layer omni-default {
+  html.fit .omni-doc { color: #18181b; font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.6; }
+  html.fit .omni-doc h1 { font-size: 20px; letter-spacing: -0.01em; }
+  html.fit .omni-doc h2 { padding-bottom: 0; border-bottom: 0; font-size: 16px; }
+  html.fit .omni-doc h3 { font-size: 15px; }
+  html.fit .omni-doc h1, html.fit .omni-doc h2, html.fit .omni-doc h3 { margin: 1.5em 0 0.4em; font-weight: 600; }
+}
 .omni-pin {
   position: absolute;
   min-width: 1.5rem;

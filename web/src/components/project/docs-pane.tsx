@@ -3,6 +3,7 @@ import { Link, Navigate } from "@tanstack/react-router";
 import { FileText, Palette, PenTool, Search } from "lucide-react";
 import type { HomeDoc } from "@/api/generated";
 import { matches } from "@/components/palette/search";
+import { DocByline } from "@/components/viewer/byline";
 import { DocPage, type DocSearch } from "@/components/viewer/doc-page";
 import { timeAgo } from "@/lib/format";
 import { useHome } from "@/lib/use-home";
@@ -12,8 +13,8 @@ import { useProjectMap } from "./project-data";
 // The docs of a scope (the project, or a part with its features): which docs
 // those are, the pillars they are grouped by (decision U8: Spec, UI,
 // Architecture, Database, Research), the small tiles an Overview shows, and
-// the Docs tab: the list with a find field on the left, the open doc in the
-// viewer on the right.
+// the Docs tab: the list with a find field on the left, the open doc on the
+// right (page text beside the list, or a design's canvas filling the window).
 
 /** The pillars, in the order the Docs tab groups them. */
 export const DOC_PILLARS = [
@@ -136,8 +137,9 @@ function DocList({ docs, current, target, about }: { docs: readonly HomeDoc[]; c
 
 /**
  * A Docs tab: the list on the left (248px), and on the right the open doc
- * (`children`, the viewer) or, with no doc open, `empty`. It fills the page
- * under the bar; each side scrolls on its own.
+ * (`children`) or, with no doc open, `empty`. An HTML doc reads as page text in
+ * the centred page beside the list, and the page scrolls; a design is a canvas,
+ * so with one open (`canvas`) the tab fills the window under the bar instead.
  */
 export function DocsTab({
   docs,
@@ -145,6 +147,7 @@ export function DocsTab({
   target,
   about,
   failed,
+  canvas = false,
   children,
 }: {
   docs: readonly HomeDoc[] | null;
@@ -153,19 +156,65 @@ export function DocsTab({
   /** A quiet note after a doc's title (the feature a part's doc is about). */
   about?: (doc: HomeDoc) => string | undefined;
   failed?: boolean;
+  /** The open doc is a design: the tab fills the window, the list on the left and the canvas taking the rest. */
+  canvas?: boolean;
   children: ReactNode;
 }) {
+  const list = (
+    <>
+      {failed && <p role="alert" className="mb-2 text-danger-ink">The docs could not be loaded. Try again in a moment.</p>}
+      {docs === null ? (
+        <span aria-hidden className="block h-(--control-h) animate-pulse rounded-control bg-hover" />
+      ) : (
+        <DocList docs={docs} current={current} target={target} about={about} />
+      )}
+    </>
+  );
+  if (canvas) {
+    return (
+      <div className="flex h-full min-h-[560px] flex-col md:flex-row">
+        <aside aria-label="Doc list" className="shrink-0 border-line px-4 py-5 md:w-[calc(var(--doclist-w)+32px)] md:overflow-y-auto md:border-r">
+          {list}
+        </aside>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col p-4 md:pl-6">{children}</div>
+      </div>
+    );
+  }
   return (
-    <div className="flex h-full min-h-0 flex-col md:flex-row">
-      <aside aria-label="Doc list" className="shrink-0 border-line px-4 py-5 md:w-[calc(var(--doclist-w)+32px)] md:overflow-y-auto md:border-r">
-        {failed && <p role="alert" className="mb-2 text-danger-ink">The docs could not be loaded. Try again in a moment.</p>}
-        {docs === null ? (
-          <span aria-hidden className="block h-(--control-h) animate-pulse rounded-control bg-hover" />
-        ) : (
-          <DocList docs={docs} current={current} target={target} about={about} />
-        )}
+    <div className="mx-auto grid w-full max-w-(--page-max) grid-cols-1 items-start gap-8 px-4 pt-8 pb-12 md:grid-cols-[var(--doclist-w)_minmax(0,1fr)] md:gap-12 md:px-(--page-pad)">
+      <aside aria-label="Doc list" className="md:sticky md:top-8">
+        {list}
       </aside>
-      <div className="min-h-0 min-w-0 flex-1 md:overflow-y-auto">{children}</div>
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
+
+/** The open doc of a Docs tab: its title as the heading, then the doc under its slim bar. */
+export function OpenDoc({
+  workspaceId,
+  projectId,
+  docId,
+  doc,
+  search,
+  heading = "h1",
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  /** The doc as the list has it; `undefined` while the list loads. */
+  doc: HomeDoc | undefined;
+  search: DocSearch;
+  /** The heading's level: h1 on a Docs page, h2 under an object's own title (a feature's Docs tab). */
+  heading?: "h1" | "h2";
+}) {
+  const Heading = heading;
+  return (
+    <div className={cn("flex min-w-0 flex-col", doc?.kind === "design" && "min-h-0 flex-1")}>
+      <Heading className="flex min-h-(--control-h-lg) items-center text-title font-semibold">
+        {doc ? doc.title : <span aria-hidden className="block h-5 w-48 animate-pulse rounded-control bg-hover" />}
+      </Heading>
+      <DocPage key={docId} workspaceId={workspaceId} projectId={projectId} docId={docId} search={search} chrome={{ meta: doc && <DocByline doc={doc} /> }} />
     </div>
   );
 }
@@ -218,10 +267,11 @@ export function ScopeDocs({
     : (doc) => ({ to: "/w/$workspaceId/projects/$projectId/docs/$docId", params: { ...params, docId: doc.id } });
   const about = features ? (doc: HomeDoc) => features.find((feature) => feature.id === doc.feature_id)?.name : undefined;
   const scope = partId ? (map?.parts.find((part) => part.id === partId)?.name ?? "the part") : "the project";
+  const open = docId ? docs?.find((doc) => doc.id === docId) : undefined;
   return (
-    <DocsTab docs={docs} current={docId} target={target} about={about} failed={failed}>
+    <DocsTab docs={docs} current={docId} target={target} about={about} failed={failed} canvas={open?.kind === "design"}>
       {docId ? (
-        <DocPage workspaceId={workspaceId} projectId={projectId} docId={docId} search={search ?? {}} />
+        <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={docId} doc={open} search={search ?? {}} />
       ) : (
         <OpenLatest
           docs={docs}

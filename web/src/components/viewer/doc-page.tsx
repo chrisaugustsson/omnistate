@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -26,6 +26,7 @@ import { ChevronRight, FileText, Files, Layers as LayersIcon, PenTool, Play, Sli
 import {
   FloatingAlert,
   FloatingAlerts,
+  PageBar,
   PaneEmpty,
   PaneLabel,
   PaneSection,
@@ -93,6 +94,19 @@ export function validateDocSearch(search: Record<string, unknown>): DocSearch {
   };
 }
 
+/**
+ * A doc that reads as part of a page (a track's Spec, How and Design tabs, a
+ * Docs page): no breadcrumb, one slim bar with `meta` (who wrote it, when),
+ * Activity, the comments toggle and `actions` (Full view); an HTML doc is as
+ * tall as it is and the page scrolls, a design fills the room it is given.
+ */
+export type DocChrome = {
+  meta?: ReactNode;
+  actions?: ReactNode;
+  /** Inside a track's tab: the comments start hidden, whatever the reader last chose on a Docs page. */
+  embedded?: boolean;
+};
+
 /** Where the address bar says the reviewer is in the doc. */
 type Place = { board?: string; node?: string; play?: string; flow?: string };
 
@@ -106,14 +120,14 @@ export function DocPage({
   projectId,
   docId,
   search,
-  embedded = false,
+  chrome,
 }: {
   workspaceId: string;
   projectId: string;
   docId: string;
   search: DocSearch;
-  /** Shown inside a track's tab: the review pane starts hidden. */
-  embedded?: boolean;
+  /** Given, the doc reads as part of the page around it (DocChrome); left out, it is the full view with its breadcrumb. */
+  chrome?: DocChrome;
 }) {
   const go = useNavigate();
   const navigate = useCallback(
@@ -168,11 +182,12 @@ export function DocPage({
         comment={comment}
         onOpened={opened}
         onPlace={place}
-        embedded={embedded}
+        chrome={chrome}
       />
     );
   }
   if (!doc.value || gone) {
+    if (chrome && !gone && !doc.failed) return <div aria-hidden className="h-40 animate-pulse rounded-card bg-frame" />;
     return (
       <main className="flex min-h-full flex-col">
         <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={null} docId={docId} />
@@ -197,7 +212,7 @@ export function DocPage({
       comment={comment}
       onOpened={opened}
       onPlace={place}
-      embedded={embedded}
+      chrome={chrome}
     />
   );
 }
@@ -211,7 +226,7 @@ function HtmlDocViewer({
   comment,
   onOpened,
   onPlace,
-  embedded,
+  chrome,
 }: {
   workspaceId: string;
   projectId: string;
@@ -221,7 +236,7 @@ function HtmlDocViewer({
   comment: string | undefined;
   onOpened: () => void;
   onPlace: (place: Place) => void;
-  embedded: boolean;
+  chrome?: DocChrome;
 }) {
   const head = useReloading(useCallback(() => loadHeadHtml(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
   const comments = useReloading(
@@ -235,7 +250,7 @@ function HtmlDocViewer({
     selectedRef.current = selected;
   });
   const [openComment, setOpenComment] = useState<string | null>(null);
-  const [review, setReview] = useReviewPane(selected, comments.value ?? null, embedded);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded);
 
   // A link to another block of the doc selects that block and scrolls to it.
   useEffect(() => {
@@ -297,6 +312,55 @@ function HtmlDocViewer({
     return Array.from(counts, ([node, count]) => ({ node, count }));
   }, [present, comments.value]);
 
+  const commentsPanel = (
+    <CommentsPanel
+      workspaceId={workspaceId}
+      projectId={projectId}
+      docId={docId}
+      kind="html"
+      selected={selected}
+      comments={commentsOnSelected}
+      removed={removed}
+      open={openComment}
+      noun="block"
+      onChanged={comments.reload}
+    />
+  );
+
+  if (chrome) {
+    return (
+      <div className="flex flex-col">
+        <PageBar workspaceId={workspaceId} projectId={projectId} docId={docId} meta={chrome.meta} actions={chrome.actions} review={{ shown: review, onShown: setReview }} />
+        <div className={cn("mt-4 grid items-start gap-8", review ? "lg:grid-cols-[minmax(0,1fr)_18rem]" : "grid-cols-1")}>
+          <div className="relative min-w-0">
+            <FloatingAlerts>
+              {(doc.failed || head.failed) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+            </FloatingAlerts>
+            {html === "" && <PaneEmpty icon={<FileText />}>This doc has no content yet.</PaneEmpty>}
+            <ViewerFrame
+              workspaceId={workspaceId}
+              html={html}
+              pins={pins}
+              selected={selected}
+              reveal={reveal}
+              onSelect={setSelected}
+              fit
+              className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
+            />
+          </div>
+          <aside
+            id="review-pane"
+            aria-label="Review"
+            hidden={!review}
+            className="overflow-hidden rounded-card border border-line lg:sticky lg:top-4 lg:max-h-[calc(100dvh-var(--bar-h)-2rem)] lg:overflow-y-auto"
+          >
+            {commentsPanel}
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
       <ViewerToolbar
@@ -342,18 +406,7 @@ function HtmlDocViewer({
           hidden={!review}
           className="border-t bg-background lg:min-h-0 lg:overflow-y-auto lg:border-t-0 lg:border-l"
         >
-          <CommentsPanel
-            workspaceId={workspaceId}
-            projectId={projectId}
-            docId={docId}
-            kind="html"
-            selected={selected}
-            comments={commentsOnSelected}
-            removed={removed}
-            open={openComment}
-            noun="block"
-            onChanged={comments.reload}
-          />
+          {commentsPanel}
         </aside>
       </div>
     </main>
@@ -610,7 +663,7 @@ function DesignViewer({
   comment,
   onOpened,
   onPlace,
-  embedded,
+  chrome,
 }: {
   workspaceId: string;
   projectId: string;
@@ -624,7 +677,7 @@ function DesignViewer({
   comment: string | undefined;
   onOpened: () => void;
   onPlace: (place: Place) => void;
-  embedded: boolean;
+  chrome?: DocChrome;
 }) {
   const outline = useReloading(
     useCallback(() => loadHeadOutline(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
@@ -668,7 +721,7 @@ function DesignViewer({
   // The board play mode was left on, which the address bar names once instead of the selection's board.
   const leftOn = useRef<string | null>(null);
   const [openComment, setOpenComment] = useState<string | null>(null);
-  const [review, setReview] = useReviewPane(selected, comments.value ?? null, embedded);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded);
   // The modes the reader chose: the shared Mode select under '', each own-list collection under its name.
   const [chosenModes, setChosenModes] = useState<Record<string, string>>({});
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
@@ -1131,16 +1184,9 @@ function DesignViewer({
     }));
   }, [renderer, drawn, comments.value, nodeBoxes]);
 
-  return (
-    <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
-      <ViewerToolbar
-        workspaceId={workspaceId}
-        projectId={projectId}
-        doc={doc.value}
-        icon={<PenTool />}
-        docId={docId}
-        review={{ shown: review, onShown: setReview }}
-      >
+  // The page's toolbar controls: play the page, and the design system's modes.
+  const controls = (
+    <>
         {doc.value && (
           <Button
             type="button"
@@ -1185,7 +1231,9 @@ function DesignViewer({
               ))}
             </ToolbarSelect>
           ))}
-      </ViewerToolbar>
+    </>
+  );
+  const body = (
       <div
         className={cn(
           "flex min-h-0 flex-1 flex-col md:grid",
@@ -1345,7 +1393,9 @@ function DesignViewer({
           <InspectPanel inspection={inspection} />
         </aside>
       </div>
-      {play !== undefined && renderer && assets && system && page && boardTarget === null && (
+  );
+  const player =
+      play !== undefined && renderer && assets && system && page && boardTarget === null ? (
         <PlayMode
           renderer={renderer}
           title={doc.value?.title ?? ""}
@@ -1357,7 +1407,32 @@ function DesignViewer({
           onPlay={playOn}
           onExit={leavePlay}
         />
-      )}
+      ) : null;
+  if (chrome) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PageBar workspaceId={workspaceId} projectId={projectId} docId={docId} meta={chrome.meta} actions={chrome.actions} review={{ shown: review, onShown: setReview }}>
+          {controls}
+        </PageBar>
+        <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-line">{body}</div>
+        {player}
+      </div>
+    );
+  }
+  return (
+    <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
+      <ViewerToolbar
+        workspaceId={workspaceId}
+        projectId={projectId}
+        doc={doc.value}
+        icon={<PenTool />}
+        docId={docId}
+        review={{ shown: review, onShown: setReview }}
+      >
+        {controls}
+      </ViewerToolbar>
+      {body}
+      {player}
     </main>
   );
 }
