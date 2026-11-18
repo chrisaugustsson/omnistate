@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { useVisit } from "@/lib/visits";
 import { useProjectEvents } from "@/live/context";
 import { useTrack } from "./track-data";
+import { Band, RowLead, rowClass } from "@/components/project/rows";
 import { EmptyLine, shortDate } from "./ui";
 
 // A track's Threads: its threads in two groups, open and concluded, newest
@@ -22,8 +23,6 @@ function lastTime(thread: HomeThread): string {
   return thread.last_post_at ?? thread.created_at;
 }
 
-const band = "flex h-(--band-h) items-center gap-2 bg-band px-3 font-medium text-ink [&>svg]:size-(--icon-sm)";
-
 function ThreadRow({ thread, open }: { thread: HomeThread; open: boolean }) {
   const { workspaceId, projectId, trackId } = useTrack();
   const posts = thread.post_count ?? 0;
@@ -34,11 +33,11 @@ function ThreadRow({ thread, open }: { thread: HomeThread; open: boolean }) {
         params={{ workspaceId, projectId, trackId, threadId: thread.id }}
         activeProps={{}}
         aria-current={open ? "page" : undefined}
-        className={cn(
-          "flex min-h-(--row-h) items-center gap-3 border-t border-line px-3 transition-colors duration-(--t-fast)",
-          open ? "bg-selected" : "hover:bg-frame",
-        )}
+        className={cn(rowClass({ link: true, inset: true }), open && "bg-selected hover:bg-selected")}
       >
+        <RowLead>
+          <MessageSquare aria-hidden strokeWidth={2} className="size-(--icon-sm) text-ink-3" />
+        </RowLead>
         <span className="min-w-0 flex-1 truncate font-medium text-ink">{thread.question}</span>
         {thread.sealed && (
           <span className="inline-flex items-center gap-1 text-meta text-ink-3">
@@ -80,33 +79,28 @@ export function TrackThreads({ threadId }: { threadId?: string }) {
       {threads.length === 0 ? (
         <EmptyLine>No threads yet. Agents open a thread when a question needs a few voices; the answer becomes a decision.</EmptyLine>
       ) : (
-        <div className="overflow-hidden rounded-card border border-line">
-          <section aria-label="Open threads">
-            <h2 className={band}>
-              <MessageSquare aria-hidden strokeWidth={2.25} className="text-ink-2" />
-              Open <span className="font-medium text-ink-3 tabular-nums">{open.length}</span>
-            </h2>
-            {open.length > 0 && (
-              <ul>
-                {open.map((thread) => (
-                  <ThreadRow key={thread.id} thread={thread} open={thread.id === threadId} />
-                ))}
-              </ul>
-            )}
-          </section>
-          <section aria-label="Concluded threads" className="border-t border-line">
-            <h2 className={band}>
-              <CheckCircle2 aria-hidden strokeWidth={2.25} className="text-state-done" />
-              Concluded <span className="font-medium text-ink-3 tabular-nums">{concluded.length}</span>
-            </h2>
-            {concluded.length > 0 && (
-              <ul>
-                {concluded.map((thread) => (
-                  <ThreadRow key={thread.id} thread={thread} open={thread.id === threadId} />
-                ))}
-              </ul>
-            )}
-          </section>
+        <div>
+          {(
+            [
+              ["Open threads", "Open", open, <MessageSquare key="icon" aria-hidden strokeWidth={2.25} className="size-(--icon-sm) text-ink-2" />],
+              ["Concluded threads", "Concluded", concluded, <CheckCircle2 key="icon" aria-hidden strokeWidth={2.25} className="size-(--icon-sm) text-state-done" />],
+            ] as const
+          ).map(([label, title, list, icon]) =>
+            list.length === 0 ? null : (
+              <section key={label} aria-label={label} className="mb-2">
+                <h2>
+                  <Band icon={icon} count={list.length}>
+                    {title}
+                  </Band>
+                </h2>
+                <ul className="border-b border-line [&>li:first-child>a]:border-t-0">
+                  {list.map((thread) => (
+                    <ThreadRow key={thread.id} thread={thread} open={thread.id === threadId} />
+                  ))}
+                </ul>
+              </section>
+            ),
+          )}
         </div>
       )}
       {threadId && <OpenThread key={threadId} threadId={threadId} />}

@@ -7,6 +7,7 @@ import { Band, rowClass } from "@/components/project/rows";
 import { Avatar } from "@/components/shell/avatar";
 import { StateIcon, TRACK_STATES, stateLabel } from "@/components/shell/state-icon";
 import { timeAgo } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { firstLine } from "./feature-parts";
 import { nameOf, type People } from "./people";
 import { Progress } from "./ui";
@@ -37,19 +38,17 @@ function Row({
       <Link
         to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
         params={{ ...params, trackId: track.id }}
-        className={rowClass({ two: true, link: true, inset: true })}
+        className={cn(rowClass({ two: true, link: true, inset: true }), "grid grid-cols-[var(--avatar)_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5")}
       >
         <span className="grid h-5 w-(--avatar) shrink-0 place-items-center">
           <StateIcon state={track.state} />
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium text-ink">{track.name}</span>
-          <span className="block truncate text-ink-3">
-            {verb}
-            {what ? `: ${what}` : ""}
-          </span>
+        <span className="min-w-0 truncate font-medium text-ink">{track.name}</span>
+        <span className="col-span-2 col-start-2 row-start-2 min-w-0 truncate text-ink-3">
+          {verb}
+          {what ? `: ${what}` : ""}
         </span>
-        <span className="flex h-5 shrink-0 items-center gap-3">
+        <span className="col-start-3 row-start-1 flex h-5 shrink-0 items-center gap-3">
           <Flags flags={flags} slots />
           <Slot kind="progress">
             {summary.stories && summary.stories.total > 0 && <Progress done={summary.stories.done} total={summary.stories.total} />}

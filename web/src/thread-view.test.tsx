@@ -79,7 +79,10 @@ function renderAt(path: string) {
   return router;
 }
 
-const rowQuestions = (region: HTMLElement) => within(region).queryAllByRole("link").map((row) => row.querySelector("span")?.textContent);
+const rowQuestions = (region: HTMLElement) =>
+  within(region)
+    .queryAllByRole("link")
+    .map((row) => Array.from(row.querySelectorAll("span")).find((span) => span.textContent)?.textContent);
 
 async function openThread() {
   return screen.findByRole("article", { name: "Which wallets do we take?" });

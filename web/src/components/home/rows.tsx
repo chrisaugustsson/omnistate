@@ -68,13 +68,14 @@ export function Band({ children, className }: { children: ReactNode; className?:
   );
 }
 
-/** A quiet line where a list or group has nothing; `indent`, under a band, it starts where the rows' titles do. */
-export function EmptyRow({ children, icon, indent = false }: { children: ReactNode; icon?: ReactNode; indent?: boolean }) {
+/** A quiet line where a list or group has nothing; `inset` with the rows' inner padding, `indent` under a band where their titles start. */
+export function EmptyRow({ children, icon, indent = false, inset = false }: { children: ReactNode; icon?: ReactNode; indent?: boolean; inset?: boolean }) {
   return (
     <div
       className={cn(
         "flex min-h-(--row-h) items-center gap-3 border-t border-line py-2.5 text-ink-3 [&_a]:font-medium [&_a]:text-ink-2 [&_a:hover]:text-ink [&_a:hover]:underline [&_a:hover]:decoration-line-strong [&_a:hover]:underline-offset-2",
         indent && "pr-3 pl-11",
+        inset && !indent && "px-3",
         "[div[data-band]+&]:border-t-0",
       )}
     >

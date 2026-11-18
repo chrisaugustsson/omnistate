@@ -81,7 +81,7 @@ export function ForYou({ workspaceId }: { workspaceId: string }) {
           {groups && (
             <ColumnList>
               {groups.length === 0 ? (
-                <EmptyRow icon={<CircleCheck aria-hidden className="mx-0.5 size-(--icon) text-faint" strokeWidth={2} />}>
+                <EmptyRow inset icon={<CircleCheck aria-hidden className="mx-0.5 size-(--icon) text-faint" strokeWidth={2} />}>
                   You&rsquo;re all caught up. When an agent replies to a comment on one of your tracks, it shows up here.
                 </EmptyRow>
               ) : (
@@ -102,7 +102,7 @@ export function ForYou({ workspaceId }: { workspaceId: string }) {
           {shown && (
             <ColumnList label="Your tracks">
               {shown.length === 0 ? (
-                <EmptyRow>You own no tracks yet. Start one on a part&rsquo;s Tracks.</EmptyRow>
+                <EmptyRow inset>You own no tracks yet. Start one on a part&rsquo;s Tracks.</EmptyRow>
               ) : (
                 shown.map((summary) => {
                   const home = homes?.get(summary.track.project_id);
@@ -111,6 +111,7 @@ export function ForYou({ workspaceId }: { workspaceId: string }) {
                     <TrackRow
                       key={summary.track.id}
                       two
+                      inset
                       workspaceId={workspaceId}
                       summary={summary}
                       sub={[stateLabel(summary.track.state), split].filter(Boolean).join(" · ")}
