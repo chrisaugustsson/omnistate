@@ -15,7 +15,9 @@ import { cn } from "@/lib/utils";
 import { foldReplaced } from "./decision-log";
 import { useFeature, type FeatureData } from "./feature-data";
 import { nameOf } from "./people";
-import { Dialog, Progress, buttonClass, chipClass, shortDate } from "./ui";
+import { Dialog, DialogError } from "@/components/shell/dialog";
+import { Field, Input, Textarea } from "@/components/shell/field";
+import { Progress, buttonClass, chipClass, shortDate } from "./ui";
 
 // The pieces of a feature's pages: its mark, the "Start track" action, the
 // banner for a track that changes it now, and its properties panel.
@@ -36,9 +38,6 @@ export function firstLine(text: string): string {
   return sentence ?? line;
 }
 
-const field =
-  "w-full rounded-control border border-line-strong bg-sheet px-2.5 py-1.5 text-ink outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:shadow-focus";
-
 /** "Start track": a new track on the feature's part that changes the feature, and to its page. */
 export function StartTrack({ data }: { data: FeatureData }) {
   const { workspaceId, projectId, partId, featureId, feature } = data;
@@ -46,14 +45,21 @@ export function StartTrack({ data }: { data: FeatureData }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tried, setTried] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const close = () => {
     setOpen(false);
+    setTried(false);
     setError(null);
   };
 
   async function start() {
+    setTried(true);
+    if (!name.trim()) {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[role="dialog"] [aria-invalid="true"]')?.focus());
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -80,35 +86,29 @@ export function StartTrack({ data }: { data: FeatureData }) {
       {open && (
         <Dialog
           title={`Start a track on ${feature?.name ?? "the feature"}`}
+          description="A track is one change to the feature: grilled, designed, built and merged. You own it; agents write into it with your key."
           onClose={close}
-          actions={
+          onSubmit={() => {
+            if (!busy) void start();
+          }}
+          footerStart={error && <DialogError>{error}</DialogError>}
+          footer={
             <>
               <button type="button" className={buttonClass()} onClick={close}>
                 Cancel
               </button>
-              <button type="button" className={buttonClass({ variant: "primary" })} disabled={!name.trim() || busy} onClick={() => void start()}>
+              <button type="submit" className={buttonClass({ variant: "primary" })} disabled={busy}>
                 Start track
               </button>
             </>
           }
         >
-          <p>A track is one change to the feature: grilled, designed, built and merged. You own it.</p>
-          <div className="mt-3 space-y-2">
-            <input aria-label="Track name" placeholder="Name" value={name} onChange={(event) => setName(event.target.value)} className={cn(field, "font-medium")} />
-            <textarea
-              aria-label="Description"
-              placeholder="What changes, in a sentence"
-              rows={2}
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              className={cn(field, "resize-y")}
-            />
-            {error && (
-              <p role="alert" className="text-danger-ink">
-                {error}
-              </p>
-            )}
-          </div>
+          <Field label="Name" error={tried && !name.trim() ? "Give the track a name" : undefined}>
+            {(control) => <Input {...control} placeholder="What changes, in a few words" value={name} onChange={(event) => setName(event.target.value)} />}
+          </Field>
+          <Field label="What it changes" optional>
+            {(control) => <Textarea {...control} minRows={2} placeholder="One sentence for the track's list" value={description} onChange={(event) => setDescription(event.target.value)} />}
+          </Field>
         </Dialog>
       )}
     </>

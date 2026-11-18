@@ -10,7 +10,8 @@ import { Avatar } from "@/components/shell/avatar";
 import { personName } from "@/lib/identity";
 import { cn } from "@/lib/utils";
 import type { MoveChoice, TrackData } from "./track-data";
-import { Dialog, MenuHint, MenuSeparator, buttonClass, menuClass, menuItemClass } from "./ui";
+import { Dialog } from "@/components/shell/dialog";
+import { MenuHint, MenuSeparator, buttonClass, menuClass, menuItemClass } from "./ui";
 
 // What a reader does to a track from its header and panel: move its state (the
 // moves the API allows, only for its owner or an admin; others see them off
@@ -84,29 +85,27 @@ export function useTrackActions(data: TrackData): TrackActions {
     dialog = (
       <Dialog
         title={asking.to === "done" ? `Mark ${name} done?` : `Drop ${name}?`}
+        description={
+          asking.to === "done"
+            ? "Mark it done once its pull request has merged. A done track stays done."
+            : "A dropped track stays dropped. Its docs, stories and decisions stay readable."
+        }
         onClose={close}
-        actions={
+        onSubmit={() => {
+          close();
+          void move(asking.to);
+        }}
+        footer={
           <>
             <button type="button" className={buttonClass()} onClick={close}>
               Cancel
             </button>
-            <button
-              type="button"
-              className={buttonClass({ variant: asking.danger ? "danger" : "primary" })}
-              onClick={() => {
-                close();
-                void move(asking.to);
-              }}
-            >
+            <button type="submit" data-autofocus className={buttonClass({ variant: asking.danger ? "danger" : "primary" })}>
               {asking.label}
             </button>
           </>
         }
-      >
-        {asking.to === "done"
-          ? "Mark it done once its pull request has merged. A done track stays done."
-          : "A dropped track stays dropped. Its docs, stories and decisions stay readable."}
-      </Dialog>
+      />
     );
   } else if (handingOver) {
     dialog = <HandOverDialog data={data} onClose={closeHandOver} onError={setError} />;
@@ -138,23 +137,26 @@ function HandOverDialog({ data, onClose, onError }: { data: TrackData; onClose: 
   return (
     <Dialog
       title="Hand over"
+      description="The new owner moves the track and records its decisions; agents run on their key."
       onClose={onClose}
-      actions={
+      onSubmit={() => {
+        if (choice && !busy) void handOver();
+      }}
+      footer={
         <>
           <button type="button" className={buttonClass()} onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className={buttonClass({ variant: "primary" })} disabled={!choice || busy} onClick={() => void handOver()}>
+          <button type="submit" className={buttonClass({ variant: "primary" })} disabled={!choice || busy}>
             Hand over
           </button>
         </>
       }
     >
-      <p>The new owner moves the track and records its decisions; agents run on their key.</p>
       {others.length === 0 ? (
-        <p className="mt-3 text-ink-3">No other member of the workspace to hand the track over to.</p>
+        <p className="text-ink-3">No other member of the workspace to hand the track over to.</p>
       ) : (
-        <div role="radiogroup" aria-label="Hand over to" className="mt-3 -mx-1 max-h-64 overflow-y-auto">
+        <div role="radiogroup" aria-label="Hand over to" className="-mx-2 -my-1 max-h-64 overflow-y-auto">
           {others.map((member) => {
             const memberName = personName(member.email);
             return (

@@ -1,9 +1,9 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 // The small pieces the feature and track pages are drawn with, in the v2 look
 // (tasks/ui-redesign/v2/components.css): buttons, chips, the progress bar,
-// section heads, menus, dialogs and quiet empty states.
+// section heads, menus and quiet empty states (dialogs: components/shell/dialog.tsx).
 
 type ButtonLook = { variant?: "default" | "primary" | "ghost" | "danger"; size?: "default" | "sm"; icon?: boolean };
 
@@ -86,51 +86,6 @@ export function MenuHint({ children }: { children: ReactNode }) {
 
 export function MenuSeparator() {
   return <div aria-hidden className="-mx-1 my-1 h-px bg-line" />;
-}
-
-/**
- * A modal dialog over a scrim: a title, a body and the actions at the bottom
- * right. Esc and a click on the scrim close it; the first field or button takes
- * the focus.
- */
-export function Dialog({
-  title,
-  children,
-  actions,
-  onClose,
-}: {
-  title: ReactNode;
-  children?: ReactNode;
-  actions: ReactNode;
-  onClose: () => void;
-}) {
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const before = document.activeElement as HTMLElement | null;
-    box.current?.querySelector<HTMLElement>("input, textarea, select, [data-autofocus], button")?.focus();
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    }
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      before?.focus?.();
-    };
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-(--scrim) p-4" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div ref={box} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined} className="w-full max-w-[440px] animate-pop-in rounded-card bg-sheet shadow-pop">
-        <div className="px-5 pt-4">
-          <h2 className="text-section font-semibold">{title}</h2>
-          {children && <div className="mt-2 text-ink-2">{children}</div>}
-        </div>
-        <div className="mt-4 flex justify-end gap-2 border-t border-line px-5 py-3">{actions}</div>
-      </div>
-    </div>
-  );
 }
 
 const DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
