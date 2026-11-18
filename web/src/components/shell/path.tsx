@@ -77,7 +77,7 @@ export function markParts(parts: readonly PartBody[] | null | undefined) {
 /** The open project's parts, or null off a project; loaded again on the project's live events. */
 export function useOpenParts(workspaceId: string, projectId: string | undefined) {
   const load = useCallback(() => (projectId ? loadParts(workspaceId, projectId) : Promise.resolve(null)), [workspaceId, projectId]);
-  const { value, reload } = useReloading(load);
+  const { value, reload } = useReloading(load, projectId ? `parts:${projectId}` : undefined);
   useProjectsEvents(projectId ? [projectId] : [], reload);
   return value;
 }
@@ -88,7 +88,7 @@ export function usePartFeatures(workspaceId: string, projectId: string | undefin
     () => (on && projectId && partId ? loadFeatures(workspaceId, projectId, partId) : Promise.resolve(null)),
     [workspaceId, projectId, partId, on],
   );
-  const { value, reload } = useReloading(load);
+  const { value, reload } = useReloading(load, on && partId ? `features:${partId}` : undefined);
   useProjectsEvents(on && projectId ? [projectId] : [], reload);
   return value;
 }

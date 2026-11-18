@@ -18,7 +18,7 @@ export function useHomeData(workspaceId: string) {
   const { homes, failed: homesFailed, reload } = useWorkspaceHomes(workspaceId, projects);
   const { parts } = useWorkspaceParts(workspaceId, projects);
   const me = useMe(workspaceId);
-  const { value: members } = useReloading(useCallback(() => loadMembers(workspaceId), [workspaceId]));
+  const { value: members } = useReloading(useCallback(() => loadMembers(workspaceId), [workspaceId]), `members:${workspaceId}`);
   return { user, workspace, projects, homes, parts, me, members, reload, failed: projectsFailed || homesFailed };
 }
 
@@ -62,7 +62,7 @@ export function useTrackFlags(workspaceId: string, tracks: readonly TrackBody[] 
     );
     return new Map(flags);
   }, [workspaceId, key]);
-  const { value, reload } = useReloading(load);
+  const { value, reload } = useReloading(load, `row-flags:${workspaceId}:${key}`);
   const projectIds = useMemo(() => [...new Set(live.map((track) => track.project_id))], [live]);
   useProjectsEvents(projectIds, (event) => {
     if (event.event.startsWith("behaviour.") || event.event.startsWith("story.")) reload();

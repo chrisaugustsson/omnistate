@@ -27,7 +27,7 @@ export function usePeople(workspaceId: string, projectId: string): People | null
     const mine = members.find((member) => member.user_id === me);
     return { members, me, mine, admin: mine?.role === "admin" };
   }, [workspaceId]);
-  const { value, reload } = useReloading(load);
+  const { value, reload } = useReloading(load, `people:${workspaceId}`);
   useProjectEvents(projectId, reload);
   return value;
 }

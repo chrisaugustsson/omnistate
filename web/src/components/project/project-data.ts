@@ -46,7 +46,7 @@ async function loadProjectMap(workspaceId: string, projectId: string): Promise<P
 /** The project's map (parts, features, what each track changes); null while it loads. */
 export function useProjectMap(workspaceId: string, projectId: string) {
   const load = useCallback(() => loadProjectMap(workspaceId, projectId), [workspaceId, projectId]);
-  const { value, failed, reload } = useReloading(load);
+  const { value, failed, reload } = useReloading(load, `map:${projectId}`);
   useProjectEvents(projectId, reload);
   return { map: value, failed, reload };
 }
@@ -105,7 +105,7 @@ export function useDecisionGroups(
     async () => (map && projectName !== undefined ? loadDecisionGroups(workspaceId, projectId, projectName, map, partId) : null),
     [workspaceId, projectId, projectName, map, partId],
   );
-  const { value, failed, reload } = useReloading(load);
+  const { value, failed, reload } = useReloading(load, map && projectName !== undefined ? `decision-groups:${projectId}:${partId ?? ""}` : undefined);
   useProjectEvents(projectId, reload);
   return { groups: value, failed };
 }
@@ -123,7 +123,7 @@ export function currentDecisions(groups: readonly DecisionGroup[]): { decision: 
 /** The workspace's members' names by user ID (decision U8: the email before the @, capitalised). */
 export function useMemberNames(workspaceId: string): ReadonlyMap<string, string> | null {
   const load = useCallback(() => loadMembers(workspaceId), [workspaceId]);
-  const { value } = useReloading(load);
+  const { value } = useReloading(load, `members:${workspaceId}`);
   return useMemo(() => (value ? new Map(value.map((member) => [member.user_id, personName(member.email)])) : null), [value]);
 }
 

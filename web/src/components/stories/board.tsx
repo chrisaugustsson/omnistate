@@ -483,7 +483,7 @@ export function Board({
   list?: boolean;
 }) {
   const load = useCallback(() => loadStories(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
-  const { value: board, failed, reload } = useReloading(load);
+  const { value: board, failed, reload } = useReloading(load, `stories:${trackId}`);
   const loaded = board?.stories;
   const linked = board?.linked ?? [];
   // Answers of our own writes, shown until a load brings a version as new.

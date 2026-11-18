@@ -30,9 +30,9 @@ export function BehaviourOutline({
   onWaiting?: (count: number) => void;
 }) {
   const load = useCallback(() => loadTree(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
-  const { value: nodes, failed, reload: reloadTree } = useReloading(load);
+  const { value: nodes, failed, reload: reloadTree } = useReloading(load, `tree:${trackId}`);
   const loadWaiting = useCallback(() => loadOpenQuestions(workspaceId, projectId, trackId).catch(() => []), [workspaceId, projectId, trackId]);
-  const { value: questions, reload: reloadQuestions } = useReloading(loadWaiting);
+  const { value: questions, reload: reloadQuestions } = useReloading(loadWaiting, `questions:${trackId}`);
   const [tick, setTick] = useState(0);
   const [chosen, setChosen] = useState<string | null>(null);
   const [onlyOpen, setOnlyOpen] = useState(false);

@@ -35,13 +35,13 @@ export function BehaviourScreen({
   onWaiting?: (count: number) => void;
 }) {
   const load = useCallback(() => loadTree(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
-  const { value: nodes, failed, reload: reloadTree } = useReloading(load);
+  const { value: nodes, failed, reload: reloadTree } = useReloading(load, `tree:${trackId}`);
   // How many questions wait on each node; a question a person asked is a remark and does not wait.
   const loadWaiting = useCallback(
     () => loadOpenQuestions(workspaceId, projectId, trackId).catch(() => []),
     [workspaceId, projectId, trackId],
   );
-  const { value: openQuestions, reload: reloadQuestions } = useReloading(loadWaiting);
+  const { value: openQuestions, reload: reloadQuestions } = useReloading(loadWaiting, `questions:${trackId}`);
   const waiting = useMemo(() => {
     const counts = new Map<string, number>();
     for (const question of openQuestions ?? []) {

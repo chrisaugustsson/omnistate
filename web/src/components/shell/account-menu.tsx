@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { Check, KeyRound, LogOut } from "lucide-react";
 import { logOut } from "@/api/auth";
 import { personName } from "@/lib/identity";
+import { forgetLoaded } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 import { Avatar } from "./avatar";
 import { usePopover } from "./popover";
@@ -37,6 +38,7 @@ export function AccountMenu({
     } catch {
       // A session that is already over is what logging out is after.
     }
+    forgetLoaded();
     await navigate({ to: "/login" });
   }
 

@@ -53,14 +53,14 @@ const recent = (summary: TrackSummary) => Date.parse(summary.last_activity ?? su
 /** Loads what the feature's pages show; the feature's layout calls it and provides it to the tabs. */
 export function useFeatureData(workspaceId: string, projectId: string, partId: string, featureId: string): FeatureData {
   const loadOne = useCallback(() => loadFeature(workspaceId, projectId, partId, featureId), [workspaceId, projectId, partId, featureId]);
-  const one = useReloading(loadOne);
+  const one = useReloading(loadOne, `feature:${featureId}`);
   const loadTracks = useCallback(() => loadFeatureTracks(workspaceId, projectId, partId, featureId), [workspaceId, projectId, partId, featureId]);
-  const linked = useReloading(loadTracks);
+  const linked = useReloading(loadTracks, `feature-tracks:${featureId}`);
   const loadDecisions = useCallback(
     () => loadFeatureDecisions(workspaceId, projectId, partId, featureId),
     [workspaceId, projectId, partId, featureId],
   );
-  const decisions = useReloading(loadDecisions);
+  const decisions = useReloading(loadDecisions, `feature-decisions:${featureId}`);
   const { home } = useHome(workspaceId, projectId);
   const { parts } = useParts(workspaceId, projectId);
   const people = usePeople(workspaceId, projectId);

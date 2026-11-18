@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { Section } from "./scope";
 
@@ -67,10 +67,11 @@ export function countsKey(level: string, id: string | undefined): string {
 export function useReportSections(key: string, counts: SectionCounts) {
   const { report } = useShell();
   const serialized = JSON.stringify(counts);
-  useEffect(() => {
+  // Before the browser paints, so a page never shows its sidebar without the counts it has.
+  useLayoutEffect(() => {
     report(key, JSON.parse(serialized) as SectionCounts);
   }, [report, key, serialized]);
-  useEffect(() => () => report(key, null), [report, key]);
+  useLayoutEffect(() => () => report(key, null), [report, key]);
 }
 
 /** The counts reported under `key`, or none yet. */

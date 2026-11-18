@@ -9,7 +9,7 @@ import { useReloading } from "./reloading";
  */
 export function useHome(workspaceId: string, projectId: string) {
   const load = useCallback(() => loadHome(workspaceId, projectId), [workspaceId, projectId]);
-  const { value: home, failed, reload } = useReloading(load);
+  const { value: home, failed, reload } = useReloading(load, `home:${projectId}`);
   useProjectEvents(projectId, reload);
   return { home, failed, reload };
 }

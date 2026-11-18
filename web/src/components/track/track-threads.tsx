@@ -113,7 +113,7 @@ function OpenThread({ threadId }: { threadId: string }) {
   const { workspaceId, projectId } = useTrack();
   const hash = useLocation({ select: (location) => location.hash });
   const load = useCallback(() => loadThread(workspaceId, projectId, threadId), [workspaceId, projectId, threadId]);
-  const { value: thread, failed, reload } = useReloading(load);
+  const { value: thread, failed, reload } = useReloading(load, `thread:${threadId}`);
   useProjectEvents(projectId, reload);
   useVisit(projectId, thread ? (thread.track_id ?? "app") : undefined, undefined, thread ? threadId : undefined);
   const wanted = hash.startsWith("post-") ? hash.slice("post-".length) : null;

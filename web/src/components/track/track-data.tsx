@@ -117,17 +117,17 @@ export function useTrackData(workspaceId: string, projectId: string, trackId: st
   const track = summary?.track;
 
   const loadFeatures = useCallback(() => loadTrackFeatures(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
-  const features = useReloading(loadFeatures);
+  const features = useReloading(loadFeatures, `track-features:${trackId}`);
   const loadLinks = useCallback(() => loadStories(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
-  const stories = useReloading(loadLinks);
+  const stories = useReloading(loadLinks, `stories:${trackId}`);
   const loadQuestions = useCallback(
     () => (onBehaviour ? Promise.resolve(null) : loadOpenQuestions(workspaceId, projectId, trackId).catch(() => [])),
     [workspaceId, projectId, trackId, onBehaviour],
   );
-  const questions = useReloading(loadQuestions);
-  const [reported, setReported] = useState(0);
+  const questions = useReloading(loadQuestions, onBehaviour ? undefined : `questions:${trackId}`);
+  const [reported, setReported] = useState<number | null>(null);
   const loadDecisions = useCallback(() => loadTrackDecisions(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
-  const decisions = useReloading(loadDecisions);
+  const decisions = useReloading(loadDecisions, `track-decisions:${trackId}`);
 
   const docs = useMemo(() => {
     const own = (home?.docs ?? []).filter((doc) => doc.track_id === trackId);
@@ -140,7 +140,7 @@ export function useTrackData(workspaceId: string, projectId: string, trackId: st
     const outlines = await Promise.all(ids.map((id) => loadHeadOutline(workspaceId, projectId, id).catch(() => ({ boards: [] }))));
     return outlines.reduce((sum, outline) => sum + outline.boards.length, 0);
   }, [workspaceId, projectId, designIds]);
-  const boards = useReloading(loadBoards);
+  const boards = useReloading(loadBoards, `track-boards:${trackId}:${designIds}`);
 
   useProjectEvents(projectId, (event) => {
     const name = event.event;
@@ -155,7 +155,15 @@ export function useTrackData(workspaceId: string, projectId: string, trackId: st
   const ownerName = nameOf(people, track?.owner_user_id);
   const isOwner = !!people?.me && people.me === track?.owner_user_id;
   const admin = people?.admin ?? false;
-  const openQuestions = onBehaviour ? reported : (questions.value ?? []).filter((question) => question.asked_by.kind !== "human").length;
+  // The count from the Behaviour screen while it is open, else from the questions read here. While the
+  // one in use has not arrived yet (right after moving to or from Behaviour), the last count of the
+  // track stands, so the sidebar does not drop it for a frame.
+  const counted = questions.value ? questions.value.filter((question) => question.asked_by.kind !== "human").length : null;
+  const known = onBehaviour ? reported : counted;
+  const [last, setLast] = useState<{ trackId: string; count: number } | null>(null);
+  if (known !== null && (last?.trackId !== trackId || last.count !== known)) setLast({ trackId, count: known });
+  if (!onBehaviour && reported !== null) setReported(null);
+  const openQuestions = known ?? (last?.trackId === trackId ? last.count : 0);
 
   return {
     workspaceId,

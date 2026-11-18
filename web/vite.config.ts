@@ -29,6 +29,7 @@ export default defineConfig({
     proxy: { "/ws": { target: STACK, ws: true } },
   },
   // Vitest does not process CSS by default, which leaves the text of the
-  // stylesheet that the viewer frame embeds empty.
-  test: { css: { include: [/viewer\/doc\.css/] } },
+  // stylesheet that the viewer frame embeds empty. The setup clears what
+  // the pages kept between tests.
+  test: { css: { include: [/viewer\/doc\.css/] }, setupFiles: ["src/testing/setup.ts"] },
 });

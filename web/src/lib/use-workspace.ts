@@ -15,7 +15,7 @@ import { useReloading } from "./reloading";
 /** The workspace's projects; loaded again when `projectId` (the open one) is renamed, and on `reload`. */
 export function useProjects(workspaceId: string, projectId?: string) {
   const load = useCallback(() => loadProjects(workspaceId), [workspaceId]);
-  const { value: projects, failed, reload } = useReloading(load);
+  const { value: projects, failed, reload } = useReloading(load, `projects:${workspaceId}`);
   useProjectsEvents(projectId ? [projectId] : [], (event) => {
     if (event.event === "project.renamed") reload();
   });
@@ -25,7 +25,7 @@ export function useProjects(workspaceId: string, projectId?: string) {
 /** The signed-in member's user ID in the workspace; null while it loads (and for an agent). */
 export function useMe(workspaceId: string): string | null {
   const load = useCallback(() => loadMyUserId(workspaceId), [workspaceId]);
-  return useReloading(load).value ?? null;
+  return useReloading(load, `me:${workspaceId}`).value ?? null;
 }
 
 /** Each project's value of `load`, by project ID, loaded again on any live event of any of them. */
@@ -33,6 +33,8 @@ function usePerProject<T>(
   workspaceId: string,
   projects: readonly ProjectBody[] | null,
   load: (workspaceId: string, projectId: string) => Promise<T>,
+  /** Names what is loaded, for keeping the last of it. */
+  name: string,
 ) {
   const ids = useMemo(() => (projects ?? []).map((project) => project.id), [projects]);
   const key = ids.join(",");
@@ -41,20 +43,20 @@ function usePerProject<T>(
     const values = await Promise.all(ids.map((projectId) => load(workspaceId, projectId)));
     return new Map(ids.map((projectId, at) => [projectId, values[at]]));
   }, [workspaceId, key, load]);
-  const loaded = useReloading(loadAll);
+  const loaded = useReloading(loadAll, projects ? `${name}:${workspaceId}:${key}` : undefined);
   useProjectsEvents(ids, loaded.reload);
   return { value: projects ? loaded.value : null, failed: loaded.failed, reload: loaded.reload };
 }
 
 /** Every project's home (tracks, docs, threads, what waits), by project ID; null while they load. */
 export function useWorkspaceHomes(workspaceId: string, projects: readonly ProjectBody[] | null) {
-  const { value: homes, failed, reload } = usePerProject<HomeResponse>(workspaceId, projects, loadHome);
+  const { value: homes, failed, reload } = usePerProject<HomeResponse>(workspaceId, projects, loadHome, "homes");
   return { homes, failed, reload };
 }
 
 /** Every project's parts, by project ID; null while they load. */
 export function useWorkspaceParts(workspaceId: string, projects: readonly ProjectBody[] | null) {
-  const { value: parts, failed, reload } = usePerProject<PartBody[]>(workspaceId, projects, loadParts);
+  const { value: parts, failed, reload } = usePerProject<PartBody[]>(workspaceId, projects, loadParts, "workspace-parts");
   return { parts, failed, reload };
 }
 
@@ -91,7 +93,7 @@ export function useOpenQuestions(workspaceId: string, tracks: readonly TrackSumm
     );
     return new Map(lists);
   }, [workspaceId, key]);
-  const { value, reload } = useReloading(load);
+  const { value, reload } = useReloading(load, `open-questions:${workspaceId}:${key}`);
   const projectIds = useMemo(() => [...new Set(live.map(({ track }) => track.project_id))], [live]);
   useProjectsEvents(projectIds, (event) => {
     if (event.event.startsWith("behaviour.")) reload();
