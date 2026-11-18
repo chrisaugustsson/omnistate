@@ -243,11 +243,12 @@ export function Graph({
     // 28 more on the right for the fold pills beside the boxes.
     const w = Math.max(...group.map((one) => one.x + one.w)) - x + 28;
     const h = Math.max(...group.map((one) => one.y + one.h)) - y;
-    // The whole drawing, when it fits at this zoom, so nothing is hidden and no minimap is needed.
+    // The whole drawing, when it fits, so nothing is hidden and no minimap is needed.
     const all = boundsRef.current;
     const m = 32;
     const whole = extent;
-    if (whole.w * current.k <= area.w - 32 && whole.h * current.k <= area.h - 32) {
+    // It fits at this zoom, or at three quarters of it or more: zooming out a little keeps everything in sight.
+    if (Math.min((area.w - 32) / whole.w, (area.h - 32) / whole.h) >= current.k * 0.75) {
       const target = keepInView(current, whole, area, 16, [ZOOM_CORNER]);
       if (target) moveTo(target, 200);
       return;
