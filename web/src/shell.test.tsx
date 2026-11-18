@@ -366,13 +366,15 @@ describe("the sections sidebar", () => {
     await waitFor(async () => expect((await sections()).map(([name]) => name)).toEqual(["Spec", "Behaviour", "How", "Board, 0/2", "Threads", "Decisions"]));
   });
 
-  test("folds to icons on a canvas section, and » brings the names back", async () => {
-    renderAt(`${P}/tracks/${LONG_WINDOWS}/board`);
-    const board = await screen.findByRole("link", { name: /^Board/ });
+  test("keeps its names on a canvas section until you fold it, and » brings them back", async () => {
+    renderAt(`${P}/tracks/${LONG_WINDOWS}/behaviour`);
+    const behaviour = await screen.findByRole("link", { name: /^Behaviour/ });
 
-    expect(board.textContent).not.toContain("Board");
+    expect(behaviour.textContent).toContain("Behaviour");
+    fireEvent.click(screen.getByRole("button", { name: "Fold the sidebar" }));
+    expect(screen.getByRole("link", { name: /^Behaviour/ }).textContent).not.toContain("Behaviour");
     fireEvent.click(screen.getByRole("button", { name: "Show section names" }));
-    expect(screen.getByRole("link", { name: /^Board/ }).textContent).toContain("Board");
+    expect(screen.getByRole("link", { name: /^Behaviour/ }).textContent).toContain("Behaviour");
   });
 
   test("folds at your word on any page, and stays folded on the next", async () => {

@@ -1,7 +1,7 @@
 import { Link, Outlet, createFileRoute, useLocation } from "@tanstack/react-router";
 import { Page, PageHead } from "@/components/shell/page";
 import { partLink, useScope } from "@/components/shell/scope";
-import { countsKey, useIsPhone, useReportCanvas, useReportSections } from "@/components/shell/shell-context";
+import { countsKey, useIsPhone, useReportSections } from "@/components/shell/shell-context";
 import { foldReplaced } from "@/components/track/decision-log";
 import { FeatureProvider, useFeatureData } from "@/components/track/feature-data";
 import { openFeatureDoc } from "@/components/track/feature-docs";
@@ -48,7 +48,6 @@ function FeatureLayout() {
   // On the phone a feature's Docs with no doc named is the list alone.
   const shownDoc = tab === "docs" && (docId || !phone) ? openFeatureDoc(docs, docId) : undefined;
   const canvas = !bleed && !failed && (tab === "design" || shownDoc?.kind === "design");
-  useReportCanvas(canvas);
 
   if (bleed) {
     return (

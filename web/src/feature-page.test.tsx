@@ -125,17 +125,6 @@ describe("a feature's Docs", () => {
   const html = docBody("0192d7a0-6666-7000-8000-000000000001", "How compare works", { pillar: "architecture", feature_id: ANALYZE });
   const design = docBody("0192d7a0-6666-7000-8000-000000000002", "Analyze screens", { pillar: "ui", kind: "design", feature_id: ANALYZE });
 
-  test("with a design open the sidebar folds to icons, as on Design; with page text open it keeps its names", async () => {
-    featureApi({ docs: [html, design] });
-    const router = renderAt(`${FEATURE_PATH}/docs/${html.id}`);
-    await screen.findByRole("heading", { name: "How compare works" });
-    expect(screen.getByRole("button", { name: "Fold the sidebar" })).toBeTruthy();
-
-    await router.navigate({ href: `${FEATURE_PATH}/docs/${design.id}` });
-    await screen.findByRole("heading", { name: "Analyze screens" });
-    expect(await screen.findByRole("button", { name: "Show section names" })).toBeTruthy();
-  });
-
   test("on the phone the list is the page, and a doc opens alone with a way back to the list", async () => {
     vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: true, addEventListener() {}, removeEventListener() {} }));
     featureApi({ docs: [html, design] });

@@ -4,7 +4,7 @@ import { ChevronLeft, FileText, Palette, PanelLeftClose, PanelLeftOpen, PenTool,
 import type { HomeDoc } from "@/api/generated";
 import { matches } from "@/components/palette/search";
 import { partLink, projectLink } from "@/components/shell/scope";
-import { useIsPhone, useReportCanvas } from "@/components/shell/shell-context";
+import { useIsPhone } from "@/components/shell/shell-context";
 import { DocByline } from "@/components/viewer/byline";
 import { DocPage, type DocSearch } from "@/components/viewer/doc-page";
 import { usePane } from "@/lib/pane";
@@ -304,8 +304,6 @@ export function ScopeDocs({
   const list = useDocListToggle();
   const phone = useIsPhone();
   const canvas = open?.kind === "design";
-  // A design open is a canvas: the sidebar folds as on Design.
-  useReportCanvas(canvas);
   const index = partId ? partLink(workspaceId, projectId, partId, "docs") : projectLink(workspaceId, projectId, "docs");
   return (
     <DocsTab

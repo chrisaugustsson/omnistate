@@ -201,22 +201,13 @@ function readFolded(): boolean {
 }
 
 /**
- * The sidebar's fold: what the reader chose with the button at its foot (kept
- * in this browser), except on a canvas section, where it folds on its own
- * until » brings it back for that page.
+ * The sidebar's fold: only what the reader chose with the button at its foot,
+ * kept in this browser. No page folds it on its own.
  */
-function useFold(scope: Scope) {
-  const [chosen, setChosen] = useState(readFolded);
-  // The canvas page on which » brought the names back; leaving it folds them again.
-  const [shownOn, setShownOn] = useState<string | null>(null);
-  const where = `${scopeKey(scope)}/${scope.section ?? ""}`;
-  const folded = scope.canvas ? shownOn !== where : chosen;
+function useFold() {
+  const [folded, setFolded] = useState(readFolded);
   function toggle() {
-    if (scope.canvas) {
-      setShownOn(folded ? where : null);
-      return;
-    }
-    setChosen(!folded);
+    setFolded(!folded);
     try {
       localStorage.setItem(FOLD_KEY, folded ? "0" : "1");
     } catch {
@@ -229,7 +220,7 @@ function useFold(scope: Scope) {
 /** The sections sidebar on a desktop: 208px, or 52px of icons when folded. */
 export function SectionsSidebar({ scope }: { scope: Scope }) {
   const sections = useSections(scope);
-  const { folded, toggle } = useFold(scope);
+  const { folded, toggle } = useFold();
   return (
     <nav
       aria-label="Sections"
