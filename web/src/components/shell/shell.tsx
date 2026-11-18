@@ -10,7 +10,7 @@ import { Kbd } from "./kbd";
 import { PathCrumbs, SiblingsSheet, upLink, useCrumbs, useOpenParts, usePartFeatures, type PathData, type Workspace } from "./path";
 import { workspaceLink, useScope } from "./scope";
 import { LevelCounts, SectionButton, SectionsSidebar } from "./sections";
-import { useIsPhone, useSetHeaderActions } from "./shell-context";
+import { useIsPhone, useReportedCanvas, useSetHeaderActions } from "./shell-context";
 
 // The shell of navigation F (tasks/ui-redesign/build-f.md): on a desktop, the
 // path header (logo, the path, then Search, the Inbox and your account) over
@@ -78,7 +78,10 @@ export function Shell({
   user: { id: string; email: string };
   children: ReactNode;
 }) {
-  const scope = useScope();
+  const said = useScope();
+  // A page that is a canvas only sometimes says so at run time (useReportCanvas).
+  const reportedCanvas = useReportedCanvas();
+  const scope = reportedCanvas && !said.canvas ? { ...said, canvas: true } : said;
   const phone = useIsPhone();
   const { projects } = useProjects(workspace.id, scope.projectId);
   const { homes } = useWorkspaceHomes(workspace.id, projects);

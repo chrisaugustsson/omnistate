@@ -136,7 +136,7 @@ export function Intro({
           type="button"
           onClick={open}
           aria-label="Edit the description"
-          className="absolute top-0 -right-12 inline-flex h-6 items-center gap-1 rounded-badge px-1.5 text-meta font-medium text-ink-3 opacity-0 transition-[opacity,background-color] duration-(--t-fast) group-hover/intro:opacity-100 hover:bg-hover hover:text-ink focus-visible:opacity-100 focus-visible:shadow-focus focus-visible:outline-none"
+          className="absolute top-0 -right-12 inline-flex h-6 items-center gap-1 rounded-badge px-1.5 text-meta font-medium text-ink-3 opacity-0 transition-[opacity,background-color] duration-(--t-fast) group-hover/intro:opacity-100 hover:bg-hover hover:text-ink focus-visible:opacity-100 focus-visible:shadow-focus focus-visible:outline-none max-lg:static max-lg:float-right max-lg:-mr-1.5 max-lg:mb-1 max-lg:ml-3 max-lg:opacity-100"
         >
           <Pencil aria-hidden className="size-3" />
           Edit

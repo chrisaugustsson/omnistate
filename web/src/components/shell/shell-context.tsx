@@ -29,6 +29,8 @@ type Shell = {
   report: (key: string, counts: SectionCounts | null) => void;
   actions: HTMLElement | null;
   setActions: (element: HTMLElement | null) => void;
+  canvas: boolean;
+  setCanvas: (canvas: boolean) => void;
 };
 
 const ShellContext = createContext<Shell | null>(null);
@@ -37,6 +39,7 @@ const ShellContext = createContext<Shell | null>(null);
 export function ShellProvider({ children }: { children: ReactNode }) {
   const [reported, setReported] = useState<Reported | null>(null);
   const [actions, setActions] = useState<HTMLElement | null>(null);
+  const [canvas, setCanvas] = useState(false);
   const report = useCallback((key: string, counts: SectionCounts | null) => {
     setReported((now) => {
       if (counts === null) return now?.key === key ? null : now;
@@ -44,7 +47,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       return { key, counts };
     });
   }, []);
-  const value = useMemo(() => ({ reported, report, actions, setActions }), [reported, report, actions]);
+  const value = useMemo(() => ({ reported, report, actions, setActions, canvas, setCanvas }), [reported, report, actions, canvas]);
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
 }
 
@@ -80,6 +83,24 @@ export function useReportedSections(key: string): SectionCounts {
 }
 
 const NONE: SectionCounts = {};
+
+/**
+ * Tells the shell that the page is a canvas while `canvas` holds, for a page
+ * that is one only sometimes (a feature's Docs with a design open), where
+ * staticData cannot say so: the sidebar then folds as on a canvas section.
+ */
+export function useReportCanvas(canvas: boolean) {
+  const { setCanvas } = useShell();
+  useEffect(() => {
+    setCanvas(canvas);
+    return () => setCanvas(false);
+  }, [setCanvas, canvas]);
+}
+
+/** Whether the open page reported that it is a canvas (useReportCanvas). */
+export function useReportedCanvas(): boolean {
+  return useShell().canvas;
+}
 
 /** Where the header's page actions go; the header sets it. */
 export function useSetHeaderActions() {

@@ -11,10 +11,9 @@ import type { TrackFlags } from "@/components/home/use-home-data";
 import type { ProjectMap } from "./project-data";
 import { Progress, RowLead, rowClass, shortWhen } from "./rows";
 
-// A track as a row: in an Overview's In flight (two lines: the name over what
-// it changes and where it split) and in a Tracks list (one line). Both show
-// its state icon, its open questions, its part (on the project's pages), its
-// progress and its owner.
+// A track as a row of a Tracks list: its state icon, its name and what it
+// changes, its open questions, its part (on the project's pages), its progress
+// and its owner.
 
 type Params = { workspaceId: string; projectId: string };
 
@@ -89,58 +88,10 @@ type RowProps = {
 };
 
 /**
- * A track in an Overview's In flight: its name, then the facts in their
- * columns (questions, blocked, part, progress, owner), and under both what it
- * changes, which truncates only at the row's end. In a narrow column (under
- * 720px) the questions and blocked mark move to the start of the second line,
- * so the name keeps the room and the grey line truncates first.
+ * A track in a Tracks list: state, name, what it changes, then questions, open
+ * threads, part, progress, owner and when it last moved, each in its column.
+ * On the phone the facts go to a second line under the name, only those there are.
  */
-export function FlightRow({ summary, all, params, map, names, questions, showPart }: RowProps) {
-  const { track } = summary;
-  const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
-  const facts = trackFacts(summary, map, all);
-  const flags = questions?.get(track.id);
-  const flagged = !!flags && (flags.questions > 0 || !!flags.blocked);
-  return (
-    <li className="@container">
-      <Link
-        to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
-        params={{ ...params, trackId: track.id }}
-        className={cn(
-          rowClass({ two: true, link: true }),
-          "grid grid-cols-[var(--avatar)_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-0.5",
-          "@max-[720px]:grid-cols-[var(--avatar)_auto_minmax(0,1fr)_auto]",
-        )}
-      >
-        <RowLead two>
-          <StateIcon state={track.state} label={stateLabel(track.state)} />
-        </RowLead>
-        <span className="col-start-2 row-start-1 min-w-0 truncate font-medium @max-[720px]:col-end-4">{track.name}</span>
-        {facts && (
-          <span className={cn("col-start-2 col-end-5 row-start-2 min-w-0 truncate text-ink-3", flagged && "@max-[720px]:col-start-3")}>{facts}</span>
-        )}
-        <span
-          className={cn(
-            "col-start-3 row-start-1 flex h-5 shrink-0 items-center gap-3",
-            "@max-[720px]:col-start-2 @max-[720px]:row-start-2 @max-[720px]:gap-2 @max-[720px]:*:w-auto @max-[720px]:*:empty:hidden",
-            !flagged && "@max-[720px]:hidden",
-          )}
-        >
-          <Flags flags={flags} slots />
-        </span>
-        <span className="col-start-4 row-start-1 flex h-5 shrink-0 items-center gap-3">
-          {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
-          <Slot kind="progress">
-            <Progress done={stories.done} total={stories.total} />
-          </Slot>
-          <OwnerAvatar userId={track.owner_user_id} names={names} />
-        </span>
-      </Link>
-    </li>
-  );
-}
-
-/** A track in a Tracks list: state, name, what it changes, then questions, open threads, part, progress, owner and when it last moved. */
 export function TrackLine({ summary, all, params, map, names, questions, showPart, openThreads = 0 }: RowProps & { openThreads?: number }) {
   const { track, last_activity } = summary;
   const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
@@ -151,16 +102,16 @@ export function TrackLine({ summary, all, params, map, names, questions, showPar
       <Link
         to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
         params={{ ...params, trackId: track.id }}
-        className={rowClass({ link: true, inset: true })}
+        className={cn(rowClass({ link: true, inset: true }), "max-md:flex-wrap max-md:items-start max-md:gap-y-1 max-md:py-2.5")}
       >
         <RowLead>
           <StateIcon state={track.state} label={stateLabel(track.state)} />
         </RowLead>
-        <span className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="flex min-w-0 flex-1 items-center gap-2 max-md:basis-[calc(100%-var(--avatar)-12px)]">
           <span className={cn("max-w-full min-w-0 shrink-0 truncate font-medium", track.state === "dropped" && "text-ink-2")}>{track.name}</span>
           {facts && <span className="min-w-0 flex-1 truncate text-ink-3">{facts}</span>}
         </span>
-        <span className="flex shrink-0 items-center gap-3">
+        <span className="flex shrink-0 items-center gap-3 max-md:min-w-0 max-md:basis-full max-md:flex-wrap max-md:gap-x-2.5 max-md:gap-y-1 max-md:pl-8 max-md:*:w-auto max-md:*:empty:hidden">
           <Flags flags={questions?.get(track.id)} slots />
           <Slot kind="threads">
             {openThreads > 0 && (
@@ -172,9 +123,7 @@ export function TrackLine({ summary, all, params, map, names, questions, showPar
             )}
           </Slot>
           {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
-          <Slot kind="progress">
-            <Progress done={stories.done} total={stories.total} />
-          </Slot>
+          <Slot kind="progress">{stories.total > 0 && <Progress done={stories.done} total={stories.total} />}</Slot>
           <OwnerAvatar userId={track.owner_user_id} names={names} />
           <Slot kind="when">
             <span

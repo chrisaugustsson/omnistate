@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { ListFilter } from "lucide-react";
 import type { TrackSummary } from "@/api/generated";
-import { PageHead } from "@/components/shell/page";
 import { Select } from "@/components/shell/select";
+import { useIsPhone } from "@/components/shell/shell-context";
 import { StateIcon, TRACK_STATES, stateLabel } from "@/components/shell/state-icon";
 import { useHome } from "@/lib/use-home";
-import { useProjects } from "@/lib/use-workspace";
+import { cn } from "@/lib/utils";
 import { StartTrackForm } from "./forms";
 import { PartNotFound } from "./overview";
 import { useMemberNames, useRowFlags, useProjectMap } from "./project-data";
@@ -15,7 +15,9 @@ import { TrackLine } from "./track-lines";
 // The Tracks of a project or a part, grouped by state like Linear: a band per
 // state (Planning, Building, Done, Dropped) with its count, the most recently
 // active track first in each. A filter bar narrows them by state, owner and
-// (on the project) part. Start track opens the form under the head.
+// (on the project) part; Start track at its end (under the list on the phone)
+// opens the form. The
+// sidebar names the section, so the page has no visible title.
 
 type Params = { workspaceId: string; projectId: string };
 
@@ -40,11 +42,10 @@ function FilterSelect({
 /** The Tracks page of a project, or with `partId` of a part. */
 export function TracksPage({ workspaceId, projectId, partId }: Params & { partId?: string }) {
   const params = { workspaceId, projectId };
-  const { projects } = useProjects(workspaceId, projectId);
-  const project = projects?.find((candidate) => candidate.id === projectId);
   const { home, failed, reload } = useHome(workspaceId, projectId);
   const { map } = useProjectMap(workspaceId, projectId);
   const names = useMemberNames(workspaceId);
+  const phone = useIsPhone();
   const [starting, setStarting] = useState(false);
   const [state, setState] = useState("");
   const [owner, setOwner] = useState("");
@@ -61,40 +62,13 @@ export function TracksPage({ workspaceId, projectId, partId }: Params & { partId
   );
   const owners = [...new Set(scoped.map(({ track }) => track.owner_user_id).filter((id): id is string => Boolean(id)))];
   const filtered = Boolean(state || owner || part);
-  const lede = partId
-    ? `Work on ${thePart?.name ?? "the part"}, active first. Done and dropped tracks stay listed with what they changed.`
-    : `Every piece of work in ${project?.name ?? "the project"}, one track per part. In flight first; done and dropped stay listed.`;
 
   return (
     <ScopePage>
-      <PageHead
-        title="Tracks"
-        actions={
-          <button type="button" className={btnPrimary} aria-expanded={starting} onClick={() => setStarting(!starting)}>
-            Start track
-          </button>
-        }
-      />
-      <p className="mt-1.5 max-w-(--main-max) text-em text-ink-2">{lede}</p>
-      {starting && map && (
-        <StartTrackForm
-          {...params}
-          fixedPartId={partId}
-          parts={map.parts}
-          onDone={(created) => {
-            setStarting(false);
-            if (created) reload();
-          }}
-        />
-      )}
-      {failed && (
-        <p role="alert" className="mt-4 text-danger-ink">
-          The tracks could not be loaded. Try again in a moment.
-        </p>
-      )}
-      {home && (
-        <>
-          <div role="group" aria-label="Filter" className="mt-6 flex flex-wrap items-center gap-1">
+      <h1 className="sr-only">Tracks</h1>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {home && (
+          <div role="group" aria-label="Filter" className="flex min-w-0 flex-1 basis-72 flex-wrap items-center gap-1">
             <ListFilter aria-hidden className="mr-1 size-(--icon-sm) text-ink-3" />
             <FilterSelect
               label="State"
@@ -133,6 +107,31 @@ export function TracksPage({ workspaceId, projectId, partId }: Params & { partId
               {filtered ? `${shown.length} of ${scoped.length}` : scoped.length} {scoped.length === 1 ? "track" : "tracks"}
             </span>
           </div>
+        )}
+        {!phone && (
+          <button type="button" className={cn(btnPrimary, "ml-auto")} aria-expanded={starting} onClick={() => setStarting(!starting)}>
+            Start track
+          </button>
+        )}
+      </div>
+      {starting && map && (
+        <StartTrackForm
+          {...params}
+          fixedPartId={partId}
+          parts={map.parts}
+          onDone={(created) => {
+            setStarting(false);
+            if (created) reload();
+          }}
+        />
+      )}
+      {failed && (
+        <p role="alert" className="mt-4 text-danger-ink">
+          The tracks could not be loaded. Try again in a moment.
+        </p>
+      )}
+      {home && (
+        <>
           {scoped.length === 0 ? (
             <p className="mt-3 border-y border-line py-2.5 text-ink-3">
               No tracks yet. A track is one piece of work on a part; start one to change something.
@@ -170,6 +169,11 @@ export function TracksPage({ workspaceId, projectId, partId }: Params & { partId
             </div>
           )}
         </>
+      )}
+      {phone && (
+        <button type="button" className={cn(btnPrimary, "mt-4 h-(--control-h-lg) w-full")} aria-expanded={starting} onClick={() => setStarting(!starting)}>
+          Start track
+        </button>
       )}
     </ScopePage>
   );

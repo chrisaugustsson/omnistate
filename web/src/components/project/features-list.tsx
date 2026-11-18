@@ -4,7 +4,6 @@ import { Box, Pencil, Trash2 } from "lucide-react";
 import type { FeatureBody, TrackSummary } from "@/api/generated";
 import { ApiError } from "@/api/client";
 import { deleteFeature, renameFeature } from "@/api/features";
-import { PageHead } from "@/components/shell/page";
 import { StateIcon, inFlight } from "@/components/shell/state-icon";
 import { useHome } from "@/lib/use-home";
 import { useProjects } from "@/lib/use-workspace";
@@ -12,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { CreateFeatureForm, StartTrackForm } from "./forms";
 import { PartNotFound } from "./overview";
 import { isReplaced, useDecisionGroups, useProjectMap, type DecisionGroup } from "./project-data";
-import { btn, btnDanger, btnIcon, btnPrimary, field, ScopePage, shortDate } from "./rows";
+import { btn, btnDanger, btnIcon, btnPrimary, field, ScopePage, SectionBar, shortDate } from "./rows";
 
 // A part's Features: what the part can do on main today, a card per feature
 // with what it does, whether a track is changing it, and how many decisions
@@ -168,7 +167,7 @@ function FeatureCard({
         {by ? (
           <p className="flex min-w-0 items-center gap-1.5 text-ink-2">
             <StateIcon state={by.track.state} className="size-3" />
-            Being changed by
+            <span className="shrink-0 whitespace-nowrap">Being changed by</span>
             <Link
               to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
               params={{ ...params, trackId: by.track.id }}
@@ -214,8 +213,9 @@ export function FeaturesPage({ workspaceId, projectId, partId }: Params & { part
 
   return (
     <ScopePage>
-      <PageHead
+      <SectionBar
         title="Features"
+        note={part && <>What {part.name} can do on main today. To change one, start a track on it.</>}
         actions={
           part && (
             <>
@@ -229,7 +229,6 @@ export function FeaturesPage({ workspaceId, projectId, partId }: Params & { part
           )
         }
       />
-      {part && <p className="mt-1.5 max-w-(--main-max) text-em text-ink-2">What {part.name} can do on main today. To change one, start a track on it.</p>}
       {opened === "feature" && (
         <CreateFeatureForm
           {...params}
@@ -261,7 +260,7 @@ export function FeaturesPage({ workspaceId, projectId, partId }: Params & { part
         (features.length === 0 ? (
           <p className="mt-6 border-y border-line py-2.5 text-ink-3">No features yet. A feature is something {part?.name} can do; create one to say what.</p>
         ) : (
-          <ul aria-label="Features" className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <ul aria-label="Features" className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {features.map((feature) => (
               <FeatureCard
                 key={feature.id}

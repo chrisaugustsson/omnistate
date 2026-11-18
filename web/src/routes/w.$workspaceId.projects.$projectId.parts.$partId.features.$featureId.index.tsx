@@ -1,55 +1,34 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { describeFeature } from "@/api/features";
 import { Intro } from "@/components/project/intro";
-import { DecisionLog, foldReplaced } from "@/components/track/decision-log";
 import { useFeature } from "@/components/track/feature-data";
-import { SectionHead, buttonClass } from "@/components/track/ui";
+import { ChangingNow, StartTrack } from "@/components/track/feature-parts";
+import { useIsPhone } from "@/components/shell/shell-context";
 
 // A feature's Overview: what it does now (its description, edited in place)
-// and its three newest current decisions, each saying which track recorded it.
+// and one line naming the tracks that change it now, each a link; on the
+// phone, Start track under them.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/")({
   staticData: { section: "overview" },
   component: Overview,
 });
 
 function Overview() {
-  const { workspaceId, projectId, partId, featureId, feature, decisions, people, tracks } = useFeature();
+  const data = useFeature();
+  const { workspaceId, projectId, partId, featureId, feature } = data;
+  const phone = useIsPhone();
   if (!feature) return <div aria-hidden className="h-40 animate-pulse rounded-card bg-frame" />;
-  const current = decisions ? foldReplaced([...decisions.decisions, ...decisions.earlier], decisions.decisions).top.length : 0;
   return (
-    <div className="space-y-8">
-      <section aria-labelledby="now-title">
-        <SectionHead id="now-title" title="What it does now" />
-        <Intro
-          className="mt-0"
-          text={feature.description}
-          onSave={async (text) => {
-            await describeFeature(workspaceId, projectId, partId, featureId, text);
-          }}
-        />
-      </section>
-      <section aria-labelledby="recent-title">
-        <SectionHead id="recent-title" title="Recent decisions" count={decisions && current > 3 ? `3 of ${current}` : undefined}>
-          {current > 0 && (
-            <Link
-              to="/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions"
-              params={{ workspaceId, projectId, partId, featureId }}
-              className={buttonClass({ variant: "ghost" })}
-            >
-              All decisions
-            </Link>
-          )}
-        </SectionHead>
-        {decisions && (
-          <DecisionLog
-            decisions={decisions.decisions}
-            earlier={decisions.earlier}
-            limit={3}
-            context={{ params: { workspaceId, projectId }, people, tracks: tracks ?? [], show: "from" }}
-            empty="No decisions about it yet. Tracks that change it record them."
-          />
-        )}
-      </section>
+    <div className="max-w-(--main-max)">
+      <Intro
+        className="mt-0"
+        text={feature.description}
+        onSave={async (text) => {
+          await describeFeature(workspaceId, projectId, partId, featureId, text);
+        }}
+      />
+      <ChangingNow />
+      {phone && <StartTrack data={data} className="mt-6 h-(--control-h-lg) w-full" />}
     </div>
   );
 }

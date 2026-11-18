@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // A feature's pages (UI redesign, slice S3; prototype
-// tasks/ui-redesign/v2/feature-analyze*.html): the Overview says what it does
-// now, a banner names each track in flight that changes it; the tabs are
+// tasks/ui-redesign/v2/feature-analyze*.html; navigation F): the Overview says
+// what it does now and names the tracks in flight that change it; the sections are
 // Overview, Docs, Design (only with design docs), Tracks and Decisions; Tracks
 // groups the tracks that changed it by state; Start track opens a new track on
 // the feature's part that changes it.
@@ -58,22 +58,22 @@ afterEach(() => {
 });
 
 describe("a feature's Overview", () => {
-  test("says what it does now, and a banner names the track in flight that changes it, linking to it; a done track has none", async () => {
+  test("says what it does now, then one line naming the track in flight that changes it as a link; a done track is not named", async () => {
     featureApi();
     renderAt(FEATURE_PATH);
-    const now = (await screen.findByRole("heading", { name: "What it does now" })).closest("section") as HTMLElement;
-    expect(now.textContent).toContain("Time-series chart per channel, compare devices, radar view, export.");
-    const banner = await screen.findByRole("link", { name: /Being changed by/ });
-    expect(banner.textContent).toContain("Being changed by Long time windows: Adds 90 d and 1 y windows. Not on main yet.");
-    expect(banner.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${WINDOWS}`);
-    expect(screen.getAllByRole("link", { name: /Being changed by/ })).toHaveLength(1);
+    const page = await screen.findByRole("main");
+    expect(await within(page).findByText("Time-series chart per channel, compare devices, radar view, export.")).toBeTruthy();
+    const line = (await within(page).findByText(/Being changed now by/)).closest("p") as HTMLElement;
+    expect(line.textContent).toBe("Being changed now by Long time windows. Not on main yet.");
+    expect(within(line).getByRole("link", { name: /Long time windows/ }).getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${WINDOWS}`);
+    expect(within(page).queryByText(/First chart/)).toBeNull();
   });
 
   test("with nothing written it offers Add a description; the text saved is what it does now", async () => {
     const api = featureApi({ feature: featureBody(ANALYZE, "Analyze") });
     renderAt(FEATURE_PATH);
-    const now = (await screen.findByRole("heading", { name: "What it does now" })).closest("section") as HTMLElement;
-    fireEvent.click(await within(now).findByRole("button", { name: "Add a description" }));
+    const page = await screen.findByRole("main");
+    fireEvent.click(await within(page).findByRole("button", { name: "Add a description" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value: "Charts each channel over time." } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -82,8 +82,8 @@ describe("a feature's Overview", () => {
         { method: "PATCH", path: `${API}/parts/${WISION}/features/${ANALYZE}`, body: { description: "Charts each channel over time." } },
       ]),
     );
-    expect(await within(now).findByText("Charts each channel over time.")).toBeTruthy();
-    expect(within(now).queryByRole("button", { name: "Add a description" })).toBeNull();
+    expect(await within(page).findByText("Charts each channel over time.")).toBeTruthy();
+    expect(within(page).queryByRole("button", { name: "Add a description" })).toBeNull();
   });
 });
 
@@ -118,6 +118,40 @@ describe("a feature's Design", () => {
     } finally {
       localStorage.removeItem("omni:pane:doc-list");
     }
+  });
+});
+
+describe("a feature's Docs", () => {
+  const html = docBody("0192d7a0-6666-7000-8000-000000000001", "How compare works", { pillar: "architecture", feature_id: ANALYZE });
+  const design = docBody("0192d7a0-6666-7000-8000-000000000002", "Analyze screens", { pillar: "ui", kind: "design", feature_id: ANALYZE });
+
+  test("with a design open the sidebar folds to icons, as on Design; with page text open it keeps its names", async () => {
+    featureApi({ docs: [html, design] });
+    const router = renderAt(`${FEATURE_PATH}/docs/${html.id}`);
+    await screen.findByRole("heading", { name: "How compare works" });
+    expect(screen.getByRole("button", { name: "Fold the sidebar" })).toBeTruthy();
+
+    await router.navigate({ href: `${FEATURE_PATH}/docs/${design.id}` });
+    await screen.findByRole("heading", { name: "Analyze screens" });
+    expect(await screen.findByRole("button", { name: "Show section names" })).toBeTruthy();
+  });
+
+  test("on the phone the list is the page, and a doc opens alone with a way back to the list", async () => {
+    vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: true, addEventListener() {}, removeEventListener() {} }));
+    featureApi({ docs: [html, design] });
+    const router = renderAt(`${FEATURE_PATH}/docs`);
+    const list = await screen.findByRole("navigation", { name: "Doc list" });
+    expect(within(list).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("aria-current")])).toEqual([
+      ["Analyze screens", null],
+      ["How compare works", null],
+    ]);
+    expect(screen.queryByRole("heading", { name: "How compare works" })).toBeNull();
+
+    fireEvent.click(within(list).getByRole("link", { name: "How compare works" }));
+    await screen.findByRole("heading", { name: "How compare works" });
+    expect(screen.queryByRole("navigation", { name: "Doc list" })).toBeNull();
+    fireEvent.click(screen.getByRole("link", { name: "All docs" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe(`${FEATURE_PATH}/docs`));
   });
 });
 

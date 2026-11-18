@@ -2,8 +2,7 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 // The page under the bar: one centred column, 1200px wide at most with 40px
-// sides, as the prototype's .wrap. A scope page starts with PageHead; an object
-// page (feature, track) with PagePath, then PageHead. The main
+// sides, as the prototype's .wrap. A page starts with PageHead. The main
 // column and the properties panel sit side by side in PageColumns.
 
 /** The centred page. `object` starts it closer to the bar, for the path above an object's title. */
@@ -39,15 +38,5 @@ export function PageColumns({ children, panel, className }: { children: ReactNod
       <div className="min-w-0">{children}</div>
       {panel}
     </div>
-  );
-}
-
-/** A page a later slice builds: its title and one quiet line on what it will hold. */
-export function PlaceholderPage({ title, children }: { title: ReactNode; children?: ReactNode }) {
-  return (
-    <Page>
-      <PageHead title={title} />
-      {children && <p className="mt-2 max-w-(--main-max) text-em text-ink-2">{children}</p>}
-    </Page>
   );
 }

@@ -44,38 +44,6 @@ function FromTrack({ trackId, context }: { trackId: string; context: DecisionCon
   );
 }
 
-/** What a decision is about, as a link: the project, a part, or a part's feature. */
-function About({ subject, context, withPart }: { subject: Subject; context: DecisionContext; withPart: boolean }) {
-  const { params, parts } = context;
-  if (subject.kind === "project") {
-    return (
-      <Link to="/w/$workspaceId/projects/$projectId" params={params} className={fromClass}>
-        <ProjectMark name={subject.name} parts={parts?.map((part) => ({ kind: part.kind, tone: partTone(parts, part.id) }))} className="size-3 rounded-[3px]" />
-        {subject.name}
-      </Link>
-    );
-  }
-  const icon = <PartIcon name={subject.part.name} kind={subject.part.kind} tone={partTone(parts, subject.part.id)} size="sm" />;
-  if (subject.kind === "part") {
-    return (
-      <Link to="/w/$workspaceId/projects/$projectId/parts/$partId" params={{ ...params, partId: subject.id }} className={fromClass}>
-        {icon}
-        {subject.name}
-      </Link>
-    );
-  }
-  return (
-    <Link
-      to="/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId"
-      params={{ ...params, partId: subject.part.id, featureId: subject.id }}
-      className={fromClass}
-    >
-      {withPart ? icon : <Box aria-hidden className="size-3 text-ink-2" strokeWidth={1.75} />}
-      {withPart ? `${subject.part.name} › ${subject.name}` : subject.name}
-    </Link>
-  );
-}
-
 function Author({ decision, context }: { decision: DecisionBody; context: DecisionContext }) {
   const who = authorOf(decision.author, context.names);
   return <Avatar name={who.name} agent={who.agent} tintKey={who.key} title={who.name} />;
@@ -90,56 +58,6 @@ function replacedChain(decision: DecisionBody, byId: ReadonlyMap<string, Decisio
     next = next.replaces_decision_id ? byId.get(next.replaces_decision_id) : undefined;
   }
   return chain;
-}
-
-/** A decision on an Overview: what was decided, then who, what it is about, its track and how many it replaces; its date. */
-export function RecentDecisionRow({
-  decision,
-  subject,
-  context,
-  showAbout,
-}: {
-  decision: DecisionBody;
-  subject: Subject;
-  context: DecisionContext;
-  /** Name what it is about (on the project's Overview, where decisions are of every level). */
-  showAbout: boolean;
-}) {
-  const who = authorOf(decision.author, context.names);
-  return (
-    <li className="flex min-h-(--row-h) items-start gap-3 border-t border-line py-2.5">
-      <RowLead two>
-        <Author decision={decision} context={context} />
-      </RowLead>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="font-medium">{decision.decision}</span>
-        <span className="text-meta leading-5 text-ink-3">
-          {who.name}
-          {(showAbout || subject.kind === "feature") && (
-            <>
-              <Sep />
-              <span className="whitespace-nowrap">
-                about <About subject={subject} context={context} withPart={showAbout} />
-              </span>
-            </>
-          )}
-          <Sep />
-          <span className="whitespace-nowrap">
-            from <FromTrack trackId={decision.track_id} context={context} />
-          </span>
-          {decision.replaces_decision_id && (
-            <>
-              <Sep />
-              replaces an earlier decision
-            </>
-          )}
-        </span>
-      </span>
-      <time dateTime={decision.created_at} className="pt-px text-meta whitespace-nowrap text-ink-3">
-        {shortDate(decision.created_at)}
-      </time>
-    </li>
-  );
 }
 
 /** A decision in the log: what was decided, why, who, the question it answers and its track; what it replaced folded under it. */

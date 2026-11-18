@@ -1,10 +1,9 @@
-import { PageHead } from "@/components/shell/page";
 import { useHome } from "@/lib/use-home";
 import { useProjects } from "@/lib/use-workspace";
 import { DecisionLog } from "./decision-log";
 import { PartNotFound } from "./overview";
 import { useDecisionGroups, useMemberNames, useProjectMap } from "./project-data";
-import { ScopePage } from "./rows";
+import { ScopePage, SectionBar } from "./rows";
 
 // The Decisions of a project or a part: the decision log of the level and the
 // levels under it, grouped by what each decision is about. Decisions are
@@ -27,12 +26,14 @@ export function DecisionsPage({ workspaceId, projectId, partId }: Params & { par
   const name = partId ? part?.name : project?.name;
   return (
     <ScopePage>
-      <PageHead title="Decisions" />
-      <p className="mt-1.5 max-w-(--main-max) text-em text-ink-2">
-        {partId
-          ? `What was decided about ${name ?? "the part"} and its features, and why. A replaced decision folds under its successor.`
-          : `What was decided in ${name ?? "the project"} and why, grouped by what each decision is about. A replaced decision folds under its successor.`}
-      </p>
+      <SectionBar
+        title="Decisions"
+        note={
+          partId
+            ? `What was decided about ${name ?? "the part"} and its features, and why. A replaced decision folds under its successor.`
+            : `What was decided in ${name ?? "the project"} and why, grouped by what each decision is about. A replaced decision folds under its successor.`
+        }
+      />
       {failed && (
         <p role="alert" className="mt-4 text-danger-ink">
           The decisions could not be loaded. Try again in a moment.

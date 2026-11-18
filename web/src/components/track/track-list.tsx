@@ -15,7 +15,8 @@ import { Progress } from "./ui";
 // The tracks of a feature as its Tracks tab lists them, like a part's Tracks:
 // grouped by state (Planning, Building, Done, Dropped) under a band each, every
 // row the track's state, name and what it changes, its questions and blocked
-// mark, progress, owner and last change.
+// mark, progress, owner and last change; on the phone those facts take a third
+// line under what it changes.
 
 function Row({
   summary,
@@ -48,7 +49,7 @@ function Row({
           {verb}
           {what ? `: ${what}` : ""}
         </span>
-        <span className="col-start-3 row-start-1 flex h-5 shrink-0 items-center gap-3">
+        <span className="col-start-3 row-start-1 flex h-5 shrink-0 items-center gap-3 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 max-md:mt-0.5 max-md:h-auto max-md:flex-wrap max-md:gap-y-1 max-md:gap-x-2.5 max-md:*:w-auto max-md:*:empty:hidden">
           <Flags flags={flags} slots />
           <Slot kind="progress">
             {summary.stories && summary.stories.total > 0 && <Progress done={summary.stories.done} total={summary.stories.total} />}

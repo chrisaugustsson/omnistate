@@ -1,11 +1,12 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link, Navigate } from "@tanstack/react-router";
-import { FileText, Palette, PanelLeftClose, PanelLeftOpen, PenTool, Search } from "lucide-react";
+import { ChevronLeft, FileText, Palette, PanelLeftClose, PanelLeftOpen, PenTool, Search } from "lucide-react";
 import type { HomeDoc } from "@/api/generated";
 import { matches } from "@/components/palette/search";
+import { partLink, projectLink } from "@/components/shell/scope";
+import { useIsPhone, useReportCanvas } from "@/components/shell/shell-context";
 import { DocByline } from "@/components/viewer/byline";
 import { DocPage, type DocSearch } from "@/components/viewer/doc-page";
-import { timeAgo } from "@/lib/format";
 import { usePane } from "@/lib/pane";
 import { useHome } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
@@ -13,9 +14,10 @@ import { useProjectMap } from "./project-data";
 
 // The docs of a scope (the project, or a part with its features): which docs
 // those are, the pillars they are grouped by (decision U8: Spec, UI,
-// Architecture, Database, Research), the small tiles an Overview shows, and
-// the Docs tab: the list with a find field on the left, the open doc on the
-// right (page text beside the list, or a design's canvas filling the window).
+// Architecture, Database, Research), and the Docs section: the list with a
+// find field on the left, the open doc on the right (page text beside the
+// list, or a design's canvas filling the window). On the phone the list is the
+// page, and a doc opens full screen with a way back to the list.
 
 /** The pillars, in the order the Docs tab groups them. */
 export const DOC_PILLARS = [
@@ -83,30 +85,6 @@ function DocListButton({ list }: { list: DocListToggle }) {
 /** Where a doc of the list opens: a router link's `to` and `params`. */
 export type DocTarget = (doc: HomeDoc) => { to: string; params: Record<string, string> };
 
-/** An Overview's recent docs as small tiles: icon, title, pillar and when it changed. */
-export function DocTiles({ docs, target }: { docs: readonly HomeDoc[]; target: DocTarget }) {
-  return (
-    <ul className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      {docs.map((doc) => (
-        <li key={doc.id} className="min-w-0">
-          <Link
-            {...(target(doc) as { to: "/w/$workspaceId/projects/$projectId/docs/$docId"; params: { workspaceId: string; projectId: string; docId: string } })}
-            className="flex min-w-0 items-start gap-2.5 rounded-card border border-line bg-sheet p-3 transition-colors duration-(--t-fast) hover:border-line-strong hover:bg-frame focus-visible:shadow-focus focus-visible:outline-none"
-          >
-            <DocIcon kind={doc.kind} className="mt-px" />
-            <span className="flex min-w-0 flex-col gap-0.5">
-              <span className="truncate font-medium">{doc.title}</span>
-              <span className="truncate text-meta text-ink-3">
-                {pillarTitle(doc.pillar)} · {timeAgo(doc.updated_at ?? doc.created_at)}
-              </span>
-            </span>
-          </Link>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 /** The doc list: a find field, then the docs grouped by pillar with a count each, the open one lit. */
 function DocList({ docs, current, target, about }: { docs: readonly HomeDoc[]; current?: string; target: DocTarget; about?: (doc: HomeDoc) => string | undefined }) {
   const [query, setQuery] = useState("");
@@ -165,7 +143,8 @@ function DocList({ docs, current, target, about }: { docs: readonly HomeDoc[]; c
 }
 
 /**
- * A Docs tab: the list on the left (248px), and on the right the open doc
+ * A Docs tab: the list on the left (248px; above the doc in a window under
+ * 1280px, where the sidebar leaves the doc too little room), and on the right the open doc
  * (`children`) or, with no doc open, `empty`. An HTML doc reads as page text in
  * the centred page beside the list, and the page scrolls; a design is a canvas,
  * so with one open (`canvas`) the tab fills the window under the bar instead.
@@ -178,6 +157,7 @@ export function DocsTab({
   failed,
   canvas = false,
   listShown = true,
+  only,
   children,
 }: {
   docs: readonly HomeDoc[] | null;
@@ -190,6 +170,8 @@ export function DocsTab({
   canvas?: boolean;
   /** Beside a design, whether the list shows; the reader folds it away with the button in the doc's header. */
   listShown?: boolean;
+  /** On the phone: the list alone, or the open doc alone (`children`, with its way back). */
+  only?: "list" | "doc";
   children: ReactNode;
 }) {
   const list = (
@@ -202,6 +184,16 @@ export function DocsTab({
       )}
     </>
   );
+  if (only === "list") {
+    return (
+      <div className="px-4 pt-5 pb-12">
+        {docs?.length === 0 ? children : list}
+      </div>
+    );
+  }
+  if (only === "doc") {
+    return <div className={cn("flex min-w-0 flex-col px-4 pt-3 pb-12", canvas && "h-full min-h-[560px]")}>{children}</div>;
+  }
   if (canvas) {
     return (
       <div className="flex h-full min-h-[560px] flex-col md:flex-row">
@@ -215,8 +207,8 @@ export function DocsTab({
     );
   }
   return (
-    <div className="mx-auto grid w-full max-w-(--page-max) grid-cols-1 items-start gap-8 px-4 pt-8 pb-12 md:grid-cols-[var(--doclist-w)_minmax(0,1fr)] md:gap-12 md:px-(--page-pad)">
-      <aside aria-label="Doc list" className="md:sticky md:top-8">
+    <div className="mx-auto grid w-full max-w-(--page-max) grid-cols-1 items-start gap-8 px-4 pt-8 pb-12 md:px-(--page-pad) xl:grid-cols-[var(--doclist-w)_minmax(0,1fr)] xl:gap-12">
+      <aside aria-label="Doc list" className="max-xl:max-w-(--main-max) xl:sticky xl:top-8">
         {list}
       </aside>
       <div className="min-w-0">{children}</div>
@@ -310,11 +302,37 @@ export function ScopeDocs({
   const scope = partId ? (map?.parts.find((part) => part.id === partId)?.name ?? "the part") : "the project";
   const open = docId ? docs?.find((doc) => doc.id === docId) : undefined;
   const list = useDocListToggle();
+  const phone = useIsPhone();
   const canvas = open?.kind === "design";
+  // A design open is a canvas: the sidebar folds as on Design.
+  useReportCanvas(canvas);
+  const index = partId ? partLink(workspaceId, projectId, partId, "docs") : projectLink(workspaceId, projectId, "docs");
   return (
-    <DocsTab docs={docs} current={docId} target={target} about={about} failed={failed} canvas={canvas} listShown={!canvas || list.shown}>
+    <DocsTab
+      docs={docs}
+      current={docId}
+      target={target}
+      about={about}
+      failed={failed}
+      canvas={canvas}
+      listShown={!canvas || list.shown}
+      only={phone ? (docId ? "doc" : "list") : undefined}
+    >
       {docId ? (
-        <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={docId} doc={open} search={search ?? {}} list={list} />
+        <>
+          {phone && (
+            <Link
+              {...index}
+              activeOptions={{ exact: true }}
+              activeProps={{}}
+              className="-ml-1.5 inline-flex h-(--control-h) w-fit items-center gap-1 rounded-control pr-2 pl-0.5 font-medium text-ink-2 transition-colors duration-(--t-fast) hover:bg-hover hover:text-ink focus-visible:shadow-focus focus-visible:outline-none"
+            >
+              <ChevronLeft aria-hidden className="size-(--icon)" strokeWidth={2.25} />
+              All docs
+            </Link>
+          )}
+          <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={docId} doc={open} search={search ?? {}} list={phone ? undefined : list} />
+        </>
       ) : (
         <OpenLatest
           docs={docs}

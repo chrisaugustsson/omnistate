@@ -5,14 +5,13 @@ import type { PartBody, TrackSummary } from "@/api/generated";
 import { ApiError } from "@/api/client";
 import { deletePart, renamePart } from "@/api/parts";
 import { PartIcon } from "@/components/shell/part-icon";
-import { PageHead } from "@/components/shell/page";
 import { StateIcon, inFlight, stateLabel } from "@/components/shell/state-icon";
 import { partTone } from "@/lib/identity";
 import { useHome } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 import { CreatePartForm } from "./forms";
 import { useProjectMap } from "./project-data";
-import { btn, btnDanger, btnIcon, btnPrimary, EmptyRow, field, ScopePage } from "./rows";
+import { btn, btnDanger, btnIcon, btnPrimary, EmptyRow, field, ScopePage, SectionBar } from "./rows";
 
 // The project's Parts: a row per part (its icon, name and kind, what it is,
 // how many features it has and what is in flight on it), with creating,
@@ -208,13 +207,13 @@ function counted(count: number): string {
 }
 
 function lede(parts: readonly PartBody[]): string {
-  if (parts.length === 0) return "The apps and services the project is made of. Each part has its own features, docs, tracks and decisions.";
+  if (parts.length === 0) return "The apps and services the project is made of.";
   const apps = parts.filter((part) => part.kind === "app").length;
   const services = parts.length - apps;
   const said = [apps > 0 && `${counted(apps)} ${apps === 1 ? "app" : "apps"}`, services > 0 && `${counted(services)} ${services === 1 ? "service" : "services"}`]
     .filter(Boolean)
     .join(" and ");
-  return `${said.charAt(0).toUpperCase()}${said.slice(1)} that change together. Each part has its own features, docs, tracks and decisions.`;
+  return `${said.charAt(0).toUpperCase()}${said.slice(1)} that change together.`;
 }
 
 /** The project's Parts page. */
@@ -227,15 +226,15 @@ export function PartsPage({ workspaceId, projectId }: Params) {
 
   return (
     <ScopePage>
-      <PageHead
+      <SectionBar
         title="Parts"
+        note={parts && lede(parts)}
         actions={
           <button type="button" className={btnPrimary} aria-expanded={creating} onClick={() => setCreating(!creating)}>
             Create part
           </button>
         }
       />
-      {parts && <p className="mt-1.5 max-w-(--main-max) text-em text-ink-2">{lede(parts)}</p>}
       {creating && (
         <CreatePartForm
           {...params}

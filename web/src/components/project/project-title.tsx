@@ -49,12 +49,15 @@ export function ProjectTitle({
   name,
   editing,
   onEditing,
+  className,
 }: {
   workspaceId: string;
   projectId: string;
   name: string;
   editing: boolean;
   onEditing: (editing: boolean) => void;
+  /** The title's classes, besides its size. */
+  className?: string;
 }) {
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
@@ -111,7 +114,7 @@ export function ProjectTitle({
     }
   }
 
-  if (!editing) return <h1 className="min-w-0 text-title font-semibold">{current}</h1>;
+  if (!editing) return <h1 className={cn("min-w-0 text-title font-semibold", className)}>{current}</h1>;
   return (
     <form
       aria-label="Rename project"

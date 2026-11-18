@@ -1,19 +1,37 @@
-import { forwardRef, type AnchorHTMLAttributes, type ReactNode } from "react";
-import { createLink } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { Page } from "@/components/shell/page";
 import { cn } from "@/lib/utils";
 
 // The pieces the project's and the part's pages are built of, after the
 // prototype (tasks/ui-redesign/v2/components.css): buttons and fields, a
-// section with its head, rows on the sheet with a hairline between them, group
-// bands, a progress bar, badges and the panel's counts.
+// section page's top bar, rows on the sheet with a hairline between them, group
+// bands, a progress bar and badges.
 
-/** A page of a scope (the project's or a part's tabs): the main landmark around the centred page. */
+/** A page of a scope (the project's or a part's sections): the main landmark around the centred page, closer to the header on the phone. */
 export function ScopePage({ children }: { children: ReactNode }) {
   return (
     <main>
-      <Page>{children}</Page>
+      <Page className="max-md:pt-4">{children}</Page>
     </main>
+  );
+}
+
+/**
+ * The top of a section's page. The sidebar names the section, so the page has
+ * no visible title (its h1 is for screen readers): a quiet line on the left and
+ * the section's actions on the right.
+ */
+export function SectionBar({ title, note, actions }: { title: string; note?: ReactNode; actions?: ReactNode }) {
+  return (
+    <>
+      <h1 className="sr-only">{title}</h1>
+      {(note || actions) && (
+        <div className="flex min-h-(--control-h) flex-wrap items-center gap-x-4 gap-y-2">
+          {note && <p className="min-w-0 flex-1 basis-60 text-ink-3">{note}</p>}
+          {actions && <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div>}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -45,36 +63,6 @@ export const btnDanger = cn(btn, "border-danger bg-danger text-on-fill hover:bor
 export const field =
   "h-(--control-h-lg) w-full min-w-0 rounded-control border border-line-strong bg-sheet px-2.5 text-ink transition-[border-color,box-shadow] duration-(--t-fast) " +
   "placeholder:text-ink-3 hover:border-faint focus:border-brand focus:shadow-focus focus:outline-none";
-
-/** A section of a page: its head (title, count, an action at the end) and its content. */
-export function Section({
-  id,
-  title,
-  count,
-  end,
-  children,
-  className,
-}: {
-  id: string;
-  title: ReactNode;
-  count?: ReactNode;
-  end?: ReactNode;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <section aria-labelledby={id} className={cn("mt-8", className)}>
-      <div className="mb-2 flex h-8 items-center gap-2">
-        <h2 id={id} className="text-section font-semibold tracking-[-0.006em]">
-          {title}
-        </h2>
-        {count !== undefined && <span className="font-medium text-ink-3 tabular-nums">{count}</span>}
-        {end && <div className="-mr-2 ml-auto flex items-center gap-1">{end}</div>}
-      </div>
-      {children}
-    </section>
-  );
-}
 
 /** Rows in the page's column: a hairline above each row and under the last. */
 export function ColumnList({ children, label }: { children: ReactNode; label?: string }) {
@@ -158,32 +146,6 @@ export function Badge({ children, tone = "plain", className }: { children: React
       {children}
     </span>
   );
-}
-
-const CountAnchor = forwardRef<HTMLAnchorElement, AnchorHTMLAttributes<HTMLAnchorElement> & { n: number; label: string }>(
-  function CountAnchor({ n, label, className, ...props }, ref) {
-    return (
-      <a
-        ref={ref}
-        {...props}
-        className={cn(
-          "flex flex-col rounded-control px-1 py-1.5 leading-[1.3] transition-colors duration-(--t-fast) hover:bg-hover focus-visible:shadow-focus focus-visible:outline-none",
-          className,
-        )}
-      >
-        <span className="text-section font-semibold text-ink tabular-nums">{n}</span>
-        <span className="text-meta text-ink-3">{label}</span>
-      </a>
-    );
-  },
-);
-
-/** One of the panel's counts, a link to where the counted things are. */
-export const CountLink = createLink(CountAnchor);
-
-/** The panel's counts, three to a row. */
-export function Counts({ children }: { children: ReactNode }) {
-  return <div className="grid grid-cols-3 gap-0.5">{children}</div>;
 }
 
 /** A short date: "12 min", "3 h", "4 Nov"; for the time column of a row. */

@@ -4,15 +4,20 @@ import { partLink } from "@/components/shell/scope";
 import { useFeature } from "@/components/track/feature-data";
 import { TracksByState } from "@/components/track/track-list";
 import { EmptyLine, buttonClass } from "@/components/track/ui";
+import { StartTrack } from "@/components/track/feature-parts";
+import { useIsPhone } from "@/components/shell/shell-context";
 
-// A feature's Tracks: the tracks that changed it or change it now, grouped by state.
+// A feature's Tracks: the tracks that changed it or change it now, grouped by
+// state; on the phone, Start track under them.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks")({
   staticData: { section: "tracks" },
   component: Tracks,
 });
 
 function Tracks() {
-  const { workspaceId, projectId, partId, tracks, people, part, feature } = useFeature();
+  const data = useFeature();
+  const { workspaceId, projectId, partId, tracks, people, part, feature } = data;
+  const phone = useIsPhone();
   if (!tracks) return <div aria-hidden className="h-40 animate-pulse rounded-card bg-frame" />;
   const flying = tracks.filter((summary) => inFlight(summary.track.state)).length;
   return (
@@ -33,6 +38,7 @@ function Tracks() {
       ) : (
         <TracksByState tracks={tracks} params={{ workspaceId, projectId }} people={people} />
       )}
+      {phone && <StartTrack data={data} className="mt-4 h-(--control-h-lg) w-full" />}
     </section>
   );
 }
