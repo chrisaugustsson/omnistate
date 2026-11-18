@@ -4,16 +4,17 @@ import { projectLink, useScope } from "@/components/shell/scope";
 import { countsKey, useIsPhone, useReportSections } from "@/components/shell/shell-context";
 import { useTrackActions } from "@/components/track/track-actions";
 import { TAB_PILLARS, TrackProvider, useTrackData, type DocTab } from "@/components/track/track-data";
-import { TrackHeader } from "@/components/track/track-header";
+import { TrackDescription, TrackHeader } from "@/components/track/track-header";
 import { linkClass } from "@/components/track/ui";
 
 // A track's pages. Its sections (Spec, Behaviour, Design, How, Board, Threads,
 // Decisions) are the shell's sidebar, whose counts the layout reports: open
 // behaviour questions and comments waiting on the reader are dark counts. The
-// page starts with the track's header: the title with "···" and the primary
-// state move, a line of facts and the description (components/track/track-header).
-// A canvas section (Behaviour, Design, Board) fills the room beside the folded
-// sidebar under a one-line header. On the phone the Board is a list and the
+// page starts with the track's header, one line on every section: the title,
+// its facts and "···" with the primary state move (components/track/track-header);
+// Spec opens with the description. A canvas section (Behaviour, Design, Board)
+// fills the room under the header; the others are a page of reading width.
+// On the phone the Board is a list and the
 // Behaviour an outline, so they keep the full header and scroll as a page. A
 // doc opened full view fills the view instead (staticData.bleed). The layout
 // loads the track's data once for every section.
@@ -83,13 +84,14 @@ function TrackLayout() {
   return (
     <TrackProvider value={data}>
       <main className={canvas ? "flex h-full min-h-[480px] flex-col" : "flex min-h-full flex-col"}>
-        <TrackHeader data={data} actions={actions} compact={canvas} lede={!wide} phone={phone} />
+        <TrackHeader data={data} actions={actions} phone={phone} />
         {canvas ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <Outlet />
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-(--page-max) min-w-0 flex-1 flex-col px-4 pt-6 pb-10 md:px-(--page-pad)">
+            {section === "spec" && <TrackDescription data={data} />}
             <Outlet />
           </div>
         )}

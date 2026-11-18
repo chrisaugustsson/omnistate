@@ -11,10 +11,11 @@ import { buttonClass } from "./ui";
 // "···" and the primary state move on the right, one line of facts under it
 // (its state, the features it changes, its owner, the tracks it was split from
 // and off to, and the tracks whose stories block its own), and its description.
-// The path header above already names the part, so the facts leave it out. On
-// a canvas section (Behaviour, Design, Board) the header is one line: the
-// title, the facts as far as they fit, and the actions. On the phone the
-// primary move takes the full width under the facts.
+// The path header above already names the part, so the facts leave it out. It
+// is the same one line on every section, so moving between them moves
+// nothing: the title, the facts as far as they fit, and the actions. On the
+// phone the path header names the track, so the line keeps its facts and
+// actions. The description opens the Spec section (TrackDescription).
 
 const factLink =
   "font-medium text-ink underline decoration-line-strong underline-offset-[3px] transition-colors duration-(--t-fast) hover:decoration-ink-3 focus-visible:shadow-focus focus-visible:outline-none";
@@ -181,61 +182,33 @@ function PrimaryMove({ data, actions, className }: { data: TrackData; actions: T
   );
 }
 
-export function TrackHeader({
-  data,
-  actions,
-  compact = false,
-  lede = true,
-  phone = false,
-}: {
-  data: TrackData;
-  actions: TrackActions;
-  /** Over a canvas section: one line, the width of the window. */
-  compact?: boolean;
-  /** Shows the description under the facts. */
-  lede?: boolean;
-  phone?: boolean;
-}) {
+export function TrackHeader({ data, actions, phone = false }: { data: TrackData; actions: TrackActions; phone?: boolean }) {
   const { summary } = data;
   const name = summary?.track.name ?? "";
-  const error = actions.error && (
-    <p role="alert" className={cn("text-danger-ink", compact ? "truncate text-meta" : "mt-3")}>
-      {actions.error}
-    </p>
-  );
-
-  if (compact) {
-    return (
-      <div className="flex h-12 w-full shrink-0 items-center gap-3 border-b border-line px-4">
-        {/* On the phone the header above names the track; the line keeps its facts. */}
-        <h1 className={phone ? "sr-only" : "max-w-[45%] min-w-0 shrink-0 truncate font-semibold text-ink"} title={name}>
-          {name}
-        </h1>
-        {summary && <Facts data={data} actions={actions} className="min-w-0 flex-1 truncate text-meta whitespace-nowrap" />}
-        {error}
-        {summary && (
-          <TrackHeaderActions data={data} actions={actions}>
-            <PrimaryMove data={data} actions={actions} className={phone ? "px-2" : undefined} />
-          </TrackHeaderActions>
-        )}
-      </div>
-    );
-  }
-
   return (
-    <div className="mx-auto w-full max-w-(--page-max) px-4 pt-5 md:px-(--page-pad) md:pt-7">
-      <div className="flex items-start gap-3">
-        <h1 className="min-w-0 flex-1 pt-px text-title font-semibold text-pretty">{name}</h1>
-        {summary && (
-          <TrackHeaderActions data={data} actions={actions}>
-            {!phone && <PrimaryMove data={data} actions={actions} />}
-          </TrackHeaderActions>
-        )}
-      </div>
-      {summary && <Facts data={data} actions={actions} className="mt-1.5 flex flex-wrap gap-y-1 md:[&>span]:whitespace-nowrap" />}
-      {phone && summary && primaryOf(data) && <PrimaryMove data={data} actions={actions} className="mt-4 h-(--control-h-lg) w-full" />}
-      {lede && summary?.track.description && <p className="mt-3 max-w-(--main-max) text-em whitespace-pre-line text-ink-2">{summary.track.description}</p>}
-      {error}
+    <div className="flex h-12 w-full shrink-0 items-center gap-3 border-b border-line px-4">
+      {/* On the phone the header above names the track; the line keeps its facts. */}
+      <h1 className={phone ? "sr-only" : "max-w-[45%] min-w-0 shrink-0 truncate font-semibold text-ink"} title={name}>
+        {name}
+      </h1>
+      {summary && <Facts data={data} actions={actions} className="min-w-0 flex-1 truncate text-meta whitespace-nowrap" />}
+      {actions.error && (
+        <p role="alert" className="truncate text-meta text-danger-ink">
+          {actions.error}
+        </p>
+      )}
+      {summary && (
+        <TrackHeaderActions data={data} actions={actions}>
+          <PrimaryMove data={data} actions={actions} className={phone ? "px-2" : undefined} />
+        </TrackHeaderActions>
+      )}
     </div>
   );
+}
+
+/** The track's description, at the top of its Spec section; nothing when it has none. */
+export function TrackDescription({ data }: { data: TrackData }) {
+  const description = data.summary?.track.description;
+  if (!description) return null;
+  return <p className="mb-6 max-w-(--main-max) text-em whitespace-pre-line text-ink-2">{description}</p>;
 }

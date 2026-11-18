@@ -266,14 +266,21 @@ describe("a track's facts line", () => {
     expect(within(await screen.findByRole("menu", { name: "Track actions" })).getByText("Created 4 Mar 2025")).toBeTruthy();
   });
 
-  test("on the phone the primary move leaves the title's row for its own line under the facts", async () => {
-    vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: true, addEventListener() {}, removeEventListener() {} }));
-    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
-    renderAt(TRACK_PATH);
-    const facts = await ready();
-    const start = await screen.findByRole("button", { name: "Start building" });
-    expect(within(screen.getByRole("group", { name: "Actions" })).queryByRole("button", { name: "Start building" })).toBeNull();
-    expect(facts.compareDocumentPosition(start) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  test("the header is the same line on every section, kept in place from Spec to Board and How; only Spec opens with the description", async () => {
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows", { description: "Hours to months in Analyze." })] });
+    const router = renderAt(TRACK_PATH);
+    await ready();
+    const line = screen.getByRole("heading", { level: 1, name: "Long windows" }).parentElement!;
+    expect(within(line).getByLabelText("Facts")).toBeTruthy();
+    expect(within(within(line).getByRole("group", { name: "Actions" })).getByRole("button", { name: "Start building" })).toBeTruthy();
+    expect(screen.getByText("Hours to months in Analyze.")).toBeTruthy();
+
+    for (const section of ["board", "how"]) {
+      await router.navigate({ to: `${TRACK_PATH}/${section}` });
+      await waitFor(() => expect(router.state.location.pathname).toBe(`${TRACK_PATH}/${section}`));
+      expect(screen.getByRole("heading", { level: 1, name: "Long windows" }).parentElement).toBe(line);
+      expect(screen.queryByText("Hours to months in Analyze.")).toBeNull();
+    }
   });
 
   test("a track the project does not have says so", async () => {
