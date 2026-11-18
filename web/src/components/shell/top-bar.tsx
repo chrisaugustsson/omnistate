@@ -5,6 +5,7 @@ import type { HomeResponse, PartBody, ProjectBody } from "@/api/generated";
 import { Palette, isMac, useSearchShortcut } from "@/components/palette/palette";
 import { partDocs } from "@/components/project/docs-pane";
 import { isProjectLevel } from "@/components/project/items";
+import { currentDecisions, useDecisionGroups, useProjectMap, type ProjectMap } from "@/components/project/project-data";
 import { partTones, personName } from "@/lib/identity";
 import { useFeatures } from "@/lib/use-features";
 import { useParts } from "@/lib/use-parts";
@@ -54,6 +55,18 @@ function Logo() {
 function tracksInFlight(home: HomeResponse | undefined, partId?: string): number | undefined {
   if (!home) return undefined;
   return (home.tracks ?? []).filter(({ track }) => inFlight(track.state) && (!partId || track.part_id === partId)).length;
+}
+
+/** How many decisions the Decisions tab of the project (no `partId`) or of a part lists: those nobody replaced. */
+function useDecisionCount(
+  workspaceId: string,
+  projectId: string,
+  projectName: string | undefined,
+  map: ProjectMap | null,
+  partId?: string,
+): number | undefined {
+  const { groups } = useDecisionGroups(workspaceId, projectId, projectName, map, partId);
+  return groups ? currentDecisions(groups).length : undefined;
 }
 
 /** A count to show on a pill: hidden while unknown and at zero. */
@@ -111,20 +124,26 @@ function ScopeButton({
 function PartPills({
   scope,
   projectId,
+  projectName,
+  map,
   part,
   home,
 }: {
   scope: Scope;
   projectId: string;
+  projectName: string | undefined;
+  map: ProjectMap | null;
   part: PartBody;
   home: HomeResponse | undefined;
 }) {
   const { features } = useFeatures(scope.workspaceId, projectId, part.id);
+  const decisions = useDecisionCount(scope.workspaceId, projectId, projectName, map, part.id);
   const counts: Partial<Record<Tab, number | undefined>> = {
     features: features?.length,
     // As the part's Docs tab lists them: on the part and on its features.
     docs: home && features ? partDocs(home.docs, part.id, new Set(features.map((feature) => feature.id))).length : undefined,
     tracks: tracksInFlight(home, part.id),
+    decisions,
   };
   return (
     <PillTabs label={part.name}>
@@ -178,10 +197,14 @@ function ProjectScope({
       <ProjectMark name={project?.name ?? ""} parts={marks} size="md" />
     );
 
+  const { map } = useProjectMap(scope.workspaceId, projectId);
+  // The project's own count is read only while its pills show.
+  const decisions = useDecisionCount(scope.workspaceId, projectId, project?.name, onPart ? null : map);
   const projectCounts: Partial<Record<Tab, number | undefined>> = {
     parts: parts?.length,
     docs: home?.docs.filter(isProjectLevel).length,
     tracks: tracksInFlight(home),
+    decisions,
   };
 
   return (
@@ -222,7 +245,7 @@ function ProjectScope({
           ))}
         </PillTabs>
       )}
-      {onPart && part && <PartPills scope={scope} projectId={projectId} part={part} home={home} />}
+      {onPart && part && <PartPills scope={scope} projectId={projectId} projectName={project?.name} map={map} part={part} home={home} />}
     </>
   );
 }
