@@ -7,7 +7,7 @@
 // them. Spec, Design and How each show the track's doc of that pillar (How:
 // architecture and tables), or say which agent writes it.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { ALICE, FakeWebSocket, IOT, PROJECT_PATH, docBody, fakeTrackApi, track } from "./testing/track-api";
@@ -133,6 +133,20 @@ describe("the Next row", () => {
     await screen.findByRole("complementary", { name: "Properties" });
     await waitFor(async () => expect(await tabs()).toContain("Behaviour"));
     expect(screen.queryByText(/^Next:/)).toBeNull();
+  });
+});
+
+describe("the properties toggle", () => {
+  test("is pressed while the panel shows and not once it hides it", async () => {
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
+    renderAt(TRACK_PATH);
+    await screen.findByRole("complementary", { name: "Properties" });
+    const toggle = within(screen.getByRole("group", { name: "Actions" })).getByRole("button", { name: "Properties" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Properties" })).toBeNull());
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
   });
 });
 

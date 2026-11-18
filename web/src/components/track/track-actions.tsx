@@ -196,6 +196,7 @@ export function TrackHeaderActions({
   const rest = moves.filter((one) => one !== primary);
   const menu = usePopover();
   const [copied, setCopied] = useState(false);
+  const [justToggled, setJustToggled] = useState(false);
 
   return (
     <div role="group" aria-label="Actions" className="flex items-center gap-2">
@@ -204,9 +205,18 @@ export function TrackHeaderActions({
           type="button"
           aria-label="Properties"
           aria-pressed={panel}
-          title="Properties"
-          onClick={onPanel}
-          className={buttonClass({ variant: "ghost", icon: true })}
+          title={panel ? "Hide properties" : "Show properties"}
+          onClick={() => {
+            setJustToggled(true);
+            onPanel();
+          }}
+          onPointerLeave={() => setJustToggled(false)}
+          className={buttonClass(
+            { variant: "ghost", icon: true },
+            // The hover fill is all but the pressed one: right after a click that hides the panel it would
+            // still look pressed under the pointer, so it waits until the pointer has left.
+            justToggled && !panel ? "hover:bg-transparent hover:text-ink-2" : undefined,
+          )}
         >
           <PanelRight aria-hidden strokeWidth={2.25} />
         </button>
