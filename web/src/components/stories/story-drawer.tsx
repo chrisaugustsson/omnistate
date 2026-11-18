@@ -8,7 +8,8 @@ import { MenuSeparator, buttonClass, menuClass, menuItemClass } from "@/componen
 import { cn } from "@/lib/utils";
 import type { Steer } from "./board";
 
-// A story opened from its card: a drawer at the right edge with its key,
+// A story opened from its card: a drawer at the right edge (the whole screen
+// on the phone) with its key,
 // status and priority over its title, then its text, its criteria with their
 // checkboxes, what blocks it and its open findings. A criterion an agent
 // ticked that waits on a human check is the one checkbox a reader can tick;
@@ -34,12 +35,15 @@ export function StoryDrawer({
   byId,
   linked,
   steer,
+  full = false,
   onClose,
 }: {
   story: StoryBody;
   byId: Map<string, StoryBody>;
   linked: LinkedBody[];
   steer: Steer;
+  /** Fills the screen (on the phone). */
+  full?: boolean;
   onClose: () => void;
 }) {
   const menu = usePopover();
@@ -106,6 +110,7 @@ export function StoryDrawer({
 
   return (
     <Drawer
+      full={full}
       title={story.title}
       eyebrow={
         <>

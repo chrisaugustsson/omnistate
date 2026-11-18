@@ -510,6 +510,20 @@ describe("the board", () => {
   });
 });
 
+describe("the board on the phone", () => {
+  test("is one list: the groups with stories first, in progress before backlog, and the empty ones named on one line", async () => {
+    vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: true, addEventListener() {}, removeEventListener() {} }));
+    fakeApi([story(1), story(2, { status: "implementing" }), story(3, { status: "done" }), story(4, { priority: 1 })]);
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    expect(columnTitles(main)).toEqual(["Implementing", "Backlog", "Done"]);
+    expect(cardKeys(main, "Backlog")).toEqual(["US-4", "US-1"]);
+    expect(within(main).getByText("None in Review or Testing")).toBeTruthy();
+    expect(within(openStory(main, "US-2")).getByRole("heading", { name: "Story 2" })).toBeTruthy();
+  });
+});
+
 describe("linked tasks on the board", () => {
   /** The Linked tasks area of the board. */
   const linkedArea = (main: HTMLElement) => within(main).getByRole("region", { name: "Linked tasks" });

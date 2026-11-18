@@ -100,6 +100,8 @@ export type Fixture = {
   linked?: Record<string, Json[]>;
   /** Open questions of each track's behaviour tree. */
   questions?: Record<string, Json[]>;
+  /** The nodes of each track's behaviour tree; none given is an empty tree. */
+  tree?: Record<string, Json[]>;
   trackDecisions?: Record<string, Json[]>;
   featureDecisions?: Record<string, { decisions: Json[]; earlier: Json[] }>;
   /** The boards of each design doc's head, by doc ID. */
@@ -240,7 +242,7 @@ export function fakeTrackApi(fixture: Fixture) {
         if (path === `${at}/stories`) return json(200, { stories: [], linked: fixture.linked?.[one.id] ?? [] });
         if (path === `${at}/decisions`) return json(200, { decisions: fixture.trackDecisions?.[one.id] ?? [], earlier: [] });
         if (path === `${at}/behaviour/questions`) return json(200, { questions: fixture.questions?.[one.id] ?? [] });
-        if (path === `${at}/behaviour`) return json(200, { nodes: [] });
+        if (path === `${at}/behaviour`) return json(200, { nodes: fixture.tree?.[one.id] ?? [] });
       }
       for (const one of fixture.features ?? []) {
         const at = `${API}/parts/${one.part_id}/features/${one.id}`;

@@ -46,15 +46,15 @@ function ThreadRow({ thread, open }: { thread: HomeThread; open: boolean }) {
           </span>
         )}
         {thread.conclusion && (
-          <span className="inline-flex items-center gap-1 text-meta text-state-done-ink">
+          <span className="inline-flex items-center gap-1 text-meta text-state-done-ink max-md:hidden">
             <CheckCircle2 aria-hidden strokeWidth={2.25} className="size-3" />
             Concluded
           </span>
         )}
-        <span className="w-20 shrink-0 text-meta text-ink-3">
+        <span className="w-20 shrink-0 text-meta text-ink-3 max-md:hidden">
           {posts} {posts === 1 ? "post" : "posts"}
         </span>
-        <span title={new Date(lastTime(thread)).toLocaleString()} className="w-20 shrink-0 text-right text-meta whitespace-nowrap text-ink-3">
+        <span title={new Date(lastTime(thread)).toLocaleString()} className="w-20 shrink-0 text-right text-meta whitespace-nowrap text-ink-3 max-md:w-auto">
           {timeAgo(lastTime(thread))}
         </span>
       </Link>

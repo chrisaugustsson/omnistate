@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-// A track's page (UI redesign, slice S3): the header's primary action is the
-// first state move the reader may make, the "…" menu holds the other moves and
-// Hand over; only the moves the API allows (planning → building | dropped,
-// building → planning | done | dropped), only for the owner or an admin, and
-// done only for the owner; others see them off with the reason. A final move
-// (dropped, done) asks first. The properties panel shows the track's part,
-// the features it changes, its split links, the stories of other tracks that
-// block its own, and its progress.
+// A track's header (navigation F, tasks/ui-redesign/build-f.md): the title,
+// then "···" and the primary action, the first state move the reader may make;
+// the menu holds the other moves, Hand over and when the track was created.
+// Only the moves the API allows (planning → building | dropped, building →
+// planning | done | dropped), only for the owner or an admin, and done only for
+// the owner; others see them off with the reason. A final move (dropped, done)
+// asks first. Under the title one line of facts, each a link where it has a
+// target: the state, the features it changes, the owner (Hand over), the tracks
+// it was split from and off to, and the tracks whose stories block its own.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -54,13 +55,15 @@ async function headerMoves() {
   return { primary: primary ? [primary.textContent, !primary.disabled] : null, items };
 }
 
-/** Waits until the members have loaded, so the header shows what the reader may do. */
+/** Waits until the members have loaded, so the header shows what the reader may do; gives the facts line. */
 async function ready() {
-  const panel = await screen.findByRole("complementary", { name: "Properties" });
-  await waitFor(() => expect(within(panel).queryByText("Nobody")).toBeNull());
-  await waitFor(() => expect(panel.textContent).toMatch(/Alice|Bob|Cara/));
-  return panel;
+  const facts = await screen.findByLabelText("Facts");
+  await waitFor(() => expect(facts.textContent).toMatch(/owner (Alice|Bob|Cara)/));
+  return facts;
 }
+
+/** The facts line as a person reads it. */
+const factsText = (facts: HTMLElement) => facts.textContent?.replaceAll("·", " · ").replace(/\s+/g, " ").trim();
 
 const stateWrites = (api: ReturnType<typeof fakeTrackApi>) =>
   api.calls.filter((call) => call.method === "POST" && call.path === `${API}/tracks/${TRACK_ID}/state`).map((call) => call.body);
@@ -129,7 +132,7 @@ describe("the state moves in a track's header", () => {
   test("a member who neither owns the track nor is an admin sees the moves and Hand over off, and why", async () => {
     fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows", { owner_user_id: BOB })] });
     renderAt(TRACK_PATH);
-    const panel = await ready();
+    const facts = await ready();
     expect(await headerMoves()).toEqual({
       primary: ["Start building", false],
       items: [
@@ -141,7 +144,9 @@ describe("the state moves in a track's header", () => {
     expect(within(screen.getByRole("group", { name: "Actions" })).getByRole("button", { name: "Start building" }).getAttribute("title")).toBe(
       "Only Bob or an admin moves this track",
     );
-    expect(panel.textContent).toContain("Only Bob or an admin hands it over");
+    // The owner in the facts is no button for them: they cannot hand the track over.
+    expect(within(facts).queryByRole("button")).toBeNull();
+    expect(within(facts).getByText("Bob").getAttribute("title")).toBe("Only Bob or an admin hands it over");
   });
 
   test("a done or a dropped track offers no move", async () => {
@@ -183,11 +188,11 @@ describe("the state moves in a track's header", () => {
 });
 
 describe("handing a track over", () => {
-  test("the owner picks another member by name in the dialog, and the track goes to that membership", async () => {
+  test("the owner clicks their name in the facts, picks another member by name in the dialog, and the track goes to that membership", async () => {
     const api = fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
     renderAt(TRACK_PATH);
-    const panel = await ready();
-    fireEvent.click(within(panel).getByRole("button", { name: "Hand over" }));
+    const facts = await ready();
+    fireEvent.click(within(facts).getByRole("button", { name: "Owner Alice: hand over" }));
     const dialog = await screen.findByRole("dialog", { name: "Hand over" });
     const group = within(dialog).getByRole("radiogroup", { name: "Hand over to" });
     expect(within(group).getAllByRole("radio")).toEqual([
@@ -204,58 +209,71 @@ describe("handing a track over", () => {
   });
 });
 
-describe("a track's properties panel", () => {
-  test("shows its part, the features it changes and the tracks it was split from and off to, each linking to its page, and its progress", async () => {
+describe("a track's facts line", () => {
+  test("says its state, links the features it changes and the tracks it was split from and off to, and names its owner", async () => {
     fakeTrackApi({
       tracks: [
         track(TRACK_ID, "Long windows", { state: "building", split_from_track_id: SOURCE_ID }),
         track(SOURCE_ID, "Readings"),
         track(SPLIT_ID, "Aggregated readings", { part_id: IOT, split_from_track_id: TRACK_ID, owner_user_id: CARA }),
       ],
-      stories: { [TRACK_ID]: { done: 1, total: 3 } },
       trackFeatures: { [TRACK_ID]: [featureBody(ANALYZE, "Analyze")] },
     });
     renderAt(TRACK_PATH);
-    const panel = await ready();
-    expect(within(panel).getByRole("link", { name: "Wision" }).getAttribute("href")).toBe(`${PROJECT_PATH}/parts/${WISION}`);
-    expect((await within(panel).findByRole("link", { name: "Analyze" })).getAttribute("href")).toBe(
-      `${PROJECT_PATH}/parts/${WISION}/features/${ANALYZE}`,
-    );
-    expect(panel.textContent).toContain("1 of 3 stories");
-    const from = within(panel).getByRole("link", { name: /Readings.*Split from/ });
-    expect(from.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SOURCE_ID}`);
-    const to = within(panel).getByRole("link", { name: /Aggregated readings.*Split off to/ });
-    expect(to.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SPLIT_ID}`);
-    expect(to.textContent).toContain("iot-service · Cara");
+    const facts = await ready();
+    await within(facts).findByRole("link", { name: "Analyze" });
+    expect(factsText(facts)).toBe("Building · changes Analyze · owner Alice · split off from Readings · split off to Aggregated readings");
+    expect(within(facts).getByRole("link", { name: "Analyze" }).getAttribute("href")).toBe(`${PROJECT_PATH}/parts/${WISION}/features/${ANALYZE}`);
+    expect(within(facts).getByRole("link", { name: "Readings" }).getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SOURCE_ID}`);
+    expect(within(facts).getByRole("link", { name: "Aggregated readings" }).getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SPLIT_ID}`);
   });
 
-  test("names a story of another track that blocks one of its own, with both keys, linking to that track's board", async () => {
-    fakeTrackApi({
-      tracks: [track(TRACK_ID, "Long windows"), track(SPLIT_ID, "Aggregated readings", { part_id: IOT })],
-      linked: {
-        [TRACK_ID]: [
-          {
-            id: "s-their",
-            key: "US-3",
-            title: "Readings per hour",
-            track_id: SPLIT_ID,
-            track_name: "Aggregated readings",
-            part_id: IOT,
-            part_name: "iot-service",
-            status: "review",
-            relation: "blocks",
-            story_id: "s-ours",
-            story_key: "US-1",
-            blocker_dropped: false,
-          },
-        ],
-      },
+  test("names the track whose open story blocks one of its own, linking to that track's board, and drops it once that story is done", async () => {
+    const blocking = (status: string) => ({
+      id: "s-their",
+      key: "US-3",
+      title: "Readings per hour",
+      track_id: SPLIT_ID,
+      track_name: "Aggregated readings",
+      part_id: IOT,
+      part_name: "iot-service",
+      status,
+      relation: "blocks",
+      story_id: "s-ours",
+      story_key: "US-1",
+      blocker_dropped: false,
     });
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows"), track(SPLIT_ID, "Aggregated readings", { part_id: IOT })], linked: { [TRACK_ID]: [blocking("review")] } });
     renderAt(TRACK_PATH);
-    const panel = await ready();
-    const blocker = await within(panel).findByRole("link", { name: /Blocked by iot-service US-3/ });
-    expect(blocker.textContent).toContain("Our US-1 waits · theirs is in review");
+    let facts = await ready();
+    const blocker = await within(facts).findByRole("link", { name: "Aggregated readings" });
+    expect(factsText(facts)).toBe("Planning · owner Alice · blocked by Aggregated readings");
     expect(blocker.getAttribute("href")).toBe(`${PROJECT_PATH}/tracks/${SPLIT_ID}/board`);
+    expect(blocker.getAttribute("title")).toBe("iot-service US-3 blocks our US-1");
+    cleanup();
+
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows"), track(SPLIT_ID, "Aggregated readings", { part_id: IOT })], linked: { [TRACK_ID]: [blocking("done")] } });
+    renderAt(TRACK_PATH);
+    facts = await ready();
+    await waitFor(() => expect(factsText(facts)).toBe("Planning · owner Alice"));
+  });
+
+  test("the menu says when the track was created", async () => {
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows", { created_at: "2025-03-04T10:00:00Z" })] });
+    renderAt(TRACK_PATH);
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(within(await screen.findByRole("menu", { name: "Track actions" })).getByText("Created 4 Mar 2025")).toBeTruthy();
+  });
+
+  test("on the phone the primary move leaves the title's row for its own line under the facts", async () => {
+    vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: true, addEventListener() {}, removeEventListener() {} }));
+    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
+    renderAt(TRACK_PATH);
+    const facts = await ready();
+    const start = await screen.findByRole("button", { name: "Start building" });
+    expect(within(screen.getByRole("group", { name: "Actions" })).queryByRole("button", { name: "Start building" })).toBeNull();
+    expect(facts.compareDocumentPosition(start) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   test("a track the project does not have says so", async () => {

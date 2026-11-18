@@ -77,7 +77,7 @@ export function TrackDocTab({ tab, search }: { tab: DocTab; search: DocSearch })
     </Link>
   );
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className={cn("flex min-h-0 flex-1 flex-col", tab === "design" && "px-4 pt-2 pb-4")}>
       <DocPage key={doc.id} workspaceId={workspaceId} projectId={projectId} docId={doc.id} search={search} chrome={{ meta, actions: fullView, embedded: true }} />
     </div>
   );

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { Check, Ellipsis, ListFilter, Plus } from "lucide-react";
 import { ApiError } from "@/api/client";
@@ -18,8 +18,10 @@ import { StoryDrawer } from "./story-drawer";
 import { cn } from "@/lib/utils";
 
 // A track's board: the five columns of a story's life, a card per story, and
-// a filter on priority. The stories are loaded again on every story event of
-// the project, so a card changes column as agents move it.
+// a filter on priority. On the phone (`list`) the columns become one list
+// grouped by status, the groups with stories first and the empty ones folded
+// into one line. The stories are loaded again on every story event of the
+// project, so a card changes column as agents move it.
 
 // A column lists its statuses in order: the waiting status first, then the working one.
 const COLUMNS = [
@@ -30,6 +32,8 @@ const COLUMNS = [
   { statuses: ["done"], title: "Done" },
 ];
 const CANCELLED = { statuses: ["cancelled"], title: "Cancelled" };
+/** The phone's list starts with what is being worked on, then what waits to start, then the later stages. */
+const LIST_ORDER = ["implementing", "backlog", "implemented", "reviewed", "done", "cancelled"];
 const PRIORITIES = [
   { value: "", label: "Any priority" },
   { value: "1", label: "P1" },
@@ -146,7 +150,7 @@ function Card({
               onClick={openMenu}
               className={cn(
                 CARD_ACTION,
-                "grid w-6 place-items-center px-0 opacity-0 group-focus-within/card:opacity-100 group-hover/card:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
+                "grid w-6 place-items-center px-0 opacity-0 group-focus-within/card:opacity-100 pointer-coarse:opacity-100 group-hover/card:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
               )}
             >
               <Ellipsis aria-hidden strokeWidth={2.25} className="size-(--icon-sm)" />
@@ -427,15 +431,56 @@ function LinkedTasks({ workspaceId, projectId, linked }: { workspaceId: string; 
   );
 }
 
+type Column = { statuses: string[]; title: string };
+
+/** The stories of a column, the waiting status first, each group by priority, then number. */
+function cardsOf(column: Column, stories: StoryBody[]): StoryBody[] {
+  return stories
+    .filter((story) => column.statuses.includes(story.status))
+    .sort((a, b) => column.statuses.indexOf(a.status) - column.statuses.indexOf(b.status) || a.priority - b.priority || a.number - b.number);
+}
+
+/** The board as one list: a group per status with stories, then one line naming the empty ones. */
+function StatusList({ columns, shown, render }: { columns: Column[]; shown: StoryBody[]; render: (story: StoryBody) => ReactNode }) {
+  const groups = [...columns]
+    .sort((a, b) => LIST_ORDER.indexOf(a.statuses[0]) - LIST_ORDER.indexOf(b.statuses[0]))
+    .map((column) => ({ column, cards: cardsOf(column, shown) }));
+  const empty = groups.filter((group) => group.cards.length === 0).map((group) => group.column.title);
+  return (
+    <div className="space-y-5">
+      {groups
+        .filter((group) => group.cards.length > 0)
+        .map(({ column, cards }) => (
+          <section key={column.statuses[0]} aria-label={column.title}>
+            <h2 className="mb-1.5 flex h-8 items-center gap-2 font-medium text-ink">
+              <StateIcon state={column.statuses[column.statuses.length - 1]} />
+              {column.title}
+              <span className="font-medium text-ink-3 tabular-nums">{cards.length}</span>
+            </h2>
+            <ul className="space-y-1.5">{cards.map(render)}</ul>
+          </section>
+        ))}
+      {empty.length > 0 && (
+        <p className="border-t border-line pt-3 text-meta text-ink-3">
+          None in {empty.length === 1 ? empty[0] : `${empty.slice(0, -1).join(", ")} or ${empty[empty.length - 1]}`}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** The board of the track `trackId`. */
 export function Board({
   workspaceId,
   projectId,
   trackId,
+  list = false,
 }: {
   workspaceId: string;
   projectId: string;
   trackId: string;
+  /** One list grouped by status, for the phone, instead of the columns. */
+  list?: boolean;
 }) {
   const load = useCallback(() => loadStories(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
   const { value: board, failed, reload } = useReloading(load);
@@ -518,64 +563,64 @@ export function Board({
       )}
       {stories && (
         <div className="space-y-4">
-          <div className="flex min-h-8 flex-wrap items-center gap-4">
+          {/* On the phone: the count and Add story on one line, the filters under them. */}
+          <div className={cn("flex min-h-8 flex-wrap items-center", list ? "gap-x-3 gap-y-2" : "gap-4")}>
             <p className="text-ink-3">
               <span className="font-medium text-ink">
                 {stories.filter((story) => story.status === "done").length} of {stories.filter((story) => story.status !== "cancelled").length}
               </span>{" "}
               stories done
             </p>
-            <div role="group" aria-label="Filter" className="ml-auto flex items-center gap-1">
-              <ListFilter aria-hidden className="mr-1 size-(--icon-sm) text-ink-3" />
+            <div role="group" aria-label="Filter" className={cn("flex items-center gap-1", list ? "order-last -ml-2 basis-full" : "ml-auto")}>
+              {!list && <ListFilter aria-hidden className="mr-1 size-(--icon-sm) text-ink-3" />}
               <Select look="filter" aria-label="Priority" value={priority} onChange={setPriority} options={PRIORITIES} />
               <label className="inline-flex h-(--control-h) cursor-pointer items-center gap-1.5 rounded-control px-2 font-medium text-ink-2 transition-colors duration-(--t-fast) hover:bg-hover has-checked:bg-selected has-checked:text-ink has-focus-visible:shadow-focus">
                 <input type="checkbox" className="size-3.5 accent-(--brand)" checked={showCancelled} onChange={(event) => setShowCancelled(event.target.checked)} />
                 Show cancelled
               </label>
             </div>
-            <button type="button" className={buttonClass()} onClick={() => setAdding(true)}>
+            <button type="button" className={buttonClass({}, list ? "ml-auto" : undefined)} onClick={() => setAdding(true)}>
               <Plus aria-hidden strokeWidth={2.25} />
               Add story
             </button>
           </div>
           {adding && <AddStory onAdd={add} onClose={() => setAdding(false)} />}
-          {opened && <StoryDrawer story={opened} byId={byId} linked={linked} steer={steer} onClose={() => setOpenId(null)} />}
-          {/* The columns share the width down to a 1024px window; only below that does the board scroll sideways. */}
-          <div className="overflow-x-auto max-[1023px]:pb-2">
-            <div
-              className="grid items-start gap-2 max-[1023px]:min-w-[880px]"
-              style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
-            >
-            {columns.map((column) => {
-              const cards = shown
-                .filter((story) => column.statuses.includes(story.status))
-                .sort(
-                  (a, b) =>
-                    column.statuses.indexOf(a.status) - column.statuses.indexOf(b.status) ||
-                    a.priority - b.priority ||
-                    a.number - b.number,
+          {opened && <StoryDrawer story={opened} byId={byId} linked={linked} steer={steer} full={list} onClose={() => setOpenId(null)} />}
+          {list ? (
+            <StatusList columns={columns} shown={shown} render={(story) => (
+              <Card key={story.id} story={story} byId={byId} linked={linked} steer={steer} onOpen={() => setOpenId(story.id)} />
+            )} />
+          ) : (
+            // The columns share the width down to a 1024px window; only below that does the board scroll sideways.
+            <div className="overflow-x-auto max-[1023px]:pb-2">
+              <div
+                className="grid items-start gap-2 max-[1023px]:min-w-[880px]"
+                style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
+              >
+              {columns.map((column) => {
+                const cards = cardsOf(column, shown);
+                return (
+                  <section key={column.statuses[0]} aria-label={column.title} className="min-w-0 rounded-card bg-well p-1.5 pb-2">
+                    <h2 className="flex h-8 items-center gap-2 px-1.5 font-medium text-ink">
+                      <StateIcon state={column.statuses[column.statuses.length - 1]} />
+                      {column.title}
+                      <span className="font-medium text-ink-3 tabular-nums">{cards.length}</span>
+                    </h2>
+                    {cards.length === 0 ? (
+                      <p className="px-1.5 pt-1 text-meta text-ink-3">None yet</p>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {cards.map((story) => (
+                          <Card key={story.id} story={story} byId={byId} linked={linked} steer={steer} onOpen={() => setOpenId(story.id)} />
+                        ))}
+                      </ul>
+                    )}
+                  </section>
                 );
-              return (
-                <section key={column.statuses[0]} aria-label={column.title} className="min-w-0 rounded-card bg-well p-1.5 pb-2">
-                  <h2 className="flex h-8 items-center gap-2 px-1.5 font-medium text-ink">
-                    <StateIcon state={column.statuses[column.statuses.length - 1]} />
-                    {column.title}
-                    <span className="font-medium text-ink-3 tabular-nums">{cards.length}</span>
-                  </h2>
-                  {cards.length === 0 ? (
-                    <p className="px-1.5 pt-1 text-meta text-ink-3">None yet</p>
-                  ) : (
-                    <ul className="space-y-1.5">
-                      {cards.map((story) => (
-                        <Card key={story.id} story={story} byId={byId} linked={linked} steer={steer} onOpen={() => setOpenId(story.id)} />
-                      ))}
-                    </ul>
-                  )}
-                </section>
-              );
-            })}
+              })}
+              </div>
             </div>
-          </div>
+          )}
           {linked.length > 0 && <LinkedTasks workspaceId={workspaceId} projectId={projectId} linked={linked} />}
         </div>
       )}

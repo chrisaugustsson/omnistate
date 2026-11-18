@@ -102,6 +102,8 @@ type SurfaceProps = {
   headActions?: ReactNode;
   /** A line above the title: a key, a status. */
   eyebrow?: ReactNode;
+  /** A drawer that fills the screen, edge to edge (on the phone). */
+  full?: boolean;
 };
 
 function Head({
@@ -169,6 +171,7 @@ function Surface({
   headActions,
   eyebrow,
   wide,
+  full = false,
 }: SurfaceProps & { kind: "dialog" | "drawer"; wide?: boolean }) {
   const titleId = useId();
   const descriptionId = useId();
@@ -186,7 +189,7 @@ function Surface({
     <div
       className={cn(
         "fixed inset-0 z-[60] grid animate-in bg-(--scrim) duration-(--t-pop) fade-in-0",
-        drawer ? "place-items-stretch justify-items-end p-2" : "place-items-start justify-items-center px-4 pt-[14vh]",
+        drawer ? cn("place-items-stretch justify-items-end", full ? "p-0" : "p-2") : "place-items-start justify-items-center px-4 pt-[14vh]",
       )}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
@@ -206,7 +209,7 @@ function Surface({
         className={cn(
           "flex min-h-0 flex-col overflow-hidden rounded-sheet bg-sheet text-ink shadow-pop outline-none",
           drawer
-            ? "w-[min(460px,100%)] animate-in duration-200 ease-out-quint fade-in-0 slide-in-from-right-6"
+            ? cn("animate-in duration-200 ease-out-quint fade-in-0 slide-in-from-right-6", full ? "w-full rounded-none pb-[env(safe-area-inset-bottom)]" : "w-[min(460px,100%)]")
             : cn("max-h-[80vh] animate-pop-in", wide ? "w-[min(560px,calc(100vw-32px))]" : "w-[min(480px,calc(100vw-32px))]"),
         )}
       >

@@ -3,9 +3,9 @@
 // Design, How, Board, Threads, Decisions, with counts: open behaviour questions an agent asked (a
 // person's remark does not wait), the design docs' boards, stories done of
 // total, threads and decisions. A track on a service part has no Design tab
-// unless it has design docs. While questions wait a quiet Next row leads to
-// them. Spec, Design and How each show the track's doc of that pillar (How:
-// architecture and tables), or say which agent writes it.
+// unless it has design docs. Spec, Design and How each show the track's doc of
+// that pillar (How: architecture and tables), or say which agent writes it. On
+// the phone the Behaviour is an outline of the tree, a node opening full screen.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -102,51 +102,40 @@ describe("a track's sections", () => {
   });
 });
 
-describe("the Next row", () => {
-  test("while agents' questions wait on a planning track, it says how many and leads to Behaviour", async () => {
-    fakeTrackApi({
-      tracks: [track(TRACK_ID, "Long windows")],
-      questions: { [TRACK_ID]: [question("q1", "agent"), question("q2", "agent"), question("q3", "human")] },
-    });
-    renderAt(TRACK_PATH);
-    const next = (await screen.findByText(/^Next:/)).closest("div") as HTMLElement;
-    expect(next.textContent).toContain("Next: answer 2 behaviour questions, then start building.");
-    expect(within(next).getByRole("link").getAttribute("href")).toBe(`${TRACK_PATH}/behaviour`);
+describe("Behaviour on the phone", () => {
+  const node = (id: string, parentId: string | null, title: string, status = "answered") => ({
+    id,
+    parent_id: parentId,
+    path: "",
+    slug: null,
+    position: 0,
+    level: 0,
+    title,
+    summary: "",
+    status,
+    version: 1,
+    open_questions: 0,
+    default_answers: 0,
+    needs_pass: false,
+    same_as: null,
+    handoff: null,
   });
 
-  test("is not on the Behaviour tab, where it leads, and neither is the properties toggle", async () => {
+  test("is the tree as an outline with its stories open and the questions waiting counted, and a node opens over the whole screen", async () => {
+    vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: true, addEventListener() {}, removeEventListener() {} }));
     fakeTrackApi({
       tracks: [track(TRACK_ID, "Long windows")],
-      questions: { [TRACK_ID]: [question("q1", "agent"), question("q2", "agent")] },
+      questions: { [TRACK_ID]: [{ ...question("q1", "agent"), node_id: "n3" }] },
+      tree: { [TRACK_ID]: [node("n1", null, "Long windows"), node("n2", "n1", "Pick a window"), node("n3", "n2", "Picks one year", "open")] },
     });
     renderAt(`${TRACK_PATH}/behaviour`);
-    const actions = await screen.findByRole("group", { name: "Actions" });
-    await waitFor(() => expect(screen.getByRole("link", { name: /Behaviour/ }).textContent).toContain("2"));
-    expect(screen.queryByText(/^Next:/)).toBeNull();
-    expect(within(actions).queryByRole("button", { name: "Properties" })).toBeNull();
-    expect(screen.queryByRole("complementary", { name: "Properties" })).toBeNull();
-  });
-
-  test("is not there when only a person's remark is open", async () => {
-    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")], questions: { [TRACK_ID]: [question("q3", "human")] } });
-    renderAt(TRACK_PATH);
-    await screen.findByRole("complementary", { name: "Properties" });
-    await waitFor(async () => expect(await tabs()).toContain("Behaviour"));
-    expect(screen.queryByText(/^Next:/)).toBeNull();
-  });
-});
-
-describe("the properties toggle", () => {
-  test("is pressed while the panel shows and not once it hides it", async () => {
-    fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")] });
-    renderAt(TRACK_PATH);
-    await screen.findByRole("complementary", { name: "Properties" });
-    const toggle = within(screen.getByRole("group", { name: "Actions" })).getByRole("button", { name: "Properties" });
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-
-    fireEvent.click(toggle);
-    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Properties" })).toBeNull());
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    const outline = await screen.findByRole("region", { name: "Behaviour outline" });
+    await waitFor(() => expect(outline.textContent).toContain("1 question waits"));
+    expect(screen.queryByRole("main", { name: "Tree as a graph" })).toBeNull();
+    fireEvent.click(within(outline).getByText("Picks one year"));
+    expect(await screen.findByRole("dialog", { name: "Picks one year" })).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });
 
