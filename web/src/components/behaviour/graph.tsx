@@ -238,8 +238,9 @@ export function Graph({
     // The whole drawing, when it fits at this zoom, so nothing is hidden and no minimap is needed.
     const all = boundsRef.current;
     const m = 32;
-    if (all.w * current.k <= area.w - 2 * m && all.h * current.k <= area.h - 2 * m) {
-      const target = keepInView(current, { ...all, w: all.w + 28 }, area, m, [ZOOM_CORNER]);
+    const whole = { ...all, w: all.w + 28 };
+    if (whole.w * current.k <= area.w - 32 && whole.h * current.k <= area.h - 32) {
+      const target = keepInView(current, whole, area, 16, [ZOOM_CORNER]);
       if (target) moveTo(target, 200);
       return;
     }
