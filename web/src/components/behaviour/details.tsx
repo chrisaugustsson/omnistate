@@ -206,7 +206,7 @@ function Chosen({
         {defaults > 0 && <span className={pill}>{defaults} answered by default</span>}
       </div>
       {listed.needs_pass && (
-        <p className="mt-3 rounded-lg border border-dashed border-foreground px-3 py-2.5 text-[12.5px] leading-normal">
+        <p className="mt-3 rounded-control bg-frame px-3 py-2.5 text-[12.5px] leading-normal">
           Waits for the next grill pass{listed.needs_pass_since ? ` since ${fmtDate(listed.needs_pass_since)}` : ""}. Something here or above was
           answered, changed or remarked. Nothing is rewritten until the grill is started again on the track.
         </p>
@@ -235,13 +235,13 @@ function Chosen({
         <>
           {read.node.situation && (
             <>
-              <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">Situation</h3>
+              <h3 className="mt-5 text-meta font-medium text-ink-3">Situation</h3>
               <Text source={read.node.situation} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
           {read.node.behaviour && (
             <>
-              <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">Behaviour</h3>
+              <h3 className="mt-5 text-meta font-medium text-ink-3">Behaviour</h3>
               <Text source={read.node.behaviour} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
@@ -308,7 +308,7 @@ function AnswerField({
         className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
       />
       <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={() => send(text)}>
+        <Button type="button" variant="outline" size="sm" disabled={busy || text.trim() === ""} onClick={() => send(text)}>
           Answer
         </Button>
         <span className="text-xs text-muted-foreground">Nobody has answered this yet.</span>
@@ -393,7 +393,7 @@ function ChangeField({
         className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
       />
       <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={busy} onClick={save}>
+        <Button type="button" variant="outline" size="sm" disabled={busy} onClick={save}>
           Save new answer
         </Button>
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
@@ -438,7 +438,7 @@ function Questions({
   const waiting = questions.filter((question) => question.state === "open" && question.asked_by.kind !== "human").length;
   return (
     <>
-      <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <h3 className="mt-5 text-meta font-medium text-ink-3">
         Questions <span className="tabular-nums">{questions.length}</span>
         {waiting > 0 && <span> · {waiting} open</span>}
       </h3>
@@ -516,7 +516,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
   };
   return (
     <>
-      <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">Add a question or remark</h3>
+      <h3 className="mt-5 text-meta font-medium text-ink-3">Add a question or remark</h3>
       <textarea
         aria-label="Add a question or remark"
         placeholder="Something that is missing or wrong here. The next grill pass takes it up."
@@ -525,7 +525,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
         className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
       />
       <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={send}>
+        <Button type="button" variant="outline" size="sm" disabled={busy || text.trim() === ""} onClick={send}>
           Add to this node
         </Button>
         <span className="text-xs text-muted-foreground">Opens the node again.</span>
@@ -547,7 +547,7 @@ function Rules({ rules, nodeId, byId }: { rules: { id: string; node_id: string; 
   };
   return (
     <>
-      <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <h3 className="mt-5 text-meta font-medium text-ink-3">
         Rules <span className="tabular-nums">{own.length}</span>
       </h3>
       {own.length === 0 && <p className="mt-1 text-xs text-muted-foreground">This node sets no rule of its own.</p>}

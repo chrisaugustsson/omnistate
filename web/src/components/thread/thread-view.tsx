@@ -117,7 +117,7 @@ export function ThreadView({ workspaceId, projectId, threadId }: { workspaceId: 
         <div className="mt-10 space-y-8">
           {thread.conclusion && (
             <section aria-labelledby="conclusion-title" className="space-y-2 rounded-xl border bg-card px-4 py-3">
-              <h2 id="conclusion-title" className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+              <h2 id="conclusion-title" className="text-meta font-medium text-ink-3">
                 Conclusion
               </h2>
               <p className="text-[14px] leading-relaxed whitespace-pre-wrap">{thread.conclusion}</p>

@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 
 // The chrome the doc and design viewers share: a slim toolbar over the view
 // with the doc's breadcrumb, compact selects, side-pane sections with small
-// uppercase labels, and alerts that float over the work.
+// sentence-case labels, and alerts that float over the work.
 
 /** The part of a doc that its breadcrumb shows. */
 export type CrumbedDoc = { track_id?: string | null; pillar: string; title: string };
@@ -210,7 +210,7 @@ export function ToolbarSelect({
 }: SelectHTMLAttributes<HTMLSelectElement> & { id: string; label: string }) {
   return (
     <div className={cn("flex min-w-0 items-center gap-1.5", className)}>
-      <label htmlFor={id} className="shrink-0 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      <label htmlFor={id} className="shrink-0 text-meta font-medium text-ink-3">
         {label}
       </label>
       <div className="relative min-w-0 flex-1">
@@ -230,7 +230,7 @@ export function ToolbarSelect({
   );
 }
 
-/** A section of a side pane: a small uppercase label that sticks while its content scrolls. */
+/** A section of a side pane: a small sentence-case label that sticks while its content scrolls. */
 export function PaneSection({
   id,
   title,
@@ -259,7 +259,7 @@ export function PaneSection({
 export function PaneLabel({ id, title, aside }: { id?: string; title: string; aside?: ReactNode }) {
   return (
     <div className="sticky top-0 z-10 flex h-9 items-center justify-between gap-2 bg-background/95 px-3 backdrop-blur">
-      <h2 id={id} className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      <h2 id={id} className="text-meta font-medium text-ink-3">
         {title}
       </h2>
       {aside && <div className="flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">{aside}</div>}
@@ -270,7 +270,7 @@ export function PaneLabel({ id, title, aside }: { id?: string; title: string; as
 /** A quiet line for a pane with nothing to show yet. */
 export function PaneEmpty({ icon, children }: { icon?: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex items-start gap-2 rounded-lg border border-dashed px-3 py-3 text-[12.5px] leading-snug text-muted-foreground [&_svg]:mt-px [&_svg]:size-3.5 [&_svg]:shrink-0">
+    <div className="flex items-start gap-2 py-1 text-meta leading-snug text-ink-3 [&_svg]:mt-px [&_svg]:size-3.5 [&_svg]:shrink-0">
       {icon}
       <p>{children}</p>
     </div>

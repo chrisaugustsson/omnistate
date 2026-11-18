@@ -49,7 +49,7 @@ export function DesignSystemViewer({ workspaceId, projectId, docId, doc }: {
       <div className="mx-auto w-full max-w-[1440px] p-4 sm:p-8">
         <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="mb-2 text-[11px] font-medium tracking-widest text-muted-foreground uppercase">Foundations & components</p>
+            <p className="mb-2 text-meta font-medium text-ink-3">Foundations & components</p>
             <h2 className="text-2xl font-semibold tracking-tight">Design system</h2>
             <p className="mt-2 text-sm text-muted-foreground">{tokens.length} tokens in {collections.length} collections · {components.length} components</p>
           </div>
@@ -142,7 +142,7 @@ function ComponentCatalog({ workspaceId, system, components, mode, values }: {
         <h4 className="border-b px-5 py-4 text-sm font-medium">{componentLabel(selected)}</h4>
         <ComponentPreview workspaceId={workspaceId} system={system} component={selected} mode={mode} values={values} />
         {object(selected.props) && Object.keys(selected.props).length > 0 && <div className="border-t p-5">
-          <h5 className="mb-3 text-xs font-medium text-muted-foreground uppercase">Properties</h5>
+          <h5 className="mb-3 text-meta font-medium text-ink-3">Properties</h5>
           <dl className="grid gap-3 sm:grid-cols-2">{Object.entries(selected.props).map(([name, prop]) => <div key={name} className="min-w-0 text-sm"><dt className="font-medium">{name}</dt><dd className="mt-1 break-words text-xs text-muted-foreground">{object(prop) ? formatValue(prop.default) : formatValue(prop)}</dd>{object(prop) && Array.isArray(prop.values) && <dd className="mt-1 break-words text-xs text-muted-foreground">{prop.values.map(String).join(" · ")}</dd>}</div>)}</dl>
         </div>}
       </div>
