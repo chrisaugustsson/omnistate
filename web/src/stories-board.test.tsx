@@ -9,6 +9,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import { choose, optionNames } from "./testing/select";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
@@ -30,6 +31,7 @@ function story(
     status?: string;
     priority?: number;
     title?: string;
+    text?: string;
     holder?: { run: string; stage: string } | null;
     blocked?: boolean;
     blockedBy?: number[];
@@ -46,7 +48,7 @@ function story(
     number,
     key: `US-${number}`,
     title: fields.title ?? `Story ${number}`,
-    text: "",
+    text: fields.text ?? "",
     topic: "",
     status: fields.status ?? "backlog",
     priority: fields.priority ?? 3,
@@ -291,8 +293,15 @@ function cardAction(main: HTMLElement, key: string, item: string) {
   fireEvent.click(within(menu).getByRole(/^P\d$/.test(item) ? "menuitemradio" : "menuitem", { name: item }));
 }
 
-const choosePriority = (main: HTMLElement, value: string) =>
-  fireEvent.change(within(main).getByRole("combobox", { name: /Priority/ }), { target: { value } });
+const choosePriority = (main: HTMLElement, value: string) => choose(within(main).getByRole("combobox", { name: "Priority" }), `P${value}`);
+
+/** Opens the story `key` from its card, by its title, and gives its drawer. */
+function openStory(main: HTMLElement, key: string) {
+  const title = within(card(main, key)).getAllByRole("button").find((button) => button.closest("p"));
+  expect(title, `the title of ${key} is a button`).toBeTruthy();
+  fireEvent.click(title as HTMLElement);
+  return screen.getByRole("dialog");
+}
 const showCancelled = (main: HTMLElement) =>
   fireEvent.click(within(main).getByRole("checkbox", { name: "Show cancelled" }));
 
@@ -393,7 +402,7 @@ describe("the board", () => {
     expect(cardKeys(main, "Cancelled")).toEqual(["US-1"]);
   });
 
-  test("Priority offers all, 1, 2 and 3; all, the default, shows a priority 0 card and 1 hides every other priority", async () => {
+  test("Priority offers any, P1, P2 and P3; any, the default, shows a priority 0 card and P1 hides every other priority", async () => {
     fakeApi([
       story(1, { priority: 0 }),
       story(2, { priority: 1 }),
@@ -404,8 +413,7 @@ describe("the board", () => {
     renderAt(BOARD_PATH);
     const main = await board();
 
-    const options = within(within(main).getByRole("combobox", { name: /Priority/ })).getAllByRole("option");
-    expect(options.map((option) => option.textContent)).toEqual(["all", "1", "2", "3"]);
+    expect(optionNames(within(main).getByRole("combobox", { name: "Priority" }))).toEqual(["Any priority", "P1", "P2", "P3"]);
     expect(cardKeys(main, "Backlog")).toEqual(["US-1", "US-2", "US-4", "US-5"]);
 
     choosePriority(main, "1");
@@ -633,7 +641,7 @@ describe("steering from the board", () => {
 
     const said = (key: string) =>
       Array.from(within(card(main, key)).getByRole("list", { name: "Blocked by" }).querySelectorAll("li")).map((line) =>
-        Array.from(line.children, (part) => part.textContent).join(" "),
+        (line.textContent ?? "").replace(/\s+/g, " ").trim(),
       );
     expect(said("US-1")).toEqual(["Blocked by US-2"]);
     expect(said("US-2")).toEqual(["Blocked by iot-service US-3"]);
@@ -678,7 +686,7 @@ describe("steering from the board", () => {
     expect(api.writes).toEqual([{ method: "POST", path: `${storyPath(131)}/cancel`, body: { expected_version: 1 } }]);
   });
 
-  test("Checked on a pending criterion sends check with its 0-based index and the to-check count drops", async () => {
+  test("ticking a criterion that waits on a human check, in the story's drawer, sends check with its 0-based index and the to-check count drops", async () => {
     const api = fakeApi([story(1, { status: "done", criteria: [criterion(true, false), criterion(true, true)] })]);
     api.answer = () => ({
       status: 200,
@@ -688,10 +696,73 @@ describe("steering from the board", () => {
     const main = await board();
 
     fireEvent.click(within(card(main, "US-1")).getByText("1 to check"));
-    fireEvent.click(within(card(main, "US-1")).getByRole("button", { name: "Checked" }));
+    const drawer = screen.getByRole("dialog", { name: "Story 1" });
+    const [checked, waiting] = within(drawer).getAllByRole("checkbox") as HTMLInputElement[];
+    expect([checked.checked, checked.disabled], "an agent-ticked criterion with no check due").toEqual([true, true]);
+    expect([waiting.checked, waiting.disabled], "the one waiting on a person").toEqual([false, false]);
+    fireEvent.click(waiting);
 
     await waitFor(() => expect(within(card(main, "US-1")).queryByText(/to check/)).toBeNull());
     expect(api.writes).toEqual([{ method: "POST", path: `${storyPath(1)}/check`, body: { expected_version: 1, criterion: 1 } }]);
+    expect((within(drawer).getAllByRole("checkbox")[1] as HTMLInputElement).checked, "checked once the answer is in").toBe(true);
+  });
+
+  test("clicking a card opens its story in a drawer: key, status, priority, title, text, criteria with how many are met, and what blocks it; Esc closes it", async () => {
+    fakeApi(
+      [
+        story(4, {
+          status: "implementing",
+          priority: 1,
+          title: "Pay with a saved card",
+          text: "As a shopper, I want to pay with a saved card.",
+          criteria: [criterion(true, false), { text: "The card is masked.", ticked: false, pending: false, human_check: false }],
+          blockedBy: [5],
+          blockers: [ingestBlocker(3, "review")],
+        }),
+        story(5, { status: "done", title: "Store cards" }),
+      ],
+      [linkedTask(3, "blocks", 4, { status: "review", title: "Accept card tokens" })],
+    );
+    renderAt(BOARD_PATH);
+    const main = await board();
+    expect(screen.queryByRole("dialog"), "closed until a card is clicked").toBeNull();
+
+    const drawer = openStory(main, "US-4");
+    expect(drawer.getAttribute("aria-labelledby") && document.getElementById(drawer.getAttribute("aria-labelledby")!)?.textContent).toBe("Pay with a saved card");
+    expect(within(drawer).getByText("US-4")).toBeTruthy();
+    expect(within(drawer).getByText("Implementing")).toBeTruthy();
+    expect(within(drawer).getByText("P1")).toBeTruthy();
+    expect(within(drawer).getByText("As a shopper, I want to pay with a saved card.")).toBeTruthy();
+    const criteria = within(drawer).getByRole("region", { name: "Criteria" });
+    expect(within(criteria).getByText("1 of 2")).toBeTruthy();
+    expect((within(criteria).getAllByRole("checkbox") as HTMLInputElement[]).map((box) => box.checked)).toEqual([true, false]);
+    expect(within(criteria).getByText("The card is masked.")).toBeTruthy();
+    const blockers = within(drawer).getByRole("region", { name: "Blocked by" });
+    expect(within(blockers).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "US-5 Store cardsDone",
+      "US-3 Accept card tokensiot-service · IngestReview",
+    ]);
+
+    fireEvent.keyDown(drawer, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("Cancel story in the drawer's menu asks first and sends cancel only once confirmed", async () => {
+    const api = fakeApi([story(131), story(132)]);
+    api.answer = () => ({ status: 200, body: { story: story(131, { status: "cancelled", version: 2 }) } });
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    const drawer = openStory(main, "US-131");
+    fireEvent.click(within(drawer).getByRole("button", { name: "US-131 actions" }));
+    fireEvent.click(within(within(drawer).getByRole("menu")).getByRole("menuitem", { name: "Cancel story…" }));
+    expect(within(drawer).getByText("Cancel US-131?")).toBeTruthy();
+    expect(api.writes).toEqual([]);
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Cancel story" }));
+    await waitFor(() => expect(cardKeys(main, "Backlog")).toEqual(["US-132"]));
+    expect(api.writes).toEqual([{ method: "POST", path: `${storyPath(131)}/cancel`, body: { expected_version: 1 } }]);
+    expect(within(drawer).getByText("Cancelled"), "the drawer shows the new status").toBeTruthy();
   });
 
   test("Add story posts one criterion per non-blank trimmed line, a human check on the marked and the browser lines, and the card appears under Backlog", async () => {
@@ -701,16 +772,19 @@ describe("steering from the board", () => {
     const main = await board();
 
     fireEvent.click(within(main).getByRole("button", { name: "Add story" }));
-    const form = within(main).getByRole("form", { name: "Add story" });
-    fireEvent.change(within(form).getByLabelText("Title"), { target: { value: "Pay with a saved card" } });
-    fireEvent.change(within(form).getByLabelText("Priority"), { target: { value: "2" } });
-    fireEvent.change(within(form).getByLabelText("Criteria, one per line"), {
+    const form = screen.getByRole("dialog", { name: "Add a story" });
+    fireEvent.click(within(form).getByRole("button", { name: "Add story" }));
+    expect(within(form).getByRole("alert").textContent, "a title is required").toBe("Give the story a title");
+    expect(api.writes).toEqual([]);
+    fireEvent.change(within(form).getByRole("textbox", { name: "Title" }), { target: { value: "Pay with a saved card" } });
+    choose(within(form).getByRole("combobox", { name: "Priority" }), /^P2/);
+    fireEvent.change(within(form).getByRole("textbox", { name: /^Criteria/ }), {
       target: {
         value:
           "  The total is shown.  \n\n   \nThe receipt reads well (human check)\nThe page loads. Verify in browser using dev-browser skill\n",
       },
     });
-    fireEvent.click(within(form).getByRole("button", { name: "Create story" }));
+    fireEvent.click(within(form).getByRole("button", { name: "Add story" }));
 
     await waitFor(() => expect(cardKeys(main, "Backlog")).toEqual(["US-1", "US-2"]));
     expect(api.writes).toEqual([

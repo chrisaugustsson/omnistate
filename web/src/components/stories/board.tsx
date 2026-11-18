@@ -1,16 +1,20 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Check, Ellipsis } from "lucide-react";
+import { Check, Ellipsis, ListFilter, Plus } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { cancelStory, checkCriterion, createStory, loadStories, patchStory } from "@/api/stories";
 import type { LinkedBody, StoryBody } from "@/api/generated";
 import { Button } from "@/components/ui/button";
 import { usePopover } from "@/components/shell/popover";
 import { StateIcon } from "@/components/shell/state-icon";
-import { MenuSeparator, menuClass, menuItemClass } from "@/components/track/ui";
+import { Dialog, DialogError } from "@/components/shell/dialog";
+import { Field, Input, Textarea } from "@/components/shell/field";
+import { Select } from "@/components/shell/select";
+import { MenuSeparator, buttonClass, menuClass, menuItemClass } from "@/components/track/ui";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useProjectEvents } from "@/live/context";
 import { useReloading } from "@/lib/reloading";
+import { StoryDrawer } from "./story-drawer";
 import { cn } from "@/lib/utils";
 
 // A track's board: the five columns of a story's life, a card per story, and
@@ -26,7 +30,12 @@ const COLUMNS = [
   { statuses: ["done"], title: "Done" },
 ];
 const CANCELLED = { statuses: ["cancelled"], title: "Cancelled" };
-const PRIORITIES = ["all", "1", "2", "3"];
+const PRIORITIES = [
+  { value: "", label: "Any priority" },
+  { value: "1", label: "P1" },
+  { value: "2", label: "P2" },
+  { value: "3", label: "P3" },
+];
 
 const closed = (story: StoryBody) => story.status === "done" || story.status === "cancelled";
 const unresolved = (story: StoryBody) => story.findings.filter((finding) => finding.resolved !== true).length;
@@ -51,7 +60,7 @@ function Badge({ tone, children }: { tone: "warning" | "neutral" | "accent"; chi
   );
 }
 
-type Steer = {
+export type Steer = {
   stories: StoryBody[];
   /** Messages shown on cards by story id, kept here so they survive a card changing column. */
   messages: Map<string, string>;
@@ -73,7 +82,19 @@ const CARD_ACTION = "h-6 rounded-control px-1.5 text-meta font-medium text-ink-2
  * blockers, Cancel story) are in the "…" menu, which shows on hover or focus;
  * a closed story has none.
  */
-function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<string, StoryBody>; linked: LinkedBody[]; steer: Steer }) {
+function Card({
+  story,
+  byId,
+  linked,
+  steer,
+  onOpen,
+}: {
+  story: StoryBody;
+  byId: Map<string, StoryBody>;
+  linked: LinkedBody[];
+  steer: Steer;
+  onOpen: () => void;
+}) {
   const holder = story.holder as { run?: string; stage?: string } | null | undefined;
   const findings = unresolved(story);
   const check = toCheck(story);
@@ -81,7 +102,6 @@ function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<stri
   const message = steer.messages.get(story.id);
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [checking, setChecking] = useState(false);
   const write = async (action: () => Promise<StoryBody>) => {
     await steer.run(story, action);
   };
@@ -105,8 +125,8 @@ function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<stri
     };
   }, [menu.open, menu.setOpen]);
   return (
-    <li className="group/card space-y-2 rounded-control border border-line bg-sheet px-3 py-2.5 shadow-card">
-      <div className="flex h-6 items-center gap-2 text-meta text-ink-3">
+    <li className="group/card relative space-y-2 rounded-control border border-line bg-sheet px-3 py-2.5 shadow-card transition-[border-color,box-shadow] duration-(--t-fast) ease-out-quint hover:border-line-strong has-[>p>button:focus-visible]:shadow-focus">
+      <div className="flex h-6 min-w-0 items-center gap-2 text-meta text-ink-3">
         <span className="font-mono text-[12px] tabular-nums">{story.key}</span>
         {(story.status === "implemented" || story.status === "reviewed") && <Badge tone="neutral">Waiting</Badge>}
         <span
@@ -116,7 +136,7 @@ function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<stri
           P{story.priority}
         </span>
         {!isClosed && (
-          <div ref={menu.anchor} className="relative -mr-1.5 inline-flex">
+          <div ref={menu.anchor} className="relative z-10 -mr-1.5 inline-flex">
             <button
               ref={menu.opener}
               type="button"
@@ -187,40 +207,28 @@ function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<stri
           </div>
         )}
       </div>
-      <p className="font-medium text-ink">{story.title}</p>
+      <p className="font-medium text-ink">
+        {/* The title opens the story; its hit area covers the card, under the card's own controls. */}
+        <button type="button" onClick={onOpen} className="text-left outline-none after:absolute after:inset-0 after:rounded-control after:content-['']">
+          {story.title}
+        </button>
+      </p>
       {holder && (
         <p className="text-xs text-muted-foreground">
           {holder.stage} · {holder.run}
         </p>
       )}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {story.blocked && <Badge tone="warning">Blocked</Badge>}
-        {droppedBlocker(story, byId) && <Badge tone="warning">Blocker dropped</Badge>}
-        {findings > 0 && <Badge tone="neutral">{`${findings} findings`}</Badge>}
-        {check > 0 && (
-          <button type="button" aria-expanded={checking} onClick={() => setChecking(!checking)}>
-            <Badge tone="accent">{`${check} to check`}</Badge>
-          </button>
-        )}
-      </div>
-      {checking && check > 0 && (
-        <ul className="space-y-1 text-xs">
-          {story.criteria.map((criterion, index) =>
-            criterion.ticked && criterion.pending ? (
-              <li key={index} className="flex items-center gap-2">
-                <span className="min-w-0 flex-1">{criterion.text}</span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => write(() => steer.check(story, index))}
-                >
-                  Checked
-                </Button>
-              </li>
-            ) : null,
+      {(story.blocked || droppedBlocker(story, byId) || findings > 0 || check > 0) && (
+        <div className="relative z-10 flex w-fit flex-wrap items-center gap-1.5">
+          {story.blocked && <Badge tone="warning">Blocked</Badge>}
+          {droppedBlocker(story, byId) && <Badge tone="warning">Blocker dropped</Badge>}
+          {findings > 0 && <Badge tone="neutral">{`${findings} findings`}</Badge>}
+          {check > 0 && (
+            <button type="button" onClick={onOpen} className="rounded-full focus-visible:shadow-focus focus-visible:outline-none">
+              <Badge tone="accent">{`${check} to check`}</Badge>
+            </button>
           )}
-        </ul>
+        </div>
       )}
       {story.blocked_by.length > 0 && (
         <ul aria-label="Blocked by" className="flex flex-col gap-0.5 text-meta text-ink-3">
@@ -230,12 +238,14 @@ function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<stri
             const part = byId.has(id) ? undefined : linked.find((task) => task.id === id)?.part_name;
             const finished = blocker && (blocker.status === "done" || blocker.status === "cancelled");
             return (
-              <li key={id} className="flex min-w-0 items-center gap-1">
-                <span className="shrink-0">Blocked by</span>
-                {part && <span className="min-w-0 truncate">{part}</span>}
-                <span className={cn("inline-flex shrink-0 items-center gap-0.5 font-mono text-[12px] text-ink-2", finished && "line-through decoration-ink-3")}>
-                  {blocker?.key ?? "?"}
-                  {finished && <Check aria-label="done" className="size-3 text-state-done" />}
+              <li key={id} className="min-w-0 break-words">
+                Blocked by{" "}
+                <span className="whitespace-nowrap">
+                  {part && <>{part} </>}
+                  <span className={cn("inline-flex items-center gap-0.5 align-bottom font-mono text-[12px] text-ink-2", finished && "line-through decoration-ink-3")}>
+                    {blocker?.key ?? "?"}
+                    {finished && <Check aria-label="done" className="size-3 text-state-done" />}
+                  </span>
                 </span>
               </li>
             );
@@ -248,7 +258,7 @@ function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<stri
         </p>
       )}
       {editing && !isClosed && (
-        <div className="space-y-1 rounded-control bg-frame px-2 py-1.5 text-xs">
+        <div className="relative z-10 space-y-1 rounded-control bg-frame px-2 py-1.5 text-xs">
           <div className="flex items-center text-meta text-ink-3">
             Blocked by
             <button type="button" onClick={() => setEditing(false)} className={cn(CARD_ACTION, "ml-auto -mr-1")}>
@@ -280,7 +290,7 @@ function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<stri
         </div>
       )}
       {confirming && !isClosed && (
-        <div className="flex items-center gap-2 text-xs">
+        <div className="relative z-10 flex flex-wrap items-center gap-2 text-xs">
           <span>{`Cancel ${story.key}?`}</span>
           <Button
             type="button"
@@ -313,62 +323,74 @@ function criteriaOf(lines: string) {
     .map((text) => ({ text, human_check: text.includes("(human check)") || text.endsWith(BROWSER_LINE) }));
 }
 
+const PRIORITY_OPTIONS = [
+  { value: "1", label: "P1", description: "Delivered first" },
+  { value: "2", label: "P2" },
+  { value: "3", label: "P3", description: "The default" },
+];
+
+/** The dialog that adds a story to the backlog: its title (required), text, topic, priority and criteria, one per line. */
 function AddStory({ onAdd, onClose }: { onAdd: (body: Parameters<typeof createStory>[3]) => Promise<boolean>; onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [topic, setTopic] = useState("");
   const [priority, setPriority] = useState("3");
   const [criteria, setCriteria] = useState("");
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = async () => {
+    setTried(true);
+    if (title.trim() === "") {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[role="dialog"] [aria-invalid="true"]')?.focus());
+      return;
+    }
+    setBusy(true);
+    setFailed(false);
     const added = await onAdd({ title, text, topic, priority: Number(priority), criteria: criteriaOf(criteria) });
+    setBusy(false);
     if (added) onClose();
     else setFailed(true);
   };
-  const field = "w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm";
   return (
-    <form onSubmit={submit} aria-label="Add story" className="max-w-xl space-y-3 rounded-xl border bg-card p-4 text-sm">
-      <label className="block space-y-1">
-        Title
-        <input value={title} onChange={(event) => setTitle(event.target.value)} className={field} />
-      </label>
-      <label className="block space-y-1">
-        Text
-        <textarea value={text} onChange={(event) => setText(event.target.value)} rows={3} className={field} />
-      </label>
-      <label className="block space-y-1">
-        Topic
-        <input value={topic} onChange={(event) => setTopic(event.target.value)} className={field} />
-      </label>
-      <label className="block space-y-1">
-        Priority
-        <select value={priority} onChange={(event) => setPriority(event.target.value)} className={field}>
-          {["1", "2", "3"].map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block space-y-1">
-        Criteria, one per line
-        <textarea value={criteria} onChange={(event) => setCriteria(event.target.value)} rows={4} className={field} />
-      </label>
-      {failed && (
-        <p role="alert" className="text-xs text-destructive">
-          The story could not be added. Check the title and try again.
-        </p>
-      )}
-      <div className="flex gap-2">
-        <Button type="submit" disabled={title.trim() === ""}>
-          Create story
-        </Button>
-        <Button type="button" variant="ghost" onClick={onClose}>
-          Close
-        </Button>
+    <Dialog
+      wide
+      title="Add a story"
+      description="It goes into the backlog; the deliver agents pick it up by priority once the track is building."
+      onClose={onClose}
+      onSubmit={() => {
+        if (!busy) void submit();
+      }}
+      footerStart={failed && <DialogError>The story could not be added. Check the title and try again.</DialogError>}
+      footer={
+        <>
+          <button type="button" className={buttonClass()} onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className={buttonClass({ variant: "primary" })} disabled={busy}>
+            Add story
+          </button>
+        </>
+      }
+    >
+      <Field label="Title" error={tried && title.trim() === "" ? "Give the story a title" : undefined}>
+        {(control) => <Input {...control} placeholder="What a person can do once it is built" value={title} onChange={(event) => setTitle(event.target.value)} />}
+      </Field>
+      <Field label="Text" optional>
+        {(control) => <Textarea {...control} minRows={3} placeholder="As a …, I want …, so that …" value={text} onChange={(event) => setText(event.target.value)} />}
+      </Field>
+      <div className="mt-4 grid grid-cols-[minmax(0,1fr)_140px] gap-3 [&>*]:mt-0!">
+        <Field label="Topic" optional>
+          {(control) => <Input {...control} placeholder="checkout" value={topic} onChange={(event) => setTopic(event.target.value)} />}
+        </Field>
+        <Field label="Priority">{(control) => <Select {...control} value={priority} onChange={setPriority} options={PRIORITY_OPTIONS} />}</Field>
       </div>
-    </form>
+      <Field label="Criteria" optional hint={'One per line. A line with "(human check)" waits on a person ticking it.'} className="mt-4">
+        {(control) => (
+          <Textarea {...control} minRows={4} placeholder={"The total is shown.\nThe receipt reads well (human check)"} value={criteria} onChange={(event) => setCriteria(event.target.value)} />
+        )}
+      </Field>
+    </Dialog>
   );
 }
 
@@ -433,9 +455,10 @@ export function Board({
   useProjectEvents(projectId, (event) => {
     if (event.event.startsWith("story.")) reload();
   });
-  const [priority, setPriority] = useState("all");
+  const [priority, setPriority] = useState("");
   const [showCancelled, setShowCancelled] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<Map<string, string>>(new Map());
 
@@ -480,10 +503,11 @@ export function Board({
 
   const byId = useMemo(() => new Map((stories ?? []).map((story) => [story.id, story])), [stories]);
   const shown = useMemo(
-    () => (stories ?? []).filter((story) => priority === "all" || String(story.priority) === priority),
+    () => (stories ?? []).filter((story) => priority === "" || String(story.priority) === priority),
     [stories, priority],
   );
   const columns = showCancelled ? [...COLUMNS, CANCELLED] : COLUMNS;
+  const opened = openId ? byId.get(openId) : undefined;
 
   return (
     <div>
@@ -501,30 +525,27 @@ export function Board({
               </span>{" "}
               stories done
             </p>
-            <label className="ml-auto flex items-center gap-2 text-ink-2">
-              Priority
-              <select
-                value={priority}
-                onChange={(event) => setPriority(event.target.value)}
-                className="h-(--control-h) rounded-control border border-line-strong bg-sheet px-1.5 text-ink"
-              >
-                {PRIORITIES.map((value) => (
-                  <option key={value} value={value}>
-                    {value}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-ink-2">
-              <input type="checkbox" checked={showCancelled} onChange={(event) => setShowCancelled(event.target.checked)} />
-              Show cancelled
-            </label>
-            <Button type="button" size="sm" variant="outline" className="h-(--control-h) rounded-control border-line-strong px-2.5" onClick={() => setAdding(!adding)}>
+            <div role="group" aria-label="Filter" className="ml-auto flex items-center gap-1">
+              <ListFilter aria-hidden className="mr-1 size-(--icon-sm) text-ink-3" />
+              <Select look="filter" aria-label="Priority" value={priority} onChange={setPriority} options={PRIORITIES} />
+              <label className="inline-flex h-(--control-h) cursor-pointer items-center gap-1.5 rounded-control px-2 font-medium text-ink-2 transition-colors duration-(--t-fast) hover:bg-hover has-checked:bg-selected has-checked:text-ink has-focus-visible:shadow-focus">
+                <input type="checkbox" className="size-3.5 accent-(--brand)" checked={showCancelled} onChange={(event) => setShowCancelled(event.target.checked)} />
+                Show cancelled
+              </label>
+            </div>
+            <button type="button" className={buttonClass()} onClick={() => setAdding(true)}>
+              <Plus aria-hidden strokeWidth={2.25} />
               Add story
-            </Button>
+            </button>
           </div>
           {adding && <AddStory onAdd={add} onClose={() => setAdding(false)} />}
-          <div className="flex gap-2 overflow-x-auto pb-2">
+          {opened && <StoryDrawer story={opened} byId={byId} linked={linked} steer={steer} onClose={() => setOpenId(null)} />}
+          {/* The columns share the width down to a 1024px window; only below that does the board scroll sideways. */}
+          <div className="overflow-x-auto max-[1023px]:pb-2">
+            <div
+              className="grid items-start gap-2 max-[1023px]:min-w-[880px]"
+              style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
+            >
             {columns.map((column) => {
               const cards = shown
                 .filter((story) => column.statuses.includes(story.status))
@@ -535,7 +556,7 @@ export function Board({
                     a.number - b.number,
                 );
               return (
-                <section key={column.statuses[0]} aria-label={column.title} className="min-w-[188px] flex-1 basis-0 self-start rounded-card bg-well p-1.5 pb-2">
+                <section key={column.statuses[0]} aria-label={column.title} className="min-w-0 rounded-card bg-well p-1.5 pb-2">
                   <h2 className="flex h-8 items-center gap-2 px-1.5 font-medium text-ink">
                     <StateIcon state={column.statuses[column.statuses.length - 1]} />
                     {column.title}
@@ -546,13 +567,14 @@ export function Board({
                   ) : (
                     <ul className="space-y-1.5">
                       {cards.map((story) => (
-                        <Card key={story.id} story={story} byId={byId} linked={linked} steer={steer} />
+                        <Card key={story.id} story={story} byId={byId} linked={linked} steer={steer} onOpen={() => setOpenId(story.id)} />
                       ))}
                     </ul>
                   )}
                 </section>
               );
             })}
+            </div>
           </div>
           {linked.length > 0 && <LinkedTasks workspaceId={workspaceId} projectId={projectId} linked={linked} />}
         </div>
