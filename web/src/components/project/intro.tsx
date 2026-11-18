@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Pencil, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { btn, btnPrimary, field } from "./rows";
+import { Textarea } from "@/components/shell/field";
+import { btn, btnPrimary } from "./rows";
 
 // The written intro of an Overview, as plain page text: the project's, the
 // part's or the feature's description, its paragraphs split on blank lines. An editable intro
@@ -53,6 +54,10 @@ export function Intro({
 
   async function save() {
     if (!onSave) return;
+    if (draft.trim() === current) {
+      setEditing(false);
+      return;
+    }
     setSaving(true);
     setFailed(false);
     try {
@@ -70,17 +75,17 @@ export function Intro({
     return (
       <form
         aria-label="Edit the description"
-        className={cn("mt-4 max-w-[680px] space-y-2", className)}
+        className={cn("mt-4 max-w-[680px]", className)}
         onSubmit={(event) => {
           event.preventDefault();
           if (!saving) void save();
         }}
       >
-        <textarea
+        <Textarea
           autoFocus
           aria-label="Description"
           value={draft}
-          rows={Math.min(12, Math.max(4, draft.split("\n").length + 1))}
+          minRows={2}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape") setEditing(false);
@@ -90,20 +95,21 @@ export function Intro({
             }
           }}
           placeholder="What this is, who it is for, and where to start reading"
-          className={cn(field, "h-auto py-2 text-em leading-[1.6]")}
+          className="-mx-2.5 w-[calc(100%+20px)] max-w-none border-line bg-transparent py-1.5 text-em leading-(--lh-prose) hover:border-line-strong"
         />
         {failed && (
-          <p role="alert" className="text-danger-ink">
+          <p role="alert" className="mt-1 text-danger-ink">
             The description could not be saved. Try again.
           </p>
         )}
-        <div className="flex gap-2">
-          <button type="submit" className={btnPrimary} disabled={saving || draft.trim() === current}>
+        <div className="mt-2 flex items-center gap-2">
+          <button type="submit" className={btnPrimary} disabled={saving}>
             Save
           </button>
           <button type="button" className={btn} onClick={() => setEditing(false)}>
             Cancel
           </button>
+          <span className="ml-1 text-meta text-ink-3">⌘ Enter saves, Esc cancels</span>
         </div>
       </form>
     );

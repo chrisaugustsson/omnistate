@@ -11,6 +11,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import * as scope from "./scope-pages-fake";
+import { choose } from "./testing/select";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
@@ -286,9 +287,9 @@ describe("the Tracks page", () => {
     renderAt(`${scope.PROJECT_PATH}/tracks`);
     const filters = within(await page()).getByRole("group", { name: "Filter" });
     await within(await page()).findByText("Query");
-    fireEvent.change(within(filters).getByRole("combobox", { name: "State" }), { target: { value: "planning" } });
-    fireEvent.change(within(filters).getByRole("combobox", { name: "Owner" }), { target: { value: sara.user_id } });
-    fireEvent.change(within(filters).getByRole("combobox", { name: "Part" }), { target: { value: wision.id } });
+    choose(within(filters).getByRole("combobox", { name: "State" }), "Planning");
+    choose(within(filters).getByRole("combobox", { name: "Owner" }), "Sara");
+    choose(within(filters).getByRole("combobox", { name: "Part" }), "Wision");
     expect((await bands()).map(([name, rows]) => [name, rows.map((row) => row.split(" changes")[0])])).toEqual([["Planning", ["Exports"]]]);
     expect(within(filters).getByText("1 of 4 tracks")).toBeTruthy();
   });
@@ -299,13 +300,15 @@ describe("the Tracks page", () => {
     const api = scope.fakeScopeApi({ parts: [wision, iot] });
     renderAt(`${scope.PROJECT_PATH}/tracks`);
     fireEvent.click(await within(await page()).findByRole("button", { name: "Start track" }));
-    const form = within(await page()).getByRole("form", { name: "Start track" });
-    fireEvent.change(within(form).getByRole("textbox", { name: "Track name" }), { target: { value: "Gateway" } });
-    const part = within(form).getByRole("combobox", { name: "Part" }) as HTMLSelectElement;
-    expect(part.value).toBe("");
-    expect((within(form).getByRole("button", { name: "Start track" }) as HTMLButtonElement).disabled, "no part, no track").toBe(true);
-    fireEvent.change(part, { target: { value: iot.id } });
-    fireEvent.click(within(form).getByRole("button", { name: "Start track" }));
+    const dialog = screen.getByRole("dialog", { name: "Start a track" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "Gateway" } });
+    const part = within(dialog).getByRole("combobox", { name: "Part" });
+    expect(part.textContent, "no part chosen").toBe("Choose a part");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start track" }));
+    expect(within(dialog).getByRole("alert").textContent).toBe("Choose the part it changes");
+    expect(api.writes, "no part, no track").toEqual([]);
+    choose(part, /^iot-service/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start track" }));
     await waitFor(() => expect(api.writes).toEqual([{ method: "POST", path: `${scope.API}/tracks`, body: { name: "Gateway", description: "", part_id: iot.id } }]));
     expect(await within(await page()).findByText("Gateway")).toBeTruthy();
 
@@ -313,9 +316,9 @@ describe("the Tracks page", () => {
     api.writes.length = 0;
     renderAt(`${scope.PROJECT_PATH}/parts/${wision.id}/tracks`);
     fireEvent.click(await within(await page()).findByRole("button", { name: "Start track" }));
-    const onPart = within(await page()).getByRole("form", { name: "Start track" });
+    const onPart = screen.getByRole("dialog", { name: "Start a track on Wision" });
     expect(within(onPart).queryByRole("combobox", { name: "Part" })).toBeNull();
-    fireEvent.change(within(onPart).getByRole("textbox", { name: "Track name" }), { target: { value: "Exports" } });
+    fireEvent.change(within(onPart).getByRole("textbox", { name: "Name" }), { target: { value: "Exports" } });
     fireEvent.click(within(onPart).getByRole("button", { name: "Start track" }));
     await waitFor(() => expect(api.writes).toEqual([{ method: "POST", path: `${scope.API}/tracks`, body: { name: "Exports", description: "", part_id: wision.id } }]));
   });
@@ -324,7 +327,7 @@ describe("the Tracks page", () => {
     scope.fakeScopeApi({ parts: [] });
     renderAt(`${scope.PROJECT_PATH}/tracks`);
     fireEvent.click(await within(await page()).findByRole("button", { name: "Start track" }));
-    const status = await within(await page()).findByRole("status");
+    const status = await within(screen.getByRole("dialog", { name: "Start a track" })).findByRole("status");
     expect(within(status).getByRole("link", { name: "Create a part" }).getAttribute("href")).toBe(`${scope.PROJECT_PATH}/parts`);
   });
 });

@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { ChevronDown, ListFilter } from "lucide-react";
+import { ListFilter } from "lucide-react";
 import type { TrackSummary } from "@/api/generated";
 import { PageHead } from "@/components/shell/page";
+import { Select } from "@/components/shell/select";
 import { StateIcon, TRACK_STATES, stateLabel } from "@/components/shell/state-icon";
 import { useHome } from "@/lib/use-home";
 import { useProjects } from "@/lib/use-workspace";
-import { cn } from "@/lib/utils";
 import { StartTrackForm } from "./forms";
 import { PartNotFound } from "./overview";
 import { useMemberNames, useRowFlags, useProjectMap } from "./project-data";
@@ -22,7 +22,7 @@ type Params = { workspaceId: string; projectId: string };
 const activity = ({ track, last_activity }: TrackSummary) => Date.parse(last_activity ?? track.created_at) || 0;
 const byActivity = (a: TrackSummary, b: TrackSummary) => activity(b) - activity(a) || a.track.name.localeCompare(b.track.name);
 
-/** A filter of the bar: a compact select that reads as a quiet button. */
+/** A filter of the bar: a quiet chip that opens its options, lit while it holds one. */
 function FilterSelect({
   label,
   value,
@@ -34,25 +34,7 @@ function FilterSelect({
   onChange: (value: string) => void;
   options: readonly { value: string; label: string }[];
 }) {
-  return (
-    <label
-      className={cn(
-        "relative inline-flex h-(--control-h) items-center gap-1 rounded-control pr-1.5 pl-2 font-medium transition-colors duration-(--t-fast) hover:bg-hover focus-within:shadow-focus",
-        value ? "bg-selected text-ink" : "text-ink-2",
-      )}
-    >
-      <span className="sr-only">{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="absolute inset-0 cursor-pointer appearance-none opacity-0">
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <span aria-hidden>{options.find((option) => option.value === value)?.label}</span>
-      <ChevronDown aria-hidden className="size-3 text-ink-3" />
-    </label>
-  );
+  return <Select look="filter" aria-label={label} value={value} onChange={onChange} options={options} />;
 }
 
 /** The Tracks page of a project, or with `partId` of a part. */

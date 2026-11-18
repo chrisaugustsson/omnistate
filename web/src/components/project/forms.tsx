@@ -1,81 +1,69 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import type { PartBody } from "@/api/generated";
 import { ApiError } from "@/api/client";
 import { createFeature } from "@/api/features";
 import { createPart, createTrack } from "@/api/parts";
-import { cn } from "@/lib/utils";
-import { btn, btnPrimary, field } from "./rows";
+import { Dialog, DialogError } from "@/components/shell/dialog";
+import { Field, Input } from "@/components/shell/field";
+import { PartIcon } from "@/components/shell/part-icon";
+import { partTone } from "@/lib/identity";
+import { Select } from "@/components/shell/select";
+import { btn, btnPrimary } from "./rows";
 
-// The create forms of the project's and the part's pages: a part, a feature
-// and a track. Each opens under the page's head from its button there, and
-// closes when it saves or is cancelled.
+// The create dialogs of the project's and the part's pages: a part, a feature
+// and a track. Each opens from its button in the page's head and closes when
+// it saves or is cancelled. A required field left empty is said under it when
+// the dialog is submitted; the server's answer about a name goes under the name.
 
 type Params = { workspaceId: string; projectId: string };
 
-/** A form in a quiet box under the head, with its fields, an error and Save/Cancel. */
-function FormBox({
-  label,
-  onSubmit,
-  children,
-  error,
-  submit,
-  canSave,
-  onCancel,
-}: {
-  label: string;
-  onSubmit: () => void;
-  children: ReactNode;
-  error: string | null;
-  submit: string;
-  canSave: boolean;
-  onCancel: () => void;
-}) {
+/** Cancel and the one primary, which is off only while saving. */
+function Actions({ submit, saving, onCancel }: { submit: string; saving: boolean; onCancel: () => void }) {
   return (
-    <form
-      aria-label={label}
-      className="mt-4 max-w-(--main-max) space-y-2 rounded-card border border-line bg-frame p-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (canSave) onSubmit();
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") onCancel();
-      }}
-    >
-      {children}
-      {error && (
-        <p role="alert" className="text-danger-ink">
-          {error}
-        </p>
-      )}
-      <div className="flex gap-2 pt-1">
-        <button type="submit" className={btnPrimary} disabled={!canSave}>
-          {submit}
-        </button>
-        <button type="button" className={btn} onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </form>
+    <>
+      <button type="button" className={btn} onClick={onCancel}>
+        Cancel
+      </button>
+      <button type="submit" className={btnPrimary} disabled={saving}>
+        {submit}
+      </button>
+    </>
   );
 }
 
-function partMessage(failure: unknown): string {
-  if (failure instanceof ApiError && failure.status === 409 && failure.code === "name_taken") return "Another part of the project has this name";
-  if (failure instanceof ApiError && failure.status === 400) return "The name can not be blank";
-  return "The part could not be created. Try again.";
+/** Puts the focus on the first field the dialog marked invalid. */
+function focusInvalid() {
+  requestAnimationFrame(() => document.querySelector<HTMLElement>('[role="dialog"] [aria-invalid="true"]')?.focus());
 }
 
-/** Creates a part: a name, a kind (app or service, no default) and an optional description. */
+type NameError = { field: "name"; text: string } | { field: "form"; text: string };
+
+function partMessage(failure: unknown): NameError {
+  if (failure instanceof ApiError && failure.status === 409 && failure.code === "name_taken") return { field: "name", text: "Another part of the project has this name" };
+  if (failure instanceof ApiError && failure.status === 400) return { field: "name", text: "The name can not be blank" };
+  return { field: "form", text: "The part could not be created. Try again." };
+}
+
+const KINDS = [
+  { value: "app", label: "App", description: "Has screens people use. Its tracks get a Design step." },
+  { value: "service", label: "Service", description: "No screens: an API, a worker, a pipeline. Its tracks skip Design." },
+] as const;
+
+/** Creates a part: a name, a kind (app or service, no default) and an optional line on what it does. */
 export function CreatePartForm({ workspaceId, projectId, onDone }: Params & { onDone: (created: boolean) => void }) {
   const [name, setName] = useState("");
-  const [kind, setKind] = useState("");
+  const [kind, setKind] = useState<"" | "app" | "service">("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [tried, setTried] = useState(false);
+  const [error, setError] = useState<NameError | null>(null);
+  const nameMissing = tried && name.trim() === "";
+  const kindMissing = tried && kind === "";
 
   async function save() {
+    setTried(true);
+    if (name.trim() === "" || kind === "") return focusInvalid();
     setSaving(true);
     setError(null);
     try {
@@ -84,63 +72,76 @@ export function CreatePartForm({ workspaceId, projectId, onDone }: Params & { on
     } catch (failure) {
       setSaving(false);
       setError(partMessage(failure));
+      focusInvalid();
     }
   }
 
   return (
-    <FormBox
-      label="Create part"
-      submit="Create part"
-      canSave={name.trim() !== "" && kind !== "" && !saving}
-      error={error}
+    <Dialog
+      wide
+      title="Create a part"
+      description="One app or one service of the project. It starts with no features: add them on its page, or let a track add them."
+      onClose={() => onDone(false)}
       onSubmit={() => void save()}
-      onCancel={() => onDone(false)}
+      footerStart={error?.field === "form" && <DialogError>{error.text}</DialogError>}
+      footer={<Actions submit="Create part" saving={saving} onCancel={() => onDone(false)} />}
     >
-      <div className="flex flex-wrap gap-2">
-        <input
-          autoFocus
-          aria-label="Part name"
-          placeholder="Name"
-          value={name}
-          className={cn(field, "max-w-xs flex-1")}
-          onChange={(event) => {
-            setName(event.target.value);
-            setError(null);
-          }}
-        />
-        <select aria-label="Part kind" value={kind} onChange={(event) => setKind(event.target.value)} className={cn(field, "w-36")}>
-          <option value="" disabled>
-            Kind
-          </option>
-          <option value="app">app</option>
-          <option value="service">service</option>
-        </select>
-      </div>
-      <input
-        aria-label="Part description"
-        placeholder="What it is (optional)"
-        value={description}
-        className={field}
-        onChange={(event) => setDescription(event.target.value)}
-      />
-    </FormBox>
+      <Field label="Name" error={nameMissing ? "Give the part a name" : error?.field === "name" ? error.text : undefined}>
+        {(control) => (
+          <Input
+            {...control}
+            placeholder="alarm-service"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
+          />
+        )}
+      </Field>
+      <Field label="Kind" error={kindMissing ? "Choose a kind" : undefined}>
+        {(control) => (
+          <Select
+            {...control}
+            value={kind}
+            onChange={setKind}
+            placeholder="App or service"
+            options={KINDS}
+          />
+        )}
+      </Field>
+      <Field label="What it does" optional hint="Shown next to its name on the project's pages.">
+        {(control) => (
+          <Input {...control} placeholder="Evaluates alarm thresholds and sends notifications" value={description} onChange={(event) => setDescription(event.target.value)} />
+        )}
+      </Field>
+    </Dialog>
   );
 }
 
-function featureMessage(failure: unknown): string {
-  if (failure instanceof ApiError && failure.status === 409 && failure.code === "name_taken") return "Another feature of the part has this name";
-  if (failure instanceof ApiError && failure.status === 400) return "The name can not be blank";
-  return "The feature could not be created. Try again.";
+function featureMessage(failure: unknown): NameError {
+  if (failure instanceof ApiError && failure.status === 409 && failure.code === "name_taken") return { field: "name", text: "Another feature of the part has this name" };
+  if (failure instanceof ApiError && failure.status === 400) return { field: "name", text: "The name can not be blank" };
+  return { field: "form", text: "The feature could not be created. Try again." };
 }
 
 /** Creates a feature of a part: a name and what it does. */
-export function CreateFeatureForm({ workspaceId, projectId, partId, onDone }: Params & { partId: string; onDone: (created: boolean) => void }) {
+export function CreateFeatureForm({
+  workspaceId,
+  projectId,
+  partId,
+  partName,
+  onDone,
+}: Params & { partId: string; partName?: string; onDone: (created: boolean) => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [tried, setTried] = useState(false);
+  const [error, setError] = useState<NameError | null>(null);
 
   async function save() {
+    setTried(true);
+    if (name.trim() === "") return focusInvalid();
     setSaving(true);
     setError(null);
     try {
@@ -149,44 +150,43 @@ export function CreateFeatureForm({ workspaceId, projectId, partId, onDone }: Pa
     } catch (failure) {
       setSaving(false);
       setError(featureMessage(failure));
+      focusInvalid();
     }
   }
 
   return (
-    <FormBox
-      label="Create feature"
-      submit="Create feature"
-      canSave={name.trim() !== "" && !saving}
-      error={error}
+    <Dialog
+      title="Create a feature"
+      description={`Something ${partName ?? "the part"} does for the people using it. Tracks change it; its decisions and docs gather on its page.`}
+      onClose={() => onDone(false)}
       onSubmit={() => void save()}
-      onCancel={() => onDone(false)}
+      footerStart={error?.field === "form" && <DialogError>{error.text}</DialogError>}
+      footer={<Actions submit="Create feature" saving={saving} onCancel={() => onDone(false)} />}
     >
-      <input
-        autoFocus
-        aria-label="Feature name"
-        placeholder="Name"
-        value={name}
-        className={cn(field, "max-w-xs")}
-        onChange={(event) => {
-          setName(event.target.value);
-          setError(null);
-        }}
-      />
-      <input
-        aria-label="Feature description"
-        placeholder="What it does (optional)"
-        value={description}
-        className={field}
-        onChange={(event) => setDescription(event.target.value)}
-      />
-    </FormBox>
+      <Field label="Name" error={tried && name.trim() === "" ? "Give the feature a name" : error?.field === "name" ? error.text : undefined}>
+        {(control) => (
+          <Input
+            {...control}
+            placeholder="Alarms"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
+          />
+        )}
+      </Field>
+      <Field label="What it does" optional>
+        {(control) => <Input {...control} placeholder="Thresholds per channel, notify by email" value={description} onChange={(event) => setDescription(event.target.value)} />}
+      </Field>
+    </Dialog>
   );
 }
 
 /**
- * Starts a track: a name, an optional description, and its part. With
- * `fixedPartId` the track goes on that part; otherwise the form asks for one,
- * starting empty. A project with no parts can not start one: the form says so
+ * Starts a track: its part, a name and an optional description. With
+ * `fixedPartId` the track goes on that part; otherwise the dialog asks for one,
+ * starting empty. A project with no parts can not start one: the dialog says so
  * and points to Parts.
  */
 export function StartTrackForm({
@@ -200,22 +200,36 @@ export function StartTrackForm({
   const [description, setDescription] = useState("");
   const [partId, setPartId] = useState("");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [tried, setTried] = useState(false);
+  const [error, setError] = useState<NameError | null>(null);
   const part = fixedPartId ?? partId;
+  const close = () => onDone(false);
 
   if (!fixedPartId && parts.length === 0) {
     return (
-      <div role="status" className="mt-4 max-w-(--main-max) rounded-card border border-line bg-frame p-3 text-ink-2">
-        A track goes on a part, and the project has none yet.{" "}
-        <Link to="/w/$workspaceId/projects/$projectId/parts" params={{ workspaceId, projectId }} className="font-medium text-ink underline underline-offset-2">
-          Create a part
-        </Link>{" "}
-        first.
-      </div>
+      <Dialog
+        title="Start a track"
+        onClose={close}
+        footer={
+          <button type="button" className={btn} onClick={close}>
+            Close
+          </button>
+        }
+      >
+        <p role="status" className="text-ink-2">
+          A track goes on a part, and the project has none yet.{" "}
+          <Link to="/w/$workspaceId/projects/$projectId/parts" params={{ workspaceId, projectId }} className="font-medium text-brand-ink underline-offset-2 hover:underline">
+            Create a part
+          </Link>{" "}
+          first.
+        </p>
+      </Dialog>
     );
   }
 
   async function save() {
+    setTried(true);
+    if (name.trim() === "" || part === "") return focusInvalid();
     setSaving(true);
     setError(null);
     try {
@@ -225,53 +239,56 @@ export function StartTrackForm({
       setSaving(false);
       setError(
         failure instanceof ApiError && failure.status === 409 && failure.code === "name_taken"
-          ? "Another track of the project has this name"
-          : "The track could not be created. Try again.",
+          ? { field: "name", text: "Another track of the project has this name" }
+          : { field: "form", text: "The track could not be created. Try again." },
       );
+      focusInvalid();
     }
   }
 
+  const fixed = parts.find((one) => one.id === fixedPartId);
   return (
-    <FormBox
-      label="Start track"
-      submit="Start track"
-      canSave={name.trim() !== "" && part !== "" && !saving}
-      error={error}
+    <Dialog
+      title={fixed ? `Start a track on ${fixed.name}` : "Start a track"}
+      description="One piece of work on one part. You own it; agents write into it with your key."
+      onClose={close}
       onSubmit={() => void save()}
-      onCancel={() => onDone(false)}
+      footerStart={error?.field === "form" && <DialogError>{error.text}</DialogError>}
+      footer={<Actions submit="Start track" saving={saving} onCancel={close} />}
     >
-      <div className="flex flex-wrap gap-2">
-        <input
-          autoFocus
-          aria-label="Track name"
-          placeholder="Name"
-          value={name}
-          className={cn(field, "max-w-xs flex-1")}
-          onChange={(event) => {
-            setName(event.target.value);
-            setError(null);
-          }}
-        />
-        {!fixedPartId && (
-          <select aria-label="Part" value={partId} onChange={(event) => setPartId(event.target.value)} className={cn(field, "w-44")}>
-            <option value="" disabled>
-              Part
-            </option>
-            {parts.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.name}
-              </option>
-            ))}
-          </select>
+      {!fixedPartId && (
+        <Field
+          label="Part"
+          hint="An app's tracks get a Design step; a service's do not. Work across parts becomes one track per part."
+          error={tried && partId === "" ? "Choose the part it changes" : undefined}
+        >
+          {(control) => (
+            <Select
+              {...control}
+              value={partId}
+              onChange={setPartId}
+              placeholder="Choose a part"
+              options={parts.map((one) => ({ value: one.id, label: one.name, hint: one.kind, icon: <PartIcon name={one.name} kind={one.kind} tone={partTone(parts, one.id)} size="sm" /> }))}
+            />
+          )}
+        </Field>
+      )}
+      <Field label="Name" error={tried && name.trim() === "" ? "Give the track a name" : error?.field === "name" ? error.text : undefined}>
+        {(control) => (
+          <Input
+            {...control}
+            placeholder="What changes, in a few words"
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
+          />
         )}
-      </div>
-      <input
-        aria-label="Track description"
-        placeholder="What it changes (optional)"
-        value={description}
-        className={field}
-        onChange={(event) => setDescription(event.target.value)}
-      />
-    </FormBox>
+      </Field>
+      <Field label="What it changes" optional>
+        {(control) => <Input {...control} placeholder="One sentence for the track's list" value={description} onChange={(event) => setDescription(event.target.value)} />}
+      </Field>
+    </Dialog>
   );
 }

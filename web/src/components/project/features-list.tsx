@@ -234,6 +234,7 @@ export function FeaturesPage({ workspaceId, projectId, partId }: Params & { part
         <CreateFeatureForm
           {...params}
           partId={partId}
+          partName={part?.name}
           onDone={(created) => {
             setOpened(null);
             if (created) reload();

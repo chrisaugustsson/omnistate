@@ -9,6 +9,7 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as scope from "./scope-pages-fake";
+import { choose } from "./testing/select";
 
 /** A WebSocket that never opens: these pages are not tested live here. */
 class FakeWebSocket extends EventTarget {
@@ -65,24 +66,27 @@ describe("the project's Parts", () => {
     expect(within(list).getByRole("link", { name: "Wision" }).getAttribute("href")).toBe(`${scope.PROJECT_PATH}/parts/${wision.id}`);
   });
 
-  test("Create part needs a name and a kind, which starts empty; a taken name is said and the form stays; the new part is listed", async () => {
+  test("Create part needs a name and a kind, which starts empty; a missing one is said under its field; the new part is listed", async () => {
     const api = scope.fakeScopeApi({ parts: [scope.part("Wision", "app")] });
     scope.renderAt(`${scope.PROJECT_PATH}/parts`);
     const page = await main();
     fireEvent.click(await within(page).findByRole("button", { name: "Create part" }));
-    const form = within(page).getByRole("form", { name: "Create part" });
-    fireEvent.change(within(form).getByRole("textbox", { name: "Part name" }), { target: { value: "wision-api" } });
-    const create = within(form).getByRole("button", { name: "Create part" }) as HTMLButtonElement;
-    expect((within(form).getByRole("combobox", { name: "Part kind" }) as HTMLSelectElement).value).toBe("");
-    expect(create.disabled, "no kind, no create").toBe(true);
-    fireEvent.change(within(form).getByRole("combobox", { name: "Part kind" }), { target: { value: "service" } });
-    fireEvent.change(within(form).getByRole("textbox", { name: "Part description" }), { target: { value: " Users and roles " } });
-    fireEvent.click(create);
+    const dialog = screen.getByRole("dialog", { name: "Create a part" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "wision-api" } });
+    const kind = within(dialog).getByRole("combobox", { name: "Kind" });
+    expect(kind.textContent, "no kind chosen").toBe("App or service");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create part" }));
+    expect(within(dialog).getByRole("alert").textContent).toBe("Choose a kind");
+    expect(kind.getAttribute("aria-invalid")).toBe("true");
+    expect(api.writes, "no kind, no create").toEqual([]);
+    choose(kind, /^Service/);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /What it does/ }), { target: { value: " Users and roles " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create part" }));
 
     await waitFor(() => expect(api.writes).toEqual([{ method: "POST", path: `${scope.API}/parts`, body: { name: "wision-api", kind: "service", description: "Users and roles" } }]));
     const list = within(page).getByRole("list", { name: "Parts" });
     expect(await within(list).findByRole("link", { name: "wision-api" })).toBeTruthy();
-    expect(within(page).queryByRole("form", { name: "Create part" }), "the form closes").toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Create a part" }), "the dialog closes").toBeNull();
   });
 
   test("a part is renamed in place, and deleted only once the delete is confirmed", async () => {
@@ -141,10 +145,10 @@ describe("a part's Features", () => {
     scope.renderAt(`${scope.PROJECT_PATH}/parts/${wision.id}/features`);
     const page = await main();
     fireEvent.click(await within(page).findByRole("button", { name: "Create feature" }));
-    const form = within(page).getByRole("form", { name: "Create feature" });
-    fireEvent.change(within(form).getByRole("textbox", { name: "Feature name" }), { target: { value: "Alarms" } });
-    fireEvent.change(within(form).getByRole("textbox", { name: "Feature description" }), { target: { value: "Warn on thresholds" } });
-    fireEvent.click(within(form).getByRole("button", { name: "Create feature" }));
+    const dialog = screen.getByRole("dialog", { name: "Create a feature" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "Alarms" } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /What it does/ }), { target: { value: "Warn on thresholds" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create feature" }));
     const list = within(page).getByRole("list", { name: "Features" });
     await within(list).findByRole("link", { name: "Alarms" });
     expect(api.writes).toEqual([{ method: "POST", path: FEATURES, body: { name: "Alarms", description: "Warn on thresholds" } }]);

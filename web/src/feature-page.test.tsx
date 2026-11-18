@@ -137,9 +137,9 @@ describe("Start track", () => {
     const api = featureApi();
     const router = renderAt(FEATURE_PATH);
     fireEvent.click(await screen.findByRole("button", { name: "Start track" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Track name"), { target: { value: "Radar export" } });
-    fireEvent.change(within(dialog).getByLabelText("Description"), { target: { value: "Export the radar view." } });
+    const dialog = await screen.findByRole("dialog", { name: "Start a track on Analyze" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "Radar export" } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /What it changes/ }), { target: { value: "Export the radar view." } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Start track" }));
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`${PROJECT_PATH}/tracks/0192d7a0-4444-7000-8000-0000000000ff`));
