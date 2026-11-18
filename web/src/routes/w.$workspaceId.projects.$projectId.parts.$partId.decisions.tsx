@@ -3,7 +3,7 @@ import { DecisionsPage } from "@/components/project/decisions-page";
 
 // A part's Decisions: the decision log of the part and its features.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/decisions")({
-  staticData: { tab: "decisions" },
+  staticData: { section: "decisions" },
   component: Decisions,
 });
 

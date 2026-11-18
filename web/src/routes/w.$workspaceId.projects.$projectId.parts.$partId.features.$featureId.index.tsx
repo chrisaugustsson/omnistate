@@ -8,6 +8,7 @@ import { SectionHead, buttonClass } from "@/components/track/ui";
 // A feature's Overview: what it does now (its description, edited in place)
 // and its three newest current decisions, each saying which track recorded it.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/")({
+  staticData: { section: "overview" },
   component: Overview,
 });
 

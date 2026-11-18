@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The Tracks of a project and of a part (slice S2; prototype
 // tasks/ui-redesign/v2/tracks.html): grouped by state like Linear, a filter on
-// state, owner and part, and Start track. Then the palette that the top bar's
+// state, owner and part, and Start track. Then the palette that the header's
 // Search button or ⌘K (Ctrl+K off macOS) opens (US-125). Both read the project
 // home, GET .../projects/<project>/home. The app is rendered into the
 // document, as in the browser: the palette's portal on the body then sees the
@@ -339,13 +339,13 @@ describe("the palette", () => {
     threads: [thread(CHECKOUT_THREAD, CHECKOUT, "Which wallets?")],
   });
 
-  /** Renders the Tracks page on `platform`, and waits until the top bar has the project home. */
+  /** Renders the Tracks page on `platform`, and waits until the shell has the project home. */
   async function renderOn(platform: string, projectHome: Home) {
     Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
     fakeApi(projectHome);
     const router = renderAt(`${PROJECT_PATH}/tracks`);
-    const pills = await screen.findByRole("navigation", { name: "Storefront" });
-    await within(pills).findByRole("link", { name: /^Tracks\d/ });
+    const sections = await screen.findByRole("navigation", { name: "Sections" });
+    await within(sections).findByRole("link", { name: /^Tracks, \d/ });
     return router;
   }
 

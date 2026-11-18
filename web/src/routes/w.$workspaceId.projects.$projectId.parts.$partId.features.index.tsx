@@ -4,7 +4,7 @@ import { FeaturesPage } from "@/components/project/features-list";
 // A part's Features: a card per feature with what it does and the track
 // changing it; creating, renaming and deleting a feature.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/")({
-  staticData: { tab: "features" },
+  staticData: { section: "features" },
   component: Features,
 });
 

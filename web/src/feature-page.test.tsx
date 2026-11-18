@@ -38,8 +38,9 @@ function renderAt(path: string) {
   return router;
 }
 
+/** The feature's sections in the sidebar as their text: name and count. */
 async function tabs() {
-  const nav = await screen.findByRole("navigation", { name: "Feature" });
+  const nav = await screen.findByRole("navigation", { name: "Sections" });
   return within(nav)
     .getAllByRole("link")
     .map((link) => link.textContent);
@@ -86,7 +87,7 @@ describe("a feature's Overview", () => {
   });
 });
 
-describe("a feature's tabs", () => {
+describe("a feature's sections", () => {
   test("leave out Design while the feature has no design doc", async () => {
     featureApi({ docs: [docBody("0192d7a0-6666-7000-8000-000000000001", "How compare works", { pillar: "architecture", feature_id: ANALYZE })] });
     renderAt(FEATURE_PATH);

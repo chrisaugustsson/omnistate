@@ -7,6 +7,7 @@ import { buttonClass } from "@/components/track/ui";
 // each saying which track recorded it, a replaced one folded under what
 // replaced it. Decisions are recorded on a track.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions")({
+  staticData: { section: "decisions" },
   component: Decisions,
 });
 

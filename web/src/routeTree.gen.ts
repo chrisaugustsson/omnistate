@@ -18,6 +18,7 @@ import { Route as WWorkspaceIdHomeIndexRouteImport } from './routes/w.$workspace
 import { Route as WWorkspaceIdHomeApiKeysRouteImport } from './routes/w.$workspaceId._home.api-keys'
 import { Route as WWorkspaceIdHomeInboxRouteImport } from './routes/w.$workspaceId._home.inbox'
 import { Route as WWorkspaceIdHomeMyTracksRouteImport } from './routes/w.$workspaceId._home.my-tracks'
+import { Route as WWorkspaceIdProjectsIndexRouteImport } from './routes/w.$workspaceId.projects.index'
 import { Route as WWorkspaceIdProjectsProjectIdRouteImport } from './routes/w.$workspaceId.projects.$projectId'
 import { Route as WWorkspaceIdProjectsProjectIdIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.index'
 import { Route as WWorkspaceIdProjectsProjectIdAppRouteImport } from './routes/w.$workspaceId.projects.$projectId.app'
@@ -101,6 +102,12 @@ const WWorkspaceIdHomeMyTracksRoute =
     id: '/my-tracks',
     path: '/my-tracks',
     getParentRoute: () => WWorkspaceIdHomeRoute,
+  } as any)
+const WWorkspaceIdProjectsIndexRoute =
+  WWorkspaceIdProjectsIndexRouteImport.update({
+    id: '/projects/',
+    path: '/projects/',
+    getParentRoute: () => WWorkspaceIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdRoute =
   WWorkspaceIdProjectsProjectIdRouteImport.update({
@@ -359,6 +366,7 @@ export interface FileRoutesByFullPath {
   '/w/$workspaceId/my-tracks': typeof WWorkspaceIdHomeMyTracksRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRouteWithChildren
   '/w/$workspaceId/': typeof WWorkspaceIdHomeIndexRoute
+  '/w/$workspaceId/projects/': typeof WWorkspaceIdProjectsIndexRoute
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId/decisions': typeof WWorkspaceIdProjectsProjectIdDecisionsRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
@@ -405,6 +413,7 @@ export interface FileRoutesByTo {
   '/w/$workspaceId/api-keys': typeof WWorkspaceIdHomeApiKeysRoute
   '/w/$workspaceId/inbox': typeof WWorkspaceIdHomeInboxRoute
   '/w/$workspaceId/my-tracks': typeof WWorkspaceIdHomeMyTracksRoute
+  '/w/$workspaceId/projects': typeof WWorkspaceIdProjectsIndexRoute
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId/decisions': typeof WWorkspaceIdProjectsProjectIdDecisionsRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
@@ -452,6 +461,7 @@ export interface FileRoutesById {
   '/w/$workspaceId/_home/my-tracks': typeof WWorkspaceIdHomeMyTracksRoute
   '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRouteWithChildren
   '/w/$workspaceId/_home/': typeof WWorkspaceIdHomeIndexRoute
+  '/w/$workspaceId/projects/': typeof WWorkspaceIdProjectsIndexRoute
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
   '/w/$workspaceId/projects/$projectId/decisions': typeof WWorkspaceIdProjectsProjectIdDecisionsRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
@@ -502,6 +512,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/my-tracks'
     | '/w/$workspaceId/projects/$projectId'
     | '/w/$workspaceId/'
+    | '/w/$workspaceId/projects/'
     | '/w/$workspaceId/projects/$projectId/app'
     | '/w/$workspaceId/projects/$projectId/decisions'
     | '/w/$workspaceId/projects/$projectId/inbox'
@@ -548,6 +559,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/api-keys'
     | '/w/$workspaceId/inbox'
     | '/w/$workspaceId/my-tracks'
+    | '/w/$workspaceId/projects'
     | '/w/$workspaceId/projects/$projectId/app'
     | '/w/$workspaceId/projects/$projectId/decisions'
     | '/w/$workspaceId/projects/$projectId/inbox'
@@ -594,6 +606,7 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/_home/my-tracks'
     | '/w/$workspaceId/projects/$projectId'
     | '/w/$workspaceId/_home/'
+    | '/w/$workspaceId/projects/'
     | '/w/$workspaceId/projects/$projectId/app'
     | '/w/$workspaceId/projects/$projectId/decisions'
     | '/w/$workspaceId/projects/$projectId/inbox'
@@ -704,6 +717,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/w/$workspaceId/my-tracks'
       preLoaderRoute: typeof WWorkspaceIdHomeMyTracksRouteImport
       parentRoute: typeof WWorkspaceIdHomeRoute
+    }
+    '/w/$workspaceId/projects/': {
+      id: '/w/$workspaceId/projects/'
+      path: '/projects'
+      fullPath: '/w/$workspaceId/projects/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsIndexRouteImport
+      parentRoute: typeof WWorkspaceIdRoute
     }
     '/w/$workspaceId/projects/$projectId': {
       id: '/w/$workspaceId/projects/$projectId'
@@ -1153,12 +1173,14 @@ const WWorkspaceIdProjectsProjectIdRouteWithChildren =
 interface WWorkspaceIdRouteChildren {
   WWorkspaceIdHomeRoute: typeof WWorkspaceIdHomeRouteWithChildren
   WWorkspaceIdProjectsProjectIdRoute: typeof WWorkspaceIdProjectsProjectIdRouteWithChildren
+  WWorkspaceIdProjectsIndexRoute: typeof WWorkspaceIdProjectsIndexRoute
 }
 
 const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
   WWorkspaceIdHomeRoute: WWorkspaceIdHomeRouteWithChildren,
   WWorkspaceIdProjectsProjectIdRoute:
     WWorkspaceIdProjectsProjectIdRouteWithChildren,
+  WWorkspaceIdProjectsIndexRoute: WWorkspaceIdProjectsIndexRoute,
 }
 
 const WWorkspaceIdRouteWithChildren = WWorkspaceIdRoute._addFileChildren(

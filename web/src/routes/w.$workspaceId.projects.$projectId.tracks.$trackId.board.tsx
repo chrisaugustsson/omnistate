@@ -3,6 +3,7 @@ import { Board } from "@/components/stories/board";
 
 // A track's story board: its stories by status, one card each.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId/board")({
+  staticData: { section: "board", canvas: true },
   component: BoardRoute,
 });
 

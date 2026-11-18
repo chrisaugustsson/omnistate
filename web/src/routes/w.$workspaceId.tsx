@@ -1,6 +1,7 @@
 import { Outlet, createFileRoute, notFound, redirect } from "@tanstack/react-router";
 import { loadSession } from "@/api/auth";
-import { TopBar } from "@/components/shell/top-bar";
+import { Shell } from "@/components/shell/shell";
+import { ShellProvider } from "@/components/shell/shell-context";
 import { LiveProvider } from "@/live/context";
 
 // Every page of a workspace is under /w/<workspace id>/. The layout checks the
@@ -18,20 +19,19 @@ export const Route = createFileRoute("/w/$workspaceId")({
   notFoundComponent: WorkspaceNotFound,
 });
 
-// The shell (navigation D): the top bar, and under it the page on one white
-// surface. The page area is the page's scroll container, so the viewers and
-// the Behaviour screen can fill its height. The routes say which scope the
-// bar shows and which pill is lit (components/shell/scope.ts).
+// The shell (navigation F, components/shell/shell.tsx): the path header and
+// the sections sidebar around the page, or on the phone the header and the
+// bottom bar. The routes say which level and section the reader is on
+// (components/shell/scope.ts); the pages report their sections' counts.
 function WorkspaceLayout() {
   const { user, workspace, workspaces } = Route.useRouteContext();
   return (
     <LiveProvider workspaceId={workspace.id}>
-      <div className="flex h-dvh flex-col bg-sheet">
-        <TopBar workspace={workspace} workspaces={workspaces} user={user} />
-        <div data-slot="page" className="relative min-h-0 flex-1 overflow-y-auto">
+      <ShellProvider>
+        <Shell workspace={workspace} workspaces={workspaces} user={user}>
           <Outlet />
-        </div>
-      </div>
+        </Shell>
+      </ShellProvider>
     </LiveProvider>
   );
 }

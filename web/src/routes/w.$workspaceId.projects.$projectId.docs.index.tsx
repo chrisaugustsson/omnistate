@@ -4,7 +4,7 @@ import { ScopeDocs } from "@/components/project/docs-pane";
 // The project's Docs with no doc open: the list of the project's own docs, and
 // the most recently updated one opens (or the tab says there are none).
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/docs/")({
-  staticData: { tab: "docs", bleed: true },
+  staticData: { section: "docs", bleed: true },
   component: Docs,
 });
 

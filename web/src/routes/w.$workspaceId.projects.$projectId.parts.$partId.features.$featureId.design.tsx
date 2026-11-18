@@ -6,6 +6,7 @@ import { validateDocSearch } from "@/components/viewer/doc-page";
 
 // A feature's Design: its design docs (UI pillar, boards and the design system) in the viewer.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design")({
+  staticData: { section: "design", canvas: true },
   validateSearch: validateDocSearch,
   component: Design,
 });

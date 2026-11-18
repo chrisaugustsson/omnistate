@@ -3,7 +3,7 @@ import { ActivityPage } from "@/components/activity/activity";
 
 // A doc's Activity tab: the writes to it, newest first.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/docs/$docId_/activity/")({
-  staticData: { tab: "docs" },
+  staticData: { section: "docs" },
   component: Page,
 });
 

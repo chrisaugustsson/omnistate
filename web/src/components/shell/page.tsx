@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 
 // The page under the bar: one centred column, 1200px wide at most with 40px
 // sides, as the prototype's .wrap. A scope page starts with PageHead; an object
-// page (feature, track) with PagePath, then PageHead and InPageTabs. The main
+// page (feature, track) with PagePath, then PageHead. The main
 // column and the properties panel sit side by side in PageColumns.
 
 /** The centred page. `object` starts it closer to the bar, for the path above an object's title. */

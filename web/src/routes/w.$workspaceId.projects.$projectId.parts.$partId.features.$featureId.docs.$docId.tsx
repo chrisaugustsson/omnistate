@@ -5,6 +5,7 @@ import { validateDocSearch } from "@/components/viewer/doc-page";
 
 // A doc on a feature, open in the feature's Docs tab beside the list.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId")({
+  staticData: { section: "docs" },
   validateSearch: validateDocSearch,
   component: FeatureDoc,
 });

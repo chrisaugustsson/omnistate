@@ -1,27 +1,27 @@
 import { Link, Outlet, createFileRoute, useLocation } from "@tanstack/react-router";
 import { ObjectHeader } from "@/components/shell/object-header";
-import { TabLink } from "@/components/shell/in-page-tabs";
 import { Page } from "@/components/shell/page";
 import { PathLink } from "@/components/shell/page-path";
 import { partLink, useScope } from "@/components/shell/scope";
+import { countsKey, useReportSections } from "@/components/shell/shell-context";
 import { foldReplaced } from "@/components/track/decision-log";
 import { FeatureProvider, useFeatureData } from "@/components/track/feature-data";
 import { openFeatureDoc } from "@/components/track/feature-docs";
 import { BeingChanged, FeatureMark, FeaturePanel, StartTrack } from "@/components/track/feature-parts";
 import { linkClass } from "@/components/track/ui";
 
-// A feature's pages. The bar keeps its part with Features lit; the page starts
-// with the path (Features › the feature), the title with its mark and "Start
-// track", a banner for each track that changes it now,
-// and its tabs: Overview, Docs, Design (only when it has design docs), Tracks,
-// Decisions. The tab's content sits beside the properties panel; Docs takes
-// the full column for its list and the open doc. Design, and Docs with a design
-// open, are a canvas: there the header keeps its place without the banners,
-// its tabs' hairline spans the window, and the canvas fills the window under it. A doc opened full
-// view fills the view instead (staticData.bleed). The layout loads the
-// feature's data once for every tab.
+// A feature's pages. Its sections (Overview, Docs, Design only when it has
+// design docs, Tracks, Decisions) are the shell's sidebar, whose counts the
+// layout reports. The page starts with the path (Features › the feature), the
+// title with its mark and "Start track", and a banner for each track that
+// changes it now. The section's content sits beside the properties panel; Docs
+// takes the full column for its list and the open doc. Design, and Docs with a
+// design open, are a canvas: there the header keeps its place without the
+// banners, and the canvas fills the window under it. A doc opened full view
+// fills the view instead (staticData.bleed). The layout loads the feature's
+// data once for every section.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId")({
-  staticData: { scope: "feature", tab: "features" },
+  staticData: { level: "feature" },
   component: FeatureLayout,
 });
 
@@ -42,6 +42,13 @@ function FeatureLayout() {
   });
   const params = { workspaceId, projectId, partId, featureId };
   const { feature, failed, tracks, decisions, designDocs, docs } = data;
+  const current = decisions ? foldReplaced([...decisions.decisions, ...decisions.earlier], decisions.decisions).top.length : undefined;
+  useReportSections(countsKey("feature", featureId), {
+    docs: docs.length ? { count: docs.length, note: `${docs.length} ${docs.length === 1 ? "doc" : "docs"}` } : {},
+    design: designDocs.length ? { count: designDocs.length, note: `${designDocs.length} ${designDocs.length === 1 ? "doc" : "docs"}` } : { hidden: true },
+    tracks: tracks?.length ? { count: tracks.length } : {},
+    decisions: current ? { count: current } : {},
+  });
 
   if (bleed) {
     return (
@@ -63,7 +70,6 @@ function FeatureLayout() {
       </Page>
     );
   }
-  const current = decisions ? foldReplaced([...decisions.decisions, ...decisions.earlier], decisions.decisions).top.length : undefined;
   const panel = !WIDE.has(tab);
   const canvas = tab === "design" || (tab === "docs" && openFeatureDoc(docs, docId)?.kind === "design");
   return (
@@ -83,28 +89,6 @@ function FeatureLayout() {
           title={feature?.name ?? ""}
           actions={feature && <StartTrack data={data} />}
           notice={canvas ? undefined : <BeingChanged data={data} />}
-          tabsLabel="Feature"
-          tabs={
-            <>
-              <TabLink to={FEATURE} params={params} activeOptions={{ exact: true }}>
-                Overview
-              </TabLink>
-              <TabLink to={`${FEATURE}/docs`} params={params} count={docs.length || undefined}>
-                Docs
-              </TabLink>
-              {designDocs.length > 0 && (
-                <TabLink to={`${FEATURE}/design`} params={params} count={designDocs.length}>
-                  Design
-                </TabLink>
-              )}
-              <TabLink to={`${FEATURE}/tracks`} params={params} count={tracks?.length || undefined}>
-                Tracks
-              </TabLink>
-              <TabLink to={`${FEATURE}/decisions`} params={params} count={current || undefined}>
-                Decisions
-              </TabLink>
-            </>
-          }
         />
         {canvas ? (
           <div className="flex min-h-0 flex-1 flex-col px-4 pt-3 pb-4">

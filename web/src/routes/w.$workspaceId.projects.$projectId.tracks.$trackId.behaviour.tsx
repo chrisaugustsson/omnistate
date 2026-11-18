@@ -5,6 +5,7 @@ import { useTrack } from "@/components/track/track-data";
 // A track's Behaviour tab: its behaviour tree (folders, graph and the chosen
 // node's details) under the track's header, filling the room below the tabs.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour")({
+  staticData: { section: "behaviour", canvas: true },
   component: BehaviourRoute,
 });
 

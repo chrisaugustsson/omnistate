@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// A track's tabs (UI redesign, slice S3): Spec, Behaviour, Design, How, Board,
-// Threads, Decisions, with counts: open behaviour questions an agent asked (a
+// A track's sections, in the shell's sidebar (navigation F): Spec, Behaviour,
+// Design, How, Board, Threads, Decisions, with counts: open behaviour questions an agent asked (a
 // person's remark does not wait), the design docs' boards, stories done of
 // total, threads and decisions. A track on a service part has no Design tab
 // unless it has design docs. While questions wait a quiet Next row leads to
@@ -51,9 +51,9 @@ const decision = (id: string) => ({
   created_at: "2026-11-10T08:00:00Z",
 });
 
-/** The track's tabs as their text: name and count. */
+/** The track's sections in the sidebar as their text: name and count. */
 async function tabs() {
-  const nav = await screen.findByRole("navigation", { name: "Track" });
+  const nav = await screen.findByRole("navigation", { name: "Sections" });
   return within(nav)
     .getAllByRole("link")
     .map((link) => link.textContent);
@@ -70,7 +70,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("a track's tabs", () => {
+describe("a track's sections", () => {
   test("count the agents' open questions, the design boards, the stories done of total, the threads and the decisions", async () => {
     fakeTrackApi({
       tracks: [track(TRACK_ID, "Long windows")],

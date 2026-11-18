@@ -3,7 +3,7 @@ import { TracksPage } from "@/components/project/tracks-list";
 
 // The project's Tracks, grouped by state, with a filter on state, owner and part.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/")({
-  staticData: { tab: "tracks" },
+  staticData: { section: "tracks" },
   component: Tracks,
 });
 

@@ -7,6 +7,7 @@ import { buttonClass } from "@/components/track/ui";
 // A track's Decisions: the decisions recorded on it, newest first, a replaced
 // one folded under what replaced it, and for its owner the form to record one.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions")({
+  staticData: { section: "decisions" },
   component: Decisions,
 });
 

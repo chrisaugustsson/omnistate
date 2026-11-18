@@ -82,7 +82,6 @@ describe("the v2 tokens", () => {
     ["--part-2", "#0e9f6e"],
     ["--part-3", "#e8590c"],
     ["--bar-h", "48px"],
-    ["--pill-h", "28px"],
     ["--fs-body", "13px"],
   ])("%s is %s", (name, value) => {
     expect(token(name)).toBe(value);

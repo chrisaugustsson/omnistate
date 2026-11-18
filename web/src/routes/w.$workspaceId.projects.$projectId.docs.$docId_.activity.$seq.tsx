@@ -3,7 +3,7 @@ import { ActivityEntryPage } from "@/components/activity/activity";
 
 // One write to a doc, with what it changed before and after, side by side.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/docs/$docId_/activity/$seq")({
-  staticData: { tab: "docs" },
+  staticData: { section: "docs" },
   component: Page,
 });
 

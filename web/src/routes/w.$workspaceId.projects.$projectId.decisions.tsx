@@ -4,7 +4,7 @@ import { DecisionsPage } from "@/components/project/decisions-page";
 // The project's Decisions: the decision log of the project, its parts and their
 // features, grouped by what each decision is about.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/decisions")({
-  staticData: { tab: "decisions" },
+  staticData: { section: "decisions" },
   component: Decisions,
 });
 

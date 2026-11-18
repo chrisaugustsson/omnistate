@@ -5,9 +5,9 @@ import type { MemberBody, PartBody, ProjectBody } from "@/api/generated";
 import { replyToComment } from "@/api/docs";
 import { Avatar } from "@/components/shell/avatar";
 import { PartIcon, ProjectMark } from "@/components/shell/part-icon";
-import { docLink, homeLink } from "@/components/shell/scope";
+import { docLink, workspaceLink } from "@/components/shell/scope";
 import { StateIcon } from "@/components/shell/state-icon";
-import { Kbd } from "@/components/shell/switcher";
+import { Kbd } from "@/components/shell/kbd";
 import { ElementSnapshot } from "@/components/viewer/comments";
 import { isMac } from "@/components/palette/palette";
 import { partTone } from "@/lib/identity";
@@ -423,7 +423,7 @@ function AllClear({ workspaceId }: { workspaceId: string }) {
       </span>
       <h2 className="text-section font-semibold">You&rsquo;re all caught up</h2>
       <p className="mb-2 text-ink-2">When an agent replies to a comment on one of your tracks, it shows up here, and you reply in place.</p>
-      <Link {...homeLink(workspaceId, "for-you")} className={buttonClass()}>
+      <Link {...workspaceLink(workspaceId, "inbox")} className={buttonClass()}>
         Back to For you
       </Link>
     </div>

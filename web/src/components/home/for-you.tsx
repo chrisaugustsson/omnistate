@@ -5,7 +5,7 @@ import { Avatar } from "@/components/shell/avatar";
 import { Page, PageColumns } from "@/components/shell/page";
 import { PartIcon, ProjectMark } from "@/components/shell/part-icon";
 import { PanelSection, PropertiesPanel } from "@/components/shell/properties-panel";
-import { homeLink, projectLink, partLink, docLink } from "@/components/shell/scope";
+import { workspaceLink, projectLink, partLink, docLink } from "@/components/shell/scope";
 import { StateIcon, inFlight, stateLabel } from "@/components/shell/state-icon";
 import { partTone, partTones, personName } from "@/lib/identity";
 import { cn } from "@/lib/utils";
@@ -74,7 +74,7 @@ export function ForYou({ workspaceId }: { workspaceId: string }) {
 
         <section aria-labelledby="h-waiting" className="mt-10">
           <SectionHead id="h-waiting" title="Waiting on you" count={groups ? groups.reduce((sum, group) => sum + group.items.length, 0) : undefined}>
-            <Link {...homeLink(workspaceId, "inbox")} className={buttonClass({ ghost: true, sm: true })}>
+            <Link {...workspaceLink(workspaceId, "inbox")} className={buttonClass({ ghost: true, sm: true })}>
               Open inbox
             </Link>
           </SectionHead>
@@ -95,7 +95,7 @@ export function ForYou({ workspaceId }: { workspaceId: string }) {
 
         <section aria-labelledby="h-mine" className="mt-8">
           <SectionHead id="h-mine" title="Your tracks" count={mine?.filter(({ track }) => inFlight(track.state)).length}>
-            <Link {...homeLink(workspaceId, "my-tracks")} className={buttonClass({ ghost: true, sm: true })}>
+            <Link {...workspaceLink(workspaceId, "my-tracks")} className={buttonClass({ ghost: true, sm: true })}>
               All my tracks
             </Link>
           </SectionHead>

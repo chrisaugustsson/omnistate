@@ -338,18 +338,18 @@ describe("the Behaviour screen with no tree or a failed load", () => {
   });
 });
 
-// The screen sits in the track's Behaviour tab, under the track's header: the
+// The screen sits in the track's Behaviour section, under the track's header: the
 // path leads back to the track's tracks and the title is the track's name as
 // the project's home data gives it, never the tree's root title.
 describe("the Behaviour screen's frame", () => {
-  test("sits under the track's header, its title the track's name while the first row shows the root title, the Behaviour tab current", async () => {
+  test("sits under the track's header, its title the track's name while the first row shows the root title, Behaviour the current section", async () => {
     fakeApi({ status: 200, body: { nodes: TREE } }, [track(TRACK_ID, "Putting basics")]);
     renderAt(BEHAVIOUR_PATH);
     const aside = await folders();
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Putting basics");
     expect(rowTexts(aside)[0]).toBe("Disc golf putting trainer");
-    const tabs = screen.getByRole("navigation", { name: "Track" });
-    expect(within(tabs).getByRole("link", { name: "Behaviour" }).getAttribute("aria-current")).toBe("page");
+    const sections = screen.getByRole("navigation", { name: "Sections" });
+    expect(within(sections).getByRole("link", { name: /^Behaviour/ }).getAttribute("aria-current")).toBe("page");
   });
 });
 

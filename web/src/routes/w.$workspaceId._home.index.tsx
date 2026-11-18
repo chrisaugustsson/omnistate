@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ForYou } from "@/components/home/for-you";
 
-// Home's For you: what waits on you and your tracks, across the workspace's
-// projects (components/home/for-you.tsx).
+// The workspace's own page, its Inbox section. It shows For you (what waits on
+// you and your tracks, components/home/for-you.tsx) until the Inbox replaces it.
 export const Route = createFileRoute("/w/$workspaceId/_home/")({
-  staticData: { tab: "for-you" },
+  staticData: { section: "inbox" },
   component: Page,
 });
 

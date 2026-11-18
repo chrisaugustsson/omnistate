@@ -7,6 +7,7 @@ import { EmptyLine, buttonClass } from "@/components/track/ui";
 
 // A feature's Tracks: the tracks that changed it or change it now, grouped by state.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks")({
+  staticData: { section: "tracks" },
   component: Tracks,
 });
 

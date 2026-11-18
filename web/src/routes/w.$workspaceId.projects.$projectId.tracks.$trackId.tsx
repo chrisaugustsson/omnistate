@@ -1,28 +1,29 @@
 import { useState } from "react";
 import { Link, Outlet, createFileRoute, useLocation } from "@tanstack/react-router";
 import { ObjectHeader } from "@/components/shell/object-header";
-import { TabLink } from "@/components/shell/in-page-tabs";
 import { Page } from "@/components/shell/page";
 import { PathLink } from "@/components/shell/page-path";
 import { partLink, projectLink, useScope } from "@/components/shell/scope";
+import { countsKey, useReportSections } from "@/components/shell/shell-context";
 import { NextRow, TrackHeaderActions, useTrackActions } from "@/components/track/track-actions";
 import { TrackProvider, useTrackData } from "@/components/track/track-data";
 import { TrackPanel } from "@/components/track/track-panel";
 import { linkClass } from "@/components/track/ui";
 
-// A track's pages. The bar keeps the track's part with Tracks lit; the page
-// starts with the path (Tracks › the track), the title with the track's
+// A track's pages. Its sections (Spec, Behaviour, Design, How, Board, Threads,
+// Decisions) are the shell's sidebar, whose counts the layout reports: open
+// behaviour questions and comments waiting on the reader are dark counts. The
+// page starts with the path (Tracks › the track), the title with the track's
 // actions (the properties toggle, the "…" menu and its next state move), its
-// description, a quiet Next row while behaviour questions wait, and its tabs:
-// Spec, Behaviour, Design, How, Board, Threads, Decisions. The tab's content
-// sits beside the properties panel; the Board takes the full column until the
-// panel is asked for. Behaviour and Design are canvases: there the header
-// keeps its place without the description, the Next row and the properties,
-// its tabs' hairline spans the window, and the canvas fills the window under it. A doc opened full view
+// description and a quiet Next row while behaviour questions wait. The
+// section's content sits beside the properties panel; the Board takes the full
+// column until the panel is asked for. Behaviour and Design are canvases: there
+// the header keeps its place without the description, the Next row and the
+// properties, and the canvas fills the window under it. A doc opened full view
 // fills the view instead (staticData.bleed). The layout loads the track's data
-// once for every tab.
+// once for every section.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId")({
-  staticData: { scope: "track", tab: "tracks" },
+  staticData: { level: "track" },
   component: TrackLayout,
 });
 
@@ -45,7 +46,22 @@ function TrackLayout() {
   const [panelWide, setPanelWide] = useState(false);
   const panel = wide ? panelWide : panelBeside;
   const params = { workspaceId, projectId, trackId };
-  const { summary, missing, docs, boards, onService, openQuestions, threads, decisions } = data;
+  const { summary, missing, docs, boards, onService, openQuestions, threads, decisions, home, isOwner } = data;
+  const stories = summary?.stories;
+  const showDesign = !onService || docs.design.length > 0;
+  // The comments waiting on the reader: on the track's docs, when the track is theirs (the Inbox's rule).
+  const waiting = isOwner ? (home?.waiting.comments ?? []).filter((comment) => comment.track_id === trackId).length : 0;
+  useReportSections(countsKey("track", trackId), {
+    behaviour: openQuestions > 0 ? { waiting: openQuestions, note: `${openQuestions} for you` } : {},
+    design: !showDesign ? { hidden: true } : boards ? { count: boards, note: `${boards} ${boards === 1 ? "board" : "boards"}` } : {},
+    board: stories ? { count: `${stories.done}/${stories.total}`, note: `${stories.done} of ${stories.total}` } : {},
+    threads: waiting
+      ? { waiting, note: `${waiting} for you` }
+      : threads.length
+        ? { count: threads.length, note: `${threads.length} ${threads.length === 1 ? "thread" : "threads"}` }
+        : {},
+    decisions: decisions?.length ? { count: decisions.length } : {},
+  });
   const tracks = summary
     ? partLink(workspaceId, projectId, summary.track.part_id, "tracks")
     : projectLink(workspaceId, projectId, "tracks");
@@ -70,8 +86,6 @@ function TrackLayout() {
       </Page>
     );
   }
-  const stories = summary?.stories;
-  const showDesign = !onService || docs.design.length > 0;
   return (
     <TrackProvider value={data}>
       <main className={canvas ? "flex h-full min-h-[560px] flex-col" : "flex min-h-full flex-col"}>
@@ -105,44 +119,6 @@ function TrackLayout() {
                   {actions.error}
                 </p>
               )}
-            </>
-          }
-          tabsLabel="Track"
-          tabs={
-            <>
-              <TabLink to={TRACK} params={params} activeOptions={{ exact: true }}>
-                Spec
-              </TabLink>
-              <TabLink
-                to={`${TRACK}/behaviour`}
-                params={params}
-                count={
-                  openQuestions > 0 ? (
-                    <span title={`${openQuestions} open ${openQuestions === 1 ? "question" : "questions"}`} className="rounded-badge bg-brand-tint px-1.5 py-px text-meta text-brand-ink">
-                      {openQuestions}
-                    </span>
-                  ) : undefined
-                }
-              >
-                Behaviour
-              </TabLink>
-              {showDesign && (
-                <TabLink to={`${TRACK}/design`} params={params} count={boards || undefined}>
-                  Design
-                </TabLink>
-              )}
-              <TabLink to={`${TRACK}/how`} params={params}>
-                How
-              </TabLink>
-              <TabLink to={`${TRACK}/board`} params={params} count={stories ? `${stories.done}/${stories.total}` : undefined}>
-                Board
-              </TabLink>
-              <TabLink to={`${TRACK}/threads`} params={params} count={threads.length || undefined}>
-                Threads
-              </TabLink>
-              <TabLink to={`${TRACK}/decisions`} params={params} count={decisions?.length || undefined}>
-                Decisions
-              </TabLink>
             </>
           }
         />

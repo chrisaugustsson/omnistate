@@ -10,7 +10,7 @@ import { validateDocSearch } from "@/components/viewer/doc-page";
 // track, a feature or a part is sent to its place (the address keeps where in
 // the doc to be) before the page shows.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/docs/$docId")({
-  staticData: { tab: "docs", bleed: true },
+  staticData: { section: "docs", bleed: true },
   validateSearch: validateDocSearch,
   // Where the doc lives is read once, on the way in; the viewer then keeps the doc live.
   shouldReload: false,

@@ -1,80 +1,115 @@
 import { useMatches, useParams } from "@tanstack/react-router";
 
-// Where the reader is, as the top bar shows it: a scope (Home, a project, a
-// part) and the lit section (pill) of that scope. Routes say it in their
-// staticData: each scope's layout route sets `scope`, each page sets `tab`, and
-// an object (a feature or a track) keeps its part in the bar with its section
-// lit (features, tracks). The deepest match that says a thing wins.
+// Where the reader is (navigation F, tasks/ui-redesign/build-f.md): a level of
+// the path (the workspace, a project, a part, a feature or a track) and the lit
+// section of that level. The path header, the sections sidebar and the phone's
+// sheets all read the tables below. Routes say where they are in their
+// staticData: each level's layout sets `level`, each page sets `section`, and a
+// canvas page (Behaviour, Design, Board) sets `canvas`, which folds the sidebar
+// to icons. The deepest match that says a thing wins.
 //
-//   Home      /w/$ws, /inbox, /my-tracks                     scope "home"
-//   Project   /w/$ws/projects/$p/…                           scope "project"
-//   Part      /w/$ws/projects/$p/parts/$part/…               scope "part"
-//   Feature   …/parts/$part/features/$f/…  (bar: its part)   scope "feature", tab "features"
-//   Track     /w/$ws/projects/$p/tracks/$t/… (bar: its part) scope "track", tab "tracks"
+//   Workspace  /w/$ws, /my-tracks, /projects                       level "workspace"
+//   Project    /w/$ws/projects/$p/…                                level "project"
+//   Part       /w/$ws/projects/$p/parts/$part/…                    level "part"
+//   Feature    …/parts/$part/features/$f/…                         level "feature"
+//   Track      /w/$ws/projects/$p/tracks/$t/… (its part from data)  level "track"
 
-export type ScopeKind = "home" | "project" | "part" | "feature" | "track";
+export type Level = "workspace" | "project" | "part" | "feature" | "track";
 
-export type HomeTab = "for-you" | "inbox" | "my-tracks";
-export type ProjectTab = "overview" | "parts" | "docs" | "tracks" | "decisions";
-export type PartTab = "overview" | "features" | "docs" | "tracks" | "decisions";
-export type Tab = HomeTab | ProjectTab | PartTab;
+export type WorkspaceSection = "inbox" | "my-tracks" | "projects";
+export type ProjectSection = "overview" | "parts" | "tracks" | "docs" | "decisions";
+export type PartSection = "overview" | "features" | "tracks" | "docs" | "decisions";
+export type FeatureSection = "overview" | "docs" | "design" | "tracks" | "decisions";
+export type TrackSection = "spec" | "behaviour" | "design" | "how" | "board" | "threads" | "decisions";
+export type Section = WorkspaceSection | ProjectSection | PartSection | FeatureSection | TrackSection;
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
-    /** The scope the bar shows for this route and the routes under it. */
-    scope?: ScopeKind;
-    /** The lit pill of the scope. */
-    tab?: Tab;
-    /** The page fills the view under the bar edge to edge (a viewer, the Behaviour screen): no page frame, no object header. */
+    /** The level of the path this route and the routes under it are on. */
+    level?: Level;
+    /** The lit section of the level. */
+    section?: Section;
+    /** The page is a canvas (Behaviour, Design, Board): the sidebar folds to icons on its own. */
+    canvas?: boolean;
+    /** The page fills the view under the header edge to edge (a viewer): no page frame, no object header. */
     bleed?: boolean;
   }
 }
 
-export const HOME_TABS: readonly HomeTab[] = ["for-you", "inbox", "my-tracks"];
-export const PROJECT_TABS: readonly ProjectTab[] = ["overview", "parts", "docs", "tracks", "decisions"];
-export const PART_TABS: readonly PartTab[] = ["overview", "features", "docs", "tracks", "decisions"];
+/** Each level's sections, in the order the sidebar and the sections sheet list them. */
+export const SECTIONS = {
+  workspace: ["inbox", "my-tracks", "projects"],
+  project: ["overview", "parts", "tracks", "docs", "decisions"],
+  part: ["overview", "features", "tracks", "docs", "decisions"],
+  feature: ["overview", "docs", "design", "tracks", "decisions"],
+  track: ["spec", "behaviour", "design", "how", "board", "threads", "decisions"],
+} as const satisfies Record<Level, readonly Section[]>;
 
-export const TAB_LABELS: Record<Tab, string> = {
-  "for-you": "For you",
+export const SECTION_LABELS: Record<Section, string> = {
   inbox: "Inbox",
   "my-tracks": "My tracks",
+  projects: "Projects",
   overview: "Overview",
   parts: "Parts",
   features: "Features",
-  docs: "Docs",
   tracks: "Tracks",
+  docs: "Docs",
   decisions: "Decisions",
+  design: "Design",
+  spec: "Spec",
+  behaviour: "Behaviour",
+  how: "How",
+  board: "Board",
+  threads: "Threads",
 };
 
-/** The tab a project shows for `tab`: its own, Parts for a part's Features, Overview for a Home tab. */
-export function projectTab(tab: Tab | undefined): ProjectTab {
-  if (tab === "features") return "parts";
-  return tab && (PROJECT_TABS as readonly string[]).includes(tab) ? (tab as ProjectTab) : "overview";
+/** The sections of `level`. */
+export function sectionsOf(level: Level): readonly Section[] {
+  return SECTIONS[level];
 }
 
-/** The tab a part shows for `tab`: its own, Features for a project's Parts, Overview for a Home tab. */
-export function partTab(tab: Tab | undefined): PartTab {
-  if (tab === "parts") return "features";
-  return tab && (PART_TABS as readonly string[]).includes(tab) ? (tab as PartTab) : "overview";
+const has = <S extends Section>(list: readonly S[], section: Section | undefined): section is S =>
+  section !== undefined && (list as readonly Section[]).includes(section);
+
+/** The section a project opens on for `section`: its own, Parts for a part's Features, Overview otherwise. */
+export function projectSection(section: Section | undefined): ProjectSection {
+  if (section === "features") return "parts";
+  return has(SECTIONS.project, section) ? section : "overview";
 }
 
-/** The page of a Home tab. */
-export function homeLink(workspaceId: string, tab: HomeTab) {
+/** The section a part opens on for `section`: its own, Features for a project's Parts, Overview otherwise. */
+export function partSection(section: Section | undefined): PartSection {
+  if (section === "parts") return "features";
+  return has(SECTIONS.part, section) ? section : "overview";
+}
+
+/** The section another feature opens on for `section`: the same one, but Overview for Design, which a feature without design docs lacks. */
+export function featureSection(section: Section | undefined): FeatureSection {
+  return has(SECTIONS.feature, section) && section !== "design" ? section : "overview";
+}
+
+/** The section another track opens on for `section`: the same one, Spec otherwise. */
+export function trackSection(section: Section | undefined): TrackSection {
+  return has(SECTIONS.track, section) ? section : "spec";
+}
+
+/** The page of a workspace's section. Its Inbox is the workspace's own page. */
+export function workspaceLink(workspaceId: string, section: WorkspaceSection) {
   const params = { workspaceId };
-  switch (tab) {
-    case "for-you":
-      return { to: "/w/$workspaceId", params } as const;
+  switch (section) {
     case "inbox":
-      return { to: "/w/$workspaceId/inbox", params } as const;
+      return { to: "/w/$workspaceId", params } as const;
     case "my-tracks":
       return { to: "/w/$workspaceId/my-tracks", params } as const;
+    case "projects":
+      return { to: "/w/$workspaceId/projects", params } as const;
   }
 }
 
-/** The page of a project's tab. */
-export function projectLink(workspaceId: string, projectId: string, tab: ProjectTab) {
+/** The page of a project's section. */
+export function projectLink(workspaceId: string, projectId: string, section: ProjectSection) {
   const params = { workspaceId, projectId };
-  switch (tab) {
+  switch (section) {
     case "overview":
       return { to: "/w/$workspaceId/projects/$projectId", params } as const;
     case "parts":
@@ -88,10 +123,10 @@ export function projectLink(workspaceId: string, projectId: string, tab: Project
   }
 }
 
-/** The page of a part's tab. */
-export function partLink(workspaceId: string, projectId: string, partId: string, tab: PartTab) {
+/** The page of a part's section. */
+export function partLink(workspaceId: string, projectId: string, partId: string, section: PartSection) {
   const params = { workspaceId, projectId, partId };
-  switch (tab) {
+  switch (section) {
     case "overview":
       return { to: "/w/$workspaceId/projects/$projectId/parts/$partId", params } as const;
     case "features":
@@ -105,33 +140,104 @@ export function partLink(workspaceId: string, projectId: string, partId: string,
   }
 }
 
-export type Scope = {
-  kind: ScopeKind;
-  /** The lit pill; undefined on a page of the scope that is none of its pills (API keys, a doc's activity). */
-  tab: Tab | undefined;
-  bleed: boolean;
+/** The page of a feature's section. */
+export function featureLink(workspaceId: string, projectId: string, partId: string, featureId: string, section: FeatureSection) {
+  const params = { workspaceId, projectId, partId, featureId };
+  switch (section) {
+    case "overview":
+      return { to: "/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId", params } as const;
+    case "docs":
+      return { to: "/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs", params } as const;
+    case "design":
+      return { to: "/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design", params } as const;
+    case "tracks":
+      return { to: "/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks", params } as const;
+    case "decisions":
+      return { to: "/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions", params } as const;
+  }
+}
+
+/** The page of a track's section. */
+export function trackLink(workspaceId: string, projectId: string, trackId: string, section: TrackSection) {
+  const params = { workspaceId, projectId, trackId };
+  switch (section) {
+    case "spec":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId", params } as const;
+    case "behaviour":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour", params } as const;
+    case "design":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId/design", params } as const;
+    case "how":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId/how", params } as const;
+    case "board":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId/board", params } as const;
+    case "threads":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId/threads", params } as const;
+    case "decisions":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions", params } as const;
+  }
+}
+
+/** A place on the path: a level and the IDs it needs. A track's part is not in its URL, so it is not needed here. */
+export type Place = {
+  level: Level;
   workspaceId: string;
   projectId?: string;
-  /** The part in the URL (part, feature); a track's part comes from its data. */
   partId?: string;
   featureId?: string;
   trackId?: string;
 };
 
-/** The scope of the current page, from the matched routes' staticData and the URL's params. */
+export type SectionLink =
+  | ReturnType<typeof workspaceLink>
+  | ReturnType<typeof projectLink>
+  | ReturnType<typeof partLink>
+  | ReturnType<typeof featureLink>
+  | ReturnType<typeof trackLink>;
+
+/** The page of `section` at `place`; a section the level does not have opens the level's first. */
+export function sectionLink(place: Place, section: Section | undefined): SectionLink {
+  const { workspaceId, projectId = "", partId = "", featureId = "", trackId = "" } = place;
+  switch (place.level) {
+    case "workspace":
+      return workspaceLink(workspaceId, has(SECTIONS.workspace, section) ? section : "inbox");
+    case "project":
+      return projectLink(workspaceId, projectId, has(SECTIONS.project, section) ? section : "overview");
+    case "part":
+      return partLink(workspaceId, projectId, partId, has(SECTIONS.part, section) ? section : "overview");
+    case "feature":
+      return featureLink(workspaceId, projectId, partId, featureId, has(SECTIONS.feature, section) ? section : "overview");
+    case "track":
+      return trackLink(workspaceId, projectId, trackId, has(SECTIONS.track, section) ? section : "spec");
+  }
+}
+
+export type Scope = Place & {
+  /** The lit section; undefined on a page of the level that is none of its sections (API keys, a doc opened full view). */
+  section: Section | undefined;
+  canvas: boolean;
+  bleed: boolean;
+};
+
+/** Where the current page is, from the matched routes' staticData and the URL's params. */
 export function useScope(): Scope {
   const said = useMatches({
     select: (matches) => {
-      let kind: ScopeKind = "home";
-      let tab: Tab | undefined;
+      let level: Level = "workspace";
+      let section: Section | undefined;
+      let canvas = false;
       let bleed = false;
       for (const match of matches) {
         const data = match.staticData;
-        if (data.scope) kind = data.scope;
-        if (data.tab) tab = data.tab;
+        if (data.level) {
+          level = data.level;
+          section = undefined;
+        }
+        if (data.section) section = data.section;
+        if (data.canvas) canvas = true;
         if (data.bleed) bleed = true;
       }
-      return { kind, tab, bleed };
+      return { level, section, canvas, bleed };
     },
     structuralSharing: true,
   });

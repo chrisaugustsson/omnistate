@@ -233,15 +233,16 @@
   --r-sheet: 10px;
 
   /* Sizes */
-  --bar-h: 48px; /* the top bar */
-  --pill-h: 28px; /* the scope's sections in the bar */
+  --bar-h: 48px; /* the path header */
   --control-h: 28px;
   --control-h-lg: 32px;
   --mark-md: 24px; /* scope mark in the bar: part icon, project mark, avatar */
   --avatar: 20px;
   --icon: 16px;
   --icon-sm: 14px;
-  --switcher-w: 560px; /* the scope switcher popover */
+  --side-w: 208px; /* the sections sidebar */
+  --side-w-folded: 52px; /* the sections sidebar folded to icons */
+  --menu-w: 320px; /* a crumb's menu of siblings */
   --page-max: 1200px; /* the centred page: main column + gap + panel */
   --page-pad: 40px; /* the page's side padding inside --page-max */
   --panel-w: 280px; /* the properties panel */

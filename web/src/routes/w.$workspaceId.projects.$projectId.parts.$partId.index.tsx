@@ -4,7 +4,7 @@ import { PartOverview } from "@/components/project/overview";
 // A part's Overview: its name and description, its tracks in flight, its
 // features, the latest decisions and docs about it, and the properties panel.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/")({
-  staticData: { tab: "overview" },
+  staticData: { section: "overview" },
   component: Overview,
 });
 
