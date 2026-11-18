@@ -380,7 +380,7 @@ describe("the palette", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Search/ }));
 
-    expect(options().map(shownText)).toEqual(["Pay in one stepCheckout · Spec", "Which wallets?Checkout", "App"]);
+    expect(options().map(shownText)).toEqual(["Pay in one stepCheckout · Spec", "Which wallets?Checkout", "Storefront"]);
   });
 
   test("typing groups the matches as Tracks and Docs, says how many a full group shows of how many, and leaves out an empty group", async () => {
@@ -395,12 +395,12 @@ describe("the palette", () => {
     expect(options().map(shownText)).toEqual([
       "Pay later",
       "Payments",
-      "Pay note 1App · Spec",
-      "Pay note 2App · Spec",
-      "Pay note 3App · Spec",
-      "Pay note 4App · Spec",
-      "Pay note 5App · Spec",
-      "Pay note 6App · Spec",
+      "Pay note 1Storefront · Spec",
+      "Pay note 2Storefront · Spec",
+      "Pay note 3Storefront · Spec",
+      "Pay note 4Storefront · Spec",
+      "Pay note 5Storefront · Spec",
+      "Pay note 6Storefront · Spec",
     ]);
   });
 
@@ -422,7 +422,7 @@ describe("the palette", () => {
 
     fireEvent.keyDown(input(), { key: "ArrowDown" });
     fireEvent.keyDown(input(), { key: "ArrowDown" });
-    expect(selected()).toEqual(["Pay note 1App · Spec"]);
+    expect(selected()).toEqual(["Pay note 1Storefront · Spec"]);
     fireEvent.keyDown(input(), { key: "ArrowUp" });
     expect(selected()).toEqual(["Payments"]);
 

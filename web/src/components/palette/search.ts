@@ -16,12 +16,12 @@ export type PlaceKind = "app" | "track" | "doc" | "thread";
 /** A place the palette can open: its name, and the scope and pillar it is in. */
 export type Place = {
   kind: PlaceKind;
-  /** The track, doc or thread ID; "app" for the App page. */
+  /** The track, doc or thread ID; "app" for the project's Overview. */
   id: string;
   /** The project the place is in. */
   projectId: string;
   name: string;
-  /** "Checkout · UI" for a doc, the scope's name for a thread, empty for a scope. */
+  /** "Checkout · UI" for a doc (its track, part or project), the scope's name for a thread, empty for a scope. */
   context: string;
 };
 
@@ -35,7 +35,7 @@ export type Index = {
   docs: Entry[];
   threads: Entry[];
   places: Map<string, Entry>;
-  /** Each project's App page, by project ID. */
+  /** Each project's Overview, by project ID. */
   apps: Map<string, Entry>;
 };
 
@@ -67,13 +67,27 @@ function byRecent(a: Entry, b: Entry): number {
 const entryKey = (kind: PlaceKind, id: string) => `${kind}:${id}`;
 
 /**
+ * The names a place's context is written with: the project's, its parts' by
+ * part ID, and the part each feature is on by feature ID. A doc of the project
+ * is labelled with the project's name, a doc of a part or of one of its
+ * features with the part's name, a doc of a track with the track's.
+ */
+export type ScopeNames = {
+  project?: string;
+  parts?: ReadonlyMap<string, string>;
+  /** The name of the part each feature is on, by feature ID. */
+  featureParts?: ReadonlyMap<string, string>;
+};
+
+/**
  * What the palette searches, from the project home. A track's activity is its
  * `last_activity` (its creation while it has none), a doc's its `updated_at`,
  * and a thread's its newest post (its creation while it has none). Each list is
  * ordered by activity here, so that a search is one pass over it.
  */
-export function buildIndex(home: HomeResponse): Index {
-  const scopes = new Map<string, string>([["app", "App"]]);
+export function buildIndex(home: HomeResponse, names: ScopeNames = {}): Index {
+  const project = names.project ?? "";
+  const scopes = new Map<string, string>([["app", project]]);
   const places = new Map<string, Entry>();
   const add = (list: Entry[], entry: Entry) => {
     list.push(entry);
@@ -96,16 +110,22 @@ export function buildIndex(home: HomeResponse): Index {
   }
   const docs: Entry[] = [];
   for (const doc of home.docs) {
-    const scope = scopes.get(doc.track_id ?? "app") ?? "";
+    const scope = doc.track_id
+      ? scopes.get(doc.track_id)
+      : doc.part_id
+        ? names.parts?.get(doc.part_id)
+        : doc.feature_id
+          ? names.featureParts?.get(doc.feature_id)
+          : project;
     const pillar = PILLAR_TITLES.get(doc.pillar) ?? doc.pillar;
-    add(docs, entry("doc", doc.id, doc.title, `${scope} · ${pillar}`, time(doc.updated_at, doc.created_at)));
+    add(docs, entry("doc", doc.id, doc.title, scope ? `${scope} · ${pillar}` : pillar, time(doc.updated_at, doc.created_at)));
   }
   const threads: Entry[] = [];
   for (const thread of home.threads) {
     const scope = scopes.get(thread.track_id ?? "app") ?? "";
     add(threads, entry("thread", thread.id, thread.question, scope, time(thread.last_post_at, thread.created_at)));
   }
-  const apps = new Map([[home.project_id, entry("app", "app", "App", "", 0)]]);
+  const apps = new Map([[home.project_id, entry("app", "app", project || "Overview", "", 0)]]);
   for (const list of [tracks, docs, threads]) list.sort(byRecent);
   return { tracks, docs, threads, places, apps };
 }
@@ -150,9 +170,9 @@ export function search(index: Index, query: string): Results {
 }
 
 /**
- * The places of the newest visits that the project still has: the App page,
+ * The places of the newest visits that the project still has: its Overview,
  * tracks, docs and threads. A visit from a merged index names its `project`, so
- * that its App page is that project's.
+ * that its Overview is that project's.
  */
 export function recentPlaces(index: Index, visits: (Visit & { project?: string })[], most = MOST_RECENT): Place[] {
   const places: Place[] = [];

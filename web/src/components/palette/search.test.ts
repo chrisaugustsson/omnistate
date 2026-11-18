@@ -37,11 +37,16 @@ function track(name: string, fields: { id?: string; description?: string; lastAc
   };
 }
 
-function doc(title: string, fields: { id?: string; track?: string; pillar?: string; updatedAt?: string; createdAt?: string } = {}) {
+function doc(
+  title: string,
+  fields: { id?: string; track?: string; part?: string; feature?: string; pillar?: string; updatedAt?: string; createdAt?: string } = {},
+) {
   return {
     id: fields.id ?? newId(),
     project_id: PROJECT_ID,
     track_id: fields.track ?? null,
+    part_id: fields.part ?? null,
+    feature_id: fields.feature ?? null,
     kind: "html",
     pillar: fields.pillar ?? "spec",
     title,
@@ -203,6 +208,7 @@ describe("the palette's recent places", () => {
         ],
         threads: [thread("Which wallets?", { id: CHECKOUT_THREAD, track: CHECKOUT }), thread("Which hero?", { id: APP_THREAD })],
       }),
+      { project: "Shop" },
     );
     const visits = [
       { scope: CHECKOUT, doc: CHECKOUT_DOC },
@@ -219,10 +225,32 @@ describe("the palette's recent places", () => {
     expect(recentPlaces(index, visits).map(({ name, context }) => ({ name, context }))).toEqual([
       { name: "Pay in one step", context: "Checkout · UI" },
       { name: "Which wallets?", context: "Checkout" },
-      { name: "App", context: "" },
+      { name: "Shop", context: "" },
       { name: "Wallets", context: "" },
-      { name: "Which hero?", context: "App" },
-      { name: "Returns PRD", context: "App · Spec" },
+      { name: "Which hero?", context: "Shop" },
+      { name: "Returns PRD", context: "Shop · Spec" },
     ]);
+  });
+
+  test("label a doc with its track's, its part's or the project's name, a feature's doc with its part's", () => {
+    const FEATURE = newId();
+    const index = buildIndex(
+      home({
+        tracks: [track("Checkout", { id: CHECKOUT })],
+        docs: [
+          doc("Pay screens", { track: CHECKOUT, pillar: "ui" }),
+          doc("Storefront UI", { part: PART_ID, pillar: "ui" }),
+          doc("Cart rules", { feature: FEATURE }),
+          doc("Project brief"),
+        ],
+      }),
+      { project: "Shop", parts: new Map([[PART_ID, "Storefront"]]), featureParts: new Map([[FEATURE, "Storefront"]]) },
+    );
+
+    const context = (title: string) => search(index, title).docs.items[0]?.context;
+    expect(context("Pay screens")).toBe("Checkout · UI");
+    expect(context("Storefront UI")).toBe("Storefront · UI");
+    expect(context("Cart rules")).toBe("Storefront · Spec");
+    expect(context("Project brief")).toBe("Shop · Spec");
   });
 });

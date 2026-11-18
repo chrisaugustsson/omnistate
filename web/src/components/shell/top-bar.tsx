@@ -376,7 +376,7 @@ export function TopBar({
         </Link>
         <AccountMenu user={user} workspace={workspace} workspaces={workspaces} />
       </div>
-      <Palette homes={searched} workspaceId={workspace.id} open={searching} onClose={closeSearch} />
+      <Palette homes={searched} projects={projects} workspaceId={workspace.id} open={searching} onClose={closeSearch} />
     </header>
   );
 }

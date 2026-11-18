@@ -1,9 +1,12 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { FileText, Layers, LayoutGrid, MessagesSquare, Search, type LucideIcon } from "lucide-react";
-import type { HomeResponse } from "@/api/generated";
-import { buildIndex, mergeIndexes, recentPlaces, search, type Place, type PlaceKind } from "@/components/palette/search";
+import { loadFeatures } from "@/api/features";
+import type { HomeResponse, ProjectBody } from "@/api/generated";
+import { loadParts } from "@/api/parts";
+import { buildIndex, mergeIndexes, recentPlaces, search, type Place, type PlaceKind, type ScopeNames } from "@/components/palette/search";
+import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 import { readVisits } from "@/lib/visits";
 
@@ -87,9 +90,51 @@ function Row({ place, id, active, workspaceId, onOpen, onHover }: {
   );
 }
 
-function PaletteDialog({ homes, workspaceId, onClose }: { homes: readonly HomeResponse[]; workspaceId: string; onClose: () => void }) {
+/**
+ * The names the searched projects' places are labelled with, by project ID:
+ * the project's, its parts', and for a project with feature docs the part of
+ * each feature. Loaded when the palette opens; until then a doc shows its pillar.
+ */
+function useScopeNames(workspaceId: string, homes: readonly HomeResponse[], projects: readonly ProjectBody[] | null) {
+  const load = useCallback(async () => {
+    const named = await Promise.all(
+      homes.map(async (home): Promise<[string, ScopeNames]> => {
+        const parts = await loadParts(workspaceId, home.project_id);
+        const featureParts = new Map<string, string>();
+        if (home.docs.some((doc) => doc.feature_id)) {
+          const features = await Promise.all(parts.map((part) => loadFeatures(workspaceId, home.project_id, part.id)));
+          parts.forEach((part, at) => features[at].forEach((feature) => featureParts.set(feature.id, part.name)));
+        }
+        return [home.project_id, { parts: new Map(parts.map((part) => [part.id, part.name])), featureParts }];
+      }),
+    );
+    return new Map(named);
+  }, [workspaceId, homes]);
+  const loaded = useReloading(load).value;
+  return useMemo(() => {
+    const names = new Map<string, ScopeNames>();
+    for (const home of homes) {
+      const project = projects?.find((one) => one.id === home.project_id)?.name;
+      names.set(home.project_id, { ...loaded?.get(home.project_id), project });
+    }
+    return names;
+  }, [homes, projects, loaded]);
+}
+
+function PaletteDialog({
+  homes,
+  projects,
+  workspaceId,
+  onClose,
+}: {
+  homes: readonly HomeResponse[];
+  projects: readonly ProjectBody[] | null;
+  workspaceId: string;
+  onClose: () => void;
+}) {
   const navigate = useNavigate();
-  const index = useMemo(() => mergeIndexes(homes.map(buildIndex)), [homes]);
+  const names = useScopeNames(workspaceId, homes, projects);
+  const index = useMemo(() => mergeIndexes(homes.map((home) => buildIndex(home, names.get(home.project_id)))), [homes, names]);
   // Every searched project's visits, newest first; read when the palette opens.
   const visits = useMemo(
     () =>
@@ -228,15 +273,18 @@ function PaletteDialog({ homes, workspaceId, onClose }: { homes: readonly HomeRe
 /** The palette, shown while `open`; it searches the items of `homes`: the open project's, or on Home every project's. */
 export function Palette({
   homes,
+  projects = null,
   workspaceId,
   open,
   onClose,
 }: {
   homes: readonly HomeResponse[] | null;
+  /** The workspace's projects, for the names places are labelled with. */
+  projects?: readonly ProjectBody[] | null;
   workspaceId: string;
   open: boolean;
   onClose: () => void;
 }) {
   if (!open || !homes || homes.length === 0) return null;
-  return createPortal(<PaletteDialog homes={homes} workspaceId={workspaceId} onClose={onClose} />, document.body);
+  return createPortal(<PaletteDialog homes={homes} projects={projects} workspaceId={workspaceId} onClose={onClose} />, document.body);
 }
