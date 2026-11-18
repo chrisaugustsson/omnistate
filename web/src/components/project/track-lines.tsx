@@ -91,26 +91,44 @@ type RowProps = {
 /**
  * A track in an Overview's In flight: its name, then the facts in their
  * columns (questions, blocked, part, progress, owner), and under both what it
- * changes, which truncates only at the row's end.
+ * changes, which truncates only at the row's end. In a narrow column (under
+ * 720px) the questions and blocked mark move to the start of the second line,
+ * so the name keeps the room and the grey line truncates first.
  */
 export function FlightRow({ summary, all, params, map, names, questions, showPart }: RowProps) {
   const { track } = summary;
   const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
   const facts = trackFacts(summary, map, all);
+  const flags = questions?.get(track.id);
+  const flagged = !!flags && (flags.questions > 0 || !!flags.blocked);
   return (
-    <li>
+    <li className="@container">
       <Link
         to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
         params={{ ...params, trackId: track.id }}
-        className={cn(rowClass({ two: true, link: true }), "grid grid-cols-[var(--avatar)_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5")}
+        className={cn(
+          rowClass({ two: true, link: true }),
+          "grid grid-cols-[var(--avatar)_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-0.5",
+          "@max-[720px]:grid-cols-[var(--avatar)_auto_minmax(0,1fr)_auto]",
+        )}
       >
         <RowLead two>
           <StateIcon state={track.state} label={stateLabel(track.state)} />
         </RowLead>
-        <span className="min-w-0 truncate font-medium">{track.name}</span>
-        {facts && <span className="col-span-2 col-start-2 row-start-2 min-w-0 truncate text-ink-3">{facts}</span>}
-        <span className="col-start-3 row-start-1 flex h-5 shrink-0 items-center gap-3">
-          <Flags flags={questions?.get(track.id)} slots />
+        <span className="col-start-2 row-start-1 min-w-0 truncate font-medium @max-[720px]:col-end-4">{track.name}</span>
+        {facts && (
+          <span className={cn("col-start-2 col-end-5 row-start-2 min-w-0 truncate text-ink-3", flagged && "@max-[720px]:col-start-3")}>{facts}</span>
+        )}
+        <span
+          className={cn(
+            "col-start-3 row-start-1 flex h-5 shrink-0 items-center gap-3",
+            "@max-[720px]:col-start-2 @max-[720px]:row-start-2 @max-[720px]:gap-2 @max-[720px]:*:w-auto @max-[720px]:*:empty:hidden",
+            !flagged && "@max-[720px]:hidden",
+          )}
+        >
+          <Flags flags={flags} slots />
+        </span>
+        <span className="col-start-4 row-start-1 flex h-5 shrink-0 items-center gap-3">
           {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
           <Slot kind="progress">
             <Progress done={stories.done} total={stories.total} />
