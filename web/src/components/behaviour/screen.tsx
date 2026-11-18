@@ -12,9 +12,10 @@ import { Graph } from "./graph";
 import { ancestorsOf, childrenOf, find, matches, shownUnder, type Filter } from "./tree";
 
 // A track's Behaviour screen: what to show and the tree's facts along the top,
-// folders on the left, the graph in the middle and the details of the chosen
-// node on the right. It fills the track's Behaviour tab, under the track's
-// header. This owns the screen's state.
+// folders on the left, the graph taking the rest, and the details of the
+// chosen node in a column that opens on the right while a node is chosen (the
+// graph narrows and keeps the node in sight). It fills the track's Behaviour
+// tab, under the track's header. This owns the screen's state.
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -229,9 +230,14 @@ export function BehaviourScreen({
 
   return (
     <div className="h-full overflow-x-auto">
-      <div className="grid h-full min-w-[1092px] grid-cols-[288px_minmax(400px,1fr)_404px] grid-rows-[56px_minmax(0,1fr)]">
+      <div
+        className={cn(
+          "grid h-full min-w-[760px] grid-rows-[52px_minmax(0,1fr)]",
+          chosenNode ? "grid-cols-[260px_minmax(320px,1fr)_360px]" : "grid-cols-[260px_minmax(320px,1fr)]",
+        )}
+      >
         {!(nodes && nodes.length === 0) && (
-        <header className="col-span-3 flex items-center gap-4 border-b px-4">
+        <header className="col-span-full flex items-center gap-4 border-b border-line px-3">
           {nodes && nodes.length > 0 && (
             <>
               <div role="group" aria-label="Show" className="flex shrink-0 rounded-lg bg-sidebar-accent p-0.5">
@@ -270,12 +276,12 @@ export function BehaviourScreen({
         </header>
         )}
         {failed && (
-          <Alert variant="destructive" className="col-span-3 m-4 w-auto">
+          <Alert variant="destructive" className="col-span-full m-4 w-auto">
             <AlertDescription>The behaviour tree could not be loaded. Try again in a moment.</AlertDescription>
           </Alert>
         )}
         {nodes && nodes.length === 0 && (
-          <div className="col-span-3 row-span-2 grid place-items-center p-6 text-center">
+          <div className="col-span-full row-span-2 grid place-items-center p-6 text-center">
             <div className="max-w-[440px]">
               <p className="font-medium text-ink">No behaviour has been written for this track yet.</p>
               <p className="mt-1 text-ink-2">
@@ -286,7 +292,7 @@ export function BehaviourScreen({
         )}
         {nodes && nodes.length > 0 && (
           <>
-            <aside aria-label="Tree as folders" className="flex min-h-0 flex-col border-r">
+            <aside aria-label="Tree as folders" className="flex min-h-0 flex-col border-r border-line">
               <div className="relative mx-3 mt-3">
                 <input
                   ref={searchField}
@@ -349,22 +355,23 @@ export function BehaviourScreen({
                 </p>
               )}
             </main>
-            <Details
-              node={chosenNode}
-              tree={nodes}
-              me={me}
-              onChoose={(id) => choose(id, "details")}
-              workspaceId={workspaceId}
-              projectId={projectId}
-              trackId={trackId}
-              onWritten={() => {
-                reloadTree();
-                reloadQuestions();
-              }}
-              waitingCount={waitingTotal}
-              refresh={nodeTick}
-              onShowOpen={() => setFilter("open")}
-            />
+            {chosenNode && (
+              <Details
+                node={chosenNode}
+                tree={nodes}
+                me={me}
+                onChoose={(id) => choose(id, "details")}
+                onClose={() => setChosen(null)}
+                workspaceId={workspaceId}
+                projectId={projectId}
+                trackId={trackId}
+                onWritten={() => {
+                  reloadTree();
+                  reloadQuestions();
+                }}
+                refresh={nodeTick}
+              />
+            )}
           </>
         )}
       </div>

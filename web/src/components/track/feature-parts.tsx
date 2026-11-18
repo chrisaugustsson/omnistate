@@ -122,7 +122,7 @@ export function BeingChanged({ data }: { data: FeatureData }) {
   const flags = useTrackFlags(workspaceId, bodies);
   if (changing.length === 0) return null;
   return (
-    <div className="mt-5 space-y-2 min-[960px]:max-w-[calc(100%-var(--panel-w)-3rem)]">
+    <div className="mt-5 space-y-2">
       {changing.map((summary) => {
         const { track } = summary;
         const owner = nameOf(people, track.owner_user_id);

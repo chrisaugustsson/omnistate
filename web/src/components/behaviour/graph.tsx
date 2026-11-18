@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TreeNode } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
-import { animateTo, bringIntoView, centreOn, fit, fitBlock, tween, zoomAt, type View } from "./camera";
+import { animateTo, bringIntoView, centreOn, fit, fitBlock, keepInView, tween, zoomAt, type View } from "./camera";
 import { elbow, layoutBlocks, planColumns, type Rect } from "./layout";
 import { Minimap } from "./minimap";
 import { Legend, Marks } from "./marks";
@@ -99,7 +99,13 @@ export function Graph({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  const columns = useMemo(() => (area ? planColumns(nodes, shown, area) : []), [nodes, shown, area]);
+  // The stories are laid out in columns for the area the graph first had: the
+  // details opening or the window resizing moves the view, not the boxes.
+  const [planArea, setPlanArea] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    if (!planArea && area && area.w > 0 && area.h > 0) setPlanArea(area);
+  }, [area, planArea]);
+  const columns = useMemo(() => (planArea ? planColumns(nodes, shown, planArea) : []), [nodes, shown, planArea]);
   const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown, folded, columns }), [nodes, shown, folded, columns]);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   // While a fold moves, the boxes slide from where they stood in the same frames as the view, so the pressed box stays still.
@@ -211,6 +217,19 @@ export function Graph({
     const block = blocks.get(id);
     if (block && areaRef.current) moveTo(fitBlock(block, areaRef.current), 260);
   };
+
+  // When the area changes size (the details open or close, the window resizes), the chosen node stays in sight.
+  const lastArea = useRef(area);
+  useEffect(() => {
+    const before = lastArea.current;
+    lastArea.current = area;
+    if (!area || !before || (before.w === area.w && before.h === area.h)) return;
+    const current = viewRef.current;
+    const box = chosenId ? boxes.get(chosenId) : undefined;
+    if (!current || !box) return;
+    const target = keepInView(current, box, area);
+    if (target) moveTo(target, 200);
+  }, [area, chosenId, boxes, moveTo]);
 
   // A node chosen outside the graph is brought into sight by the rules of bringIntoView.
   const handled = useRef<number | null>(null);

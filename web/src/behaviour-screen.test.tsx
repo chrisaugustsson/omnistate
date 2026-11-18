@@ -393,7 +393,7 @@ describe("choosing a node in the Behaviour screen", () => {
 
   const boxOf = (id: string) => document.querySelector<HTMLElement>(`main [data-node="${id}"]`)!;
   const rowOf = (id: string) => document.querySelector<HTMLElement>(`aside [data-row="${id}"]`);
-  const detailsTitle = () => screen.getByRole("region", { name: "Details" }).querySelector("h2")?.textContent ?? null;
+  const detailsTitle = () => screen.queryByRole("region", { name: "Details" })?.querySelector("h2")?.textContent ?? null;
   const graphArea = () => screen.getByRole("main", { name: "Tree as a graph" }).firstElementChild as HTMLElement;
 
   /** Presses `element` without dragging. */
@@ -481,6 +481,21 @@ describe("choosing a node in the Behaviour screen", () => {
     // Any eased move would have landed by now: 240ms and the 120ms fallback after it.
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(currentView()).toEqual(opening);
+  });
+
+  test("the details column opens only while a node is chosen, and Close the details closes it", async () => {
+    fakeApi({ status: 200, body: { nodes: testTree() } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    await openingView();
+    expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
+
+    press(boxOf(CANNOT_REMEMBER));
+    expect(detailsTitle()).toBe("Player can't remember how to sign in");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close the details" }));
+    expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
+    expect(document.querySelectorAll("main [data-chosen]")).toHaveLength(0);
   });
 
   test("pressing the graph's background or the chosen box again keeps the choice", async () => {
@@ -1487,12 +1502,6 @@ describe("filtering the Behaviour screen", () => {
     fireEvent.click(screen.getByRole("button", { name: "1 question waits for an answer" }));
     expect(pressed(/^Only open/)).toBe("true");
     expect(screen.getByText("1 of 6 nodes, with what lies above them")).toBeTruthy();
-
-    // The details' link turns Only open on as well.
-    fireEvent.click(choice(/^Only open/));
-    expect(pressed(/^All/)).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Show only the open nodes" }));
-    expect(pressed(/^Only open/)).toBe("true");
   });
 
   test("the grill-pass choice stays while it is on after the tree is read again with no node marked", async () => {

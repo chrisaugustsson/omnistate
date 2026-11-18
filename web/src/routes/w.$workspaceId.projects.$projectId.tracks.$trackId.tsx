@@ -15,9 +15,12 @@ import { linkClass } from "@/components/track/ui";
 // actions (the properties toggle, the "…" menu and its next state move), its
 // description, a quiet Next row while behaviour questions wait, and its tabs:
 // Spec, Behaviour, Design, How, Board, Threads, Decisions. The tab's content
-// sits beside the properties panel; Behaviour, Design (the canvas viewer) and
-// Board take the full width until the panel is asked for. A doc opened full view fills the view instead
-// (staticData.bleed). The layout loads the track's data once for every tab.
+// sits beside the properties panel; the Board takes the full column until the
+// panel is asked for. Behaviour and Design are canvases: there the header is
+// compact (no description, no Next row, no properties) and spans the window
+// with the canvas, which fills the height under it. A doc opened full view
+// fills the view instead (staticData.bleed). The layout loads the track's data
+// once for every tab.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId")({
   staticData: { scope: "track", tab: "tracks" },
   component: TrackLayout,
@@ -25,8 +28,10 @@ export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks
 
 const TRACK = "/w/$workspaceId/projects/$projectId/tracks/$trackId";
 
-/** The tabs that want the full width: the panel stays closed there until it is asked for. */
-const WIDE = new Set(["behaviour", "design", "board"]);
+/** The tabs that want the full column: the panel stays closed there until it is asked for. */
+const WIDE = new Set(["board"]);
+/** The tabs that are a canvas: they fill the window under a compact header, with no panel. */
+const CANVAS = new Set(["behaviour", "design"]);
 
 function TrackLayout() {
   const { workspaceId, projectId, trackId } = Route.useParams();
@@ -35,6 +40,7 @@ function TrackLayout() {
   const data = useTrackData(workspaceId, projectId, trackId, tab === "behaviour");
   const actions = useTrackActions(data);
   const wide = WIDE.has(tab);
+  const canvas = CANVAS.has(tab);
   const [panelBeside, setPanelBeside] = useState(true);
   const [panelWide, setPanelWide] = useState(false);
   const panel = wide ? panelWide : panelBeside;
@@ -68,8 +74,9 @@ function TrackLayout() {
   const showDesign = !onService || docs.design.length > 0;
   return (
     <TrackProvider value={data}>
-      <main className="flex min-h-full flex-col">
+      <main className={canvas ? "flex h-full min-h-[560px] flex-col" : "flex min-h-full flex-col"}>
         <ObjectHeader
+          wide={canvas}
           path={[
             <PathLink key="tracks" {...tracks} activeOptions={{ exact: true }}>
               Tracks
@@ -81,13 +88,18 @@ function TrackLayout() {
           title={summary?.track.name ?? ""}
           actions={
             summary && (
-              <TrackHeaderActions data={data} actions={actions} panel={panel} onPanel={() => (wide ? setPanelWide : setPanelBeside)(!panel)} />
+              <TrackHeaderActions
+                data={data}
+                actions={actions}
+                panel={canvas ? undefined : panel}
+                onPanel={() => (wide ? setPanelWide : setPanelBeside)(!panel)}
+              />
             )
           }
-          lede={summary?.track.description ? <span className="whitespace-pre-line">{summary.track.description}</span> : undefined}
+          lede={!canvas && summary?.track.description ? <span className="whitespace-pre-line">{summary.track.description}</span> : undefined}
           notice={
             <>
-              <NextRow data={data} />
+              {!canvas && <NextRow data={data} />}
               {actions.error && (
                 <p role="alert" className="mt-3 text-danger-ink">
                   {actions.error}
@@ -134,12 +146,18 @@ function TrackLayout() {
             </>
           }
         />
-        <div className="mx-auto flex w-full max-w-(--page-max) flex-1 flex-col gap-12 px-4 pt-6 pb-10 md:px-(--page-pad) min-[960px]:flex-row">
-          <div className="flex min-w-0 flex-1 flex-col">
+        {canvas ? (
+          <div className="flex min-h-0 flex-1 flex-col px-4 pt-3 pb-4">
             <Outlet />
           </div>
-          {panel && summary && <TrackPanel data={data} actions={actions} className="w-full shrink-0 self-start min-[960px]:w-(--panel-w)" />}
-        </div>
+        ) : (
+          <div className="mx-auto flex w-full max-w-(--page-max) flex-1 flex-col gap-12 px-4 pt-6 pb-10 md:px-(--page-pad) min-[960px]:flex-row">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <Outlet />
+            </div>
+            {panel && summary && <TrackPanel data={data} actions={actions} className="w-full shrink-0 self-start min-[960px]:w-(--panel-w)" />}
+          </div>
+        )}
         {actions.dialog}
       </main>
     </TrackProvider>

@@ -187,7 +187,8 @@ export function TrackHeaderActions({
 }: {
   data: TrackData;
   actions: TrackActions;
-  panel: boolean;
+  /** Whether the properties panel shows; left out, the page has no panel and no toggle (a canvas tab). */
+  panel?: boolean;
   onPanel: () => void;
 }) {
   const { moves, mayHandOver, ownerName } = data;
@@ -198,16 +199,18 @@ export function TrackHeaderActions({
 
   return (
     <div role="group" aria-label="Actions" className="flex items-center gap-2">
-      <button
-        type="button"
-        aria-label="Properties"
-        aria-pressed={panel}
-        title="Properties"
-        onClick={onPanel}
-        className={buttonClass({ variant: "ghost", icon: true })}
-      >
-        <PanelRight aria-hidden strokeWidth={2.25} />
-      </button>
+      {panel !== undefined && (
+        <button
+          type="button"
+          aria-label="Properties"
+          aria-pressed={panel}
+          title="Properties"
+          onClick={onPanel}
+          className={buttonClass({ variant: "ghost", icon: true })}
+        >
+          <PanelRight aria-hidden strokeWidth={2.25} />
+        </button>
+      )}
       <div ref={menu.anchor} className="relative inline-flex">
         <button
           ref={menu.opener}
@@ -293,7 +296,7 @@ export function NextRow({ data }: { data: TrackData }) {
   if (openQuestions === 0 || !summary) return null;
   const questions = `${openQuestions} behaviour ${openQuestions === 1 ? "question" : "questions"}`;
   return (
-    <div className="mt-5 flex min-h-9 items-center gap-2.5 rounded-control bg-brand-tint py-1.5 pr-2 pl-3 text-ink min-[960px]:max-w-[calc(100%-var(--panel-w)-3rem)]">
+    <div className="mt-5 flex min-h-9 items-center gap-2.5 rounded-control bg-brand-tint py-1.5 pr-2 pl-3 text-ink">
       <ArrowRight aria-hidden strokeWidth={2.25} className="size-(--icon) shrink-0 text-brand" />
       <p className="min-w-0 flex-1">
         <b className="font-semibold">Next:</b> answer {questions}

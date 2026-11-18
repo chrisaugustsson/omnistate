@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
+import { X } from "lucide-react";
 import { Text } from "./text";
 import { ancestorsOf, descendantsOf, shortTitle } from "./tree";
 
@@ -53,56 +54,56 @@ function Link({ children, onClick }: { children: string; onClick: () => void }) 
   );
 }
 
-/** The details of `node`; with none chosen, how to choose one and how many questions wait. */
+/** The details of the chosen `node`, in the column that opens beside the graph; `onClose` closes it. */
 export function Details({
   node,
   tree,
   me,
   onChoose,
+  onClose,
   workspaceId,
   projectId,
   trackId,
-  waitingCount = 0,
-  onShowOpen,
   onWritten,
   refresh = 0,
 }: {
-  node: TreeNode | null;
+  node: TreeNode;
   tree: TreeNode[];
   me: string | null;
   onChoose: (id: string) => void;
+  /** Closes the details: nothing is chosen any more. */
+  onClose?: () => void;
   workspaceId: string;
   projectId: string;
   trackId: string;
-  waitingCount?: number;
-  onShowOpen?: () => void;
   /** After a write, accepted or not: the tree and the open questions need reading again. */
   onWritten?: () => void;
   /** Reads the chosen node again each time this number changes. */
   refresh?: number;
 }) {
   return (
-    <section aria-label="Details" className="min-h-0 overflow-y-auto border-l">
-      {node ? (
-        <Chosen
-          key={node.id}
-          node={node}
-          tree={tree}
-          me={me}
-          onChoose={onChoose}
-          ids={{ workspaceId, projectId, trackId }}
-          onWritten={onWritten ?? (() => {})}
-          refresh={refresh}
-        />
-      ) : (
-        <p className="px-6 py-10 text-[13px] leading-relaxed text-muted-foreground">
-          Choose a node in the folders or in the graph to read it here: its text, its questions with their answers, and its rules.
-          <br />
-          <br />
-          {waitingCount === 0 ? "No question waits for an answer." : `${plural(waitingCount, "question waits", "questions wait")} for an answer.`}{" "}
-          <Link onClick={onShowOpen ?? (() => {})}>Show only the open nodes</Link>
-        </p>
+    <section aria-label="Details" className="relative min-h-0 overflow-y-auto border-l border-line">
+      {onClose && (
+        <button
+          type="button"
+          aria-label="Close the details"
+          title="Close the details"
+          onClick={onClose}
+          className="absolute top-3 right-3 z-10 grid size-7 place-items-center rounded-control text-ink-3 transition-colors hover:bg-hover hover:text-ink focus-visible:shadow-focus focus-visible:outline-none"
+        >
+          <X aria-hidden strokeWidth={2.25} className="size-(--icon-sm)" />
+        </button>
       )}
+      <Chosen
+        key={node.id}
+        node={node}
+        tree={tree}
+        me={me}
+        onChoose={onChoose}
+        ids={{ workspaceId, projectId, trackId }}
+        onWritten={onWritten ?? (() => {})}
+        refresh={refresh}
+      />
     </section>
   );
 }
@@ -180,7 +181,7 @@ function Chosen({
 
   return (
     <div className="px-5 pb-24 pt-4">
-      <p className="text-[11.5px] leading-normal text-muted-foreground">
+      <p className="pr-8 text-[11.5px] leading-normal text-muted-foreground">
         {crumbs.length === 0 && "Track"}
         {crumbs.map((id, at) => (
           <span key={id}>

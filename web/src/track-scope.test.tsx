@@ -114,6 +114,19 @@ describe("the Next row", () => {
     expect(within(next).getByRole("link").getAttribute("href")).toBe(`${TRACK_PATH}/behaviour`);
   });
 
+  test("is not on the Behaviour tab, where it leads, and neither is the properties toggle", async () => {
+    fakeTrackApi({
+      tracks: [track(TRACK_ID, "Long windows")],
+      questions: { [TRACK_ID]: [question("q1", "agent"), question("q2", "agent")] },
+    });
+    renderAt(`${TRACK_PATH}/behaviour`);
+    const actions = await screen.findByRole("group", { name: "Actions" });
+    await waitFor(() => expect(screen.getByRole("link", { name: /Behaviour/ }).textContent).toContain("2"));
+    expect(screen.queryByText(/^Next:/)).toBeNull();
+    expect(within(actions).queryByRole("button", { name: "Properties" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Properties" })).toBeNull();
+  });
+
   test("is not there when only a person's remark is open", async () => {
     fakeTrackApi({ tracks: [track(TRACK_ID, "Long windows")], questions: { [TRACK_ID]: [question("q3", "human")] } });
     renderAt(TRACK_PATH);

@@ -309,20 +309,6 @@ describe("a node's text", () => {
   });
 });
 
-describe("the details with nothing chosen", () => {
-  test("say that no question waits, 1 question waits, or N questions wait, with a link to show only the open nodes", () => {
-    const props = { node: null, tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, trackId: TRACK_ID };
-    const { rerender } = render(<Details {...props} waitingCount={0} />);
-    const details = screen.getByRole("region", { name: "Details" });
-    expect(details.textContent).toContain("No question waits for an answer.");
-    expect(within(details).getByRole("button", { name: "Show only the open nodes" })).toBeTruthy();
-    rerender(<Details {...props} waitingCount={1} />);
-    expect(details.textContent).toContain("1 question waits for an answer.");
-    rerender(<Details {...props} waitingCount={3} />);
-    expect(details.textContent).toContain("3 questions wait for an answer.");
-  });
-});
-
 // US-228: a person answers a waiting question in the details with
 // POST .../behaviour/questions/<question>/answers, then the node is read again.
 describe("answering a waiting question", () => {

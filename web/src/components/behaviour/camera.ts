@@ -6,12 +6,12 @@ export type View = { x: number; y: number; k: number };
 export const MIN_ZOOM = 0.012;
 export const MAX_ZOOM = 2;
 
-/** The view that shows all of `bounds` inside `area`, centred, with room for the legend above and the controls below. */
+/** The view that shows all of `bounds` inside `area`, centred, with room for the legend button above and the controls below. */
 export function fit(
   bounds: Rect,
   area: { w: number; h: number },
   maxZoom = 1,
-  { side, top, bottom } = { side: 40, top: 84, bottom: 64 },
+  { side, top, bottom } = { side: 40, top: 56, bottom: 64 },
 ): View {
   const k = Math.max(MIN_ZOOM, Math.min((area.w - side * 2) / bounds.w, (area.h - top - bottom) / bounds.h, maxZoom));
   return {
@@ -59,6 +59,23 @@ export function bringIntoView(
   const sy = view.y + box.y * view.k;
   if (sx >= m && sy >= m + 30 && sx + box.w * view.k <= area.w - m && sy + box.h * view.k <= area.h - m) return null;
   return centreOn(view, box, area);
+}
+
+/**
+ * Where the view goes so that `box` lies inside `area` with `m` to spare, moved
+ * no further than that and at the same zoom, or null when it already does: the
+ * graph keeps the chosen node in sight when the area narrows (the details open).
+ */
+export function keepInView(view: View, box: Rect, area: { w: number; h: number }, m = 32): View | null {
+  const left = view.x + box.x * view.k;
+  const top = view.y + box.y * view.k;
+  const right = left + box.w * view.k;
+  const bottom = top + box.h * view.k;
+  let dx = right > area.w - m ? area.w - m - right : 0;
+  if (left + dx < m) dx = m - left;
+  let dy = bottom > area.h - m ? area.h - m - bottom : 0;
+  if (top + dy < m) dy = m - top;
+  return dx || dy ? { ...view, x: view.x + dx, y: view.y + dy } : null;
 }
 
 // cubic-bezier(0.23, 1, 0.32, 1), solved for y at x by Newton steps.
