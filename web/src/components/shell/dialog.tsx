@@ -210,7 +210,7 @@ function Surface({
             : cn("max-h-[80vh] animate-pop-in", wide ? "w-[min(560px,calc(100vw-32px))]" : "w-[min(480px,calc(100vw-32px))]"),
         )}
       >
-        <div className={cn(drawer && "border-b border-line pb-4")}>
+        <div className={cn(drawer ? "border-b border-line pb-4" : !children && "pb-5")}>
           <Head titleId={titleId} descriptionId={descriptionId} title={title} description={description} eyebrow={eyebrow} actions={headActions} onClose={onClose} />
         </div>
         <div data-modal-body className={cn("min-h-0 overflow-y-auto p-5", drawer && "flex-1", !children && "hidden")}>
