@@ -1,11 +1,11 @@
 import type { CommentBody, HomeDoc, HomeResponse, MemberBody, ReplyBody, TrackSummary } from "@/api/generated";
 import { personName } from "@/lib/identity";
 
-// What Home shows, as pure functions over every project's home (build plan,
-// "Data" 6): the comments that wait on the reader, grouped by track, and the
+// What the workspace's pages show, as pure functions over every project's
+// home (build plan, "Data" 6): the comments that wait on the reader, and the
 // reader's tracks. A comment waits when its latest reply is an agent's
 // (`home.waiting.comments`); it waits on the reader when it is on a track the
-// reader owns, as the Inbox count in the top bar has it (waitingOnMe).
+// reader owns, as the Inbox count in the header has it (waitingOnMe).
 
 /** Who wrote something, as Home shows them: a person by name, an agent as "<role> agent". */
 export type Who = {
@@ -24,17 +24,7 @@ export type WaitingItem = {
   at: number;
   projectId: string;
   doc: HomeDoc | undefined;
-  track: TrackSummary | undefined;
-};
-
-/** The waiting comments of one track, or of one project's docs that are on no track. */
-export type WaitingGroup = {
-  key: string;
-  projectId: string;
-  track: TrackSummary | undefined;
-  /** The newest reply of the group, in ms. */
-  at: number;
-  items: WaitingItem[];
+  track: TrackSummary;
 };
 
 /** "Writer agent" for the agent role "writer". */
@@ -52,43 +42,25 @@ export function whoOf(author: Record<string, unknown>, members: readonly MemberB
   return { name: member ? personName(member.email) : "Someone", agent: false, tintKey: userId };
 }
 
-/** A member's name by user ID; null while unknown. */
-export function memberName(members: readonly MemberBody[] | null, userId: string | null | undefined): string | null {
-  const member = userId ? members?.find((candidate) => candidate.user_id === userId) : undefined;
-  return member ? personName(member.email) : null;
-}
-
 /**
- * The comments that wait, grouped by track, the group with the newest reply
- * first and the newest reply first in each group. Only those on tracks `me`
- * owns, unless `everyone`; then also those on other people's tracks and on
- * docs that are on no track. Null while the homes or the reader are unknown.
+ * The comments that wait on `me`: those on tracks `me` owns whose latest reply
+ * is an agent's, in every project, the newest reply first. Null while the
+ * homes or the reader are unknown.
  */
-export function waitingGroups(
-  homes: ReadonlyMap<string, HomeResponse> | null,
-  me: string | null,
-  everyone = false,
-): WaitingGroup[] | null {
-  if (!homes || (!me && !everyone)) return null;
-  const groups = new Map<string, WaitingGroup>();
+export function waitingItems(homes: ReadonlyMap<string, HomeResponse> | null, me: string | null): WaitingItem[] | null {
+  if (!homes || !me) return null;
+  const items: WaitingItem[] = [];
   for (const [projectId, home] of homes) {
     const tracks = new Map((home.tracks ?? []).map((summary) => [summary.track.id, summary]));
     const docs = new Map(home.docs.map((doc) => [doc.id, doc]));
     for (const comment of home.waiting.comments) {
       const reply = comment.replies.at(-1);
-      if (!reply) continue;
       const track = comment.track_id ? tracks.get(comment.track_id) : undefined;
-      if (!everyone && (!track || track.track.owner_user_id !== me)) continue;
-      const key = track ? track.track.id : `project:${projectId}`;
-      const item: WaitingItem = { comment, reply, at: Date.parse(reply.created_at) || 0, projectId, doc: docs.get(comment.doc_id), track };
-      const group = groups.get(key) ?? { key, projectId, track, at: 0, items: [] };
-      group.items.push(item);
-      group.at = Math.max(group.at, item.at);
-      groups.set(key, group);
+      if (!reply || !track || track.track.owner_user_id !== me) continue;
+      items.push({ comment, reply, at: Date.parse(reply.created_at) || 0, projectId, doc: docs.get(comment.doc_id), track });
     }
   }
-  for (const group of groups.values()) group.items.sort((a, b) => b.at - a.at);
-  return [...groups.values()].sort((a, b) => b.at - a.at);
+  return items.sort((a, b) => b.at - a.at);
 }
 
 /** The order of the track states, as the Tracks list groups them. */
@@ -106,19 +78,6 @@ export function myTracks(homes: ReadonlyMap<string, HomeResponse> | null, me: st
   return mine.sort((a, b) => activityOf(b) - activityOf(a));
 }
 
-/** "Good morning" before noon, "Good afternoon" until six, then "Good evening" (and before five). */
-export function greeting(now: Date): string {
-  const hour = now.getHours();
-  if (hour >= 5 && hour < 12) return "Good morning";
-  if (hour >= 12 && hour < 18) return "Good afternoon";
-  return "Good evening";
-}
-
-/** "1 comment" / "3 comments". */
-export function plural(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
-}
-
 /** How long ago, short, as rows show it: "now", "12 min", "3 h", "Yesterday", "4 d", or the date. */
 export function age(at: number, now = Date.now()): string {
   const minutes = Math.round(Math.max(0, now - at) / 60_000);
@@ -134,7 +93,7 @@ export function age(at: number, now = Date.now()): string {
 
 /**
  * How a track came apart, in a few words: "split off from Checkout", or "split
- * off to Wallets on iot-service, building" (the first track split off it); empty
+ * off to Wallets on iot-service" (the first track split off it); empty
  * when it is neither.
  */
 export function splitText(summary: TrackSummary, home: HomeResponse | undefined): string {
@@ -146,10 +105,5 @@ export function splitText(summary: TrackSummary, home: HomeResponse | undefined)
   const child = tracks.find(({ track }) => track.split_from_track_id === summary.track.id);
   if (!child) return "";
   const where = child.part_name && child.part_name !== summary.part_name ? ` on ${child.part_name}` : "";
-  return `split off to ${child.track.name}${where}, ${child.track.state}`;
-}
-
-/** The first line of a text, for a one-line row. */
-export function firstLine(text: string): string {
-  return text.trim().split("\n", 1)[0] ?? "";
+  return `split off to ${child.track.name}${where}`;
 }

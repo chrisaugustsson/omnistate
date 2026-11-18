@@ -1,12 +1,13 @@
 import { vi } from "vitest";
 
-// The workspace that Home's tests (web/src/home.test.tsx, web/src/inbox.test.tsx)
-// run against, and a fake of the API that serves it. Two projects: Storefront
+// The workspace that the workspace pages' tests (web/src/home.test.tsx,
+// web/src/inbox.test.tsx) run against, and a fake of the API that serves it. Two projects: Storefront
 // (parts Web, an app, and payments-api, a service) and Warehouse (part
 // scanner). Alice, the signed-in member, owns Checkout, Returns and Apple Pay
 // in Storefront and Pick lists in Warehouse; Bob owns Wallets. Five comments
 // wait (their latest reply is an agent's): two on Checkout, one on Pick lists,
-// one on Bob's Wallets and one on a Storefront doc of no track.
+// one on Bob's Wallets and one on a Storefront doc of no track. Every comment
+// is on the element p0000001 of its doc; Pay screens' says "Pay with card, in one step."
 
 export const WS = "0192d7a0-0000-7000-8000-00000000000a";
 export const ALICE = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice.doe@example.com" };
@@ -208,7 +209,8 @@ const story = (key: string, status: string, blockers: { key: string; status: str
 
 /**
  * A fake of the API. `me` is the signed-in member; `api.homes` may be changed
- * by the test, and `api.replies` records each reply posted. Checkout has three
+ * by the test, and `api.replies` records each reply posted (a replied comment
+ * no longer waits). Checkout has three
  * open questions an agent asked and one remark Alice left, and its US-2 waits
  * on Wallets' US-7 (US-1, done, waited on a story that is not done either).
  */
@@ -266,6 +268,9 @@ export function fakeApi(me = ALICE) {
       // The comment no longer waits: its latest reply is now the human's.
       project.waiting.comments = project.waiting.comments.filter((candidate) => candidate.id !== replied[2]);
       return json(201, { comment: { ...answered, replies: [...answered.replies, reply] } });
+    }
+    if (method === "GET" && path === `${API}/projects/${STOREFRONT}/docs/${PAY_SCREENS}/html`) {
+      return json(200, { doc_id: PAY_SCREENS, html: '<h1 data-omni-id="h0000001">Pay screens</h1><p data-omni-id="p0000001">Pay with  card,\n in one step.</p>' });
     }
     if (method === "GET" && path in fixed) return json(200, fixed[path]);
     if (method === "GET" && path.endsWith("/behaviour/questions")) return json(200, { questions: [] });
