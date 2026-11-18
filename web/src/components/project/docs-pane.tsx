@@ -1,11 +1,12 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link, Navigate } from "@tanstack/react-router";
-import { FileText, Palette, PenTool, Search } from "lucide-react";
+import { FileText, Palette, PanelLeftClose, PanelLeftOpen, PenTool, Search } from "lucide-react";
 import type { HomeDoc } from "@/api/generated";
 import { matches } from "@/components/palette/search";
 import { DocByline } from "@/components/viewer/byline";
 import { DocPage, type DocSearch } from "@/components/viewer/doc-page";
 import { timeAgo } from "@/lib/format";
+import { usePane } from "@/lib/pane";
 import { useHome } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 import { useProjectMap } from "./project-data";
@@ -49,6 +50,34 @@ export function byRecent(docs: readonly HomeDoc[]): HomeDoc[] {
 export function DocIcon({ kind, className }: { kind: string; className?: string }) {
   const Icon = kind === "design" ? PenTool : kind === "design-system" ? Palette : FileText;
   return <Icon aria-hidden strokeWidth={1.75} className={cn("size-(--icon-sm) shrink-0 text-ink-2", className)} />;
+}
+
+/** The key under which the reader's choice to fold the doc list away beside a design is kept. */
+const DOC_LIST_PANE = "omni:pane:doc-list";
+
+/** Whether the doc list shows beside an open design, and the reader's way to fold it away or back. */
+export type DocListToggle = { shown: boolean; onShown: (shown: boolean) => void };
+
+/** The doc list's toggle beside a design: shown until the reader folds it away, the choice kept. */
+export function useDocListToggle(): DocListToggle {
+  const [shown, onShown] = usePane(DOC_LIST_PANE);
+  return { shown, onShown };
+}
+
+/** The button in a design's header that folds the doc list away and back. */
+function DocListButton({ list }: { list: DocListToggle }) {
+  const Icon = list.shown ? PanelLeftClose : PanelLeftOpen;
+  return (
+    <button
+      type="button"
+      aria-label={list.shown ? "Hide the doc list" : "Show the doc list"}
+      title={list.shown ? "Hide the doc list" : "Show the doc list"}
+      onClick={() => list.onShown(!list.shown)}
+      className="mr-2 -ml-1 grid size-(--control-h) shrink-0 place-items-center rounded-control text-ink-2 transition-colors duration-(--t-fast) hover:bg-hover hover:text-ink focus-visible:shadow-focus focus-visible:outline-none"
+    >
+      <Icon aria-hidden strokeWidth={2.25} className="size-(--icon)" />
+    </button>
+  );
 }
 
 /** Where a doc of the list opens: a router link's `to` and `params`. */
@@ -148,6 +177,7 @@ export function DocsTab({
   about,
   failed,
   canvas = false,
+  listShown = true,
   children,
 }: {
   docs: readonly HomeDoc[] | null;
@@ -158,6 +188,8 @@ export function DocsTab({
   failed?: boolean;
   /** The open doc is a design: the tab fills the window, the list on the left and the canvas taking the rest. */
   canvas?: boolean;
+  /** Beside a design, whether the list shows; the reader folds it away with the button in the doc's header. */
+  listShown?: boolean;
   children: ReactNode;
 }) {
   const list = (
@@ -173,9 +205,11 @@ export function DocsTab({
   if (canvas) {
     return (
       <div className="flex h-full min-h-[560px] flex-col md:flex-row">
-        <aside aria-label="Doc list" className="shrink-0 border-line px-4 py-5 md:w-[calc(var(--doclist-w)+32px)] md:overflow-y-auto md:border-r">
-          {list}
-        </aside>
+        {listShown && (
+          <aside aria-label="Doc list" className="shrink-0 border-line px-4 py-5 md:w-[calc(var(--doclist-w)+32px)] md:overflow-y-auto md:border-r">
+            {list}
+          </aside>
+        )}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col p-4 md:pl-6">{children}</div>
       </div>
     );
@@ -198,6 +232,7 @@ export function OpenDoc({
   doc,
   search,
   heading = "h1",
+  list,
 }: {
   workspaceId: string;
   projectId: string;
@@ -207,13 +242,19 @@ export function OpenDoc({
   search: DocSearch;
   /** The heading's level: h1 on a Docs page, h2 under an object's own title (a feature's Docs tab). */
   heading?: "h1" | "h2";
+  /** Given, a design's header has the button that folds the doc list away and back. */
+  list?: DocListToggle;
 }) {
   const Heading = heading;
+  const design = doc?.kind === "design";
   return (
-    <div className={cn("flex min-w-0 flex-col", doc?.kind === "design" && "min-h-0 flex-1")}>
-      <Heading className="flex min-h-(--control-h-lg) items-center text-title font-semibold">
-        {doc ? doc.title : <span aria-hidden className="block h-5 w-48 animate-pulse rounded-control bg-hover" />}
-      </Heading>
+    <div className={cn("flex min-w-0 flex-col", design && "min-h-0 flex-1")}>
+      <div className="flex min-h-(--control-h-lg) items-center">
+        {design && list && <DocListButton list={list} />}
+        <Heading className="min-w-0 text-title font-semibold">
+          {doc ? doc.title : <span aria-hidden className="block h-5 w-48 animate-pulse rounded-control bg-hover" />}
+        </Heading>
+      </div>
       <DocPage key={docId} workspaceId={workspaceId} projectId={projectId} docId={docId} search={search} chrome={{ meta: doc && <DocByline doc={doc} /> }} />
     </div>
   );
@@ -268,10 +309,12 @@ export function ScopeDocs({
   const about = features ? (doc: HomeDoc) => features.find((feature) => feature.id === doc.feature_id)?.name : undefined;
   const scope = partId ? (map?.parts.find((part) => part.id === partId)?.name ?? "the part") : "the project";
   const open = docId ? docs?.find((doc) => doc.id === docId) : undefined;
+  const list = useDocListToggle();
+  const canvas = open?.kind === "design";
   return (
-    <DocsTab docs={docs} current={docId} target={target} about={about} failed={failed} canvas={open?.kind === "design"}>
+    <DocsTab docs={docs} current={docId} target={target} about={about} failed={failed} canvas={canvas} listShown={!canvas || list.shown}>
       {docId ? (
-        <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={docId} doc={open} search={search ?? {}} />
+        <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={docId} doc={open} search={search ?? {}} list={list} />
       ) : (
         <OpenLatest
           docs={docs}

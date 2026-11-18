@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import type { HomeDoc } from "@/api/generated";
-import { OpenDoc } from "@/components/project/docs-pane";
+import { OpenDoc, useDocListToggle } from "@/components/project/docs-pane";
 import type { DocSearch } from "@/components/viewer/doc-page";
 import { cn } from "@/lib/utils";
 import { DocGlyph } from "./feature-parts";
@@ -47,6 +47,7 @@ export function FeatureDocs({
   empty: { title: string; body: string };
 }) {
   const { workspaceId, projectId, partId, featureId, home } = useFeature();
+  const list = useDocListToggle();
   if (!home) return <div aria-hidden className="h-40 animate-pulse rounded-card bg-frame" />;
   const groups = PILLARS.map(({ pillar, title }) => ({
     title,
@@ -58,7 +59,11 @@ export function FeatureDocs({
   const canvas = open?.kind === "design";
   return (
     <div className={cn("flex flex-col gap-8 md:flex-row", canvas ? "min-h-0 flex-1 md:gap-6" : "items-start md:gap-12")}>
-      <nav aria-label="Doc list" className={cn("shrink-0 md:w-(--doclist-w)", canvas ? "md:overflow-y-auto" : "md:sticky md:top-6")}>
+      <nav
+        aria-label="Doc list"
+        hidden={canvas && !list.shown}
+        className={cn("shrink-0 md:w-(--doclist-w)", canvas ? "md:overflow-y-auto" : "md:sticky md:top-6")}
+      >
         {groups.map((group) => (
           <section key={group.title} aria-label={group.title} className="mt-2 first:mt-0">
             <h3 className="flex h-7 items-center px-2 text-meta font-medium text-ink-3">
@@ -93,7 +98,7 @@ export function FeatureDocs({
       </nav>
       <div className={cn("min-w-0 flex-1", canvas && "flex min-h-0 flex-col")}>
         {open ? (
-          <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={open.id} doc={open} search={search} heading="h2" />
+          <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={open.id} doc={open} search={search} heading="h2" list={list} />
         ) : (
           <p className="text-ink-2">This doc is not on the feature. Pick one from the list.</p>
         )}

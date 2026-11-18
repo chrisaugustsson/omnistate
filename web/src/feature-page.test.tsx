@@ -100,6 +100,26 @@ describe("a feature's tabs", () => {
   });
 });
 
+describe("a feature's Design", () => {
+  test("the design's header folds the doc list away for the canvas and brings it back", async () => {
+    localStorage.removeItem("omni:pane:doc-list");
+    try {
+      featureApi({ docs: [docBody("0192d7a0-6666-7000-8000-000000000002", "Analyze screens", { pillar: "ui", kind: "design", feature_id: ANALYZE })] });
+      renderAt(`${FEATURE_PATH}/design`);
+      const list = () => screen.queryByRole("navigation", { name: "Doc list" });
+      await screen.findByRole("heading", { name: "Analyze screens" });
+      expect(list()).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Hide the doc list" }));
+      expect(list()).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Show the doc list" }));
+      expect(list()).toBeTruthy();
+    } finally {
+      localStorage.removeItem("omni:pane:doc-list");
+    }
+  });
+});
+
 describe("a feature's Tracks", () => {
   test("groups the tracks that changed it by state", async () => {
     featureApi();

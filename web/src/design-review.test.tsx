@@ -812,6 +812,8 @@ beforeEach(() => {
   api = fakeApi();
   FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
+  // A wide window: under 1440px a design on a Docs tab opens with its review pane hidden.
+  vi.stubGlobal("innerWidth", 1920);
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 });
 
@@ -893,6 +895,21 @@ describe("comment pins", () => {
       fireEvent.click(await findPin("Label"));
       await waitFor(() => expect(pane()).toBeTruthy());
       await waitFor(() => expect(within(pane()!).getByText(ON_LABEL)).toBeTruthy());
+    } finally {
+      localStorage.removeItem("omni:pane:review");
+    }
+  });
+
+  test("in a window under 1440px the design opens with its review pane hidden, whatever was kept, and the toggle shows it", async () => {
+    vi.stubGlobal("innerWidth", 1280);
+    localStorage.setItem("omni:pane:review", "open");
+    try {
+      renderAt(DOC_PATH);
+      await findRenderer();
+      const pane = () => screen.queryByRole("complementary", { name: "Review" });
+      expect(pane()).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Show the review pane" }));
+      await waitFor(() => expect(pane()).toBeTruthy());
     } finally {
       localStorage.removeItem("omni:pane:review");
     }

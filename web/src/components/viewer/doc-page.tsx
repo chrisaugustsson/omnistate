@@ -37,7 +37,7 @@ import { Button } from "@/components/ui/button";
 import { CommentsPanel } from "@/components/viewer/comments";
 import { DesignSystemViewer } from "@/components/viewer/design-system";
 import { InteractionsSection, LayerIcon, MonoValue, PropertyTable, ScrollingRow, TokenChip } from "@/components/viewer/design";
-import { useReviewPane } from "@/lib/pane";
+import { NARROW_FOR_REVIEW, useReviewPane } from "@/lib/pane";
 import { cn } from "@/lib/utils";
 import { PlayMode, type PlayBoard, type PlayFlow } from "@/components/viewer/play";
 import { useReloading, type Reloading } from "@/lib/reloading";
@@ -106,6 +106,11 @@ export type DocChrome = {
   /** Inside a track's tab: the comments start hidden, whatever the reader last chose on a Docs page. */
   embedded?: boolean;
 };
+
+/** Whether the window is too narrow for a design's canvas beside its review pane. */
+function isNarrow(): boolean {
+  return typeof window !== "undefined" && window.innerWidth < NARROW_FOR_REVIEW;
+}
 
 /** Where the address bar says the reviewer is in the doc. */
 type Place = { board?: string; node?: string; play?: string; flow?: string };
@@ -352,7 +357,7 @@ function HtmlDocViewer({
             id="review-pane"
             aria-label="Review"
             hidden={!review}
-            className="overflow-hidden rounded-card border border-line lg:sticky lg:top-4 lg:max-h-[calc(100dvh-var(--bar-h)-2rem)] lg:overflow-y-auto"
+            className="border-t border-line lg:sticky lg:top-4 lg:max-h-[calc(100dvh-var(--bar-h)-2rem)] lg:overflow-y-auto lg:border-t-0 lg:border-l"
           >
             {commentsPanel}
           </aside>
@@ -721,7 +726,8 @@ function DesignViewer({
   // The board play mode was left on, which the address bar names once instead of the selection's board.
   const leftOn = useRef<string | null>(null);
   const [openComment, setOpenComment] = useState<string | null>(null);
-  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded);
+  // On a Docs tab in a narrow window the canvas needs the room: the review pane starts hidden there.
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded, !!chrome && !chrome.embedded && isNarrow());
   // The modes the reader chose: the shared Mode select under '', each own-list collection under its name.
   const [chosenModes, setChosenModes] = useState<Record<string, string>>({});
   // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
