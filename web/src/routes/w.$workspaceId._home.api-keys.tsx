@@ -109,7 +109,7 @@ function ApiKeys() {
         </p>
       )}
       {keys && (
-        <section aria-label="Keys" className="mt-8 max-w-(--main-max)">
+        <section aria-label="Keys" className="mt-8">
           <ColumnList label="Keys">
             {keys.length === 0 && <EmptyRow icon={<KeyRound aria-hidden className="size-(--icon) text-faint" />}>No keys yet. Create one for each agent harness.</EmptyRow>}
             {[...live, ...revoked].map((key) => (
