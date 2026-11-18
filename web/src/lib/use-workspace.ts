@@ -1,5 +1,7 @@
 import { useCallback, useMemo } from "react";
-import type { HomeResponse, PartBody, ProjectBody } from "@/api/generated";
+import type { HomeResponse, PartBody, ProjectBody, TrackSummary } from "@/api/generated";
+import { loadOpenQuestions } from "@/api/behaviour";
+import { inFlight } from "@/components/shell/state-icon";
 import { loadHome, loadProjects } from "@/api/home";
 import { loadMyUserId } from "@/api/members";
 import { loadParts } from "@/api/parts";
@@ -69,4 +71,30 @@ export function waitingOnMe(homes: ReadonlyMap<string, HomeResponse> | null, me:
     count += home.waiting.comments.filter((comment) => comment.track_id && mine.has(comment.track_id)).length;
   }
   return count;
+}
+
+/**
+ * The open behaviour questions an agent asked on each of `tracks` in flight,
+ * by track ID (a person's remark waits on no one); read again on any
+ * behaviour event of their projects.
+ */
+export function useOpenQuestions(workspaceId: string, tracks: readonly TrackSummary[] | null) {
+  const live = useMemo(() => (tracks ?? []).filter(({ track }) => inFlight(track.state)), [tracks]);
+  const key = live.map(({ track }) => `${track.project_id}/${track.id}`).join(",");
+  const load = useCallback(async () => {
+    const pairs = key ? key.split(",").map((pair) => pair.split("/") as [string, string]) : [];
+    const lists = await Promise.all(
+      pairs.map(async ([projectId, trackId]) => {
+        const questions = await loadOpenQuestions(workspaceId, projectId, trackId).catch(() => []);
+        return [trackId, questions.filter((question) => question.asked_by.kind !== "human")] as const;
+      }),
+    );
+    return new Map(lists);
+  }, [workspaceId, key]);
+  const { value, reload } = useReloading(load);
+  const projectIds = useMemo(() => [...new Set(live.map(({ track }) => track.project_id))], [live]);
+  useProjectsEvents(projectIds, (event) => {
+    if (event.event.startsWith("behaviour.")) reload();
+  });
+  return tracks ? (value ?? null) : null;
 }

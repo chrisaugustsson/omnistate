@@ -3,7 +3,8 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronLeft, Inbox, Search } from "lucide-react";
 import { Palette, isMac, useSearchShortcut } from "@/components/palette/palette";
 import { CreatePartForm, StartTrackForm } from "@/components/project/forms";
-import { useMe, useProjects, useWorkspaceHomes, waitingOnMe } from "@/lib/use-workspace";
+import { myTracks } from "@/components/home/model";
+import { useMe, useOpenQuestions, useProjects, useWorkspaceHomes, waitingOnMe } from "@/lib/use-workspace";
 import { cn } from "@/lib/utils";
 import { AccountMenu } from "./account-menu";
 import { Kbd } from "./kbd";
@@ -86,7 +87,12 @@ export function Shell({
   const { projects } = useProjects(workspace.id, scope.projectId);
   const { homes } = useWorkspaceHomes(workspace.id, projects);
   const me = useMe(workspace.id);
-  const waiting = waitingOnMe(homes, me);
+  // What waits on you, as the Inbox lists it: the comments, and one row per track of yours with open behaviour questions.
+  const mine = useMemo(() => myTracks(homes, me), [homes, me]);
+  const questions = useOpenQuestions(workspace.id, mine);
+  const comments = waitingOnMe(homes, me);
+  const waiting =
+    comments === null || !questions ? null : comments + [...questions.values()].filter((open) => open.length > 0).length;
   const parts = useOpenParts(workspace.id, scope.projectId);
   const home = scope.projectId ? homes?.get(scope.projectId) : undefined;
   const track = scope.level === "track" ? home?.tracks?.find((summary) => summary.track.id === scope.trackId) : undefined;

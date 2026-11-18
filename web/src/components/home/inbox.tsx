@@ -2,19 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "@tanstack/react-router";
 import { ArrowUpRight, ChevronLeft, ChevronRight, CircleHelp } from "lucide-react";
 import type { HomeDoc, MemberBody, QuestionBody, TrackSummary } from "@/api/generated";
-import { loadOpenQuestions } from "@/api/behaviour";
 import { loadHeadHtml, replyToComment } from "@/api/docs";
-import { btn, btnPrimary } from "@/components/project/rows";
+import { btnPrimary } from "@/components/project/rows";
 import { Avatar } from "@/components/shell/avatar";
 import { Page } from "@/components/shell/page";
 import { SECTION_LABELS, docLink, trackLink, workspaceLink, type TrackSection } from "@/components/shell/scope";
 import { useIsPhone } from "@/components/shell/shell-context";
-import { inFlight } from "@/components/shell/state-icon";
 import { TAB_PILLARS } from "@/components/track/track-data";
 import { ElementSnapshot } from "@/components/viewer/comments";
 import { isMac } from "@/components/palette/palette";
-import { useProjectsEvents } from "@/live/context";
 import { useReloading } from "@/lib/reloading";
+import { useOpenQuestions } from "@/lib/use-workspace";
 import { cn } from "@/lib/utils";
 import { age, myTracks, waitingItems, whoOf, type WaitingItem } from "./model";
 import { useHomeData } from "./use-home-data";
@@ -48,32 +46,6 @@ const searchOf = (entry: Entry | undefined): InboxSearch =>
   !entry ? {} : entry.kind === "comment" ? { comment: entry.item.comment.id } : { questions: entry.track.track.id };
 
 const keyOf = (search: InboxSearch) => (search.comment ? `c:${search.comment}` : search.questions ? `q:${search.questions}` : undefined);
-
-/**
- * The open behaviour questions an agent asked on each of `tracks` in flight,
- * by track ID (a person's remark waits on no one); read again on any
- * behaviour event of their projects.
- */
-function useQuestions(workspaceId: string, tracks: readonly TrackSummary[] | null) {
-  const live = useMemo(() => (tracks ?? []).filter(({ track }) => inFlight(track.state)), [tracks]);
-  const key = live.map(({ track }) => `${track.project_id}/${track.id}`).join(",");
-  const load = useCallback(async () => {
-    const pairs = key ? key.split(",").map((pair) => pair.split("/") as [string, string]) : [];
-    const lists = await Promise.all(
-      pairs.map(async ([projectId, trackId]) => {
-        const questions = await loadOpenQuestions(workspaceId, projectId, trackId).catch(() => []);
-        return [trackId, questions.filter((question) => question.asked_by.kind !== "human")] as const;
-      }),
-    );
-    return new Map(lists);
-  }, [workspaceId, key]);
-  const { value, reload } = useReloading(load);
-  const projectIds = useMemo(() => [...new Set(live.map(({ track }) => track.project_id))], [live]);
-  useProjectsEvents(projectIds, (event) => {
-    if (event.event.startsWith("behaviour.")) reload();
-  });
-  return tracks ? (value ?? null) : null;
-}
 
 /** The track section a doc shows in: Spec for spec and research, Design for UI, How for architecture and tables. */
 function sectionOf(doc: HomeDoc | undefined): TrackSection {
@@ -131,7 +103,7 @@ export function Inbox({
   const { homes, me, members, reload, failed } = useHomeData(workspaceId);
   const items = waitingItems(homes, me);
   const mine = useMemo(() => myTracks(homes, me), [homes, me]);
-  const questions = useQuestions(workspaceId, mine);
+  const questions = useOpenQuestions(workspaceId, mine);
   const entries: Entry[] | null = useMemo(() => {
     if (!items || !mine || !questions) return null;
     const asked: Entry[] = mine.flatMap((track) => {
@@ -421,9 +393,8 @@ function CommentItem({
   const [text, setText] = useState("");
   const [state, setState] = useState<"idle" | "empty" | "sending" | "failed">("idle");
 
-  // Resolving answers the comment with a last reply (yours, or "Resolved."), so no agent's reply waits on you.
-  async function send(resolve: boolean) {
-    const said = text.trim() || (resolve ? "Resolved." : "");
+  async function send() {
+    const said = text.trim();
     if (!said) {
       setState("empty");
       composer.current?.focus();
@@ -434,7 +405,7 @@ function CommentItem({
       await replyToComment(workspaceId, item.projectId, comment.id, said);
       setText("");
       setState("idle");
-      onDone(resolve ? "Resolved. It leaves your inbox." : "Reply sent. It leaves your inbox.");
+      onDone("Reply sent. It leaves your inbox.");
     } catch {
       setState("failed");
     }
@@ -491,7 +462,7 @@ function CommentItem({
             onKeyDown={(event) => {
               if (event.key === "Enter" && (isMac() ? event.metaKey : event.ctrlKey)) {
                 event.preventDefault();
-                void send(false);
+                void send();
               }
             }}
             placeholder="Reply…"
@@ -500,10 +471,7 @@ function CommentItem({
             className="min-h-[76px] resize-none border-0 bg-transparent px-3 pt-2.5 leading-(--lh-body) outline-none placeholder:text-ink-3"
           />
           <div className="flex items-center justify-end gap-2 py-2 pr-2 pl-3">
-            <button type="button" disabled={state === "sending"} onClick={() => void send(true)} className={btn} title="Close the comment with a last reply">
-              Resolve
-            </button>
-            <button type="button" disabled={state === "sending"} onClick={() => void send(false)} className={btnPrimary}>
+            <button type="button" disabled={state === "sending"} onClick={() => void send()} className={btnPrimary}>
               Reply
             </button>
           </div>

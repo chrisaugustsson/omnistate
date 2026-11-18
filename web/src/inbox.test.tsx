@@ -74,6 +74,12 @@ describe("the Inbox", () => {
     ]);
   });
 
+  test("the header's Inbox count matches the list: three replies and one track with questions make 4", async () => {
+    fakeApi();
+    renderAt(INBOX);
+    expect(await screen.findByRole("link", { name: "Inbox, 4 waiting" })).toBeTruthy();
+  });
+
   test("opens the newest item, and a row opens its own: the doc's quoted text and the whole thread, kept in the URL so Back returns", async () => {
     fakeApi();
     const router = renderAt(INBOX);
@@ -113,16 +119,6 @@ describe("the Inbox", () => {
     fireEvent.click(within(openItem()).getByRole("button", { name: "Reply" }));
     expect(within(openItem()).getByText("Write a reply before you send it.")).toBeTruthy();
     expect(api.replies).toEqual([]);
-  });
-
-  test("Resolve with nothing written closes the comment with “Resolved.”, and it leaves the list", async () => {
-    const api = fakeApi();
-    renderAt(`${INBOX}?comment=${MOVED}`);
-    await waitFor(() => expect(thread().at(-1)).toBe("Moved the button above the fold."));
-    fireEvent.click(within(openItem()).getByRole("button", { name: "Resolve" }));
-
-    await waitFor(() => expect(rows()).toHaveLength(3));
-    expect(api.replies).toEqual([{ path: `${API}/projects/${STOREFRONT}/comments/${MOVED}/replies`, text: "Resolved." }]);
   });
 
   test("Open in track opens the track's section that shows the doc, with the comment open", async () => {
