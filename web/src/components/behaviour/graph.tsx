@@ -110,6 +110,14 @@ export function Graph({
   const columns = useMemo(() => (planArea ? planColumns(nodes, shown, planArea) : []), [nodes, shown, planArea]);
   const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown, folded, columns }), [nodes, shown, folded, columns]);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  // What the boxes take, with their fold pills (the drawing's bounds also hold room around its blocks).
+  const extent = useMemo(() => {
+    const every = [...boxes.values()];
+    if (every.length === 0) return bounds;
+    const x = Math.min(...every.map((one) => one.x));
+    const y = Math.min(...every.map((one) => one.y));
+    return { x, y, w: Math.max(...every.map((one) => one.x + one.w)) - x + 28, h: Math.max(...every.map((one) => one.y + one.h)) - y };
+  }, [boxes, bounds]);
   // While a fold moves, the boxes slide from where they stood in the same frames as the view, so the pressed box stays still.
   const [slide, setSlideState] = useState<Slide>(null);
   const slideRef = useRef<Slide>(null);
@@ -238,7 +246,7 @@ export function Graph({
     // The whole drawing, when it fits at this zoom, so nothing is hidden and no minimap is needed.
     const all = boundsRef.current;
     const m = 32;
-    const whole = { ...all, w: all.w + 28 };
+    const whole = extent;
     if (whole.w * current.k <= area.w - 32 && whole.h * current.k <= area.h - 32) {
       const target = keepInView(current, whole, area, 16, [ZOOM_CORNER]);
       if (target) moveTo(target, 200);
@@ -246,7 +254,7 @@ export function Graph({
     }
     const target = keepInView(current, { x, y, w, h }, area, m, [ZOOM_CORNER, { side: "right", ...minimapCorner(all) }]);
     if (target) moveTo(target, 200);
-  }, [area, chosenId, boxes, nodes, moveTo]);
+  }, [area, chosenId, boxes, nodes, extent, moveTo]);
 
   // A node chosen outside the graph is brought into sight by the rules of bringIntoView.
   const handled = useRef<number | null>(null);
@@ -518,7 +526,7 @@ export function Graph({
             ))}
           </div>
           {/* The map only while some of the drawing lies outside the area: with all of it in view it adds nothing. */}
-          {!allInView(view, bounds, area) && <Minimap boxes={boxes} bounds={bounds} waiting={waiting} view={view} area={area} onGo={goTo} />}
+          {!allInView(view, extent, area) && <Minimap boxes={boxes} bounds={bounds} waiting={waiting} view={view} area={area} onGo={goTo} />}
         </>
       )}
     </div>
