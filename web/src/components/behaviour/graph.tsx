@@ -16,6 +16,8 @@ const BARS_BELOW = 0.3;
 const LABELS_BELOW = 0.46;
 const BUTTON_ZOOM = 1.4;
 const FOLD_MS = 220;
+// The corner the zoom controls take, bottom left: four 30px buttons and their 12px inset.
+const ZOOM_CORNER = { side: "left", w: 48, h: 136 } as const;
 // A press that moves less than this is a click, not a drag.
 const DRAG_FROM = 4;
 
@@ -237,11 +239,11 @@ export function Graph({
     const all = boundsRef.current;
     const m = 32;
     if (all.w * current.k <= area.w - 2 * m && all.h * current.k <= area.h - 2 * m) {
-      const target = keepInView(current, all, area, m);
+      const target = keepInView(current, { ...all, w: all.w + 28 }, area, m, [ZOOM_CORNER]);
       if (target) moveTo(target, 200);
       return;
     }
-    const target = keepInView(current, { x, y, w, h }, area, m, minimapCorner(all));
+    const target = keepInView(current, { x, y, w, h }, area, m, [ZOOM_CORNER, { side: "right", ...minimapCorner(all) }]);
     if (target) moveTo(target, 200);
   }, [area, chosenId, boxes, nodes, moveTo]);
 

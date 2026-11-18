@@ -88,19 +88,27 @@ describe("bringIntoView", () => {
 
 describe("keepInView", () => {
   const area = { w: 800, h: 600 };
-  const corner = { w: 172, h: 192 };
+  const corner = { side: "right" as const, w: 172, h: 192 };
 
   test("leaves a group that is in sight and clear of the minimap's corner where it is", () => {
-    expect(keepInView({ x: 0, y: 0, k: 1 }, { x: 100, y: 100, w: 300, h: 100 }, area, 32, corner)).toBeNull();
+    expect(keepInView({ x: 0, y: 0, k: 1 }, { x: 100, y: 100, w: 300, h: 100 }, area, 32, [corner])).toBeNull();
   });
 
   test("moves a group out from under the minimap's corner, up when that keeps its top in sight", () => {
     // Centred, the group would run from 400 to 650 across and 250 to 350 down: under the corner, which starts at 628, 408 once it is moved.
-    const view = keepInView({ x: -600, y: 0, k: 1 }, { x: 0, y: 0, w: 250, h: 100 }, { w: 800, h: 500 }, 32, corner)!;
+    const view = keepInView({ x: -600, y: 0, k: 1 }, { x: 0, y: 0, w: 250, h: 100 }, { w: 800, h: 500 }, 32, [corner])!;
     const right = view.x + 250;
     const bottom = view.y + 100;
     expect(right > 800 - corner.w - 8 && bottom > 500 - corner.h - 8).toBe(false);
     expect(view.y).toBeGreaterThanOrEqual(32);
     expect(view.x).toBeGreaterThanOrEqual(32);
+  });
+
+  test("moves a group that lies under the zoom controls' corner, bottom left, away from it", () => {
+    const controls = { side: "left" as const, w: 48, h: 136 };
+    // A tall group: centred in a 400 x 300 area it runs from 8 to 292 down, so it cannot go up; it goes right.
+    const view = keepInView({ x: 0, y: 0, k: 1 }, { x: 0, y: 0, w: 300, h: 284 }, { w: 400, h: 300 }, 8, [controls])!;
+    expect(view.x).toBeGreaterThanOrEqual(controls.w + 8);
+    expect(view.x + 300).toBeLessThanOrEqual(400 - 8);
   });
 });

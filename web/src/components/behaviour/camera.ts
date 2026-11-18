@@ -74,31 +74,38 @@ export function keepInView(
   group: Rect,
   area: { w: number; h: number },
   m = 32,
-  corner: { w: number; h: number } | null = null,
+  corners: Corner[] = [],
 ): View | null {
   const screen = (at: View) => {
     const left = at.x + group.x * at.k;
     const top = at.y + group.y * at.k;
     return { left, top, right: left + group.w * at.k, bottom: top + group.h * at.k };
   };
-  // Whether the group lies under the corner the minimap takes.
-  const covered = (at: View) => {
+  // The first bottom corner (the zoom controls, the minimap) the group lies under, with 8 to spare.
+  const under = (at: View) => {
     const box = screen(at);
-    return !!corner && box.right > area.w - corner.w - 8 && box.bottom > area.h - corner.h - 8;
+    return corners.find((corner) =>
+      box.bottom > area.h - corner.h - 8 && (corner.side === "right" ? box.right > area.w - corner.w - 8 : box.left < corner.w + 8),
+    );
   };
   const now = screen(view);
-  if (now.left >= m && now.top >= m && now.right <= area.w - m && now.bottom <= area.h - m && !covered(view)) return null;
+  if (now.left >= m && now.top >= m && now.right <= area.w - m && now.bottom <= area.h - m && !under(view)) return null;
   const k = Math.max(MIN_ZOOM, Math.min(view.k, (area.w - 2 * m) / group.w, (area.h - 2 * m) / group.h));
   let target = centreOn({ ...view, k }, group, area);
-  if (corner && covered(target)) {
-    // Up out of the corner when the group's top stays clear, otherwise left of it.
+  for (const corner of corners) {
+    if (under(target) !== corner) continue;
+    // Up out of the corner when the group's top stays clear, otherwise sideways away from it.
     const box = screen(target);
     const up = box.bottom - (area.h - corner.h - 8);
-    const left = box.right - (area.w - corner.w - 8);
-    target = box.top - up >= m ? { ...target, y: target.y - up } : { ...target, x: target.x - Math.min(left, box.left - m) };
+    if (box.top - up >= 8) target = { ...target, y: target.y - up };
+    else if (corner.side === "right") target = { ...target, x: target.x - Math.min(box.right - (area.w - corner.w - 8), box.left - 8) };
+    else target = { ...target, x: target.x + Math.min(corner.w + 8 - box.left, area.w - 8 - box.right) };
   }
   return target;
 }
+
+/** A corner at the bottom of the graph area that controls take: its side, width and height. */
+export type Corner = { side: "left" | "right"; w: number; h: number };
 
 /** Whether all of `bounds` lies inside `area` under `view`. */
 export function allInView(view: View, bounds: Rect, area: { w: number; h: number }): boolean {
