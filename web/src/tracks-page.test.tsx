@@ -232,7 +232,7 @@ describe("the Tracks page", () => {
     expect(within(await page()).getByText("5 tracks")).toBeTruthy();
   });
 
-  test("a row shows what the track changes, its part on the project's page, its progress, its owner and when it last moved, and opens the track", async () => {
+  test("a row shows what the track changes, one signal (its questions), its part on the project's page and when it last moved, and opens the track", async () => {
     const sara = scope.member("sara.lind@example.com");
     const wision = scope.part("Wision", "app");
     const iot = scope.part("iot-service", "service");
@@ -256,8 +256,8 @@ describe("the Tracks page", () => {
     renderAt(`${scope.PROJECT_PATH}/tracks`);
     await waitFor(async () => expect((await bands())[0][1][0]).toContain("3 questions"));
     expect(await bands()).toEqual([
-      ["Planning", ["Long windows changes no feature · split off to Aggregated readings 3 questions Wision 0 of 2 Owned by Christopher 12 min"]],
-      ["Building", ["Aggregated readings changes Readings query · split off from Long windows iot-service 1 of 2 Owned by Sara 4 Nov"]],
+      ["Planning", ["Long windows changes no feature · split off to Aggregated readings 3 questions Wision 12 min"]],
+      ["Building", ["Aggregated readings changes Readings query · split off from Long windows iot-service 4 Nov"]],
     ]);
     const row = within(await page()).getByRole("link", { name: /^BuildingAggregated readings/ });
     expect(row.getAttribute("href")).toBe(`${scope.PROJECT_PATH}/tracks/${query.track.id}`);
@@ -266,7 +266,7 @@ describe("the Tracks page", () => {
     renderAt(`${scope.PROJECT_PATH}/parts/${iot.id}/tracks`);
     await within(await page()).findByText("Aggregated readings");
     expect(await bands(), "a part's page leaves out the part, and other parts' tracks").toEqual([
-      ["Building", ["Aggregated readings changes Readings query · split off from Long windows 1 of 2 Owned by Sara 4 Nov"]],
+      ["Building", ["Aggregated readings changes Readings query · split off from Long windows 4 Nov"]],
     ]);
   });
 

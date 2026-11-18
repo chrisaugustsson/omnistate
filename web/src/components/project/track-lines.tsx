@@ -1,7 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { MessageSquare } from "lucide-react";
 import type { PartBody, TrackSummary } from "@/api/generated";
-import { Avatar } from "@/components/shell/avatar";
 import { PartIcon } from "@/components/shell/part-icon";
 import { StateIcon, stateLabel } from "@/components/shell/state-icon";
 import { partTone } from "@/lib/identity";
@@ -9,11 +7,11 @@ import { cn } from "@/lib/utils";
 import { Flags, Slot } from "@/components/home/rows";
 import type { TrackFlags } from "@/components/home/use-home-data";
 import type { ProjectMap } from "./project-data";
-import { Progress, RowLead, rowClass, shortWhen } from "./rows";
+import { RowLead, rowClass, shortWhen } from "./rows";
 
 // A track as a row of a Tracks list: its state icon, its name and what it
-// changes, its open questions, its part (on the project's pages), its progress
-// and its owner.
+// changes, then one signal at most (questions waiting, else blocked), its part
+// (on the project's pages) and when it last moved.
 
 type Params = { workspaceId: string; projectId: string };
 
@@ -63,24 +61,11 @@ function TrackPart({ summary, parts }: { summary: TrackSummary; parts: readonly 
   );
 }
 
-/** The owner of a track as an avatar; nothing for a track nobody owns. */
-export function OwnerAvatar({ userId, names }: { userId?: string | null; names: ReadonlyMap<string, string> | null }) {
-  if (!userId) return <Slot kind="owner" />;
-  const name = names?.get(userId) ?? "Owner";
-  return (
-    <span data-col="owner" className="inline-grid w-(--avatar) shrink-0 place-items-center" title={`Owned by ${name}`}>
-      <Avatar name={name} tintKey={userId} />
-      <span className="sr-only">Owned by {name}</span>
-    </span>
-  );
-}
-
 type RowProps = {
   summary: TrackSummary;
   all: readonly TrackSummary[];
   params: Params;
   map: ProjectMap | null;
-  names: ReadonlyMap<string, string> | null;
   /** Each track's questions and blocked mark (useRowFlags). */
   questions: ReadonlyMap<string, TrackFlags> | null | undefined;
   /** Show the track's part (on the project's pages). */
@@ -88,15 +73,17 @@ type RowProps = {
 };
 
 /**
- * A track in a Tracks list: state, name, what it changes, then questions, open
- * threads, part, progress, owner and when it last moved, each in its column.
- * On the phone the facts go to a second line under the name, only those there are.
+ * A track in a Tracks list: state, name, what it changes, then one signal at
+ * most (its open questions, else a blocked mark), its part on the project's
+ * pages, and when it last moved. Progress, threads and owner live on the
+ * track's own page. On the phone the facts go to a second line under the name.
  */
-export function TrackLine({ summary, all, params, map, names, questions, showPart, openThreads = 0 }: RowProps & { openThreads?: number }) {
+export function TrackLine({ summary, all, params, map, questions, showPart }: RowProps) {
   const { track, last_activity } = summary;
-  const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
   const facts = trackFacts(summary, map, all);
   const when = last_activity ?? track.created_at;
+  const flags = questions?.get(track.id);
+  const signal = flags && (flags.questions > 0 ? { questions: flags.questions, blocked: null } : flags);
   return (
     <li>
       <Link
@@ -112,19 +99,8 @@ export function TrackLine({ summary, all, params, map, names, questions, showPar
           {facts && <span className="min-w-0 flex-1 truncate text-ink-3">{facts}</span>}
         </span>
         <span className="flex shrink-0 items-center gap-3 max-md:min-w-0 max-md:basis-full max-md:flex-wrap max-md:gap-x-2.5 max-md:gap-y-1 max-md:pl-8 max-md:*:w-auto max-md:*:empty:hidden">
-          <Flags flags={questions?.get(track.id)} slots />
-          <Slot kind="threads">
-            {openThreads > 0 && (
-              <span title={openThreads === 1 ? "1 open thread" : `${openThreads} open threads`} className="inline-flex shrink-0 items-center gap-1 text-meta text-ink-3 tabular-nums">
-                <MessageSquare aria-hidden className="size-(--icon-sm)" strokeWidth={2} />
-                {openThreads}
-                <span className="sr-only">{openThreads === 1 ? " open thread" : " open threads"}</span>
-              </span>
-            )}
-          </Slot>
+          <Flags flags={signal} slots />
           {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
-          <Slot kind="progress">{stories.total > 0 && <Progress done={stories.done} total={stories.total} />}</Slot>
-          <OwnerAvatar userId={track.owner_user_id} names={names} />
           <Slot kind="when">
             <span
               title={last_activity ? `Last activity ${new Date(last_activity).toLocaleString()}` : `Created ${new Date(track.created_at).toLocaleString()}`}

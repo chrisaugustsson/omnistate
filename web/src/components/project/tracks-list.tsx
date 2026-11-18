@@ -156,10 +156,8 @@ export function TracksPage({ workspaceId, projectId, partId }: Params & { partId
                           all={all}
                           params={params}
                           map={map}
-                          names={names}
                           questions={questions}
                           showPart={!partId}
-                          openThreads={home?.threads.filter((thread) => thread.track_id === summary.track.id && !thread.conclusion).length}
                         />
                       ))}
                     </ul>
