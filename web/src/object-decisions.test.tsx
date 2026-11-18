@@ -11,6 +11,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
 import { API, BOB, FakeWebSocket, PROJECT_ID, PROJECT_PATH, WISION, fakeTrackApi, featureBody, track } from "./testing/track-api";
+import { choose, optionNames } from "./testing/select";
 
 const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
 const OLD_TRACK = "0192d7a0-4444-7000-8000-000000000002";
@@ -107,15 +108,17 @@ describe("a track's Decisions", () => {
     });
     renderAt(`${TRACK_PATH}/decisions`);
     fireEvent.click(await screen.findByRole("button", { name: "Record decision" }));
-    const form = await screen.findByRole("form", { name: "Record decision" });
-    const about = within(form).getByLabelText("About") as HTMLSelectElement;
-    await waitFor(() => expect(Array.from(about.options).map((option) => option.textContent)).toEqual(["This track", "Feature: Analyze", "Part: Wision", "The whole project"]));
-    const record = within(form).getByRole("button", { name: "Record decision" }) as HTMLButtonElement;
-    fireEvent.change(within(form).getByLabelText("Question"), { target: { value: "Which windows?" } });
-    fireEvent.change(within(form).getByLabelText("Decision"), { target: { value: "Presets only" } });
-    expect(record.disabled, "why is required").toBe(true);
-    fireEvent.change(within(form).getByLabelText("Why"), { target: { value: "Custom ranges hid the switch" } });
-    fireEvent.change(about, { target: { value: `feature:${ANALYZE}` } });
+    const drawer = await screen.findByRole("dialog", { name: "Record a decision" });
+    const about = within(drawer).getByRole("combobox", { name: "About" });
+    await waitFor(() => expect(optionNames(about)).toEqual(["This track · Long windows", "Analyze · feature", "Wision · part", "The whole project"]));
+    const record = within(drawer).getByRole("button", { name: "Record decision" });
+    fireEvent.change(within(drawer).getByRole("textbox", { name: "Question it answers" }), { target: { value: "Which windows?" } });
+    fireEvent.change(within(drawer).getByRole("textbox", { name: "What was decided" }), { target: { value: "Presets only" } });
+    fireEvent.click(record);
+    expect(within(drawer).getByRole("alert").textContent, "why is required").toBe("Say why");
+    expect(api.calls.filter((call) => call.method === "POST"), "nothing sent without why").toEqual([]);
+    fireEvent.change(within(drawer).getByRole("textbox", { name: "Why" }), { target: { value: "Custom ranges hid the switch" } });
+    choose(about, /^Analyze/);
     fireEvent.click(record);
 
     await waitFor(async () => expect(await topDecisions()).toEqual(["Presets only"]));

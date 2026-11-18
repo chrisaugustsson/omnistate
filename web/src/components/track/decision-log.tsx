@@ -8,7 +8,10 @@ import { Avatar } from "@/components/shell/avatar";
 import { StateIcon } from "@/components/shell/state-icon";
 import { cn } from "@/lib/utils";
 import { authorOf, type People } from "./people";
-import { EmptyLine, buttonClass, shortDate } from "./ui";
+import { Drawer, DialogError } from "@/components/shell/dialog";
+import { Field, Input, Textarea } from "@/components/shell/field";
+import { Select } from "@/components/shell/select";
+import { EmptyLine, buttonClass, chipClass, shortDate } from "./ui";
 
 // A decision log, as the feature's and the track's Decisions show it: the
 // current decisions newest first, each with why, who, the question it answers
@@ -50,21 +53,27 @@ function Where({ decision, context }: { decision: DecisionBody; context: LogCont
     if (!track) return null;
     return (
       <>
-        {" · from "}
-        <Link to="/w/$workspaceId/projects/$projectId/tracks/$trackId" params={{ ...params, trackId: track.track.id }} className={metaLink}>
-          <StateIcon state={track.track.state} />
-          {track.track.name}
-        </Link>
+        {" · "}
+        <span className="whitespace-nowrap">
+          {"from "}
+          <Link to="/w/$workspaceId/projects/$projectId/tracks/$trackId" params={{ ...params, trackId: track.track.id }} className={metaLink}>
+            <StateIcon state={track.track.state} />
+            {track.track.name}
+          </Link>
+        </span>
       </>
     );
   }
   if (decision.about === "feature" && decision.feature_id) {
     return (
       <>
-        {" · about "}
-        <span className={metaLink}>
-          <Box aria-hidden strokeWidth={2.25} />
-          {decision.feature_name ?? "a feature"}
+        {" · "}
+        <span className="whitespace-nowrap">
+          {"about "}
+          <span className={metaLink}>
+            <Box aria-hidden strokeWidth={2.25} />
+            {decision.feature_name ?? "a feature"}
+          </span>
         </span>
       </>
     );
@@ -72,10 +81,13 @@ function Where({ decision, context }: { decision: DecisionBody; context: LogCont
   if (decision.about === "part" && decision.part_id) {
     return (
       <>
-        {" · about "}
-        <Link to="/w/$workspaceId/projects/$projectId/parts/$partId" params={{ ...params, partId: decision.part_id }} className={metaLink}>
-          {decision.part_name ?? "a part"}
-        </Link>
+        {" · "}
+        <span className="whitespace-nowrap">
+          {"about "}
+          <Link to="/w/$workspaceId/projects/$projectId/parts/$partId" params={{ ...params, partId: decision.part_id }} className={metaLink}>
+            {decision.part_name ?? "a part"}
+          </Link>
+        </span>
       </>
     );
   }
@@ -170,17 +182,18 @@ function recordError(failure: unknown): string {
   return "The decision could not be recorded. Try again.";
 }
 
-const field =
-  "w-full rounded-control border border-line-strong bg-sheet px-2.5 py-1.5 text-ink outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:shadow-focus";
-
 /**
- * The form that records a decision on a track: the question it answers, the
- * decision, why, and what it is about (the track, one of its features, its
- * part, or the whole project).
+ * The drawer that records a decision on a track: what was decided, the
+ * question it answers, why, and what it is about (the track, one of its
+ * features, its part, or the whole project). All but About are required; one
+ * left empty is said under it when the drawer is submitted.
  */
 export function RecordDecision({
   params,
   trackId,
+  trackName,
+  trackState = "planning",
+  by,
   features,
   part,
   onDone,
@@ -188,6 +201,10 @@ export function RecordDecision({
 }: {
   params: Params;
   trackId: string;
+  trackName?: string;
+  trackState?: string;
+  /** Who records it: the track's owner. */
+  by?: string;
   features: FeatureBody[];
   part: PartBody | undefined;
   onDone: () => void;
@@ -198,10 +215,16 @@ export function RecordDecision({
   const [why, setWhy] = useState("");
   const [about, setAbout] = useState("track");
   const [busy, setBusy] = useState(false);
+  const [tried, setTried] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ready = question.trim() !== "" && decision.trim() !== "" && why.trim() !== "";
+  const missing = (value: string) => tried && value.trim() === "";
 
   async function submit() {
+    setTried(true);
+    if (question.trim() === "" || decision.trim() === "" || why.trim() === "") {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('[role="dialog"] [aria-invalid="true"]')?.focus());
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -221,47 +244,59 @@ export function RecordDecision({
     }
   }
 
+  const options = [
+    { value: "track", label: "This track", hint: trackName },
+    ...features.map((feature) => ({ value: `feature:${feature.id}`, label: feature.name, hint: "feature", icon: <Box aria-hidden strokeWidth={2.25} className="text-ink-2" /> })),
+    ...(part ? [{ value: "part", label: part.name, hint: "part" }] : []),
+    { value: "project", label: "The whole project" },
+  ];
+
   return (
-    <form
-      aria-label="Record decision"
-      className="mb-4 space-y-2 rounded-card border border-line bg-frame p-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (ready && !busy) void submit();
+    <Drawer
+      title="Record a decision"
+      description="A decision made outside a thread. It shows here, on what it is about and in the decision log."
+      onClose={onCancel}
+      onSubmit={() => {
+        if (!busy) void submit();
       }}
-    >
-      <input aria-label="Question" placeholder="The question it answers" value={question} onChange={(event) => setQuestion(event.target.value)} className={field} />
-      <input aria-label="Decision" placeholder="What was decided" value={decision} onChange={(event) => setDecision(event.target.value)} className={cn(field, "font-medium")} />
-      <textarea aria-label="Why" placeholder="Why" rows={2} value={why} onChange={(event) => setWhy(event.target.value)} className={cn(field, "resize-y")} />
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-2 text-ink-2">
-          About
-          <select aria-label="About" value={about} onChange={(event) => setAbout(event.target.value)} className={cn(field, "h-(--control-h) w-auto py-0")}>
-            <option value="track">This track</option>
-            {features.map((feature) => (
-              <option key={feature.id} value={`feature:${feature.id}`}>
-                Feature: {feature.name}
-              </option>
-            ))}
-            {part && <option value="part">Part: {part.name}</option>}
-            <option value="project">The whole project</option>
-          </select>
-        </label>
-        <div className="ml-auto flex gap-2">
-          <button type="button" className={buttonClass({ variant: "ghost" })} onClick={onCancel}>
+      footerStart={error && <DialogError>{error}</DialogError>}
+      footer={
+        <>
+          <button type="button" className={buttonClass()} onClick={onCancel}>
             Cancel
           </button>
-          <button type="submit" className={buttonClass({ variant: "primary" })} disabled={!ready || busy}>
+          <button type="submit" className={buttonClass({ variant: "primary" })} disabled={busy}>
             Record decision
           </button>
-        </div>
-      </div>
-      {error && (
-        <p role="alert" className="text-danger-ink">
-          {error}
-        </p>
+        </>
+      }
+    >
+      <Field label="What was decided" error={missing(decision) ? "Say what was decided" : undefined}>
+        {(control) => <Input {...control} placeholder="One sentence, as it now stands" value={decision} onChange={(event) => setDecision(event.target.value)} />}
+      </Field>
+      <Field label="Question it answers" error={missing(question) ? "Say which question it answers" : undefined}>
+        {(control) => <Input {...control} placeholder="The question that needed deciding" value={question} onChange={(event) => setQuestion(event.target.value)} />}
+      </Field>
+      <Field label="Why" error={missing(why) ? "Say why" : undefined}>
+        {(control) => <Textarea {...control} placeholder="What made this the right call" value={why} onChange={(event) => setWhy(event.target.value)} />}
+      </Field>
+      <Field label="About" hint="The decision shows on what it is about too.">
+        {(control) => <Select {...control} value={about} onChange={setAbout} options={options} />}
+      </Field>
+      {trackName && (
+        <Field label="Recorded on">
+          {(control) => (
+            <span id={control.id} className="flex min-h-(--control-h-lg) items-center gap-2">
+              <span className={chipClass}>
+                <StateIcon state={trackState} />
+                <span className="truncate">{trackName}</span>
+              </span>
+              {by && <span className="text-ink-3">by {by}</span>}
+            </span>
+          )}
+        </Field>
       )}
-    </form>
+    </Drawer>
   );
 }
 

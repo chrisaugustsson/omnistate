@@ -118,11 +118,15 @@ export function RecentDecisionRow({
           {(showAbout || subject.kind === "feature") && (
             <>
               <Sep />
-              about <About subject={subject} context={context} withPart={showAbout} />
+              <span className="whitespace-nowrap">
+                about <About subject={subject} context={context} withPart={showAbout} />
+              </span>
             </>
           )}
           <Sep />
-          from <FromTrack trackId={decision.track_id} context={context} />
+          <span className="whitespace-nowrap">
+            from <FromTrack trackId={decision.track_id} context={context} />
+          </span>
           {decision.replaces_decision_id && (
             <>
               <Sep />
@@ -169,7 +173,9 @@ function LogRow({
           <Sep />
           Answers “{decision.question}”
           <Sep />
-          from <FromTrack trackId={decision.track_id} context={context} />
+          <span className="whitespace-nowrap">
+            from <FromTrack trackId={decision.track_id} context={context} />
+          </span>
         </p>
         {chain.length > 0 && <Replaces chain={chain} context={context} />}
       </div>
@@ -200,7 +206,9 @@ function Replaces({ chain, context }: { chain: DecisionBody[]; context: Decision
               <Sep />
               {shortDate(old.created_at)}
               <Sep />
-              from <FromTrack trackId={old.track_id} context={context} />
+              <span className="whitespace-nowrap">
+                from <FromTrack trackId={old.track_id} context={context} />
+              </span>
             </p>
           </li>
         ))}

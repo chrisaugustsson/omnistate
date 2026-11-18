@@ -47,6 +47,9 @@ function Decisions() {
         <RecordDecision
           params={params}
           trackId={trackId}
+          trackName={summary?.track.name}
+          trackState={summary?.track.state}
+          by={ownerName}
           features={features ?? []}
           part={part}
           onCancel={() => setAdding(false)}
