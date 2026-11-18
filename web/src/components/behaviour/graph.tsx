@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TreeNode } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
-import { animateTo, bringIntoView, centreOn, fit, fitBlock, keepInView, tween, zoomAt, type View } from "./camera";
+import { allInView, animateTo, bringIntoView, centreOn, fit, fitBlock, keepInView, tween, zoomAt, type View } from "./camera";
 import { elbow, layoutBlocks, planColumns, type Rect } from "./layout";
-import { Minimap } from "./minimap";
+import { Minimap, minimapCorner } from "./minimap";
 import { Legend, Marks } from "./marks";
 import { ancestorsOf, childrenOf, descendantsOf, shortTitle } from "./tree";
 
@@ -233,7 +233,15 @@ export function Graph({
     // 28 more on the right for the fold pills beside the boxes.
     const w = Math.max(...group.map((one) => one.x + one.w)) - x + 28;
     const h = Math.max(...group.map((one) => one.y + one.h)) - y;
-    const target = keepInView(current, { x, y, w, h }, area);
+    // The whole drawing, when it fits at this zoom, so nothing is hidden and no minimap is needed.
+    const all = boundsRef.current;
+    const m = 32;
+    if (all.w * current.k <= area.w - 2 * m && all.h * current.k <= area.h - 2 * m) {
+      const target = keepInView(current, all, area, m);
+      if (target) moveTo(target, 200);
+      return;
+    }
+    const target = keepInView(current, { x, y, w, h }, area, m, minimapCorner(all));
     if (target) moveTo(target, 200);
   }, [area, chosenId, boxes, nodes, moveTo]);
 
@@ -506,7 +514,8 @@ export function Graph({
               </button>
             ))}
           </div>
-          <Minimap boxes={boxes} bounds={bounds} waiting={waiting} view={view} area={area} onGo={goTo} />
+          {/* The map only while some of the drawing lies outside the area: with all of it in view it adds nothing. */}
+          {!allInView(view, bounds, area) && <Minimap boxes={boxes} bounds={bounds} waiting={waiting} view={view} area={area} onGo={goTo} />}
         </>
       )}
     </div>

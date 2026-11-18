@@ -4,7 +4,7 @@
 // and a move of the view is skipped when the system asks for reduced motion and
 // stops on any new input.
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { animateTo, bringIntoView, zoomAt } from "./components/behaviour/camera";
+import { animateTo, bringIntoView, keepInView, zoomAt } from "./components/behaviour/camera";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -83,5 +83,24 @@ describe("bringIntoView", () => {
     expect(bringIntoView(near, { x: 433, y: 200, ...BOX }, AREA, { isStory: false })).toEqual({ k: 1, x: -185, y: 207 });
     expect(bringIntoView(near, { x: 200, y: 750, ...BOX }, AREA, { isStory: false })).toBeNull();
     expect(bringIntoView(near, { x: 200, y: 751, ...BOX }, AREA, { isStory: false })).toEqual({ k: 1, x: 48, y: -344 });
+  });
+});
+
+describe("keepInView", () => {
+  const area = { w: 800, h: 600 };
+  const corner = { w: 172, h: 192 };
+
+  test("leaves a group that is in sight and clear of the minimap's corner where it is", () => {
+    expect(keepInView({ x: 0, y: 0, k: 1 }, { x: 100, y: 100, w: 300, h: 100 }, area, 32, corner)).toBeNull();
+  });
+
+  test("moves a group out from under the minimap's corner, up when that keeps its top in sight", () => {
+    // Centred, the group would run from 400 to 650 across and 250 to 350 down: under the corner, which starts at 628, 408 once it is moved.
+    const view = keepInView({ x: -600, y: 0, k: 1 }, { x: 0, y: 0, w: 250, h: 100 }, { w: 800, h: 500 }, 32, corner)!;
+    const right = view.x + 250;
+    const bottom = view.y + 100;
+    expect(right > 800 - corner.w - 8 && bottom > 500 - corner.h - 8).toBe(false);
+    expect(view.y).toBeGreaterThanOrEqual(32);
+    expect(view.x).toBeGreaterThanOrEqual(32);
   });
 });
