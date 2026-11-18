@@ -150,7 +150,11 @@ function OpenThread({ threadId }: { threadId: string }) {
           </span>
         )}
         <span>Started {shortDate(thread.created_at)}</span>
-        {thread.run_tag && <span className="font-mono">· {thread.run_tag}</span>}
+        {thread.run_tag && (
+          <span className="whitespace-nowrap">
+            · run <span className="font-mono text-ink-2">{thread.run_tag}</span>
+          </span>
+        )}
       </p>
       {thread.conclusion && (
         <section aria-label="Conclusion" className="mt-4 rounded-control bg-frame px-3 py-2.5">

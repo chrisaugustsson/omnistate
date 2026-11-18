@@ -148,6 +148,15 @@ describe("a track's Threads tab", () => {
     expect((await within(article).findByRole("region", { name: "Conclusion" })).textContent).toContain("We take Apple Pay and Swish.");
   });
 
+  test("a thread from an agent run names the run in its meta line", async () => {
+    const api = threadsApi();
+    api.fixture.threadBodies = { [WALLETS]: { ...walletsBody(), run_tag: "seed" } };
+    renderAt(`${THREADS_PATH}/${WALLETS}`);
+    const article = await openThread();
+    const meta = (await within(article).findByText(/^Started/)).closest("p");
+    expect(meta?.textContent).toContain("Started 17 Nov· run seed");
+  });
+
   test("your post is sent as written and the fields clear", async () => {
     const api = threadsApi();
     renderAt(`${THREADS_PATH}/${WALLETS}`);
