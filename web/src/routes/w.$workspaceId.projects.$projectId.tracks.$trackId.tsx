@@ -3,7 +3,7 @@ import { Page } from "@/components/shell/page";
 import { projectLink, useScope } from "@/components/shell/scope";
 import { countsKey, useIsPhone, useReportSections } from "@/components/shell/shell-context";
 import { useTrackActions } from "@/components/track/track-actions";
-import { TrackProvider, useTrackData } from "@/components/track/track-data";
+import { TAB_PILLARS, TrackProvider, useTrackData, type DocTab } from "@/components/track/track-data";
 import { TrackHeader } from "@/components/track/track-header";
 import { linkClass } from "@/components/track/ui";
 
@@ -35,17 +35,29 @@ function TrackLayout() {
   const { summary, missing, docs, boards, onService, openQuestions, threads, decisions, home, isOwner } = data;
   const stories = summary?.stories;
   const showDesign = !onService || docs.design.length > 0;
-  // The comments waiting on the reader: on the track's docs, when the track is theirs (the Inbox's rule).
-  const waiting = isOwner ? (home?.waiting.comments ?? []).filter((comment) => comment.track_id === trackId).length : 0;
+  // The comments waiting on the reader (the Inbox's rule: on a track of theirs), counted on the
+  // section that shows their doc: Spec, Design or How, by the doc's pillar.
+  const waitingIn = (tab: DocTab) => {
+    if (!isOwner || !home) return 0;
+    const pillars: readonly string[] = TAB_PILLARS[tab];
+    const ids = new Set(home.docs.filter((doc) => doc.track_id === trackId && pillars.includes(doc.pillar)).map((doc) => doc.id));
+    return home.waiting.comments.filter((comment) => comment.track_id === trackId && ids.has(comment.doc_id)).length;
+  };
+  const waiting = { spec: waitingIn("spec"), design: waitingIn("design"), how: waitingIn("how") };
+  const forYou = (count: number) => ({ waiting: count, note: `${count} for you` });
   useReportSections(countsKey("track", trackId), {
-    behaviour: openQuestions > 0 ? { waiting: openQuestions, note: `${openQuestions} for you` } : {},
-    design: !showDesign ? { hidden: true } : boards ? { count: boards, note: `${boards} ${boards === 1 ? "board" : "boards"}` } : {},
+    spec: waiting.spec ? forYou(waiting.spec) : {},
+    behaviour: openQuestions > 0 ? forYou(openQuestions) : {},
+    design: !showDesign
+      ? { hidden: true }
+      : waiting.design
+        ? forYou(waiting.design)
+        : boards
+          ? { count: boards, note: `${boards} ${boards === 1 ? "board" : "boards"}` }
+          : {},
+    how: waiting.how ? forYou(waiting.how) : {},
     board: stories ? { count: `${stories.done}/${stories.total}`, note: `${stories.done} of ${stories.total}` } : {},
-    threads: waiting
-      ? { waiting, note: `${waiting} for you` }
-      : threads.length
-        ? { count: threads.length, note: `${threads.length} ${threads.length === 1 ? "thread" : "threads"}` }
-        : {},
+    threads: threads.length ? { count: threads.length, note: `${threads.length} ${threads.length === 1 ? "thread" : "threads"}` } : {},
     decisions: decisions?.length ? { count: decisions.length } : {},
   });
   if (bleed) {

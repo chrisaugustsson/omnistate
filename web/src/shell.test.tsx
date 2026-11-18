@@ -343,17 +343,17 @@ describe("the sections sidebar", () => {
     expect((await sections())[1][1]).toBe(true);
   });
 
-  test("on your track: Threads is a dark count while a comment waits on you, and each section leads to the track's page of it", async () => {
+  test("on your track: a comment waiting on you is a dark count on the section that shows its doc (Spec for a spec), and each section leads to the track's page of it", async () => {
     renderAt(`${P}/tracks/${LONG_WINDOWS}`);
 
     await waitFor(async () =>
       expect(await sections()).toEqual([
-        ["Spec", true],
+        ["Spec, 1 waiting on you", true],
         ["Behaviour", false],
         ["Design", false],
         ["How", false],
         ["Board, 0/2", false],
-        ["Threads, 1 waiting on you", false],
+        ["Threads", false],
         ["Decisions", false],
       ]),
     );
@@ -396,12 +396,12 @@ describe("on the phone", () => {
     fireEvent.click(button);
     const sheet = await screen.findByRole("dialog", { name: "Sections" });
     expect(within(sheet).getAllByRole("link").map((link) => link.textContent)).toEqual([
-      "Spec",
+      "Spec1 for you",
       "Behaviour",
       "Design",
       "How",
       "Board0 of 2",
-      "Threads1 for you",
+      "Threads",
       "Decisions",
     ]);
   });
