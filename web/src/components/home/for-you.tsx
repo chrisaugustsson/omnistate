@@ -228,7 +228,7 @@ function WaitingRow({ workspaceId, item, members, me }: { workspaceId: string; i
   const who = whoOf(item.reply.author, members, me);
   const doc = item.doc ?? { id: item.comment.doc_id, track_id: item.comment.track_id };
   return (
-    <div className="group relative flex items-start gap-3 border-t border-line py-2.5 transition-colors duration-(--t-fast) ease-out-quint [div[data-band]+&]:border-t-0 hover:bg-frame hover:shadow-[-8px_0_0_var(--frame),8px_0_0_var(--frame)]">
+    <div className="group relative flex items-start gap-3 border-t border-line px-3 py-2.5 transition-colors duration-(--t-fast) ease-out-quint [div[data-band]+&]:border-t-0 hover:bg-frame">
       <Avatar name={who.avatarName ?? who.name} agent={who.agent} tintKey={who.tintKey} title={who.name} />
       <Link
         {...docLink(workspaceId, item.projectId, doc)}
@@ -240,7 +240,7 @@ function WaitingRow({ workspaceId, item, members, me }: { workspaceId: string; i
           {who.name} replied to your comment{item.doc ? ` · ${item.doc.title}` : ""}
         </span>
       </Link>
-      <span className="w-16 shrink-0 text-right text-meta whitespace-nowrap text-ink-3 tabular-nums transition-opacity group-focus-within:opacity-0 group-hover:opacity-0">
+      <span className="w-14 shrink-0 text-right text-meta whitespace-nowrap text-ink-3 tabular-nums transition-opacity group-focus-within:opacity-0 group-hover:opacity-0">
         {age(item.at)}
       </span>
       <Link
@@ -249,7 +249,7 @@ function WaitingRow({ workspaceId, item, members, me }: { workspaceId: string; i
         search={{ comment: item.comment.id }}
         className={cn(
           buttonClass({ sm: true }),
-          "pointer-events-none absolute top-1/2 right-0 z-10 -translate-y-1/2 opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100",
+          "pointer-events-none absolute top-1/2 right-3 z-10 -translate-y-1/2 opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100",
         )}
       >
         Reply

@@ -4,7 +4,7 @@ import { Page } from "@/components/shell/page";
 import { projectLink } from "@/components/shell/scope";
 import { StateIcon, stateLabel } from "@/components/shell/state-icon";
 import { STATE_ORDER, age, activityOf, myTracks, splitText } from "./model";
-import { Band, ColumnList, EmptyRow, TrackRow } from "./rows";
+import { Band, ColumnList, EmptyRow, Slot, TrackRow } from "./rows";
 import { findPart, useHomeData, useTrackFlags } from "./use-home-data";
 
 // Home's My tracks (tasks/ui-redesign/v2/my-tracks.html): the tracks you own
@@ -61,10 +61,11 @@ export function MyTracks({ workspaceId }: { workspaceId: string }) {
                         flags={flags.get(summary.track.id)}
                         part={findPart(parts, summary.track.project_id, summary.track.part_id)}
                         parts={parts?.get(summary.track.project_id)}
+                        inset
                         end={
-                          <span className="w-16 shrink-0 text-right text-meta whitespace-nowrap text-ink-3 tabular-nums">
-                            {age(activityOf(summary))}
-                          </span>
+                          <Slot kind="when">
+                            <span className="text-meta whitespace-nowrap text-ink-3 tabular-nums">{age(activityOf(summary))}</span>
+                          </Slot>
                         }
                       />
                     ))

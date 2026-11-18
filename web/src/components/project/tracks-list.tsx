@@ -158,7 +158,7 @@ export function TracksPage({ workspaceId, projectId, partId }: Params & { partId
           ) : shown.length === 0 ? (
             <p className="mt-3 border-y border-line py-2.5 text-ink-3">No track matches the filter.</p>
           ) : (
-            <div className="-mx-3 mt-3">
+            <div className="mt-3">
               {TRACK_STATES.map((band) => {
                 const tracks = shown.filter(({ track }) => track.state === band).sort(byActivity);
                 if (tracks.length === 0) return null;

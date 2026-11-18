@@ -6,7 +6,7 @@ import { PartIcon } from "@/components/shell/part-icon";
 import { StateIcon, stateLabel } from "@/components/shell/state-icon";
 import { partTone } from "@/lib/identity";
 import { cn } from "@/lib/utils";
-import { Flags } from "@/components/home/rows";
+import { Flags, Slot } from "@/components/home/rows";
 import type { TrackFlags } from "@/components/home/use-home-data";
 import type { ProjectMap } from "./project-data";
 import { Progress, RowLead, rowClass, shortWhen } from "./rows";
@@ -52,22 +52,24 @@ export function PartChip({ name, kind, tone, deleted, className }: { name: strin
 function TrackPart({ summary, parts }: { summary: TrackSummary; parts: readonly PartBody[] | null }) {
   const part = parts?.find((candidate) => candidate.id === summary.track.part_id);
   return (
-    <PartChip
-      className="w-[104px]"
-      name={part?.name ?? summary.part_name ?? "Part"}
-      kind={part?.kind ?? "service"}
-      tone={partTone(parts, summary.track.part_id)}
-      deleted={summary.part_deleted}
-    />
+    <Slot kind="part">
+      <PartChip
+        className="w-full"
+        name={part?.name ?? summary.part_name ?? "Part"}
+        kind={part?.kind ?? "service"}
+        tone={partTone(parts, summary.track.part_id)}
+        deleted={summary.part_deleted}
+      />
+    </Slot>
   );
 }
 
 /** The owner of a track as an avatar; nothing for a track nobody owns. */
 export function OwnerAvatar({ userId, names }: { userId?: string | null; names: ReadonlyMap<string, string> | null }) {
-  if (!userId) return <span aria-hidden className="w-(--avatar) shrink-0" />;
+  if (!userId) return <Slot kind="owner" />;
   const name = names?.get(userId) ?? "Owner";
   return (
-    <span className="inline-grid shrink-0" title={`Owned by ${name}`}>
+    <span data-col="owner" className="inline-grid w-(--avatar) shrink-0 place-items-center" title={`Owned by ${name}`}>
       <Avatar name={name} tintKey={userId} />
       <span className="sr-only">Owned by {name}</span>
     </span>
@@ -86,7 +88,11 @@ type RowProps = {
   showPart: boolean;
 };
 
-/** A track in an Overview's In flight: its name over what it changes, then questions, part, progress and owner. */
+/**
+ * A track in an Overview's In flight: its name, then the facts in their
+ * columns (questions, blocked, part, progress, owner), and under both what it
+ * changes, which truncates only at the row's end.
+ */
 export function FlightRow({ summary, all, params, map, names, questions, showPart }: RowProps) {
   const { track } = summary;
   const stories = summary.stories ?? { total: 0, open: 0, done: 0 };
@@ -96,19 +102,19 @@ export function FlightRow({ summary, all, params, map, names, questions, showPar
       <Link
         to="/w/$workspaceId/projects/$projectId/tracks/$trackId"
         params={{ ...params, trackId: track.id }}
-        className={rowClass({ two: true, link: true })}
+        className={cn(rowClass({ two: true, link: true }), "grid grid-cols-[var(--avatar)_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5")}
       >
         <RowLead two>
           <StateIcon state={track.state} label={stateLabel(track.state)} />
         </RowLead>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate font-medium">{track.name}</span>
-          {facts && <span className="truncate text-ink-3">{facts}</span>}
-        </span>
-        <span className="flex min-h-5 shrink-0 items-center gap-3">
-          <Flags flags={questions?.get(track.id)} />
+        <span className="min-w-0 truncate font-medium">{track.name}</span>
+        {facts && <span className="col-span-2 col-start-2 row-start-2 min-w-0 truncate text-ink-3">{facts}</span>}
+        <span className="col-start-3 row-start-1 flex h-5 shrink-0 items-center gap-3">
+          <Flags flags={questions?.get(track.id)} slots />
           {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
-          <Progress done={stories.done} total={stories.total} className="w-24" />
+          <Slot kind="progress">
+            <Progress done={stories.done} total={stories.total} />
+          </Slot>
           <OwnerAvatar userId={track.owner_user_id} names={names} />
         </span>
       </Link>
@@ -133,27 +139,33 @@ export function TrackLine({ summary, all, params, map, names, questions, showPar
           <StateIcon state={track.state} label={stateLabel(track.state)} />
         </RowLead>
         <span className="flex min-w-0 flex-1 items-center gap-2">
-          <span className={cn("shrink-0 truncate font-medium", track.state === "dropped" && "text-ink-2")}>{track.name}</span>
+          <span className={cn("max-w-full min-w-0 shrink-0 truncate font-medium", track.state === "dropped" && "text-ink-2")}>{track.name}</span>
           {facts && <span className="min-w-0 flex-1 truncate text-ink-3">{facts}</span>}
         </span>
         <span className="flex shrink-0 items-center gap-3">
-          <Flags flags={questions?.get(track.id)} />
-          {openThreads > 0 && (
-            <span title={openThreads === 1 ? "1 open thread" : `${openThreads} open threads`} className="inline-flex shrink-0 items-center gap-1 text-meta text-ink-3 tabular-nums">
-              <MessageSquare aria-hidden className="size-(--icon-sm)" strokeWidth={2} />
-              {openThreads}
-              <span className="sr-only">{openThreads === 1 ? " open thread" : " open threads"}</span>
-            </span>
-          )}
+          <Flags flags={questions?.get(track.id)} slots />
+          <Slot kind="threads">
+            {openThreads > 0 && (
+              <span title={openThreads === 1 ? "1 open thread" : `${openThreads} open threads`} className="inline-flex shrink-0 items-center gap-1 text-meta text-ink-3 tabular-nums">
+                <MessageSquare aria-hidden className="size-(--icon-sm)" strokeWidth={2} />
+                {openThreads}
+                <span className="sr-only">{openThreads === 1 ? " open thread" : " open threads"}</span>
+              </span>
+            )}
+          </Slot>
           {showPart && <TrackPart summary={summary} parts={map?.parts ?? null} />}
-          <Progress done={stories.done} total={stories.total} className="w-24" />
+          <Slot kind="progress">
+            <Progress done={stories.done} total={stories.total} />
+          </Slot>
           <OwnerAvatar userId={track.owner_user_id} names={names} />
-          <span
-            title={last_activity ? `Last activity ${new Date(last_activity).toLocaleString()}` : `Created ${new Date(track.created_at).toLocaleString()}`}
-            className="w-14 text-right text-meta whitespace-nowrap text-ink-3"
-          >
-            {shortWhen(when)}
-          </span>
+          <Slot kind="when">
+            <span
+              title={last_activity ? `Last activity ${new Date(last_activity).toLocaleString()}` : `Created ${new Date(track.created_at).toLocaleString()}`}
+              className="text-meta whitespace-nowrap text-ink-3"
+            >
+              {shortWhen(when)}
+            </span>
+          </Slot>
         </span>
       </Link>
     </li>

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "@tanstack/react-router";
 import type { TrackSummary } from "@/api/generated";
-import { Flags } from "@/components/home/rows";
+import { Flags, Slot } from "@/components/home/rows";
 import { useTrackFlags, type TrackFlags } from "@/components/home/use-home-data";
 import { Band, rowClass } from "@/components/project/rows";
 import { Avatar } from "@/components/shell/avatar";
@@ -50,12 +50,18 @@ function Row({
           </span>
         </span>
         <span className="flex h-5 shrink-0 items-center gap-3">
-          <Flags flags={flags} />
-          {summary.stories && summary.stories.total > 0 && <Progress done={summary.stories.done} total={summary.stories.total} />}
-          <Avatar name={owner} tintKey={track.owner_user_id ?? undefined} title={owner} />
-          <span title={new Date(when).toLocaleString()} className="w-16 text-right text-meta whitespace-nowrap text-ink-3">
-            {timeAgo(when)}
-          </span>
+          <Flags flags={flags} slots />
+          <Slot kind="progress">
+            {summary.stories && summary.stories.total > 0 && <Progress done={summary.stories.done} total={summary.stories.total} />}
+          </Slot>
+          <Slot kind="owner">
+            <Avatar name={owner} tintKey={track.owner_user_id ?? undefined} title={owner} />
+          </Slot>
+          <Slot kind="when">
+            <span title={new Date(when).toLocaleString()} className="text-meta whitespace-nowrap text-ink-3">
+              {timeAgo(when)}
+            </span>
+          </Slot>
         </span>
       </Link>
     </li>
@@ -77,7 +83,7 @@ export function TracksByState({
   const bodies = useMemo(() => tracks.map(({ track }) => track), [tracks]);
   const flags = useTrackFlags(params.workspaceId, bodies);
   return (
-    <div className="-mx-3">
+    <div>
       {groups.map((group) => (
         <section key={group.state} aria-label={stateLabel(group.state)} className="mb-2">
           <h2>

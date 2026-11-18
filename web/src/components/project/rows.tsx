@@ -112,11 +112,15 @@ export function EmptyRow({ children, icon, inset = false }: { children: ReactNod
   );
 }
 
-/** A group band over rows: a pale tinted bar with an icon, the group's name and its count. */
+/**
+ * A group band over rows: a pale tinted bar with an icon, the group's name and
+ * its count. It spans the column with the rows' inner padding (rowClass
+ * `inset`), its icon over theirs and its name over their titles.
+ */
 export function Band({ icon, children, count, end }: { icon?: ReactNode; children: ReactNode; count?: number; end?: ReactNode }) {
   return (
-    <div role="presentation" className="flex h-(--band-h) items-center gap-2 rounded-control bg-band pr-3 pl-3 font-medium text-ink">
-      {icon && <span className="mr-[7px] ml-[3px] grid place-items-center">{icon}</span>}
+    <div role="presentation" className="flex h-(--band-h) items-center gap-2 rounded-control bg-band px-3 font-medium text-ink">
+      {icon && <span className="mr-1 grid w-(--avatar) shrink-0 place-items-center">{icon}</span>}
       {children}
       {count !== undefined && <span className="font-medium text-ink-3 tabular-nums">{count}</span>}
       {end && <div className="ml-auto flex items-center gap-1">{end}</div>}

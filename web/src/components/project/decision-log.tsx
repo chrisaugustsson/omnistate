@@ -330,7 +330,7 @@ export function DecisionLog({
           <EmptyRow>{emptyText}</EmptyRow>
         </ul>
       ) : (
-        <div className="-mx-3 mt-3">
+        <div className="mt-3">
           {shown.map(({ group, rows }) => (
             <section key={group.subject.id} aria-label={group.subject.name} className="mb-3">
               <Band icon={<SubjectIcon subject={group.subject} parts={context.parts} />} count={rows.length}>
@@ -347,7 +347,7 @@ export function DecisionLog({
             </section>
           ))}
           {shown.length === 0 && (
-            <ul className="mx-3 border-y border-line">
+            <ul className="border-y border-line">
               <EmptyRow>No decisions about this yet.</EmptyRow>
             </ul>
           )}
