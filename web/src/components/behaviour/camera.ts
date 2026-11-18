@@ -62,20 +62,21 @@ export function bringIntoView(
 }
 
 /**
- * Where the view goes so that `box` lies inside `area` with `m` to spare, moved
- * no further than that and at the same zoom, or null when it already does: the
- * graph keeps the chosen node in sight when the area narrows (the details open).
+ * Where the view goes so that `group` (a chosen node with its children) lies
+ * inside `area` with `m` to spare, or null when it already does. A group that
+ * fits at the current zoom is centred at that zoom; one that does not is
+ * fitted, zooming out no further than it must. The graph keeps the chosen node
+ * and what is under it in sight when the area changes size (the details open,
+ * the window resizes).
  */
-export function keepInView(view: View, box: Rect, area: { w: number; h: number }, m = 32): View | null {
-  const left = view.x + box.x * view.k;
-  const top = view.y + box.y * view.k;
-  const right = left + box.w * view.k;
-  const bottom = top + box.h * view.k;
-  let dx = right > area.w - m ? area.w - m - right : 0;
-  if (left + dx < m) dx = m - left;
-  let dy = bottom > area.h - m ? area.h - m - bottom : 0;
-  if (top + dy < m) dy = m - top;
-  return dx || dy ? { ...view, x: view.x + dx, y: view.y + dy } : null;
+export function keepInView(view: View, group: Rect, area: { w: number; h: number }, m = 32): View | null {
+  const left = view.x + group.x * view.k;
+  const top = view.y + group.y * view.k;
+  const right = left + group.w * view.k;
+  const bottom = top + group.h * view.k;
+  if (left >= m && top >= m && right <= area.w - m && bottom <= area.h - m) return null;
+  const k = Math.max(MIN_ZOOM, Math.min(view.k, (area.w - 2 * m) / group.w, (area.h - 2 * m) / group.h));
+  return centreOn({ ...view, k }, group, area);
 }
 
 // cubic-bezier(0.23, 1, 0.32, 1), solved for y at x by Newton steps.

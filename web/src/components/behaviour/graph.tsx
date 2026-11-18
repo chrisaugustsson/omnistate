@@ -218,7 +218,7 @@ export function Graph({
     if (block && areaRef.current) moveTo(fitBlock(block, areaRef.current), 260);
   };
 
-  // When the area changes size (the details open or close, the window resizes), the chosen node stays in sight.
+  // When the area changes size (the details open or close, the window resizes), the chosen node and its children stay in sight.
   const lastArea = useRef(area);
   useEffect(() => {
     const before = lastArea.current;
@@ -227,9 +227,15 @@ export function Graph({
     const current = viewRef.current;
     const box = chosenId ? boxes.get(chosenId) : undefined;
     if (!current || !box) return;
-    const target = keepInView(current, box, area);
+    const group = [box, ...nodes.filter((node) => node.parent_id === chosenId).flatMap((node) => boxes.get(node.id) ?? [])];
+    const x = Math.min(...group.map((one) => one.x));
+    const y = Math.min(...group.map((one) => one.y));
+    // 28 more on the right for the fold pills beside the boxes.
+    const w = Math.max(...group.map((one) => one.x + one.w)) - x + 28;
+    const h = Math.max(...group.map((one) => one.y + one.h)) - y;
+    const target = keepInView(current, { x, y, w, h }, area);
     if (target) moveTo(target, 200);
-  }, [area, chosenId, boxes, moveTo]);
+  }, [area, chosenId, boxes, nodes, moveTo]);
 
   // A node chosen outside the graph is brought into sight by the rules of bringIntoView.
   const handled = useRef<number | null>(null);

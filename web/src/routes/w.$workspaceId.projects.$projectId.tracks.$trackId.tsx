@@ -16,9 +16,9 @@ import { linkClass } from "@/components/track/ui";
 // description, a quiet Next row while behaviour questions wait, and its tabs:
 // Spec, Behaviour, Design, How, Board, Threads, Decisions. The tab's content
 // sits beside the properties panel; the Board takes the full column until the
-// panel is asked for. Behaviour and Design are canvases: there the header is
-// compact (no description, no Next row, no properties) and spans the window
-// with the canvas, which fills the height under it. A doc opened full view
+// panel is asked for. Behaviour and Design are canvases: there the header
+// keeps its place without the description, the Next row and the properties,
+// its tabs' hairline spans the window, and the canvas fills the window under it. A doc opened full view
 // fills the view instead (staticData.bleed). The layout loads the track's data
 // once for every tab.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/tracks/$trackId")({
@@ -30,7 +30,7 @@ const TRACK = "/w/$workspaceId/projects/$projectId/tracks/$trackId";
 
 /** The tabs that want the full column: the panel stays closed there until it is asked for. */
 const WIDE = new Set(["board"]);
-/** The tabs that are a canvas: they fill the window under a compact header, with no panel. */
+/** The tabs that are a canvas: they fill the window under the header, with no panel. */
 const CANVAS = new Set(["behaviour", "design"]);
 
 function TrackLayout() {

@@ -16,8 +16,8 @@ import { linkClass } from "@/components/track/ui";
 // and its tabs: Overview, Docs, Design (only when it has design docs), Tracks,
 // Decisions. The tab's content sits beside the properties panel; Docs takes
 // the full column for its list and the open doc. Design, and Docs with a design
-// open, are a canvas: there the header is compact (no banners) and spans the
-// window with the canvas, which fills the height under it. A doc opened full
+// open, are a canvas: there the header keeps its place without the banners,
+// its tabs' hairline spans the window, and the canvas fills the window under it. A doc opened full
 // view fills the view instead (staticData.bleed). The layout loads the
 // feature's data once for every tab.
 export const Route = createFileRoute("/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId")({
