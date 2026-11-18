@@ -284,6 +284,13 @@ function blocker(main: HTMLElement, of: string, key: string) {
   return within(card(main, of)).getByText(key);
 }
 
+/** Opens the "…" menu of the card `key` and presses `item` in it (a priority "P1", "Edit blockers…", "Cancel story…"). */
+function cardAction(main: HTMLElement, key: string, item: string) {
+  fireEvent.click(within(card(main, key)).getByRole("button", { name: `${key} actions` }));
+  const menu = within(card(main, key)).getByRole("menu");
+  fireEvent.click(within(menu).getByRole(/^P\d$/.test(item) ? "menuitemradio" : "menuitem", { name: item }));
+}
+
 const choosePriority = (main: HTMLElement, value: string) =>
   fireEvent.change(within(main).getByRole("combobox", { name: /Priority/ }), { target: { value } });
 const showCancelled = (main: HTMLElement) =>
@@ -575,15 +582,15 @@ describe("steering from the board", () => {
     renderAt(BOARD_PATH);
     const main = await board();
 
-    fireEvent.change(within(card(main, "US-1")).getByRole("combobox"), { target: { value: "1" } });
+    cardAction(main, "US-1", "P1");
 
     await waitFor(() => expect(cardKeys(main, "Implementing")).toEqual(["US-1"]));
     expect(cardKeys(main, "Backlog")).toEqual([]);
     expect(within(card(main, "US-1")).getByRole("alert").textContent).toBe(CONFLICT);
-    expect((within(card(main, "US-1")).getByRole("combobox") as HTMLSelectElement).value).toBe("2");
+    expect(within(card(main, "US-1")).getByText("P2")).toBeTruthy();
 
     api.answer = () => ({ status: 200, body: { story: story(1, { status: "implementing", priority: 1, version: 3 }) } });
-    fireEvent.change(within(card(main, "US-1")).getByRole("combobox"), { target: { value: "1" } });
+    cardAction(main, "US-1", "P1");
 
     await waitFor(() => expect(api.writes).toHaveLength(2));
     expect(api.writes[1].body).toEqual({ expected_version: 2, priority: 1 });
@@ -597,24 +604,39 @@ describe("steering from the board", () => {
     const main = await board();
     expect(cardKeys(main, "Backlog")).toEqual(["US-1", "US-2"]);
 
-    fireEvent.change(within(card(main, "US-2")).getByRole("combobox"), { target: { value: "1" } });
+    cardAction(main, "US-2", "P1");
 
     await waitFor(() => expect(cardKeys(main, "Backlog")).toEqual(["US-2", "US-1"]));
     expect(api.writes).toEqual([{ method: "PATCH", path: storyPath(2), body: { expected_version: 1, priority: 1 } }]);
   });
 
-  test("a done card disables its priority and Edit blockers and offers no Cancel story; a fix story shows P0 without a selector", async () => {
+  test("a done card shows its priority and has no actions; a fix story shows P0 and its menu offers no priority", async () => {
     fakeApi([story(1, { status: "done", priority: 2 }), story(2, { priority: 0 })]);
     renderAt(BOARD_PATH);
     const main = await board();
 
     const done = card(main, "US-1");
-    expect((within(done).getByRole("combobox") as HTMLSelectElement).disabled).toBe(true);
-    expect((within(done).getByRole("button", { name: "Edit blockers" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(within(done).queryByRole("button", { name: "Cancel story" })).toBeNull();
+    expect(within(done).getByText("P2")).toBeTruthy();
+    expect(within(done).queryByRole("button", { name: "US-1 actions" })).toBeNull();
     const fix = card(main, "US-2");
     expect(within(fix).getByText("P0")).toBeTruthy();
-    expect(within(fix).queryByRole("combobox")).toBeNull();
+    fireEvent.click(within(fix).getByRole("button", { name: "US-2 actions" }));
+    expect(within(fix).queryAllByRole("menuitemradio")).toEqual([]);
+    expect(within(fix).getByRole("menuitem", { name: "Edit blockers…" })).toBeTruthy();
+    expect(within(fix).getByRole("menuitem", { name: "Cancel story…" })).toBeTruthy();
+  });
+
+  test("a blocker is labelled: Blocked by and its key on this track, with its part on another track", async () => {
+    fakeApi([story(1, { blockedBy: [2] }), story(2, { blockers: [ingestBlocker(3, "implementing")] })], [linkedTask(3, "blocks", 2)]);
+    renderAt(BOARD_PATH);
+    const main = await board();
+
+    const said = (key: string) =>
+      Array.from(within(card(main, key)).getByRole("list", { name: "Blocked by" }).querySelectorAll("li")).map((line) =>
+        Array.from(line.children, (part) => part.textContent).join(" "),
+      );
+    expect(said("US-1")).toEqual(["Blocked by US-2"]);
+    expect(said("US-2")).toEqual(["Blocked by iot-service US-3"]);
   });
 
   test("each blocker tick sends its own PATCH of the blockers plus or minus the ticked one, at the version of the last answer", async () => {
@@ -624,7 +646,7 @@ describe("steering from the board", () => {
     renderAt(BOARD_PATH);
     const main = await board();
 
-    fireEvent.click(within(card(main, "US-131")).getByRole("button", { name: "Edit blockers" }));
+    cardAction(main, "US-131", "Edit blockers…");
     fireEvent.click(within(card(main, "US-131")).getByRole("checkbox", { name: "US-132" }));
     await waitFor(() =>
       expect((within(card(main, "US-131")).getByRole("checkbox", { name: "US-132" }) as HTMLInputElement).checked).toBe(true),
@@ -647,7 +669,7 @@ describe("steering from the board", () => {
     renderAt(BOARD_PATH);
     const main = await board();
 
-    fireEvent.click(within(card(main, "US-131")).getByRole("button", { name: "Cancel story" }));
+    cardAction(main, "US-131", "Cancel story…");
     expect(within(card(main, "US-131")).getByText("Cancel US-131?")).toBeTruthy();
     expect(api.writes).toEqual([]);
 

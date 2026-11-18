@@ -1,11 +1,13 @@
-import { useCallback, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { Check } from "lucide-react";
+import { Check, Ellipsis } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { cancelStory, checkCriterion, createStory, loadStories, patchStory } from "@/api/stories";
 import type { LinkedBody, StoryBody } from "@/api/generated";
 import { Button } from "@/components/ui/button";
+import { usePopover } from "@/components/shell/popover";
 import { StateIcon } from "@/components/shell/state-icon";
+import { MenuSeparator, menuClass, menuItemClass } from "@/components/track/ui";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useProjectEvents } from "@/live/context";
 import { useReloading } from "@/lib/reloading";
@@ -65,7 +67,13 @@ const CONFLICT = "Someone changed this story; it has been reloaded";
 /** A card's quiet actions: small, muted, filled on hover. */
 const CARD_ACTION = "h-6 rounded-control px-1.5 text-meta font-medium text-ink-2 hover:bg-hover hover:text-ink";
 
-function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, StoryBody>; steer: Steer }) {
+/**
+ * A story's card: its key, priority as a small badge, title, holder, flags and
+ * what blocks it ("Blocked by iot-service US-3"). Its actions (priority, Edit
+ * blockers, Cancel story) are in the "…" menu, which shows on hover or focus;
+ * a closed story has none.
+ */
+function Card({ story, byId, linked, steer }: { story: StoryBody; byId: Map<string, StoryBody>; linked: LinkedBody[]; steer: Steer }) {
   const holder = story.holder as { run?: string; stage?: string } | null | undefined;
   const findings = unresolved(story);
   const check = toCheck(story);
@@ -78,25 +86,105 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
     await steer.run(story, action);
   };
   const others = steer.stories.filter((other) => other.id !== story.id);
+  const menu = usePopover();
+  // The board's columns scroll sideways, which would clip the menu: it is placed on the page, under its button, and closes on a scroll.
+  const [at, setAt] = useState<{ top: number; right: number } | null>(null);
+  const openMenu = () => {
+    const box = menu.opener.current?.getBoundingClientRect();
+    if (box) setAt({ top: box.bottom + 4, right: window.innerWidth - box.right });
+    menu.toggle();
+  };
+  useEffect(() => {
+    if (!menu.open) return;
+    const close = () => menu.setOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [menu.open, menu.setOpen]);
   return (
-    <li className="space-y-2 rounded-control border border-line bg-sheet px-3 py-2.5 shadow-card">
-      <div className="flex items-center gap-2 text-meta text-ink-3">
+    <li className="group/card space-y-2 rounded-control border border-line bg-sheet px-3 py-2.5 shadow-card">
+      <div className="flex h-6 items-center gap-2 text-meta text-ink-3">
         <span className="font-mono text-[12px] tabular-nums">{story.key}</span>
         {(story.status === "implemented" || story.status === "reviewed") && <Badge tone="neutral">Waiting</Badge>}
-        {story.priority === 0 ? (
-          <span className="ml-auto tabular-nums">P0</span>
-        ) : (
-          <select
-            aria-label={`${story.key} priority`}
-            value={story.priority}
-            disabled={isClosed}
-            onChange={(event) => write(() => steer.patch(story, { priority: Number(event.target.value) }))}
-            className="ml-auto h-7 rounded-md border border-input bg-background px-1 text-xs tabular-nums"
-          >
-            {[1, 2, 3].map((value) => (
-              <option key={value} value={value}>{`P${value}`}</option>
-            ))}
-          </select>
+        <span
+          title={story.priority === 0 ? "Priority 0: a fix" : `Priority ${story.priority}`}
+          className="ml-auto inline-flex h-5 items-center rounded-badge bg-hover px-1.5 text-meta font-medium text-ink-2 tabular-nums"
+        >
+          P{story.priority}
+        </span>
+        {!isClosed && (
+          <div ref={menu.anchor} className="relative -mr-1.5 inline-flex">
+            <button
+              ref={menu.opener}
+              type="button"
+              aria-label={`${story.key} actions`}
+              aria-haspopup="menu"
+              aria-expanded={menu.open}
+              onClick={openMenu}
+              className={cn(
+                CARD_ACTION,
+                "grid w-6 place-items-center px-0 opacity-0 group-focus-within/card:opacity-100 group-hover/card:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100",
+              )}
+            >
+              <Ellipsis aria-hidden strokeWidth={2.25} className="size-(--icon-sm)" />
+            </button>
+            {menu.open && (
+              <div
+                role="menu"
+                aria-label={`${story.key} actions`}
+                style={at ? { top: at.top, right: at.right } : undefined}
+                className={cn(menuClass, "fixed min-w-[180px]", !at && "absolute")}
+              >
+                {story.priority !== 0 && (
+                  <>
+                    <div className="flex h-7 items-center px-2 text-meta text-ink-3">Priority</div>
+                    {[1, 2, 3].map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={story.priority === value}
+                        onClick={() => {
+                          menu.setOpen(false);
+                          if (story.priority !== value) void write(() => steer.patch(story, { priority: value }));
+                        }}
+                        className={menuItemClass}
+                      >
+                        <span className="grid w-4 place-items-center">{story.priority === value && <Check aria-hidden className="size-(--icon-sm)" />}</span>
+                        {`P${value}`}
+                      </button>
+                    ))}
+                    <MenuSeparator />
+                  </>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    menu.setOpen(false);
+                    setEditing(true);
+                  }}
+                  className={menuItemClass}
+                >
+                  Edit blockers…
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    menu.setOpen(false);
+                    setConfirming(true);
+                  }}
+                  className={cn(menuItemClass, "text-danger-ink")}
+                >
+                  Cancel story…
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
       <p className="font-medium text-ink">{story.title}</p>
@@ -135,15 +223,20 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
         </ul>
       )}
       {story.blocked_by.length > 0 && (
-        <ul className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <ul aria-label="Blocked by" className="flex flex-col gap-0.5 text-meta text-ink-3">
           {story.blocked_by.map((id) => {
             const blocker = byId.get(id) ?? story.blockers?.find((other) => other.id === id);
+            // A blocker on another track is named with its part, as the track's panel names it.
+            const part = byId.has(id) ? undefined : linked.find((task) => task.id === id)?.part_name;
+            const finished = blocker && (blocker.status === "done" || blocker.status === "cancelled");
             return (
-              <li key={id} className="inline-flex items-center gap-0.5">
-                {blocker?.key ?? "?"}
-                {blocker && (blocker.status === "done" || blocker.status === "cancelled") && (
-                  <Check aria-label="done" className="size-3" />
-                )}
+              <li key={id} className="flex min-w-0 items-center gap-1">
+                <span className="shrink-0">Blocked by</span>
+                {part && <span className="min-w-0 truncate">{part}</span>}
+                <span className={cn("inline-flex shrink-0 items-center gap-0.5 font-mono text-[12px] text-ink-2", finished && "line-through decoration-ink-3")}>
+                  {blocker?.key ?? "?"}
+                  {finished && <Check aria-label="done" className="size-3 text-state-done" />}
+                </span>
               </li>
             );
           })}
@@ -154,47 +247,37 @@ function Card({ story, byId, steer }: { story: StoryBody; byId: Map<string, Stor
           {message}
         </p>
       )}
-      <div className="-ml-1.5 flex flex-wrap gap-0.5">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={isClosed}
-          aria-expanded={editing}
-          onClick={() => setEditing(!editing)}
-          className={CARD_ACTION}
-        >
-          Edit blockers
-        </Button>
-        {!isClosed && !confirming && (
-          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirming(true)} className={CARD_ACTION}>
-            Cancel story
-          </Button>
-        )}
-      </div>
       {editing && !isClosed && (
-        <ul className="space-y-1 text-xs">
-          {others.map((other) => (
-            <li key={other.id}>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={story.blocked_by.includes(other.id)}
-                  onChange={(event) =>
-                    write(() =>
-                      steer.patch(story, {
-                        blocked_by: event.target.checked
-                          ? [...story.blocked_by, other.id]
-                          : story.blocked_by.filter((id) => id !== other.id),
-                      }),
-                    )
-                  }
-                />
-                {other.key}
-              </label>
-            </li>
-          ))}
-        </ul>
+        <div className="space-y-1 rounded-control bg-frame px-2 py-1.5 text-xs">
+          <div className="flex items-center text-meta text-ink-3">
+            Blocked by
+            <button type="button" onClick={() => setEditing(false)} className={cn(CARD_ACTION, "ml-auto -mr-1")}>
+              Done
+            </button>
+          </div>
+          <ul className="space-y-1">
+            {others.map((other) => (
+              <li key={other.id}>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={story.blocked_by.includes(other.id)}
+                    onChange={(event) =>
+                      write(() =>
+                        steer.patch(story, {
+                          blocked_by: event.target.checked
+                            ? [...story.blocked_by, other.id]
+                            : story.blocked_by.filter((id) => id !== other.id),
+                        }),
+                      )
+                    }
+                  />
+                  {other.key}
+                </label>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {confirming && !isClosed && (
         <div className="flex items-center gap-2 text-xs">
@@ -463,7 +546,7 @@ export function Board({
                   ) : (
                     <ul className="space-y-1.5">
                       {cards.map((story) => (
-                        <Card key={story.id} story={story} byId={byId} steer={steer} />
+                        <Card key={story.id} story={story} byId={byId} linked={linked} steer={steer} />
                       ))}
                     </ul>
                   )}
