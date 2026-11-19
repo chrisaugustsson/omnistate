@@ -712,11 +712,14 @@ const supervise = async (jobFile) => {
 const WORKING = ['implementing', 'review', 'testing']
 const CHECKS = ['fast', 'stack_up', 'stack', 'stack_reset', 'seed', 'lint']
 const slugOf = (track) => track.toLowerCase().replace(/[^a-z0-9]/g, '-')
+// omni refuses a command without an agent identity: the helper acts as the
+// run's deliver agent.
+const identityOf = (runId) => ({ ...process.env, OMNI_RUN: runId, OMNI_ROLE: 'deliver' })
 const boardOf = (root, runId, track) => {
   const git = (argv, opts) => run('git', ['-C', root, ...argv], opts)
   const storiesDir = path.join(root, '..', `${path.basename(root)}-stories`)
   const branch = `deliver/${slugOf(track)}`
-  const identity = { ...process.env, OMNI_RUN: runId, OMNI_ROLE: 'deliver' }
+  const identity = identityOf(runId)
   // Every omni call acts as this run's agent, in the track.
   const omni = (argv, opts = {}) => run('omni', [...argv, '--track', track], { cwd: root, ...opts, env: identity })
   const omniJson = (argv) => {
@@ -760,7 +763,7 @@ const boardOf = (root, runId, track) => {
     if (!docs.has(id)) docs.set(id, tryRun('omni', ['doc', 'read', id], { cwd: root, env: identity }) ?? `(the doc ${id} could not be read)`)
     return docs.get(id)
   }
-  return { root, runId, track, git, storiesDir, lane: path.join(storiesDir, '_lane'), branch, omni, listStories, readStory, write, post, linkAndBlock, docText, worktreeOf: (key) => path.join(storiesDir, key) }
+  return { root, runId, track, identity, git, storiesDir, lane: path.join(storiesDir, '_lane'), branch, omni, listStories, readStory, write, post, linkAndBlock, docText, worktreeOf: (key) => path.join(storiesDir, key) }
 }
 
 const statusOf = (s) => ({ key: s.key, status: s.status, blocked: !!s.blocked, holder: s.holder ? s.holder.run : null })
@@ -1408,7 +1411,7 @@ const STEPS = {
     const said = (e) => String((e && e.stderr) || '').trim() || String((e && e.stdout) || '').trim() || `omni exited with code ${e && e.status}`
     let linked
     try {
-      linked = run('omni', ['link', '--json'], { cwd: b.root })
+      linked = run('omni', ['link', '--json'], { cwd: b.root, env: b.identity })
     } catch (e) {
       return refuse(said(e).slice(0, 300))
     }
@@ -1421,7 +1424,7 @@ const STEPS = {
     if (!project) return refuse('omni link gives no project_id for this folder')
     fs.rmSync(dir, { recursive: true, force: true })
     try {
-      run('omni', ['export', '--project', String(project), '--track', b.track, '--out', dir], { cwd: b.root, timeout: 5 * 60000 })
+      run('omni', ['export', '--project', String(project), '--track', b.track, '--out', dir], { cwd: b.root, timeout: 5 * 60000, env: b.identity })
     } catch (e) {
       if (e && e.timedOut) return refuse('omni export ran past 5 minutes')
       return refuse(said(e).slice(0, 300))
@@ -2181,7 +2184,7 @@ const start = (flags) => {
   // folder linked to the project, which has no repository of its own yet.
   if (setupTask && top) {
     let matched = null
-    try { matched = JSON.parse(tryRun('omni', ['link', '--json'], { cwd: here })).matched } catch {}
+    try { matched = JSON.parse(tryRun('omni', ['link', '--json'], { cwd: here, env: identityOf(runId) })).matched } catch {}
     if (typeof matched === 'string' && matched && real(matched).startsWith(`${real(top)}${path.sep}`)) {
       if (real(here) !== real(matched)) return { ok: false, received, error: `start the build from ${matched}, the folder linked to the project`, retry: false }
       root = here
@@ -2356,7 +2359,7 @@ const excludeOmni = (b) => {
 // when none is, or the list fails.
 const setupDocOf = (b) => {
   try {
-    const docs = JSON.parse(run('omni', ['doc', 'list', '--global', '--json'], { cwd: b.root })).docs || []
+    const docs = JSON.parse(run('omni', ['doc', 'list', '--global', '--json'], { cwd: b.root, env: b.identity })).docs || []
     const doc = docs.find((d) => d && !d.track_id && !d.feature_id && !d.part_id && d.pillar === 'architecture' && String(d.title).toLowerCase() === 'setup')
     return doc ? doc.id : null
   } catch {

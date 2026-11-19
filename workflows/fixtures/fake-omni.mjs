@@ -32,6 +32,7 @@
 // .tags file in <out>/manifest.json as {path, doc_id, board_id, board}. `checks`
 // without checks in the state reads the [checks] table of the .omni.toml in the
 // current folder, and fails as the CLI does without that file.
+// A call without --as, or OMNI_RUN and OMNI_ROLE, fails as the CLI does: no agent identity.
 // Calls at once each read, change and write the state under a lock file
 // beside it, and a write replaces the file whole, as the server serves
 // requests at once without losing one.
@@ -40,6 +41,11 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 const argv = process.argv.slice(2);
+// Like the CLI, a call needs an agent identity: --as, or OMNI_RUN and OMNI_ROLE.
+if (!argv.includes("--as") && !(process.env.OMNI_RUN && process.env.OMNI_ROLE)) {
+  process.stderr.write("omni: no agent identity: pass --as <run>/<role>, such as --as run-7/explorer, or set OMNI_RUN and OMNI_ROLE\n");
+  process.exit(1);
+}
 const named = (variable) => process.env[variable] && `${argv.join(" ")} `.startsWith(`${process.env[variable]} `);
 const hold = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_OMNI_HANG_MS) || 30000);
 if (named("FAKE_OMNI_HANG")) hold();

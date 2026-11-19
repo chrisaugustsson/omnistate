@@ -354,7 +354,8 @@ const findingsOf = (dirs, key) => (dirs.story(key).findings || []).map((f) => [f
 
 // ---- the fake omni's phase rules ----------------------------------------------------
 
-const omni = (dirs, ...argv) => spawnSync(join(dirs.bin, "omni"), argv, { cwd: dirs.repo, env: dirs.env, encoding: "utf8" });
+// A direct call acts as an agent, which always has an identity.
+const omni = (dirs, ...argv) => spawnSync(join(dirs.bin, "omni"), argv, { cwd: dirs.repo, env: { ...dirs.env, OMNI_RUN: "r", OMNI_ROLE: "test" }, encoding: "utf8" });
 
 test("the fake refuses a claim from a status that is not its stage's waiting state, changing nothing, and claims from the waiting state", (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2", { status: "implemented" })]);
