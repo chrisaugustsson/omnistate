@@ -508,6 +508,56 @@ fn a_text_in_a_registered_alias_or_in_inter_regular_stands_in_for_nothing() {
     assert_eq!(listed, vec![]);
 }
 
+/// Inter as web code self-hosts it: one variable WOFF2 file whose `wght` axis
+/// runs from 100 to 900.
+const INTER_VARIABLE_WOFF2: &[u8] = include_bytes!("fonts/Inter-Variable-latin.woff2");
+
+/// Assets with the variable Inter WOFF2 file registered as `family`.
+fn variable_inter_as(family: &str) -> Assets {
+    let mut assets = Assets::new();
+    assets
+        .add_font(family, INTER_VARIABLE_WOFF2)
+        .expect("a WOFF2 file is a font");
+    assets
+}
+
+#[test]
+fn a_variable_font_stands_in_for_no_weight_that_its_axis_covers() {
+    // Registered as "Inter", as web code names it, it takes the place of the
+    // bundled Inter Regular at every weight.
+    let listed = stood_in(
+        vec![
+            text_in(1, "Inter", 100, "normal"),
+            text_in(2, "Inter", 400, "normal"),
+            text_in(3, "Inter", 450, "normal"),
+            text_in(4, "Inter", 600, "normal"),
+            text_in(5, "Inter", 900, "normal"),
+        ],
+        variable_inter_as("Inter"),
+    );
+    assert_eq!(listed, vec![]);
+}
+
+#[test]
+fn a_weight_beyond_the_axis_of_a_variable_font_is_drawn_at_the_end_of_the_axis() {
+    let listed = stood_in(
+        vec![text_in(1, "Brand Sans", 950, "normal")],
+        variable_inter_as("Brand Sans"),
+    );
+    assert_eq!(
+        listed,
+        vec![stand_in(
+            "Brand Sans",
+            950,
+            FontStyle::Normal,
+            "Brand Sans",
+            900,
+            FontStyle::Normal,
+            1,
+        )]
+    );
+}
+
 #[test]
 fn inter_at_another_weight_or_in_italic_is_drawn_in_inter_400_normal() {
     let listed = stood_in(

@@ -1808,6 +1808,60 @@ fn a_font_file_supplied_by_the_host_is_used_for_layout_and_for_drawing() {
     );
 }
 
+/// Inter as web code self-hosts it: one variable WOFF2 file (Google Fonts'
+/// Inter v20, Latin subset) whose `wght` axis runs from 100 to 900.
+const INTER_VARIABLE_WOFF2: &[u8] = include_bytes!("fonts/Inter-Variable-latin.woff2");
+
+#[test]
+fn a_variable_woff2_font_is_measured_and_drawn_at_each_weight_from_its_weight_axis() {
+    let mut assets = Assets::new();
+    assets
+        .add_font("Brand Sans", INTER_VARIABLE_WOFF2)
+        .expect("the host can supply a WOFF2 file");
+    let design_at = |weight: u32| {
+        scene(
+            300,
+            100,
+            vec![text_at(
+                "txt00001",
+                20.0,
+                20.0,
+                "Hamburgefonts",
+                24.0,
+                1.5,
+                json!({"fontFamily": "Brand Sans", "fontWeight": weight}),
+            )],
+        )
+    };
+    // The width of "Hamburgefonts" at 24 px in this file, as Chrome 157 lays
+    // it out with `@font-face { font-weight: 100 900 }`.
+    let chrome = [
+        (400, 175.6094),
+        (500, 178.1563),
+        (600, 180.6875),
+        (700, 183.2344),
+    ];
+    let mut last_ink = 0;
+    for (weight, expected) in chrome {
+        let design = design_at(weight);
+        let width = box_of(&layout::compute(&node(&design), assets.fonts()), "txt00001").width;
+        assert!(
+            (width - expected).abs() <= 0.05,
+            "at {weight} the text is {width} px wide, as in Chrome: {expected} px"
+        );
+        let pixels = render_with(&design, &assets, 300, 100);
+        let ink: u32 = (0..100)
+            .flat_map(|y| (0..300).map(move |x| (x, y)))
+            .map(|(x, y)| u32::from(pixels.ink(x, y)))
+            .sum();
+        assert!(
+            ink > last_ink * 102 / 100,
+            "at {weight} the glyphs are drawn heavier than the weight before: {ink} after {last_ink}"
+        );
+        last_ink = ink;
+    }
+}
+
 #[test]
 fn the_host_cannot_supply_a_font_or_an_image_that_is_not_one() {
     let mut assets = Assets::new();

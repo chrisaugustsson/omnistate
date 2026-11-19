@@ -4,13 +4,16 @@
 mod breaks;
 
 use omni_core::design::{self, Text, TextAlign, TextDecoration, TokenOr};
+use skia_safe::font_arguments::VariationPosition;
+use skia_safe::font_arguments::variation_position::Coordinate;
 use skia_safe::font_style::{Slant, Weight, Width};
 use skia_safe::textlayout::{
     FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, RectHeightStyle, RectWidthStyle,
     TextStyle, TypefaceFontProvider,
 };
 use skia_safe::{
-    Canvas, Color, Data, Font, FontHinting, FontMgr, FontStyle, Paint, Rect, Typeface,
+    Canvas, Color, Data, Font, FontArguments, FontHinting, FontMgr, FontStyle, FourByteTag, Paint,
+    Rect, Typeface,
 };
 use std::ops::Range;
 
@@ -20,6 +23,14 @@ const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
 
 /// The family name of the bundled Inter.
 const INTER: &str = "Inter";
+
+/// The alias the bundled Inter is registered under: the default family, which
+/// stands in for every family that has no font file, "Inter" included. It is
+/// never registered as "Inter" itself, so an Inter that the host supplies is
+/// the only face of that family: two faces that both say 400, the bundled
+/// one and a variable font's default, would let Skia draw every weight in
+/// the bundled one.
+const BUNDLED: &str = "OmniState bundled Inter";
 
 /// The font size of a text whose `fontSize` is a token that is not resolved:
 /// CSS's initial `font-size`, `medium`.
@@ -66,11 +77,11 @@ impl Fonts {
     /// that is missing, so text measures the same on every machine.
     pub fn bundled() -> Self {
         let mut provider = TypefaceFontProvider::new();
-        provider.register_typeface(inter(), INTER);
+        provider.register_typeface(inter(), BUNDLED);
         let mut collection = FontCollection::new();
         // No system fonts: a family that is not registered falls back to the
-        // default family, Inter.
-        collection.set_default_font_manager(Some(provider.clone().into()), INTER);
+        // default family, the bundled Inter.
+        collection.set_default_font_manager(Some(provider.clone().into()), BUNDLED);
         Fonts {
             provider,
             collection,
@@ -78,13 +89,16 @@ impl Fonts {
         }
     }
 
-    /// Supplies a font file (TrueType or OpenType) for text in `family`: text
-    /// in that family is measured and drawn with it from now on. Fails if the
-    /// bytes are not a font.
+    /// Supplies a font file (TrueType, OpenType, WOFF or WOFF2) for text in
+    /// `family`: text in that family is measured and drawn with it from now
+    /// on. A variable font draws every weight it covers from its `wght` axis.
+    /// Fails if the bytes are not a font.
     pub fn add_font(&mut self, family: &str, data: &[u8]) -> Result<(), String> {
+        let sfnt = sfnt(data)
+            .map_err(|error| format!("the bytes for font family {family:?} are {error}"))?;
         let typeface = FontMgr::custom_empty()
             .unwrap_or_default()
-            .new_from_data(Data::new_copy(data), None)
+            .new_from_data(Data::new_copy(&sfnt), None)
             .ok_or_else(|| format!("the bytes for font family {family:?} are not a font"))?;
         self.provider.register_typeface(typeface, family);
         self.collection.clear_caches();
@@ -100,6 +114,8 @@ impl Fonts {
 
     /// The typeface that text in `family` and `style` is set in: the closest
     /// face of the family, or the bundled Inter when the family is missing.
+    /// A face with a `wght` axis comes as it is, at its default weight:
+    /// `at_weight` gives the instance that text draws in.
     fn typeface(&self, family: &str, style: FontStyle) -> Typeface {
         self.collection
             .clone()
@@ -108,6 +124,56 @@ impl Fonts {
             .next()
             .unwrap_or_else(inter)
     }
+}
+
+/// The tag of the axis of a variable font that sets its weight.
+const WGHT: FourByteTag = FourByteTag::from_chars('w', 'g', 'h', 't');
+
+/// The bytes of a font file as TrueType or OpenType (sfnt), which Skia reads:
+/// a WOFF2 or WOFF file decoded, any other file as it is.
+fn sfnt(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    match data.get(..4) {
+        Some(b"wOF2") => wuff::decompress_woff2(data)
+            .map(Into::into)
+            .map_err(|error| format!("a WOFF2 file that could not be decoded ({error:?})")),
+        Some(b"wOFF") => wuff::decompress_woff1(data)
+            .map(Into::into)
+            .map_err(|error| format!("a WOFF file that could not be decoded ({error:?})")),
+        _ => Ok(data.into()),
+    }
+}
+
+/// The range of the `wght` axis of `typeface`, if it is a variable font that
+/// has one.
+fn weight_axis(typeface: &Typeface) -> Option<(f32, f32)> {
+    typeface
+        .variation_design_parameters()?
+        .into_iter()
+        .find(|axis| axis.tag == WGHT)
+        .map(|axis| (axis.min, axis.max))
+}
+
+/// The arguments that set the `wght` axis of a variable font to the weight
+/// in `coordinates`. Chrome draws a variable font this way: its weight axis
+/// follows `font-weight`, within the range the axis covers.
+fn weight_arguments(coordinates: &[Coordinate; 1]) -> FontArguments<'_, '_> {
+    FontArguments::new().set_variation_design_position(VariationPosition { coordinates })
+}
+
+/// `typeface` at `weight`, and the weight it is drawn in: a variable font at
+/// that point of its `wght` axis, clamped to the axis; any other typeface as
+/// it is, in its own weight.
+fn at_weight(typeface: Typeface, weight: i32) -> (Typeface, u32) {
+    let Some((min, max)) = weight_axis(&typeface) else {
+        let own = (*typeface.font_style().weight()).max(0) as u32;
+        return (typeface, own);
+    };
+    let value = (weight as f32).clamp(min, max);
+    let coordinates = [Coordinate { axis: WGHT, value }];
+    let instance = typeface
+        .clone_with_arguments(&weight_arguments(&coordinates))
+        .unwrap_or(typeface);
+    (instance, value.round() as u32)
 }
 
 /// A font face: the family, weight and slant that text asks for or is drawn in.
@@ -309,12 +375,24 @@ impl ShapedText {
             .and_then(literal)
             .unwrap_or(0.0);
 
+        let matched = fonts.typeface(family, font_style);
+        let variable = weight_axis(&matched).is_some();
+        let (typeface, drawn_weight) = at_weight(matched, *font_style.weight());
+
         let mut style = TextStyle::new();
         style
             .set_font_families(&[family])
             .set_font_size(font_size)
             .set_font_style(font_style)
             .set_letter_spacing(letter_spacing);
+        if variable {
+            // Shaping and drawing use the same instance as the metrics below.
+            let coordinates = [Coordinate {
+                axis: WGHT,
+                value: drawn_weight as f32,
+            }];
+            style.set_font_arguments(&weight_arguments(&coordinates));
+        }
         if letter_spacing != 0.0 {
             for feature in FEATURES_OFF_WITH_LETTER_SPACING {
                 style.add_font_feature(feature, 0);
@@ -335,7 +413,6 @@ impl ShapedText {
         paragraph.layout(f32::INFINITY);
         let lines = pieces(text.content_text(), &paragraph);
 
-        let typeface = fonts.typeface(family, font_style);
         let slant_of = |slant: Slant| match slant {
             Slant::Upright => design::FontStyle::Normal,
             Slant::Italic | Slant::Oblique => design::FontStyle::Italic,
@@ -356,7 +433,7 @@ impl ShapedText {
             } else {
                 INTER.to_string()
             },
-            weight: (*got.weight()).max(0) as u32,
+            weight: drawn_weight,
             style: slant_of(got.slant()),
         };
         let mut font = Font::from_typeface(typeface, font_size);
@@ -740,4 +817,25 @@ fn font_style(text: &Text) -> FontStyle {
         Some(design::FontStyle::Normal) | None => Slant::Upright,
     };
     FontStyle::new(weight, Width::NORMAL, slant)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sfnt;
+
+    /// The FreeType in the WebAssembly build reads no WOFF2 (native Skia
+    /// does, so the tests in `tests/` cannot tell), so a WOFF2 file must reach
+    /// Skia already decoded.
+    #[test]
+    fn a_woff2_file_reaches_skia_as_truetype_with_its_variation_tables() {
+        let woff2 = include_bytes!("../tests/fonts/Inter-Variable-latin.woff2");
+        let decoded = sfnt(woff2).expect("the WOFF2 file decodes");
+        assert_eq!(decoded[..4], [0, 1, 0, 0], "a TrueType file");
+        let tables = u16::from_be_bytes([decoded[4], decoded[5]]) as usize;
+        let tags: Vec<&[u8]> = (0..tables)
+            .map(|i| &decoded[12 + 16 * i..12 + 16 * i + 4])
+            .collect();
+        assert!(tags.contains(&&b"fvar"[..]), "with its axes: {tags:?}");
+        assert!(tags.contains(&&b"gvar"[..]), "and its glyph variations");
+    }
 }
