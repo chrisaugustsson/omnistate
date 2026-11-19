@@ -339,7 +339,8 @@ function HtmlDocViewer({
       <div className="flex min-h-0 flex-1 flex-col">
         <PageBar workspaceId={workspaceId} projectId={projectId} docId={docId} meta={chrome.meta} actions={chrome.actions} review={{ shown: review, onShown: setReview }} />
         <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-line xl:flex-row">
-          <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
+          {/* A click in the box around the text clears the selection, as a click between blocks in the frame does. */}
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto" onClick={() => setSelected(null)}>
             <FloatingAlerts>
               {(doc.failed || head.failed) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
             </FloatingAlerts>
@@ -420,7 +421,7 @@ function HtmlDocViewer({
           review ? "lg:grid-cols-[minmax(0,1fr)_20rem]" : "lg:grid-cols-1",
         )}
       >
-        <div className="relative flex min-h-0 flex-col bg-canvas px-3 py-4 sm:px-6 sm:py-6 lg:px-8">
+        <div className="relative flex min-h-0 flex-col bg-canvas px-3 py-4 sm:px-6 sm:py-6 lg:px-8" onClick={() => setSelected(null)}>
           <FloatingAlerts>
             {(doc.failed || head.failed) && (
               <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>

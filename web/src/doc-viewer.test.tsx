@@ -17,8 +17,9 @@
 // of web/src/doc-viewer-frame.test.ts, which tests the frame itself in Chrome:
 //
 // - frame to page: `{ type: "viewer.ready" }`, and `{ type: "viewer.select",
-//   node }` when the reviewer clicks a block. The page ignores messages whose
-//   `source` is not its frame.
+//   node }` when the reviewer clicks a block (`node: null` for a click outside
+//   every block or Escape). The page ignores messages whose `source` is not
+//   its frame.
 // - page to frame: `{ type: "viewer.show", html, pins, selected, claims }`
 //   after each `viewer.ready` and whenever any of it changes, where `html` is
 //   the HTML of what is shown, `pins` is `[{ node, count }]` (the blocks of
@@ -693,6 +694,24 @@ describe("the doc viewer", () => {
     expect(within(comments).getByText("Say which week.")).toBeTruthy();
     expect(within(comments).queryByText("Is one day right?")).toBeNull();
     expect(shows()[shows().length - 1].selected).toBe("p0000002");
+  });
+
+  test("a click outside every block in the frame, or on the box around the text, clears the selection", async () => {
+    fakeApi();
+    const router = renderAt(DOC_PATH);
+    const frame = await findFrame();
+    await select("p0000002");
+    await shown((s) => expect(s.selected).toBe("p0000002"));
+
+    fromFrame({ type: "viewer.select", node: null });
+    await shown((s) => expect(s.selected).toBeNull());
+    await waitFor(() => expect(router.state.location.search).toEqual({}));
+    await waitFor(() => expect(within(screen.getByRole("complementary", { name: "Review" })).getByText(/Select a block/)).toBeTruthy());
+
+    await select("p0000002");
+    await shown((s) => expect(s.selected).toBe("p0000002"));
+    fireEvent.click(frame.parentElement!);
+    await shown((s) => expect(s.selected).toBeNull());
   });
 
   test("pins mark the blocks that have comments", async () => {

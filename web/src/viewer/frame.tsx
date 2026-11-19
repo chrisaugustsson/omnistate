@@ -20,7 +20,8 @@ export function ViewerFrame({
   selected: string | null;
   /** A block that the frame scrolls into view and keeps in place once it has; left out, none is. */
   reveal?: string | null;
-  onSelect: (node: string) => void;
+  /** A block the reviewer clicked, or `null` for a click outside every block or Escape. */
+  onSelect: (node: string | null) => void;
   /** The frame's class names; the doc viewer's tall frame at first. */
   className?: string;
   title?: string;
@@ -57,7 +58,7 @@ export function ViewerFrame({
       if (!frame.current || event.source !== frame.current.contentWindow) return;
       const message = event.data as { type?: unknown; node?: unknown } | null;
       if (message?.type === "viewer.ready") setReady((count) => count + 1);
-      else if (message?.type === "viewer.select" && typeof message.node === "string") {
+      else if (message?.type === "viewer.select" && (typeof message.node === "string" || message.node === null)) {
         onSelectRef.current(message.node);
       } else if (message?.type === "viewer.size" && typeof (message as { height?: unknown }).height === "number") {
         setHeight((message as { height: number }).height);

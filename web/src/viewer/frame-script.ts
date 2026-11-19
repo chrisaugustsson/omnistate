@@ -9,7 +9,8 @@
 // described in web/src/doc-viewer-frame.test.ts):
 //
 // - to the page: `viewer.ready` once the script runs, and `viewer.select` with
-//   the node ID of the innermost block that the reviewer clicked;
+//   the node ID of the innermost block that the reviewer clicked, or `null`
+//   when they clicked outside every block or pressed Escape;
 // - from the page: `viewer.show` with the doc's `html`, the `pins`
 //   (`[{ node, count }]`), the `selected` node and `reveal`, a node ID that the
 //   frame scrolls into view when it is not the one it revealed last. When the
@@ -182,7 +183,10 @@ export const FRAME_SCRIPT = String.raw`(function () {
     if (target && target.closest("a")) event.preventDefault();
     var pin = target && target.closest("[data-pin-for]");
     var block = pin ? find(pin.getAttribute("data-pin-for")) : blockOf(target);
-    if (block) post({ type: "viewer.select", node: block.getAttribute("data-omni-id") });
+    post({ type: "viewer.select", node: block ? block.getAttribute("data-omni-id") : null });
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") post({ type: "viewer.select", node: null });
   });
 
   var frameRequested = false;

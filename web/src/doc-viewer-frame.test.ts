@@ -17,6 +17,7 @@
 //   - `{ type: "viewer.select", node }` when the reviewer clicks a block: the
 //     node ID of the innermost block under the pointer. A click on inline
 //     markup (a `<strong>` in a paragraph) selects the text block it is in.
+//     A click outside every block, or Escape, sends `node: null`.
 // - from the page to the frame (`frame.contentWindow.postMessage(message,
 //   "*")`): `{ type: "viewer.show", html, pins, selected, claims }`, sent after
 //   each `viewer.ready` and whenever any of it changes:
@@ -523,6 +524,23 @@ document.getElementById("measured").textContent = "Measured " + window.innerWidt
 
     await target.frame.click('[data-omni-id="h0000001"]', { force: true });
     await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("h0000001");
+  });
+
+  test("a click outside every block, or Escape, says nothing is selected", async () => {
+    const target = await openViewer();
+    await show(target, { html: SHORT_DOC, selected: "p0000002" }, "p0000002");
+    const lastSelect = async () =>
+      (await got(target)).filter((m) => m?.type === "viewer.select").map((m) => m.node).pop();
+
+    await target.frame.click('[data-omni-id="p0000002"]', { force: true });
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("p0000002");
+    await target.frame.click("body", { position: { x: 2, y: 2 }, force: true });
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBeNull();
+
+    await target.frame.click('[data-omni-id="p0000002"]', { force: true });
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("p0000002");
+    await target.page.keyboard.press("Escape");
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBeNull();
   });
 
   test("the selected block looks selected", async () => {
