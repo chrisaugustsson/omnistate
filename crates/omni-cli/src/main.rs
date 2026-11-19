@@ -174,8 +174,9 @@ Usage:
                                       --type creates a token that does not exist, with its groups
   omni tokens remove <path>           remove one token (and the groups it leaves empty); refused
                                       while another token refers to it
-  omni export --project <name|id> [--track <name|id>] --out <dir>
-                                      write the scope's plan to a folder: manifest.json, the
+  omni export --project <name|id> [--track <name|id> | --doc <id>] --out <dir>
+                                      write the scope's plan to a folder (with --doc, that one
+                                      doc, at any level, with its board images): manifest.json, the
                                       HTML docs by pillar, each design board in the tag format
                                       under ui/<doc>/, and the design system's tokens as
                                       tokens.json and tokens.css (variables per mode). The

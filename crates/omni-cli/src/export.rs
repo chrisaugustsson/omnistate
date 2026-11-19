@@ -1,4 +1,4 @@
-//! `omni export --project <p> [--track <name>] --out <dir>`: write the plan
+//! `omni export --project <p> [--track <name> | --doc <id>] --out <dir>`: write the plan
 //! of one scope to a folder a builder can work from without the API. The
 //! folder gets `manifest.json`, one `.html` file per HTML doc under its
 //! pillar, one tag-format file per board of each design under `ui/<doc>/`
@@ -58,9 +58,11 @@ fn doc_stem(title: &str, id: &str) -> String {
     format!("{}-{tail}", slug(title))
 }
 
-/// `omni export --project <p> [--track <name>] --out <dir>`
+/// `omni export --project <p> [--track <name> | --doc <id>] --out <dir>`; `--doc` exports
+/// that one doc, whatever it belongs to (a track, a feature, a part or the app).
 pub fn run(args: &Args) -> Result<()> {
-    const USAGE: &str = "omni export --project <name|id> [--track <name|id>] --out <dir>";
+    const USAGE: &str =
+        "omni export --project <name|id> [--track <name|id> | --doc <id>] --out <dir>";
     let Some(out) = args.out.as_deref() else {
         bail!("an export needs the folder to write to: {USAGE}");
     };
@@ -78,9 +80,13 @@ pub fn run(args: &Args) -> Result<()> {
             .to_vec())
     };
     let app_docs = docs_of("global")?;
-    let docs = match &track {
-        Some(track) => docs_of(track)?,
-        None => app_docs.clone(),
+    let docs = match (args.doc.as_deref(), &track) {
+        (Some(doc), _) => {
+            let answer = get(&agent, &format!("{base}/docs/{doc}"), "the doc")?;
+            vec![answer.get("doc").cloned().unwrap_or(Value::Null)]
+        }
+        (None, Some(track)) => docs_of(track)?,
+        (None, None) => app_docs.clone(),
     };
 
     // Every read comes before the first write, so a failure leaves no half.

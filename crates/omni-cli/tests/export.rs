@@ -121,6 +121,10 @@ fn answer(request: &Recorded, app: &[Value], feature: &[Value], tokens: &Value) 
         };
         let (id, tail) = rest.split_at(36);
         match tail {
+            "" if id == FEATURE_DESIGN => Reply::json(
+                200,
+                &json!({"doc": doc(FEATURE_DESIGN, "design", "ui", "Checkout screens")}),
+            ),
             "/activity?limit=1" => Reply::json(
                 200,
                 &json!({"entries": [{"seq": seq_of(id), "kind": "write"}]}),
@@ -250,6 +254,24 @@ fn a_feature_export_lists_the_feature_docs_and_the_app_tokens_each_at_its_seq() 
     ]
     .into_iter()
     .collect();
+    assert_eq!(entries_without_path(&out.path), expected);
+}
+
+#[test]
+fn a_doc_export_writes_that_one_doc_with_its_boards_and_the_app_tokens() {
+    let server = mock(app_docs(), feature_docs(), tokens_answer(two_mode_tree()));
+    let out = Scratch::new("out");
+
+    let run = export(&server, &out.path, &["--doc", FEATURE_DESIGN]);
+
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    let board = json!({
+        "doc_id": FEATURE_DESIGN, "pillar": "ui", "title": "Checkout screens", "seq": 12,
+        "board_id": BOARD, "board": "Cart"
+    });
+    let expected: BTreeSet<String> = [board.to_string(), entry(SYSTEM, "ui", "Design system", 3)]
+        .into_iter()
+        .collect();
     assert_eq!(entries_without_path(&out.path), expected);
 }
 
