@@ -136,6 +136,16 @@ export const BlockStoryRequestSchema = z.object({
 });
 export type BlockStoryRequest = z.infer<typeof BlockStoryRequestSchema>;
 
+export const BlockerBodySchema = z.object({
+  blocker_dropped: z.boolean(),
+  id: z.string(),
+  key: z.string(),
+  status: z.string(),
+  track_id: z.string(),
+  track_name: z.string(),
+});
+export type BlockerBody = z.infer<typeof BlockerBodySchema>;
+
 export const BoardBodySchema = z.object({
   board_id: z.string(),
   doc_id: z.string(),
@@ -242,7 +252,6 @@ export const CommentBodySchema = z.object({
   author: z.record(z.string(), z.unknown()),
   created_at: z.string(),
   doc_id: z.string(),
-  feature_id: z.string().nullable().optional(),
   id: z.string(),
   node: z.string(),
   orphaned: z.boolean().optional(),
@@ -250,6 +259,7 @@ export const CommentBodySchema = z.object({
   replies: z.array(ReplyBodySchema),
   snapshot: z.string().optional(),
   text: z.string(),
+  track_id: z.string().nullable().optional(),
   waiting_on_you: z.boolean().optional(),
 });
 export type CommentBody = z.infer<typeof CommentBodySchema>;
@@ -300,10 +310,24 @@ export const CreateCommentRequestSchema = z.object({
 });
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
 
+export const CreateDecisionRequestSchema = z.object({
+  about_project: z.boolean().nullable().optional(),
+  decision: z.string().nullable().optional(),
+  feature_id: z.string().nullable().optional(),
+  part_id: z.string().nullable().optional(),
+  question: z.string().nullable().optional(),
+  replaces_decision_id: z.string().nullable().optional(),
+  why: z.string().nullable().optional(),
+});
+export type CreateDecisionRequest = z.infer<typeof CreateDecisionRequestSchema>;
+
 export const CreateDocRequestSchema = z.object({
+  feature_id: z.string().nullable().optional(),
   kind: z.string().nullable().optional(),
+  part_id: z.string().nullable().optional(),
   pillar: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
+  track_id: z.string().nullable().optional(),
 });
 export type CreateDocRequest = z.infer<typeof CreateDocRequestSchema>;
 
@@ -322,6 +346,13 @@ export const CreateNodeRequestSchema = z.object({
   title: z.string(),
 });
 export type CreateNodeRequest = z.infer<typeof CreateNodeRequestSchema>;
+
+export const CreatePartRequestSchema = z.object({
+  description: z.string().nullable().optional(),
+  kind: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+});
+export type CreatePartRequest = z.infer<typeof CreatePartRequestSchema>;
 
 export const CreatePostRequestSchema = z.object({
   attachments: z.array(z.string()).nullable().optional(),
@@ -363,6 +394,14 @@ export const CreateStoryRequestSchema = z.object({
 });
 export type CreateStoryRequest = z.infer<typeof CreateStoryRequestSchema>;
 
+export const CreateTrackRequestSchema = z.object({
+  description: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+  part_id: z.unknown().optional(),
+  split_from_track_id: z.unknown().optional(),
+});
+export type CreateTrackRequest = z.infer<typeof CreateTrackRequestSchema>;
+
 export const CreatedKeyResponseSchema = z.object({
   key: ApiKeyBodySchema,
   secret: z.string(),
@@ -377,6 +416,31 @@ export const CriterionBodySchema = z.object({
 });
 export type CriterionBody = z.infer<typeof CriterionBodySchema>;
 
+export const DecisionBodySchema = z.object({
+  about: z.string(),
+  author: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  decision: z.string(),
+  feature_id: z.string().nullable().optional(),
+  feature_name: z.string().nullable().optional(),
+  id: z.string(),
+  part_id: z.string().nullable().optional(),
+  part_name: z.string().nullable().optional(),
+  project_id: z.string(),
+  question: z.string(),
+  replaced_by_decision_id: z.string().nullable().optional(),
+  replaces_decision_id: z.string().nullable().optional(),
+  track_id: z.string(),
+  why: z.string(),
+});
+export type DecisionBody = z.infer<typeof DecisionBodySchema>;
+
+export const DecisionListResponseSchema = z.object({
+  decisions: z.array(DecisionBodySchema),
+  earlier: z.array(DecisionBodySchema),
+});
+export type DecisionListResponse = z.infer<typeof DecisionListResponseSchema>;
+
 export const DecisionRequestSchema = z.object({
   by: z.string(),
   choice: z.string(),
@@ -385,6 +449,11 @@ export const DecisionRequestSchema = z.object({
   run: z.string(),
 });
 export type DecisionRequest = z.infer<typeof DecisionRequestSchema>;
+
+export const DecisionResponseSchema = z.object({
+  decision: DecisionBodySchema,
+});
+export type DecisionResponse = z.infer<typeof DecisionResponseSchema>;
 
 export const DigestEntrySchema = z.object({
   author: z.record(z.string(), z.unknown()),
@@ -406,9 +475,11 @@ export const DocBodySchema = z.object({
   feature_id: z.string().nullable().optional(),
   id: z.string(),
   kind: z.string(),
+  part_id: z.string().nullable().optional(),
   pillar: z.string(),
   project_id: z.string(),
   title: z.string(),
+  track_id: z.string().nullable().optional(),
 });
 export type DocBody = z.infer<typeof DocBodySchema>;
 
@@ -451,6 +522,7 @@ export const FeatureBodySchema = z.object({
   description: z.string(),
   id: z.string(),
   name: z.string(),
+  part_id: z.string(),
   project_id: z.string(),
 });
 export type FeatureBody = z.infer<typeof FeatureBodySchema>;
@@ -464,22 +536,6 @@ export const FeatureResponseSchema = z.object({
   feature: FeatureBodySchema,
 });
 export type FeatureResponse = z.infer<typeof FeatureResponseSchema>;
-
-export const StoryCountsSchema = z.object({
-  done: z.number().int(),
-  open: z.number().int(),
-  total: z.number().int(),
-});
-export type StoryCounts = z.infer<typeof StoryCountsSchema>;
-
-export const FeatureSummarySchema = z.object({
-  docs: z.number().int(),
-  feature: FeatureBodySchema,
-  last_activity: z.string().nullable().optional(),
-  stories: StoryCountsSchema.optional(),
-  waiting: z.number().int(),
-});
-export type FeatureSummary = z.infer<typeof FeatureSummarySchema>;
 
 export const FilesRequestSchema = z.object({
   expected_version: z.number().int(),
@@ -496,6 +552,11 @@ export const FindingRequestSchema = z.object({
   text: z.string(),
 });
 export type FindingRequest = z.infer<typeof FindingRequestSchema>;
+
+export const HandoverRequestSchema = z.object({
+  membership_id: z.unknown().optional(),
+});
+export type HandoverRequest = z.infer<typeof HandoverRequestSchema>;
 
 export const HeadBoardSchema = z.object({
   chunk: z.string(),
@@ -552,19 +613,18 @@ export const PostBodySchema = z.object({
   body_html: z.string(),
   confidence: z.number().nullable().optional(),
   created_at: z.string(),
-  feature_id: z.string().nullable().optional(),
   id: z.string(),
   links: z.array(z.record(z.string(), z.unknown())),
   replaces: z.string().nullable().optional(),
   summary: z.string(),
   thread_id: z.string(),
+  track_id: z.string().nullable().optional(),
 });
 export type PostBody = z.infer<typeof PostBodySchema>;
 
 export const ThreadBodySchema = z.object({
   conclusion: z.string().nullable().optional(),
   created_at: z.string(),
-  feature_id: z.string().nullable().optional(),
   id: z.string(),
   posts: z.array(PostBodySchema).nullable().optional(),
   project_id: z.string(),
@@ -572,6 +632,7 @@ export const ThreadBodySchema = z.object({
   run_tag: z.string().nullable().optional(),
   scope: z.string().optional(),
   sealed: z.boolean().optional(),
+  track_id: z.string().nullable().optional(),
 });
 export type ThreadBody = z.infer<typeof ThreadBodySchema>;
 
@@ -580,6 +641,37 @@ export const HomeThreadSchema = z.intersection(ThreadBodySchema, z.object({
   post_count: z.number().int().optional(),
 }));
 export type HomeThread = z.infer<typeof HomeThreadSchema>;
+
+export const StoryCountsSchema = z.object({
+  done: z.number().int(),
+  open: z.number().int(),
+  total: z.number().int(),
+});
+export type StoryCounts = z.infer<typeof StoryCountsSchema>;
+
+export const TrackBodySchema = z.object({
+  created_at: z.string(),
+  description: z.string(),
+  id: z.string(),
+  name: z.string(),
+  owner_user_id: z.string().nullable().optional(),
+  part_id: z.string(),
+  project_id: z.string(),
+  split_from_track_id: z.string().nullable().optional(),
+  state: z.string(),
+});
+export type TrackBody = z.infer<typeof TrackBodySchema>;
+
+export const TrackSummarySchema = z.object({
+  docs: z.number().int(),
+  last_activity: z.string().nullable().optional(),
+  part_deleted: z.boolean().optional(),
+  part_name: z.string().optional(),
+  stories: StoryCountsSchema.optional(),
+  track: TrackBodySchema,
+  waiting: z.number().int(),
+});
+export type TrackSummary = z.infer<typeof TrackSummarySchema>;
 
 export const WaitingBodySchema = z.object({
   comments: z.array(CommentBodySchema),
@@ -592,9 +684,9 @@ export const HomeResponseSchema = z.object({
     AppSummarySchema,
   ]).optional(),
   docs: z.array(HomeDocSchema),
-  features: z.array(FeatureSummarySchema).optional(),
   project_id: z.string(),
   threads: z.array(HomeThreadSchema),
+  tracks: z.array(TrackSummarySchema).optional(),
   waiting: WaitingBodySchema,
 });
 export type HomeResponse = z.infer<typeof HomeResponseSchema>;
@@ -691,6 +783,12 @@ export const InvalidDesignBodySchema = z.object({
 });
 export type InvalidDesignBody = z.infer<typeof InvalidDesignBodySchema>;
 
+export const InvalidKindBodySchema = z.object({
+  error: z.string(),
+  message: z.string(),
+});
+export type InvalidKindBody = z.infer<typeof InvalidKindBodySchema>;
+
 export const InvalidOperationBodySchema = z.object({
   error: z.string(),
   index: z.number().int(),
@@ -714,6 +812,27 @@ export const KeyResponseSchema = z.object({
 });
 export type KeyResponse = z.infer<typeof KeyResponseSchema>;
 
+export const LinkFeatureRequestSchema = z.object({
+  feature_id: z.unknown().optional(),
+});
+export type LinkFeatureRequest = z.infer<typeof LinkFeatureRequestSchema>;
+
+export const LinkedBodySchema = z.object({
+  blocker_dropped: z.boolean(),
+  id: z.string(),
+  key: z.string(),
+  part_id: z.string(),
+  part_name: z.string(),
+  relation: z.string(),
+  status: z.string(),
+  story_id: z.string(),
+  story_key: z.string(),
+  title: z.string(),
+  track_id: z.string(),
+  track_name: z.string(),
+});
+export type LinkedBody = z.infer<typeof LinkedBodySchema>;
+
 export const LiveClientMessageSchema = z.object({
     after: z.number().int().nullable().optional(),
     project_id: z.string(),
@@ -724,7 +843,7 @@ export type LiveClientMessage = z.infer<typeof LiveClientMessageSchema>;
 export const LiveErrorCodeSchema = z.enum(["not_found", "invalid_request", "unavailable"]);
 export type LiveErrorCode = z.infer<typeof LiveErrorCodeSchema>;
 
-export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "feature.created", "feature.deleted", "feature.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
+export const LiveEventNameSchema = z.enum(["behaviour.node_created", "behaviour.node_changed", "behaviour.question_changed", "behaviour.rule_changed", "behaviour.marked", "behaviour.imported", "comment.created", "comment.replied", "comment.deleted", "comment.status_changed", "doc.changed", "doc.created", "doc.deleted", "doc.renamed", "track.created", "track.deleted", "track.renamed", "track.moved", "track.owner_changed", "track.feature_linked", "track.feature_unlinked", "decision.recorded", "feature.created", "feature.deleted", "feature.renamed", "part.created", "part.deleted", "part.renamed", "post.created", "project.renamed", "story.cancelled", "story.changed", "story.created", "thread.concluded", "thread.created"]);
 export type LiveEventName = z.infer<typeof LiveEventNameSchema>;
 
 export const LiveServerMessageSchema = z.union([
@@ -774,6 +893,19 @@ export const ManifestSchema = z.object({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 
+export const MemberBodySchema = z.object({
+  email: z.string(),
+  membership_id: z.string(),
+  role: z.string(),
+  user_id: z.string(),
+});
+export type MemberBody = z.infer<typeof MemberBodySchema>;
+
+export const MemberListResponseSchema = z.object({
+  members: z.array(MemberBodySchema),
+});
+export type MemberListResponse = z.infer<typeof MemberListResponseSchema>;
+
 export const MoveNodeRequestSchema = z.object({
   expected_version: z.number().int(),
   parent_id: z.string(),
@@ -786,6 +918,17 @@ export const MoveStoryRequestSchema = z.object({
   to: z.string(),
 });
 export type MoveStoryRequest = z.infer<typeof MoveStoryRequestSchema>;
+
+export const MoveToTrackRequestSchema = z.object({
+  expected_version: z.number().int(),
+  to_track_id: z.string(),
+});
+export type MoveToTrackRequest = z.infer<typeof MoveToTrackRequestSchema>;
+
+export const MoveTrackRequestSchema = z.object({
+  part_id: z.unknown().optional(),
+});
+export type MoveTrackRequest = z.infer<typeof MoveTrackRequestSchema>;
 
 export const PointerBodySchema = z.object({
   id: z.string(),
@@ -866,6 +1009,26 @@ export const NodeResponseSchema = z.object({
 });
 export type NodeResponse = z.infer<typeof NodeResponseSchema>;
 
+export const PartBodySchema = z.object({
+  created_at: z.string(),
+  description: z.string(),
+  id: z.string(),
+  kind: z.string(),
+  name: z.string(),
+  project_id: z.string(),
+});
+export type PartBody = z.infer<typeof PartBodySchema>;
+
+export const PartListResponseSchema = z.object({
+  parts: z.array(PartBodySchema),
+});
+export type PartListResponse = z.infer<typeof PartListResponseSchema>;
+
+export const PartResponseSchema = z.object({
+  part: PartBodySchema,
+});
+export type PartResponse = z.infer<typeof PartResponseSchema>;
+
 export const PatchNodeRequestSchema = z.object({
   behaviour: z.string().nullable().optional(),
   expected_version: z.number().int(),
@@ -908,6 +1071,7 @@ export type PostResponse = z.infer<typeof PostResponseSchema>;
 
 export const ProjectBodySchema = z.object({
   created_at: z.string(),
+  description: z.string().nullable().optional(),
   id: z.string(),
   name: z.string(),
 });
@@ -945,14 +1109,27 @@ export const RenameDocRequestSchema = z.object({
 export type RenameDocRequest = z.infer<typeof RenameDocRequestSchema>;
 
 export const RenameFeatureRequestSchema = z.object({
+  description: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
 });
 export type RenameFeatureRequest = z.infer<typeof RenameFeatureRequestSchema>;
 
+export const RenamePartRequestSchema = z.object({
+  description: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+});
+export type RenamePartRequest = z.infer<typeof RenamePartRequestSchema>;
+
 export const RenameProjectRequestSchema = z.object({
+  description: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
 });
 export type RenameProjectRequest = z.infer<typeof RenameProjectRequestSchema>;
+
+export const RenameTrackRequestSchema = z.object({
+  name: z.string().nullable().optional(),
+});
+export type RenameTrackRequest = z.infer<typeof RenameTrackRequestSchema>;
 
 export const ReplyRequestSchema = z.object({
   text: z.string().nullable().optional(),
@@ -1003,16 +1180,17 @@ export type SinglePostResponse = z.infer<typeof SinglePostResponseSchema>;
 export const StartThreadRequestSchema = z.object({
   question: z.string().nullable().optional(),
   sealed: z.boolean().nullable().optional(),
+  track_id: z.string().nullable().optional(),
 });
 export type StartThreadRequest = z.infer<typeof StartThreadRequestSchema>;
 
 export const StoryBodySchema = z.object({
   blocked: z.boolean(),
   blocked_by: z.array(z.string()),
+  blockers: z.array(BlockerBodySchema).optional(),
   created_at: z.string(),
   criteria: z.array(CriterionBodySchema),
   decisions: z.array(z.record(z.string(), z.unknown())),
-  feature_id: z.string(),
   files_changed: z.array(z.string()),
   files_planned: z.array(z.string()),
   findings: z.array(z.record(z.string(), z.unknown())),
@@ -1027,6 +1205,7 @@ export const StoryBodySchema = z.object({
   text: z.string(),
   title: z.string(),
   topic: z.string(),
+  track_id: z.string(),
   updated_at: z.string(),
   version: z.number().int(),
 });
@@ -1050,6 +1229,7 @@ export const StoryHeldBodySchema = z.object({
 export type StoryHeldBody = z.infer<typeof StoryHeldBodySchema>;
 
 export const StoryListResponseSchema = z.object({
+  linked: z.array(LinkedBodySchema).optional(),
   stories: z.array(StoryBodySchema),
 });
 export type StoryListResponse = z.infer<typeof StoryListResponseSchema>;
@@ -1077,6 +1257,21 @@ export const TickRequestSchema = z.object({
   ticked: z.boolean(),
 });
 export type TickRequest = z.infer<typeof TickRequestSchema>;
+
+export const TrackListResponseSchema = z.object({
+  tracks: z.array(TrackBodySchema),
+});
+export type TrackListResponse = z.infer<typeof TrackListResponseSchema>;
+
+export const TrackResponseSchema = z.object({
+  track: TrackBodySchema,
+});
+export type TrackResponse = z.infer<typeof TrackResponseSchema>;
+
+export const TrackStateRequestSchema = z.object({
+  state: z.string().nullable().optional(),
+});
+export type TrackStateRequest = z.infer<typeof TrackStateRequestSchema>;
 
 export const UsageBoardSchema = z.object({
   board_id: z.string(),
@@ -1140,6 +1335,7 @@ export const schemas = {
   AttachmentBody: AttachmentBodySchema,
   AttachmentResponse: AttachmentResponseSchema,
   BlockStoryRequest: BlockStoryRequestSchema,
+  BlockerBody: BlockerBodySchema,
   BoardBody: BoardBodySchema,
   CancelStoryRequest: CancelStoryRequestSchema,
   ChainNodeBody: ChainNodeBodySchema,
@@ -1154,16 +1350,22 @@ export const schemas = {
   ConflictBody: ConflictBodySchema,
   ConflictDetails: ConflictDetailsSchema,
   CreateCommentRequest: CreateCommentRequestSchema,
+  CreateDecisionRequest: CreateDecisionRequestSchema,
   CreateDocRequest: CreateDocRequestSchema,
   CreateFeatureRequest: CreateFeatureRequestSchema,
   CreateNodeRequest: CreateNodeRequestSchema,
+  CreatePartRequest: CreatePartRequestSchema,
   CreatePostRequest: CreatePostRequestSchema,
   CreateProjectRequest: CreateProjectRequestSchema,
   CreateRuleRequest: CreateRuleRequestSchema,
   CreateStoryRequest: CreateStoryRequestSchema,
+  CreateTrackRequest: CreateTrackRequestSchema,
   CreatedKeyResponse: CreatedKeyResponseSchema,
   CriterionBody: CriterionBodySchema,
+  DecisionBody: DecisionBodySchema,
+  DecisionListResponse: DecisionListResponseSchema,
   DecisionRequest: DecisionRequestSchema,
+  DecisionResponse: DecisionResponseSchema,
   DigestEntry: DigestEntrySchema,
   DigestResponse: DigestResponseSchema,
   DocBody: DocBodySchema,
@@ -1175,9 +1377,9 @@ export const schemas = {
   FeatureBody: FeatureBodySchema,
   FeatureListResponse: FeatureListResponseSchema,
   FeatureResponse: FeatureResponseSchema,
-  FeatureSummary: FeatureSummarySchema,
   FilesRequest: FilesRequestSchema,
   FindingRequest: FindingRequestSchema,
+  HandoverRequest: HandoverRequestSchema,
   HeadBoard: HeadBoardSchema,
   HeadHtmlResponse: HeadHtmlResponseSchema,
   HeadTokensResponse: HeadTokensResponseSchema,
@@ -1197,10 +1399,13 @@ export const schemas = {
   ImportedHeadComponents: ImportedHeadComponentsSchema,
   ImportedHeadTokens: ImportedHeadTokensSchema,
   InvalidDesignBody: InvalidDesignBodySchema,
+  InvalidKindBody: InvalidKindBodySchema,
   InvalidOperationBody: InvalidOperationBodySchema,
   InvalidTokensBody: InvalidTokensBodySchema,
   KeyListResponse: KeyListResponseSchema,
   KeyResponse: KeyResponseSchema,
+  LinkFeatureRequest: LinkFeatureRequestSchema,
+  LinkedBody: LinkedBodySchema,
   LiveClientMessage: LiveClientMessageSchema,
   LiveErrorCode: LiveErrorCodeSchema,
   LiveEventName: LiveEventNameSchema,
@@ -1209,8 +1414,12 @@ export const schemas = {
   Manifest: ManifestSchema,
   ManifestBoard: ManifestBoardSchema,
   ManifestPage: ManifestPageSchema,
+  MemberBody: MemberBodySchema,
+  MemberListResponse: MemberListResponseSchema,
   MoveNodeRequest: MoveNodeRequestSchema,
   MoveStoryRequest: MoveStoryRequestSchema,
+  MoveToTrackRequest: MoveToTrackRequestSchema,
+  MoveTrackRequest: MoveTrackRequestSchema,
   NewCriterion: NewCriterionSchema,
   NodeBody: NodeBodySchema,
   NodeBox: NodeBoxSchema,
@@ -1220,6 +1429,9 @@ export const schemas = {
   NodeResponse: NodeResponseSchema,
   NodeSummaryBody: NodeSummaryBodySchema,
   OpResultBody: OpResultBodySchema,
+  PartBody: PartBodySchema,
+  PartListResponse: PartListResponseSchema,
+  PartResponse: PartResponseSchema,
   PatchNodeRequest: PatchNodeRequestSchema,
   PatchRuleRequest: PatchRuleRequestSchema,
   PatchStoryRequest: PatchStoryRequestSchema,
@@ -1237,7 +1449,9 @@ export const schemas = {
   ReleaseStoryRequest: ReleaseStoryRequestSchema,
   RenameDocRequest: RenameDocRequestSchema,
   RenameFeatureRequest: RenameFeatureRequestSchema,
+  RenamePartRequest: RenamePartRequestSchema,
   RenameProjectRequest: RenameProjectRequestSchema,
+  RenameTrackRequest: RenameTrackRequestSchema,
   ReplyBody: ReplyBodySchema,
   ReplyRequest: ReplyRequestSchema,
   ResolveFindingRequest: ResolveFindingRequestSchema,
@@ -1259,6 +1473,11 @@ export const schemas = {
   TickRequest: TickRequestSchema,
   TitleChange: TitleChangeSchema,
   TokensChange: TokensChangeSchema,
+  TrackBody: TrackBodySchema,
+  TrackListResponse: TrackListResponseSchema,
+  TrackResponse: TrackResponseSchema,
+  TrackStateRequest: TrackStateRequestSchema,
+  TrackSummary: TrackSummarySchema,
   UsageBoard: UsageBoardSchema,
   UsageResponse: UsageResponseSchema,
   UserBody: UserBodySchema,
@@ -1348,6 +1567,13 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/members": {
+    responses: {
+      "200": MemberListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects": {
     responses: {
       "200": ProjectListResponseSchema,
@@ -1432,12 +1658,21 @@ export const operations = {
       "404": ErrorBodySchema,
     },
   },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/decisions": {
+    responses: {
+      "200": DecisionListResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/docs": {
     responses: {
       "200": DocListResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/projects/{project_id}/docs": {
@@ -1535,372 +1770,113 @@ export const operations = {
       "409": ConflictBodySchema,
     },
   },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features": {
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/home": {
+    responses: {
+      "200": HomeResponseSchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts": {
+    responses: {
+      "200": PartListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/parts": {
+    request: CreatePartRequestSchema,
+    responses: {
+      "201": PartResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": InvalidKindBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}": {
+    responses: {
+      "200": PartResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}": {
+    request: RenamePartRequestSchema,
+    responses: {
+      "200": PartResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/decisions": {
+    responses: {
+      "200": DecisionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features": {
     responses: {
       "200": FeatureListResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features": {
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features": {
     request: CreateFeatureRequestSchema,
     responses: {
       "201": FeatureResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
     },
   },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}": {
     responses: {
       "200": FeatureResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },
-  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}": {
     responses: {
       "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },
-  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}": {
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}": {
     request: RenameFeatureRequestSchema,
     responses: {
       "200": FeatureResponseSchema,
       "400": ErrorBodySchema,
       "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
       "409": ErrorBodySchema,
     },
   },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour": {
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/decisions": {
     responses: {
-      "200": NodeListResponseSchema,
+      "200": DecisionListResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import": {
-    request: ImportRequestSchema,
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks": {
     responses: {
-      "201": ImportResponseSchema,
-      "400": ErrorBodySchema,
+      "200": TrackListResponseSchema,
       "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-      "422": ImportInvalidBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes": {
-    request: CreateNodeRequestSchema,
-    responses: {
-      "201": NodeResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
-    responses: {
-      "200": NodeReadResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}": {
-    request: PatchNodeRequestSchema,
-    responses: {
-      "200": NodeResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move": {
-    request: MoveNodeRequestSchema,
-    responses: {
-      "200": NodeResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions": {
-    request: AskRequestSchema,
-    responses: {
-      "201": QuestionResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules": {
-    request: CreateRuleRequestSchema,
-    responses: {
-      "201": RuleResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions": {
-    responses: {
-      "200": QuestionListResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}": {
-    responses: {
-      "200": QuestionResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers": {
-    request: AnswerRequestSchema,
-    responses: {
-      "201": QuestionResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules": {
-    responses: {
-      "200": RuleListResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}": {
-    request: PatchRuleRequestSchema,
-    responses: {
-      "200": RuleResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs": {
-    request: CreateDocRequestSchema,
-    responses: {
-      "201": DocResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories": {
-    responses: {
-      "200": StoryListResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories": {
-    request: CreateStoryRequestSchema,
-    responses: {
-      "201": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}": {
-    responses: {
-      "200": StoryResponseSchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}": {
-    request: PatchStoryRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block": {
-    request: BlockStoryRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel": {
-    request: CancelStoryRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check": {
-    request: CheckCriterionRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim": {
-    request: ClaimStoryRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryHeldBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions": {
-    request: DecisionRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files": {
-    request: FilesRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings": {
-    request: FindingRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve": {
-    request: ResolveFindingRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move": {
-    request: MoveStoryRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryHeldBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release": {
-    request: ReleaseStoryRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick": {
-    request: TickRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-      "422": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock": {
-    request: BlockStoryRequestSchema,
-    responses: {
-      "200": StoryResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-      "409": StoryConflictBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads": {
-    request: StartThreadRequestSchema,
-    responses: {
-      "201": ThreadResponseSchema,
-      "400": ErrorBodySchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/projects/{project_id}/home": {
-    responses: {
-      "200": HomeResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "404": ErrorBodySchema,
     },
   },
@@ -1928,6 +1904,7 @@ export const operations = {
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
     },
   },
   "GET /api/v1/w/{workspace_id}/projects/{project_id}/threads/{thread_id}": {
@@ -1978,6 +1955,457 @@ export const operations = {
     responses: {
       "200": ImportedHeadTokensSchema,
       "400": InvalidTokensBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks": {
+    responses: {
+      "200": TrackListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks": {
+    request: CreateTrackRequestSchema,
+    responses: {
+      "201": TrackResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}": {
+    responses: {
+      "200": TrackResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}": {
+    request: RenameTrackRequestSchema,
+    responses: {
+      "200": TrackResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour": {
+    responses: {
+      "200": NodeListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/import": {
+    request: ImportRequestSchema,
+    responses: {
+      "201": ImportResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ImportInvalidBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes": {
+    request: CreateNodeRequestSchema,
+    responses: {
+      "201": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}": {
+    responses: {
+      "200": NodeReadResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}": {
+    request: PatchNodeRequestSchema,
+    responses: {
+      "200": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/move": {
+    request: MoveNodeRequestSchema,
+    responses: {
+      "200": NodeResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/questions": {
+    request: AskRequestSchema,
+    responses: {
+      "201": QuestionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/rules": {
+    request: CreateRuleRequestSchema,
+    responses: {
+      "201": RuleResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions": {
+    responses: {
+      "200": QuestionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}": {
+    responses: {
+      "200": QuestionResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}/answers": {
+    request: AnswerRequestSchema,
+    responses: {
+      "201": QuestionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules": {
+    responses: {
+      "200": RuleListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules/{rule_id}": {
+    request: PatchRuleRequestSchema,
+    responses: {
+      "200": RuleResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions": {
+    responses: {
+      "200": DecisionListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions": {
+    request: CreateDecisionRequestSchema,
+    responses: {
+      "201": DecisionResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/docs": {
+    request: CreateDocRequestSchema,
+    responses: {
+      "201": DocResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features": {
+    responses: {
+      "200": FeatureListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features": {
+    request: LinkFeatureRequestSchema,
+    responses: {
+      "200": FeatureResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "DELETE /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features/{feature_id}": {
+    responses: {
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move": {
+    request: MoveTrackRequestSchema,
+    responses: {
+      "200": TrackResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/owner": {
+    request: HandoverRequestSchema,
+    responses: {
+      "200": TrackResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state": {
+    request: TrackStateRequestSchema,
+    responses: {
+      "200": TrackResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories": {
+    responses: {
+      "200": StoryListResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories": {
+    request: CreateStoryRequestSchema,
+    responses: {
+      "201": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "GET /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}": {
+    responses: {
+      "200": StoryResponseSchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
+  "PATCH /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}": {
+    request: PatchStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/block": {
+    request: BlockStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/cancel": {
+    request: CancelStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/check": {
+    request: CheckCriterionRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/claim": {
+    request: ClaimStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryHeldBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/decisions": {
+    request: DecisionRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/files": {
+    request: FilesRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings": {
+    request: FindingRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings/{index}/resolve": {
+    request: ResolveFindingRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/move": {
+    request: MoveStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryHeldBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/release": {
+    request: ReleaseStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/tick": {
+    request: TickRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track": {
+    request: MoveToTrackRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+      "422": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/unblock": {
+    request: BlockStoryRequestSchema,
+    responses: {
+      "200": StoryResponseSchema,
+      "400": ErrorBodySchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+      "409": StoryConflictBodySchema,
+    },
+  },
+  "POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/threads": {
+    request: StartThreadRequestSchema,
+    responses: {
+      "201": ThreadResponseSchema,
+      "400": ErrorBodySchema,
       "401": ErrorBodySchema,
       "403": ErrorBodySchema,
       "404": ErrorBodySchema,

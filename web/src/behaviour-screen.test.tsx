@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// US-221: a feature's Behaviour screen, .../features/<feature>/behaviour. It
-// reads GET .../features/<feature>/behaviour and lists the tree as folders: the
-// feature first, then its stories, closed, by their short titles. An empty list
-// is a feature with no tree; any failed request, 404 included, is a failed load.
+// US-221: a track's Behaviour screen, .../tracks/<track>/behaviour. It
+// reads GET .../tracks/<track>/behaviour and lists the tree as folders: the
+// track first, then its stories, closed, by their short titles. An empty list
+// is a track with no tree; any failed request, 404 included, is a failed load.
 // The app is rendered with its own router on a memory history and the
 // browser's fetch is replaced by a fake of the API.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
@@ -13,10 +13,12 @@ import { testTree } from "./testing/behaviour-test-tree";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
-const FEATURE_ID = "0192d7a0-4444-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
+const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
-const BEHAVIOUR_PATH = `${PROJECT_PATH}/features/${FEATURE_ID}/behaviour`;
+const BEHAVIOUR_PATH = `${PROJECT_PATH}/tracks/${TRACK_ID}/behaviour`;
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const AT = "2026-11-12T09:00:00Z";
 
@@ -54,7 +56,7 @@ function node(
 }
 
 /**
- * The feature, a story with a situation that has one below it, a situation
+ * The track, a story with a situation that has one below it, a situation
  * after it that is out of scope, and a second story with nothing under it.
  */
 const TREE = [
@@ -68,10 +70,10 @@ const TREE = [
 
 type Behaviour = { status: number; body: unknown };
 
-/** A feature of the project's home data. */
-function feature(id: string, name: string) {
+/** A track of the project's home data. */
+function track(id: string, name: string) {
   return {
-    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
+    track: { id, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name, description: "", created_at: AT },
     docs: 0,
     waiting: 0,
     stories: { total: 0, open: 0, done: 0 },
@@ -89,11 +91,11 @@ const BY_PERSON = { kind: "human", user_id: USER.id };
 
 /**
  * A fake of the API whose behaviour list answers with `behaviour` and whose
- * home data holds `features`, or never arrives when `features` is "pending".
+ * home data holds `tracks`, or never arrives when `tracks` is "pending".
  * The open questions are `questions`; without them that request fails.
  * Reading a node in full answers from `reads`, keyed by node id.
  */
-function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], questions?: unknown[], reads: Record<string, unknown> = {}) {
+function fakeApi(behaviour: Behaviour, tracks: unknown[] | "pending" = [track(TRACK_ID, "Putting basics")], questions?: unknown[], reads: Record<string, unknown> = {}) {
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   vi.stubGlobal(
@@ -109,24 +111,24 @@ function fakeApi(behaviour: Behaviour, features: unknown[] | "pending" = [], que
         case `/api/v1/w/${WORKSPACE_ID}/projects`:
           return json(200, { projects: [{ id: PROJECT_ID, name: "Trainer", created_at: AT }] });
         case `${API}/home`:
-          if (features === "pending") return new Promise<Response>(() => {});
+          if (tracks === "pending") return new Promise<Response>(() => {});
           return json(200, {
             project_id: PROJECT_ID,
             app: { last_activity: null },
-            features,
+            tracks,
             docs: [],
             threads: [],
             waiting: { comments: [] },
           });
         case `${API}/comments`:
           return json(200, { project_id: PROJECT_ID, comments: [] });
-        case `${API}/features/${FEATURE_ID}/behaviour`:
+        case `${API}/tracks/${TRACK_ID}/behaviour`:
           return json(behaviour.status, behaviour.body);
-        case `${API}/features/${FEATURE_ID}/behaviour/questions`:
+        case `${API}/tracks/${TRACK_ID}/behaviour/questions`:
           if (!questions) return json(404, { error: "not_found" });
           return json(200, { questions });
         default:
-          if (path.startsWith(`${API}/features/${FEATURE_ID}/behaviour/nodes/`)) {
+          if (path.startsWith(`${API}/tracks/${TRACK_ID}/behaviour/nodes/`)) {
             const read = reads[decodeURIComponent(path.split("/").at(-1)!)];
             if (read) return json(200, read);
           }
@@ -222,11 +224,10 @@ afterEach(() => {
 });
 
 describe("the Behaviour screen's folders", () => {
-  test("list the feature, then its stories closed by their short titles, under the count of stories and nodes", async () => {
+  test("list the track, then its stories closed by their short titles, under the count of stories and nodes", async () => {
     fakeApi({ status: 200, body: { nodes: TREE } });
     renderAt(BEHAVIOUR_PATH);
     const aside = await folders();
-    expect(screen.getByRole("heading", { level: 1, name: "Behaviour" })).toBeTruthy();
     expect(within(aside).getByText("2 stories · 6 nodes")).toBeTruthy();
     expect(rowTexts(aside)).toEqual([
       "Disc golf putting trainer",
@@ -286,7 +287,7 @@ describe("the Behaviour screen's waiting badges in the folders", () => {
     rowTitled(aside, title).querySelector<HTMLElement>('[data-mark="waiting"]');
 
   test("a closed row adds up the questions agents asked on it and under it, an open row counts its own, and remarks never count", async () => {
-    fakeApi({ status: 200, body: { nodes: TREE } }, [], [
+    fakeApi({ status: 200, body: { nodes: TREE } }, undefined, [
       openQuestion("q1", SIGNS_UP, BY_AGENT),
       openQuestion("q2", CONFIRMS, BY_AGENT),
       openQuestion("q3", CONFIRMS, BY_PERSON),
@@ -315,17 +316,17 @@ describe("the Behaviour screen with no tree or a failed load", () => {
   test("an empty list says no behaviour has been written, in place of the folders", async () => {
     fakeApi({ status: 200, body: { nodes: [] } });
     renderAt(BEHAVIOUR_PATH);
-    expect(await screen.findByText("No behaviour has been written for this feature yet.")).toBeTruthy();
+    expect(await screen.findByText("No behaviour has been written for this track yet.")).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Tree as folders" })).toBeNull();
   });
 
-  test("a tree holding only the feature is drawn as a tree, not as the empty state", async () => {
+  test("a tree holding only the track is drawn as a tree, not as the empty state", async () => {
     fakeApi({ status: 200, body: { nodes: [node(ROOT, null, "Disc golf putting trainer")] } });
     renderAt(BEHAVIOUR_PATH);
     const aside = await folders();
     expect(within(aside).getByText("0 stories · 1 node")).toBeTruthy();
     expect(rowTexts(aside)).toEqual(["Disc golf putting trainer"]);
-    expect(screen.queryByText("No behaviour has been written for this feature yet.")).toBeNull();
+    expect(screen.queryByText("No behaviour has been written for this track yet.")).toBeNull();
   });
 
   test("a 404 for the list is a failed load: the alert shows and neither folders nor the empty state do", async () => {
@@ -333,37 +334,22 @@ describe("the Behaviour screen with no tree or a failed load", () => {
     renderAt(BEHAVIOUR_PATH);
     expect(await screen.findByText("The behaviour tree could not be loaded. Try again in a moment.")).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Tree as folders" })).toBeNull();
-    expect(screen.queryByText("No behaviour has been written for this feature yet.")).toBeNull();
+    expect(screen.queryByText("No behaviour has been written for this track yet.")).toBeNull();
   });
 });
 
-// US-222: the screen takes the whole window. The app's sidebar is left out, and
-// the top bar links back to the feature by the name the project's home data
-// gives it, never by the tree's root title.
-describe("the Behaviour screen's frame and top bar", () => {
-  test("leaves out the app's sidebar", async () => {
-    fakeApi({ status: 200, body: { nodes: TREE } });
-    renderAt(BEHAVIOUR_PATH);
-    await folders();
-    expect(screen.queryByRole("navigation", { name: "Project" })).toBeNull();
-  });
-
-  test("links back to the feature page by the feature's name while the first row shows the root title", async () => {
-    fakeApi({ status: 200, body: { nodes: TREE } }, [feature(FEATURE_ID, "Putting basics")]);
+// The screen sits in the track's Behaviour section, under the track's header: the
+// path leads back to the track's tracks and the title is the track's name as
+// the project's home data gives it, never the tree's root title.
+describe("the Behaviour screen's frame", () => {
+  test("sits under the track's header, its title the track's name while the first row shows the root title, Behaviour the current section", async () => {
+    fakeApi({ status: 200, body: { nodes: TREE } }, [track(TRACK_ID, "Putting basics")]);
     renderAt(BEHAVIOUR_PATH);
     const aside = await folders();
-    const back = await screen.findByRole("link", { name: "‹ Putting basics" });
-    expect(back.getAttribute("href")).toBe(`${PROJECT_PATH}/features/${FEATURE_ID}`);
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Putting basics");
     expect(rowTexts(aside)[0]).toBe("Disc golf putting trainer");
-  });
-
-  test("before the home data arrives the back link reads only the arrow, not the root title", async () => {
-    fakeApi({ status: 200, body: { nodes: TREE } }, "pending");
-    renderAt(BEHAVIOUR_PATH);
-    await folders();
-    const back = screen.getByRole("link", { name: "‹" });
-    expect(back.textContent).toBe("‹ ");
-    expect(back.getAttribute("href")).toBe(`${PROJECT_PATH}/features/${FEATURE_ID}`);
+    const sections = screen.getByRole("navigation", { name: "Sections" });
+    expect(within(sections).getByRole("link", { name: /^Behaviour/ }).getAttribute("aria-current")).toBe("page");
   });
 });
 
@@ -407,7 +393,7 @@ describe("choosing a node in the Behaviour screen", () => {
 
   const boxOf = (id: string) => document.querySelector<HTMLElement>(`main [data-node="${id}"]`)!;
   const rowOf = (id: string) => document.querySelector<HTMLElement>(`aside [data-row="${id}"]`);
-  const detailsTitle = () => screen.getByRole("region", { name: "Details" }).querySelector("h2")?.textContent ?? null;
+  const detailsTitle = () => screen.queryByRole("region", { name: "Details" })?.querySelector("h2")?.textContent ?? null;
   const graphArea = () => screen.getByRole("main", { name: "Tree as a graph" }).firstElementChild as HTMLElement;
 
   /** Presses `element` without dragging. */
@@ -435,7 +421,7 @@ describe("choosing a node in the Behaviour screen", () => {
     delete (Element.prototype as Partial<Element>).scrollIntoView;
   });
 
-  test("pressing the feature's row after a story was chosen fits the whole drawing again", async () => {
+  test("pressing the track's row after a story was chosen fits the whole drawing again", async () => {
     fakeApi({ status: 200, body: { nodes: testTree() } });
     renderAt(BEHAVIOUR_PATH);
     await folders();
@@ -495,6 +481,21 @@ describe("choosing a node in the Behaviour screen", () => {
     // Any eased move would have landed by now: 240ms and the 120ms fallback after it.
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(currentView()).toEqual(opening);
+  });
+
+  test("the details column opens only while a node is chosen, and Close the details closes it", async () => {
+    fakeApi({ status: 200, body: { nodes: testTree() } });
+    renderAt(BEHAVIOUR_PATH);
+    await folders();
+    await openingView();
+    expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
+
+    press(boxOf(CANNOT_REMEMBER));
+    expect(detailsTitle()).toBe("Player can't remember how to sign in");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close the details" }));
+    expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
+    expect(document.querySelectorAll("main [data-chosen]")).toHaveLength(0);
   });
 
   test("pressing the graph's background or the chosen box again keeps the choice", async () => {
@@ -565,7 +566,7 @@ describe("choosing a node in the Behaviour screen", () => {
     expect(detailsTitle()).toBe("Player signs up with an email");
     key("ArrowLeft");
     expect(detailsTitle()).toBe(story);
-    // Left on a story does not choose the feature.
+    // Left on a story does not choose the track.
     key("ArrowLeft");
     expect(detailsTitle()).toBe(story);
     key("ArrowDown");
@@ -788,7 +789,7 @@ describe("choosing a node in the Behaviour screen", () => {
       expect(rows(aside)).toHaveLength(1);
       expect(rows(aside)[0].firstElementChild!.textContent).toBe("Player: pick a training program");
       expect(marks(rows(aside)[0])).toEqual(["program"]);
-      expect(rows(aside)[0].lastElementChild!.textContent).toBe("Feature");
+      expect(rows(aside)[0].lastElementChild!.textContent).toBe("Track");
 
       // The typed words are marked as written, not read as a pattern.
       type("(once");
@@ -919,13 +920,13 @@ describe("choosing a node in the Behaviour screen", () => {
     });
   });
 
-  // US-235: a behaviour event of this feature on the project's live socket reads
+  // US-235: a behaviour event of this track on the project's live socket reads
   // the tree and the open questions again, at most once per 300 ms: on the first
   // event, and once more at the end of the window when more came in it. The
   // chosen node is read again when the event names it, or is behaviour.imported
   // or behaviour.marked.
   describe("following a running grill", () => {
-    const OTHER_FEATURE = "0192d7a0-4444-7000-8000-000000000002";
+    const OTHER_TRACK = "0192d7a0-4444-7000-8000-000000000002";
     const pillOf = (id: string) => document.querySelector<HTMLElement>(`main [data-node="${id}"] [data-fold]`)!;
     const still = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -936,9 +937,9 @@ describe("choosing a node in the Behaviour screen", () => {
         return new URL(url, "http://localhost:3000").pathname === path;
       }).length;
     }
-    const treeReads = () => requests(`${API}/features/${FEATURE_ID}/behaviour`);
-    const questionReads = () => requests(`${API}/features/${FEATURE_ID}/behaviour/questions`);
-    const nodeReads = (id: string) => requests(`${API}/features/${FEATURE_ID}/behaviour/nodes/${id}`);
+    const treeReads = () => requests(`${API}/tracks/${TRACK_ID}/behaviour`);
+    const questionReads = () => requests(`${API}/tracks/${TRACK_ID}/behaviour/questions`);
+    const nodeReads = (id: string) => requests(`${API}/tracks/${TRACK_ID}/behaviour/nodes/${id}`);
 
     /** Opens the live socket and returns a way to send a project event on it. */
     async function liveSocket() {
@@ -966,28 +967,28 @@ describe("choosing a node in the Behaviour screen", () => {
       };
     }
 
-    test("a burst of this feature's behaviour events reads the tree and the open questions at once and once more at its end, and a lone event once", async () => {
+    test("a burst of this track's behaviour events reads the tree and the open questions at once and once more at its end, and a lone event once", async () => {
       const list = { status: 200, body: { nodes: TREE } };
-      fakeApi(list, [], []);
+      fakeApi(list, undefined, []);
       renderAt(BEHAVIOUR_PATH);
       const aside = await folders();
       const send = await liveSocket();
       await waitFor(() => expect(questionReads()).toBe(1));
       expect(treeReads()).toBe(1);
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: PROGRAM_STORY });
+      send("behaviour.node_changed", { track_id: TRACK_ID, node_id: PROGRAM_STORY });
       await waitFor(() => expect(treeReads()).toBe(2));
       expect(questionReads()).toBe(2);
       await still(450);
       expect(treeReads()).toBe(2);
       expect(questionReads()).toBe(2);
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: PROGRAM_STORY });
+      send("behaviour.node_changed", { track_id: TRACK_ID, node_id: PROGRAM_STORY });
       await waitFor(() => expect(treeReads()).toBe(3));
       const STATS_STORY = "0192d7a0-8888-7000-8000-000000000007";
       list.body = { nodes: [...TREE, node(STATS_STORY, ROOT, "As a player, I want to see my putting stats, so that I know where I improve", { position: 2 })] };
-      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: STATS_STORY });
-      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: STATS_STORY, question_id: "q9", state: "open" });
+      send("behaviour.node_created", { track_id: TRACK_ID, node_id: STATS_STORY });
+      send("behaviour.question_changed", { track_id: TRACK_ID, node_id: STATS_STORY, question_id: "q9", state: "open" });
 
       await waitFor(() => expect(within(aside).queryByText("Player: see my putting stats")).not.toBeNull());
       expect(treeReads()).toBe(4);
@@ -997,25 +998,25 @@ describe("choosing a node in the Behaviour screen", () => {
       expect(questionReads()).toBe(4);
     }, 10_000);
 
-    test("an event of another feature of the project, or one that is not about behaviour, reads nothing of this feature", async () => {
-      fakeApi({ status: 200, body: { nodes: TREE } }, [], []);
+    test("an event of another track of the project, or one that is not about behaviour, reads nothing of this track", async () => {
+      fakeApi({ status: 200, body: { nodes: TREE } }, undefined, []);
       renderAt(BEHAVIOUR_PATH);
       await folders();
       const send = await liveSocket();
       await waitFor(() => expect(questionReads()).toBe(1));
 
-      send("behaviour.node_created", { feature_id: OTHER_FEATURE, node_id: "0192d7a0-8888-7000-8000-000000000099" });
-      send("feature.renamed", { feature_id: FEATURE_ID, name: "Putting" });
+      send("behaviour.node_created", { track_id: OTHER_TRACK, node_id: "0192d7a0-8888-7000-8000-000000000099" });
+      send("track.renamed", { track_id: TRACK_ID, name: "Putting" });
       await still(450);
       expect(treeReads()).toBe(1);
       expect(questionReads()).toBe(1);
 
-      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: SIGNS_UP });
+      send("behaviour.node_created", { track_id: TRACK_ID, node_id: SIGNS_UP });
       await waitFor(() => expect(treeReads()).toBe(2));
     }, 10_000);
 
     test("the chosen node is read again for an event that names it, for behaviour.marked and behaviour.imported, and at the end of a burst one of them came in, keeping the typed remark", async () => {
-      fakeApi({ status: 200, body: { nodes: TREE } }, [], [], { [SIGNS_UP]: readOf(SIGNS_UP, SIGN_UP_STORY, TREE[2].title) });
+      fakeApi({ status: 200, body: { nodes: TREE } }, undefined, [], { [SIGNS_UP]: readOf(SIGNS_UP, SIGN_UP_STORY, TREE[2].title) });
       renderAt(BEHAVIOUR_PATH);
       const aside = await folders();
       const send = await liveSocket();
@@ -1025,25 +1026,25 @@ describe("choosing a node in the Behaviour screen", () => {
       const remark = (await screen.findByRole("textbox", { name: "Add a question or remark" })) as HTMLTextAreaElement;
       fireEvent.change(remark, { target: { value: "The confirmation is easy to miss." } });
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: CONFIRMS });
+      send("behaviour.node_changed", { track_id: TRACK_ID, node_id: CONFIRMS });
       await waitFor(() => expect(treeReads()).toBe(2));
       await still(450);
       expect(nodeReads(SIGNS_UP)).toBe(1);
 
-      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
+      send("behaviour.question_changed", { track_id: TRACK_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(2));
       await still(450);
 
-      send("behaviour.marked", { feature_id: FEATURE_ID, node_id: CONFIRMS, below: false });
+      send("behaviour.marked", { track_id: TRACK_ID, node_id: CONFIRMS, below: false });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(3));
       await still(450);
 
-      send("behaviour.imported", { feature_id: FEATURE_ID });
+      send("behaviour.imported", { track_id: TRACK_ID });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(4));
       await still(450);
 
-      send("behaviour.node_changed", { feature_id: FEATURE_ID, node_id: CONFIRMS });
-      send("behaviour.question_changed", { feature_id: FEATURE_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
+      send("behaviour.node_changed", { track_id: TRACK_ID, node_id: CONFIRMS });
+      send("behaviour.question_changed", { track_id: TRACK_ID, node_id: SIGNS_UP, question_id: "q1", state: "answered" });
       await waitFor(() => expect(nodeReads(SIGNS_UP)).toBe(5));
       await still(450);
       expect(nodeReads(SIGNS_UP)).toBe(5);
@@ -1090,7 +1091,7 @@ describe("choosing a node in the Behaviour screen", () => {
           added(PROGRAM_OFFLINE, PROGRAM, "Player opens a program offline", 9),
         ],
       };
-      send("behaviour.node_created", { feature_id: FEATURE_ID, node_id: OFFLINE });
+      send("behaviour.node_created", { track_id: TRACK_ID, node_id: OFFLINE });
 
       await waitFor(() => expect(boxOf(OFFLINE)).not.toBeNull(), { timeout: 2000 });
       expect(rowOf(OFFLINE)!.textContent).toBe("Player is offline");
@@ -1132,7 +1133,7 @@ describe("the Behaviour screen's details", () => {
       ],
       rules: [],
     };
-    fakeApi({ status: 200, body: { nodes: TREE } }, [], [], { [SIGN_UP_STORY]: read });
+    fakeApi({ status: 200, body: { nodes: TREE } }, undefined, [], { [SIGN_UP_STORY]: read });
     renderAt(BEHAVIOUR_PATH);
     const aside = await folders();
 
@@ -1150,7 +1151,7 @@ describe("the Behaviour screen's details", () => {
 // US-228: after a person's answer, accepted or turned away with a 409, the
 // screen reads the tree, the open questions and the chosen node again.
 describe("answering a waiting question in the Behaviour screen", () => {
-  const ANSWERS_PATH = `${API}/features/${FEATURE_ID}/behaviour/questions/q1/answers`;
+  const ANSWERS_PATH = `${API}/tracks/${TRACK_ID}/behaviour/questions/q1/answers`;
   const STORY = "Player: create an account and get set up";
   const given = (text: string, userId: string) => ({ answer: text, at: AT, author: { kind: "human", user_id: userId }, given_by: "human" });
   const answered = (text: string, userId: string) => ({ ...openQuestion("q1", SIGNS_UP, BY_AGENT), state: "answered", answer: given(text, userId), answers: [given(text, userId)], version: 2 });
@@ -1176,7 +1177,7 @@ describe("answering a waiting question in the Behaviour screen", () => {
     const list = { status: 200, body: { nodes: TREE } };
     const questions = [openQuestion("q1", SIGNS_UP, BY_AGENT), openQuestion("q2", CONFIRMS, BY_AGENT)];
     const reads: Record<string, unknown> = { [SIGNS_UP]: readOf([questions[0]]) };
-    fakeApi(list, [], questions, reads);
+    fakeApi(list, undefined, questions, reads);
     const api = globalThis.fetch;
     vi.stubGlobal(
       "fetch",
@@ -1216,7 +1217,7 @@ describe("answering a waiting question in the Behaviour screen", () => {
     const { aside, details } = await answerSignsUp();
 
     await waitFor(() => expect(within(details).queryByText("↻ Needs another grill pass")).not.toBeNull());
-    expect(details.textContent).toContain("Nothing is rewritten until the grill is started again on the feature.");
+    expect(details.textContent).toContain("Nothing is rewritten until the grill is started again on the track.");
     await waitFor(() => expect(badge(aside)?.textContent).toBe("1"));
     expect(details.querySelector('[data-question="q1"]')!.textContent).toContain("You");
   });
@@ -1238,7 +1239,7 @@ describe("answering a waiting question in the Behaviour screen", () => {
 // US-230: after a person's remark the screen reads the tree, the open questions
 // and the chosen node again, so the node shows the remark and needs another pass.
 describe("adding a remark in the Behaviour screen", () => {
-  const ASK_PATH = `${API}/features/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
+  const ASK_PATH = `${API}/tracks/${TRACK_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
   const REMARK = { ...openQuestion("q-remark", SIGNS_UP, BY_PERSON), question: "The confirmation is easy to miss." };
 
   function readOf(questions: unknown[]) {
@@ -1257,7 +1258,7 @@ describe("adding a remark in the Behaviour screen", () => {
     const list = { status: 200, body: { nodes: TREE } };
     const questions: unknown[] = [];
     const reads: Record<string, unknown> = { [SIGNS_UP]: readOf([]) };
-    fakeApi(list, [], questions, reads);
+    fakeApi(list, undefined, questions, reads);
     const api = globalThis.fetch;
     vi.stubGlobal(
       "fetch",
@@ -1466,7 +1467,7 @@ describe("filtering the Behaviour screen", () => {
 
   test("the top bar counts the questions agents asked, the answers given by default and the nodes waiting for a pass, and offers the grill-pass choice", async () => {
     const marked = FILTERED.map((one) => (one.id === PROGRAM_STORY ? { ...one, needs_pass: true } : one));
-    fakeApi({ status: 200, body: { nodes: marked } }, [], [
+    fakeApi({ status: 200, body: { nodes: marked } }, undefined, [
       openQuestion("q1", SIGNS_UP, BY_AGENT),
       openQuestion("q2", CONFIRMS, BY_AGENT),
       openQuestion("q3", SIGNS_UP, BY_PERSON),
@@ -1481,7 +1482,7 @@ describe("filtering the Behaviour screen", () => {
   });
 
   test("with nothing waiting, nothing by default and nothing marked the top bar says only that no question is open, and offers no grill-pass choice", async () => {
-    fakeApi({ status: 200, body: { nodes: TREE } }, [], []);
+    fakeApi({ status: 200, body: { nodes: TREE } }, undefined, []);
     renderAt(BEHAVIOUR_PATH);
     await folders();
 
@@ -1490,7 +1491,7 @@ describe("filtering the Behaviour screen", () => {
   });
 
   test("pressing 1 question waits for an answer turns Only open on, and pressing it again keeps it on", async () => {
-    fakeApi({ status: 200, body: { nodes: FILTERED } }, [], [openQuestion("q1", SIGNS_UP, BY_AGENT)]);
+    fakeApi({ status: 200, body: { nodes: FILTERED } }, undefined, [openQuestion("q1", SIGNS_UP, BY_AGENT)]);
     renderAt(BEHAVIOUR_PATH);
     await folders();
     const waits = await screen.findByRole("button", { name: "1 question waits for an answer" });
@@ -1501,16 +1502,10 @@ describe("filtering the Behaviour screen", () => {
     fireEvent.click(screen.getByRole("button", { name: "1 question waits for an answer" }));
     expect(pressed(/^Only open/)).toBe("true");
     expect(screen.getByText("1 of 6 nodes, with what lies above them")).toBeTruthy();
-
-    // The details' link turns Only open on as well.
-    fireEvent.click(choice(/^Only open/));
-    expect(pressed(/^All/)).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Show only the open nodes" }));
-    expect(pressed(/^Only open/)).toBe("true");
   });
 
   test("the grill-pass choice stays while it is on after the tree is read again with no node marked", async () => {
-    const ASK_PATH = `${API}/features/${FEATURE_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
+    const ASK_PATH = `${API}/tracks/${TRACK_ID}/behaviour/nodes/${SIGNS_UP}/questions`;
     const list = { status: 200, body: { nodes: FILTERED.map((one) => (one.id === SIGNS_UP ? { ...one, needs_pass: true, needs_pass_since: AT } : one)) } };
     const read = {
       node: { ...FILTERED[2], level: 2, situation: "", behaviour: "", created_at: AT, created_by: BY_AGENT, updated_at: AT },
@@ -1520,7 +1515,7 @@ describe("filtering the Behaviour screen", () => {
       questions: [],
       rules: [],
     };
-    fakeApi(list, [], [], { [SIGNS_UP]: read });
+    fakeApi(list, undefined, [], { [SIGNS_UP]: read });
     const api = globalThis.fetch;
     vi.stubGlobal(
       "fetch",

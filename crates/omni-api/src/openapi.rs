@@ -22,6 +22,9 @@ use crate::comments::{
     CommentBody, CommentListResponse, CommentResponse, CreateCommentRequest, ReplyBody,
     ReplyRequest, SingleCommentResponse,
 };
+use crate::decisions::{
+    CreateDecisionRequest, DecisionBody, DecisionListResponse, DecisionResponse,
+};
 use crate::design::{
     ImportTagsRequest, ImportedHeadComponents, InvalidDesignBody, UsageBoard, UsageResponse,
 };
@@ -33,8 +36,11 @@ use crate::docs::{
 use crate::features::{
     CreateFeatureRequest, FeatureBody, FeatureListResponse, FeatureResponse, RenameFeatureRequest,
 };
-use crate::home::{FeatureSummary, HomeResponse, StoryCounts, WaitingBody};
+use crate::home::{HomeResponse, StoryCounts, TrackSummary, WaitingBody};
 use crate::live::{LiveClientMessage, LiveErrorCode, LiveEventName, LiveServerMessage};
+use crate::parts::{
+    CreatePartRequest, InvalidKindBody, PartBody, PartListResponse, PartResponse, RenamePartRequest,
+};
 use crate::pins::NodeBox;
 use crate::projects::{
     CreateProjectRequest, ProjectBody, ProjectListResponse, ProjectResponse, RenameProjectRequest,
@@ -55,6 +61,11 @@ use crate::threads::{
 };
 use crate::tokens::{
     HeadTokensResponse, ImportTokensRequest, ImportedHeadTokens, InvalidTokensBody,
+};
+use crate::tracks::{
+    CreateTrackRequest, HandoverRequest, LinkFeatureRequest, MemberBody, MemberListResponse,
+    MoveTrackRequest, RenameTrackRequest, TrackBody, TrackListResponse, TrackResponse,
+    TrackStateRequest,
 };
 use crate::workspace::{ActorBody, WhoamiResponse};
 use axum::Json;
@@ -85,13 +96,36 @@ use utoipa::OpenApi;
         crate::features::show_feature,
         crate::features::rename_feature,
         crate::features::delete_feature,
+        crate::parts::list_parts,
+        crate::parts::create_part,
+        crate::parts::show_part,
+        crate::parts::rename_part,
+        crate::parts::delete_part,
+        crate::tracks::list_tracks,
+        crate::tracks::create_track,
+        crate::tracks::show_track,
+        crate::tracks::rename_track,
+        crate::tracks::move_track,
+        crate::tracks::set_track_state,
+        crate::tracks::hand_over_track,
+        crate::tracks::list_members,
+        crate::tracks::list_track_features,
+        crate::tracks::link_feature,
+        crate::tracks::unlink_feature,
+        crate::tracks::list_feature_tracks,
+        crate::decisions::create_decision,
+        crate::decisions::list_track_decisions,
+        crate::decisions::list_feature_decisions,
+        crate::decisions::list_part_decisions,
+        crate::decisions::list_project_decisions,
+        crate::tracks::delete_track,
         crate::projects::list_projects,
         crate::projects::create_project,
         crate::projects::rename_project,
         crate::attachments::upload,
         crate::attachments::download,
         crate::docs::create_app_doc,
-        crate::docs::create_feature_doc,
+        crate::docs::create_track_doc,
         crate::docs::list_docs,
         crate::docs::show_doc,
         crate::docs::rename_doc,
@@ -125,6 +159,7 @@ use utoipa::OpenApi;
         crate::stories::show_story,
         crate::stories::patch_story,
         crate::stories::cancel_story,
+        crate::stories::move_story_to_track,
         crate::stories::claim_story,
         crate::stories::release_story,
         crate::stories::move_story,
@@ -137,7 +172,7 @@ use utoipa::OpenApi;
         crate::stories::unblock_story,
         crate::stories::check_criterion,
         crate::threads::create_app_thread,
-        crate::threads::create_feature_thread,
+        crate::threads::create_track_thread,
         crate::threads::list_threads,
         crate::threads::conclude_thread,
         crate::threads::show_thread,
@@ -172,11 +207,32 @@ use utoipa::OpenApi;
         ProjectListResponse,
         CreateProjectRequest,
         RenameProjectRequest,
+        CreateFeatureRequest,
         FeatureBody,
+        FeatureListResponse,
         FeatureResponse,
         RenameFeatureRequest,
-        FeatureListResponse,
-        CreateFeatureRequest,
+        DecisionBody,
+        DecisionResponse,
+        DecisionListResponse,
+        CreateDecisionRequest,
+        PartBody,
+        PartResponse,
+        RenamePartRequest,
+        PartListResponse,
+        CreatePartRequest,
+        InvalidKindBody,
+        TrackBody,
+        TrackStateRequest,
+        TrackResponse,
+        RenameTrackRequest,
+        MoveTrackRequest,
+        HandoverRequest,
+        MemberBody,
+        MemberListResponse,
+        TrackListResponse,
+        LinkFeatureRequest,
+        CreateTrackRequest,
         AttachmentBody,
         AttachmentResponse,
         CreateDocRequest,
@@ -284,7 +340,7 @@ use utoipa::OpenApi;
         CreateCommentRequest,
         ReplyRequest,
         WaitingBody,
-        FeatureSummary,
+        TrackSummary,
         StoryCounts,
         HomeResponse
     ))

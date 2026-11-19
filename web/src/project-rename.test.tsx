@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-// US-14: the App page of a project renames it inline. The pencil (Rename
-// project) turns the title into an input with Save and Cancel; Save sends
+// US-14: a project's Overview renames it inline. "Rename project" in its "…"
+// menu (More actions) turns the title into an input with Save and Cancel; Save sends
 // PATCH /api/v1/w/<ws>/projects/<id> {name}. A 409 name_taken shows "Another
 // project has this name", any other failure "The project could not be
-// renamed. Try again.", both under the input. A feature's page has no pencil.
+// renamed. Try again.", both under the input. A track's page has no such action.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -11,7 +11,9 @@ import { getRouter } from "./router";
 
 const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
 const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
-const FEATURE_ID = "0192d7a0-7777-7000-8000-000000000001";
+/** The part every track of the fixtures is on (US-305). */
+const PART_ID = "0192d7a0-3333-7000-8000-000000000001";
+const TRACK_ID = "0192d7a0-7777-7000-8000-000000000001";
 const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
 const API = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
 const AT = "2026-10-23T10:00:00Z";
@@ -23,7 +25,7 @@ function fakeApi(rename: () => Response | Promise<Response>) {
   const patches: Call[] = [];
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  const feature = { id: FEATURE_ID, project_id: PROJECT_ID, name: "Wishlist", description: "", created_at: AT };
+  const track = { id: TRACK_ID, project_id: PROJECT_ID, part_id: PART_ID, state: "planning", name: "Wishlist", description: "", created_at: AT };
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -43,8 +45,10 @@ function fakeApi(rename: () => Response | Promise<Response>) {
             docs: [],
             threads: [],
             waiting: { comments: [] },
-            features: [{ feature, docs: 0, waiting: 0, stories: { total: 0, open: 0, done: 0 } }],
+            tracks: [{ track, docs: 0, waiting: 0, stories: { total: 0, open: 0, done: 0 } }],
           });
+        case `GET ${API}/parts`:
+          return json(200, { parts: [] });
         case `PATCH ${API}`:
           patches.push({ method, path, body: JSON.parse(String(init?.body)) });
           return rename();
@@ -86,12 +90,13 @@ const fail = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, headers: { "content-type": "application/json" } });
 
 async function startEditing() {
-  renderAt(`/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/app`);
-  fireEvent.click(await screen.findByRole("button", { name: "Rename project" }));
+  renderAt(`/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`);
+  fireEvent.click(await screen.findByRole("button", { name: "More actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Rename project" }));
   return (await screen.findByRole("textbox")) as HTMLInputElement;
 }
 
-describe("rename a project on its App page", () => {
+describe("rename a project on its Overview", () => {
   beforeEach(() => {
     vi.stubGlobal("scrollTo", () => {});
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -101,7 +106,7 @@ describe("rename a project on its App page", () => {
     vi.unstubAllGlobals();
   });
 
-  test("the pencil opens a focused input with the name; Save is disabled while blank or unchanged", async () => {
+  test("Rename project opens a focused input with the name; Save is disabled while blank or unchanged", async () => {
     fakeApi(() => ok("x"));
     const input = await startEditing();
     expect(input.value).toBe("Storefront");
@@ -132,7 +137,8 @@ describe("rename a project on its App page", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Storefront");
     expect(patches).toEqual([]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Rename project" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename project" }));
     const again = await screen.findByRole("textbox");
     fireEvent.change(again, { target: { value: "Shop v2" } });
     fireEvent.submit(again.closest("form")!);
@@ -184,9 +190,9 @@ describe("rename a project on its App page", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Storefront");
   });
 
-  test("a feature's page has no rename button", async () => {
+  test("a track's page has no rename button", async () => {
     fakeApi(() => ok("x"));
-    renderAt(`/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}`);
+    renderAt(`/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${TRACK_ID}`);
     await screen.findByRole("heading", { level: 1, name: "Wishlist" });
     expect(screen.queryByRole("button", { name: "Rename project" })).toBeNull();
   });

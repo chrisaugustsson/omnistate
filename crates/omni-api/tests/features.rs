@@ -1,41 +1,36 @@
-//! US-059: features, the level below a project (Q51).
+//! US-307: features, what a part can do (D5, D14).
 //! Run with `--features stack-tests` in the Compose test container, which
 //! reaches Postgres at `postgres:5432`.
 //!
-//! The tests migrate a scratch database, seed a workspace with one member
-//! (alice) and a live session, mint an API key through the API and serve the
-//! API's router on a local port against that database.
+//! The tests migrate a scratch database, seed a workspace with two members
+//! (alice and bob), each with a live session, mint an API key for alice
+//! through the API and serve the API's router on a local port against that
+//! database.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}`):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}`):
 //!
-//! - `POST /features` (agent) takes `{"name", "description"}` and answers 201
-//!   `{"feature": Feature}`. `name` is required: missing, blank or not a
-//!   string is 400 `{"error": "invalid_request"}` and creates nothing.
-//!   `description` is optional and defaults to `""`. A session (the human) is
-//!   403 `{"error": "forbidden"}`.
-//! - A Feature (`FeatureBody`) is `{"id" (UUIDv7), "project_id", "name",
-//!   "description", "created_at"}` and nothing else: since US-110 a feature
-//!   has no status.
-//! - Feature names are unique in their project, ignoring case: a second
-//!   feature named "checkout" next to "Checkout" is 409 `{"error":
-//!   "name_taken"}` and creates nothing. Another project may use the name.
-//! - `GET /features` (both) answers `{"features": [Feature, ...]}`, the
-//!   project's features in the order they were created. `GET
-//!   /features/{feature_id}` (both) answers `{"feature": Feature}`.
-//! - An unknown project, an unknown feature, a feature of another project and
-//!   an ID that is not a UUID are 404 `{"error": "not_found"}`.
-//! - Creating a feature emits `feature.created` on the project's live channel
-//!   with `data` that has at least `{"feature_id", "name"}`. A refused request
-//!   emits nothing.
-//! - Features live in the tenant table `features` (migrations/README.md):
-//!   `id`, `workspace_id`, `project_id`, `name` (not blank), `description`
-//!   (default `''`), `created_at` and `deleted_at` (US-110; null until an
-//!   agent deletes it), with no `status` column, a composite foreign key to
-//!   `projects`, `UNIQUE (workspace_id, project_id, id)` and a unique index on
-//!   `(workspace_id, project_id, lower(name))` over the features that are not
-//!   deleted, so a deleted feature's name can be taken again.
-//!   tests/workspace_delete.rs and the isolation suite seed it.
+//! - `POST /features` takes `{"name", "description"}`. A feature name is
+//!   unique in its part ignoring case, among the features that are not
+//!   deleted: a second feature of the name on the part, or a rename to the
+//!   name of another feature of the part, is 409 `name_taken`. Another part
+//!   may have a feature of the same name.
+//! - `DELETE /features/{feature_id}` hides the feature: `GET
+//!   /features/{feature_id}` is 404 `not_found`, `GET /features` leaves it
+//!   out, and its name can be used again on the part.
+//! - The features of a deleted part are hidden with it: its feature routes
+//!   are 404 `not_found`.
+//! - Any member creates, renames and deletes any feature, with a session or
+//!   an API key (D14).
+//! - `PATCH /features/{feature_id}` takes `{"name"?, "description"?}`, at
+//!   least one of them (decision U8): the description is trimmed and a blank
+//!   one clears it; a body with neither is 400 `invalid_request` and changes
+//!   nothing.
+//! - US-309: `POST /api/v1/w/{workspace_id}/projects/{project_id}/tracks/
+//!   {track_id}/features` with `{"feature_id"}` links a track to a feature of
+//!   its own part; any other feature (of another part or project, or deleted)
+//!   is 422 `feature_not_on_part`. A second link of the same feature answers
+//!   as the first and emits no live event.
 
 mod common;
 
@@ -49,9 +44,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const TEST_DB: &str = "omni_us059_features";
-/// An ID that no row has.
-const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
+const TEST_DB: &str = "omni_us307_features";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -111,12 +104,13 @@ async fn admin_connection() -> PgConnection {
 struct Fixture {
     workspace: String,
     alice_token: String,
+    bob_token: String,
     key: String,
     server: TestServer,
 }
 
 fn session_token(name: &str) -> String {
-    format!("us059-session-{name}-0123456789abcdef0123456789abcdef0123456789abcdef")
+    format!("us307-session-{name}-0123456789abcdef0123456789abcdef0123456789abcdef")
 }
 
 fn fixture() -> &'static Fixture {
@@ -152,24 +146,26 @@ fn fixture() -> &'static Fixture {
                 &[],
             )
             .await;
-            let user = text(
-                "insert into users (email) values ('alice@example.test') returning id::text",
-                &[],
-            )
-            .await;
-            text(
-                "insert into sessions (user_id, token_hash, expires_at) \
-                 values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
-                 returning id::text",
-                &[&user, &session_token("alice")],
-            )
-            .await;
-            text(
-                "insert into memberships (workspace_id, user_id) \
-                 values ($1::uuid, $2::uuid) returning id::text",
-                &[&workspace, &user],
-            )
-            .await;
+            for name in ["alice", "bob"] {
+                let user = text(
+                    "insert into users (email) values ($1) returning id::text",
+                    &[&format!("{name}@example.test")],
+                )
+                .await;
+                text(
+                    "insert into sessions (user_id, token_hash, expires_at) \
+                     values ($1::uuid, sha256(convert_to($2, 'UTF8')), now() + interval '1 day') \
+                     returning id::text",
+                    &[&user, &session_token(name)],
+                )
+                .await;
+                text(
+                    "insert into memberships (workspace_id, user_id) \
+                     values ($1::uuid, $2::uuid) returning id::text",
+                    &[&workspace, &user],
+                )
+                .await;
+            }
             workspace
         });
         let server = TestServer::start(&config());
@@ -188,6 +184,7 @@ fn fixture() -> &'static Fixture {
         Fixture {
             workspace,
             alice_token: session_token("alice"),
+            bob_token: session_token("bob"),
             key,
             server,
         }
@@ -199,8 +196,8 @@ fn ready() -> (&'static Fixture, &'static Client) {
     (fixture, &fixture.server.client)
 }
 
-/// Who sends a request: an agent (an API key with its run and role) or the
-/// human (a session cookie).
+/// Who sends a request: an agent (alice's API key with its run and role) or
+/// a member (a session cookie).
 #[derive(Clone, Copy)]
 enum Auth<'a> {
     Agent(&'a str),
@@ -211,8 +208,12 @@ fn agent(f: &Fixture) -> Auth<'_> {
     Auth::Agent(&f.key)
 }
 
-fn human(f: &Fixture) -> Auth<'_> {
+fn alice(f: &Fixture) -> Auth<'_> {
     Auth::Session(&f.alice_token)
+}
+
+fn bob(f: &Fixture) -> Auth<'_> {
+    Auth::Session(&f.bob_token)
 }
 
 fn call(client: &Client, method: &str, path: &str, auth: &Auth, body: Option<&Value>) -> Response {
@@ -243,35 +244,21 @@ fn assert_error(response: &Response, status: u16, code: &str) {
     );
 }
 
-fn assert_uuid_v7(id: &Value) {
-    let id = id
-        .as_str()
-        .unwrap_or_else(|| panic!("an ID is a string: {id}"));
-    let bytes = id.as_bytes();
-    assert!(
-        bytes.len() == 36
-            && bytes[14] == b'7'
-            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
-            && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
-        "{id:?} is not a UUIDv7"
-    );
-}
-
 fn unique(label: &str) -> String {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     format!("{label}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-fn parse(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+fn part_path(f: &Fixture, project: &str, part: &str) -> String {
+    format!("/api/v1/w/{}/projects/{project}/parts/{part}", f.workspace)
 }
 
-fn features_path(f: &Fixture, project: &str) -> String {
-    format!("/api/v1/w/{}/projects/{project}/features", f.workspace)
+fn features_path(f: &Fixture, project: &str, part: &str) -> String {
+    format!("{}/features", part_path(f, project, part))
 }
 
-fn feature_path(f: &Fixture, project: &str, feature: &str) -> String {
-    format!("{}/{feature}", features_path(f, project))
+fn feature_path(f: &Fixture, project: &str, part: &str, feature: &str) -> String {
+    format!("{}/{feature}", features_path(f, project, part))
 }
 
 fn new_project(f: &Fixture, client: &Client) -> String {
@@ -292,281 +279,502 @@ fn new_project(f: &Fixture, client: &Client) -> String {
         .to_string()
 }
 
-fn create_feature_response(f: &Fixture, client: &Client, project: &str, body: &Value) -> Response {
-    call(
-        client,
-        "POST",
-        &features_path(f, project),
-        &agent(f),
-        Some(body),
-    )
+/// Creates a part of the project; returns its ID.
+fn create_part(f: &Fixture, client: &Client, project: &str, name: &str, kind: &str) -> String {
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/parts", f.workspace),
+            &agent(f),
+            Some(&json!({ "name": name, "kind": kind })),
+        ),
+        201,
+        "create a part",
+    );
+    created["part"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the part has an id: {created}"))
+        .to_string()
 }
 
-/// Creates a feature as the agent; returns the `feature` of the answer.
-fn create_feature(f: &Fixture, client: &Client, project: &str, name: &str) -> Value {
-    must(
-        create_feature_response(f, client, project, &json!({ "name": name })),
+/// Creates a feature on a part with `auth`; returns its ID.
+fn create_feature(
+    f: &Fixture,
+    client: &Client,
+    auth: &Auth,
+    project: &str,
+    part: &str,
+    name: &str,
+) -> String {
+    let created = must(
+        call(
+            client,
+            "POST",
+            &features_path(f, project, part),
+            auth,
+            Some(&json!({ "name": name, "description": "Time-series chart per channel" })),
+        ),
         201,
         "create a feature",
-    )["feature"]
-        .clone()
+    );
+    created["feature"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the feature has an id: {created}"))
+        .to_string()
 }
 
-fn list_features(f: &Fixture, client: &Client, auth: &Auth, project: &str) -> Vec<Value> {
+/// The `(id, name)` of each feature that `GET /features` lists, in its order.
+fn listed(f: &Fixture, client: &Client, project: &str, part: &str) -> Vec<(String, String)> {
     let listed = must(
-        call(client, "GET", &features_path(f, project), auth, None),
+        call(
+            client,
+            "GET",
+            &features_path(f, project, part),
+            &agent(f),
+            None,
+        ),
         200,
         "list the features",
     );
     listed["features"]
         .as_array()
         .unwrap_or_else(|| panic!("`features` is a list: {listed}"))
-        .clone()
+        .iter()
+        .map(|feature| {
+            (
+                feature["id"].as_str().unwrap_or_default().to_string(),
+                feature["name"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
 }
 
-/// The `data` of the live events of a project named `event`, oldest first.
-fn events_of(project: &str, event: &str) -> Vec<Value> {
-    block(async {
-        let mut conn = admin_connection().await;
-        let rows = sqlx::query_scalar::<_, String>(
-            "select data::jsonb::text from live_events \
-             where project_id = $1::uuid and event = $2 order by seq",
-        )
-        .bind(project)
-        .bind(event)
-        .fetch_all(&mut conn)
-        .await
-        .unwrap_or_else(|e| panic!("read the live events: {e}"));
-        rows.iter().map(|text| parse(text)).collect()
-    })
+// ---------------------------------------------------------------------------
+// Names
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_second_feature_of_the_name_on_the_part_is_409_name_taken_ignoring_case_and_another_part_may_have_it()
+ {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let iot = create_part(f, client, &project, "iot-service", "service");
+    let analyze = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    for name in ["Analyze", "analyze", "ANALYZE"] {
+        let response = call(
+            client,
+            "POST",
+            &features_path(f, &project, &wision),
+            &agent(f),
+            Some(&json!({ "name": name })),
+        );
+        assert_error(&response, 409, "name_taken");
+    }
+    assert_eq!(
+        listed(f, client, &project, &wision),
+        vec![(analyze, "Analyze".to_string())],
+        "no second Analyze is created on Wision"
+    );
+    let on_iot = create_feature(f, client, &agent(f), &project, &iot, "Analyze");
+    assert_eq!(
+        listed(f, client, &project, &iot),
+        vec![(on_iot, "Analyze".to_string())]
+    );
 }
 
-/// How many rows the `features` table has for a project.
-fn feature_rows(project: &str) -> i64 {
+#[test]
+fn renaming_a_feature_to_the_name_of_another_feature_of_its_part_is_409_name_taken_and_keeps_its_name()
+ {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let analyze = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    let alarms = create_feature(f, client, &agent(f), &project, &wision, "Alarms");
+    let response = call(
+        client,
+        "PATCH",
+        &feature_path(f, &project, &wision, &alarms),
+        &agent(f),
+        Some(&json!({ "name": "analyze" })),
+    );
+    assert_error(&response, 409, "name_taken");
+    assert_eq!(
+        listed(f, client, &project, &wision),
+        vec![
+            (analyze, "Analyze".to_string()),
+            (alarms, "Alarms".to_string())
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Deleting hides (D14)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_deleted_feature_is_404_by_its_id_leaves_the_list_and_its_name_can_be_used_again() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let old = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    let deleted = call(
+        client,
+        "DELETE",
+        &feature_path(f, &project, &wision, &old),
+        &agent(f),
+        None,
+    );
+    assert_eq!(
+        deleted.status,
+        204,
+        "delete the feature: {}",
+        deleted.text()
+    );
+    for method in ["GET", "PATCH", "DELETE"] {
+        let body = (method == "PATCH").then(|| json!({ "name": "Analyze again" }));
+        let response = call(
+            client,
+            method,
+            &feature_path(f, &project, &wision, &old),
+            &agent(f),
+            body.as_ref(),
+        );
+        assert_error(&response, 404, "not_found");
+    }
+    assert_eq!(listed(f, client, &project, &wision), vec![]);
+    let new = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    assert_eq!(
+        listed(f, client, &project, &wision),
+        vec![(new, "Analyze".to_string())]
+    );
+}
+
+#[test]
+fn the_features_of_a_deleted_part_are_404_not_found() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let analyze = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    let deleted = call(
+        client,
+        "DELETE",
+        &part_path(f, &project, &wision),
+        &agent(f),
+        None,
+    );
+    assert_eq!(deleted.status, 204, "delete the part: {}", deleted.text());
+    for (method, path) in [
+        ("GET", features_path(f, &project, &wision)),
+        ("GET", feature_path(f, &project, &wision, &analyze)),
+        ("DELETE", feature_path(f, &project, &wision, &analyze)),
+    ] {
+        let response = call(client, method, &path, &agent(f), None);
+        assert_error(&response, 404, "not_found");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Who may change a feature (D14)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_member_with_a_session_renames_and_deletes_a_feature_that_another_member_created() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let feature = create_feature(f, client, &alice(f), &project, &wision, "Analyze");
+    let renamed = must(
+        call(
+            client,
+            "PATCH",
+            &feature_path(f, &project, &wision, &feature),
+            &bob(f),
+            Some(&json!({ "name": "Analyze channels" })),
+        ),
+        200,
+        "bob renames alice's feature",
+    );
+    assert_eq!(renamed["feature"]["name"], "Analyze channels", "{renamed}");
+    let deleted = call(
+        client,
+        "DELETE",
+        &feature_path(f, &project, &wision, &feature),
+        &bob(f),
+        None,
+    );
+    assert_eq!(
+        deleted.status,
+        204,
+        "bob deletes alice's feature: {}",
+        deleted.text()
+    );
+    assert_eq!(listed(f, client, &project, &wision), vec![]);
+}
+
+// ---------------------------------------------------------------------------
+// Description (decision U8)
+// ---------------------------------------------------------------------------
+
+/// The `(name, description)` of a feature as `GET /features/{feature_id}` reads it.
+fn name_and_description(
+    f: &Fixture,
+    client: &Client,
+    project: &str,
+    part: &str,
+    feature: &str,
+) -> (Value, Value) {
+    let read = must(
+        call(
+            client,
+            "GET",
+            &feature_path(f, project, part, feature),
+            &agent(f),
+            None,
+        ),
+        200,
+        "read the feature",
+    );
+    (
+        read["feature"]["name"].clone(),
+        read["feature"]["description"].clone(),
+    )
+}
+
+#[test]
+fn a_member_or_an_agent_sets_what_a_feature_does_and_a_blank_one_clears_it() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let feature = create_feature(f, client, &alice(f), &project, &wision, "Analyze");
+
+    for (auth, text) in [
+        (
+            bob(f),
+            "Shows a chart of each channel over a chosen period.",
+        ),
+        (agent(f), "Charts each channel over time."),
+    ] {
+        let changed = must(
+            call(
+                client,
+                "PATCH",
+                &feature_path(f, &project, &wision, &feature),
+                &auth,
+                Some(&json!({ "description": format!("\n {text} ") })),
+            ),
+            200,
+            "describe the feature",
+        );
+        assert_eq!(changed["feature"]["description"], text, "{changed}");
+        assert_eq!(changed["feature"]["name"], "Analyze", "the name stays");
+        assert_eq!(
+            name_and_description(f, client, &project, &wision, &feature),
+            (json!("Analyze"), json!(text))
+        );
+    }
+
+    let cleared = must(
+        call(
+            client,
+            "PATCH",
+            &feature_path(f, &project, &wision, &feature),
+            &alice(f),
+            Some(&json!({ "description": "" })),
+        ),
+        200,
+        "clear the description",
+    );
+    assert_eq!(cleared["feature"]["description"], "", "{cleared}");
+}
+
+#[test]
+fn a_feature_patch_with_neither_name_nor_description_or_a_blank_name_is_400_and_changes_nothing() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let feature = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    must(
+        call(
+            client,
+            "PATCH",
+            &feature_path(f, &project, &wision, &feature),
+            &agent(f),
+            Some(&json!({ "name": "Analyze channels", "description": "Charts" })),
+        ),
+        200,
+        "rename and describe the feature in one request",
+    );
+
+    for body in [
+        json!({}),
+        json!({ "description": null }),
+        json!({ "description": 7 }),
+        json!({ "name": "", "description": "Tables" }),
+    ] {
+        assert_error(
+            &call(
+                client,
+                "PATCH",
+                &feature_path(f, &project, &wision, &feature),
+                &agent(f),
+                Some(&body),
+            ),
+            400,
+            "invalid_request",
+        );
+        assert_eq!(
+            name_and_description(f, client, &project, &wision, &feature),
+            (json!("Analyze channels"), json!("Charts")),
+            "{body} changes nothing"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The features a track changes (US-309, D15)
+// ---------------------------------------------------------------------------
+
+/// Creates a track on a part; returns its ID.
+fn create_track(f: &Fixture, client: &Client, project: &str, part: &str, name: &str) -> String {
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
+            &agent(f),
+            Some(&json!({ "name": name, "part_id": part })),
+        ),
+        201,
+        "create a track",
+    );
+    created["track"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the track has an id: {created}"))
+        .to_string()
+}
+
+fn track_features_path(f: &Fixture, project: &str, track: &str) -> String {
+    format!(
+        "/api/v1/w/{}/projects/{project}/tracks/{track}/features",
+        f.workspace
+    )
+}
+
+/// The IDs of the records under `key` that `GET path` lists, in its order.
+fn ids_at(f: &Fixture, client: &Client, path: &str, key: &str) -> Vec<String> {
+    let listed = must(call(client, "GET", path, &agent(f), None), 200, path);
+    listed[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("`{key}` is a list: {listed}"))
+        .iter()
+        .map(|record| record["id"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn live_events_of(project: &str) -> i64 {
     block(async {
         let mut conn = admin_connection().await;
-        sqlx::query_scalar("select count(*) from features where project_id = $1::uuid")
+        sqlx::query_scalar("SELECT count(*) FROM live_events WHERE project_id = $1::uuid")
             .bind(project)
             .fetch_one(&mut conn)
             .await
-            .unwrap_or_else(|e| panic!("count the features: {e}"))
+            .expect("count the live events of the project")
     })
 }
-
-/// Runs `sql` as the admin role and says whether the database accepted it;
-/// whatever it did is rolled back.
-fn accepted(sql: &str, binds: &[&str]) -> bool {
-    block(async {
-        let mut conn = admin_connection().await;
-        let mut tx = conn.begin().await.expect("begin");
-        let mut query = sqlx::query(sql);
-        for bind in binds {
-            query = query.bind(*bind);
-        }
-        let result = query.execute(&mut *tx).await;
-        tx.rollback().await.expect("roll back");
-        result.is_ok()
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Creating a feature
-// ---------------------------------------------------------------------------
 
 #[test]
-fn creating_a_feature_records_its_name_and_description_and_no_status() {
+fn linking_the_same_feature_twice_answers_the_same_and_adds_no_second_link_or_event() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let created = must(
-        create_feature_response(
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let analyze = create_feature(f, client, &agent(f), &project, &wision, "Analyze");
+    let track = create_track(f, client, &project, &wision, "Long windows");
+    let path = track_features_path(f, &project, &track);
+    let link = json!({ "feature_id": analyze });
+
+    let first = call(client, "POST", &path, &agent(f), Some(&link));
+    assert!(
+        (200..300).contains(&first.status),
+        "the first link succeeds: {}",
+        first.text()
+    );
+    let events = live_events_of(&project);
+    let second = call(client, "POST", &path, &agent(f), Some(&link));
+    assert_eq!(second.status, first.status, "{}", second.text());
+    assert_eq!(
+        second.json(),
+        first.json(),
+        "the second link answers the same"
+    );
+    assert_eq!(
+        live_events_of(&project),
+        events,
+        "the second link emits no live event"
+    );
+
+    assert_eq!(ids_at(f, client, &path, "features"), vec![analyze.clone()]);
+    assert_eq!(
+        ids_at(
             f,
             client,
-            &project,
-            &json!({ "name": "Checkout", "description": "Pay for the basket in one step." }),
+            &format!("{}/tracks", feature_path(f, &project, &wision, &analyze)),
+            "tracks"
         ),
-        201,
-        "create a feature",
-    );
-    let feature = &created["feature"];
-    assert_uuid_v7(&feature["id"]);
-    assert_eq!(feature["project_id"], project.as_str(), "{feature}");
-    assert_eq!(feature["name"], "Checkout", "{feature}");
-    assert_eq!(
-        feature["description"], "Pay for the basket in one step.",
-        "{feature}"
-    );
-    assert!(
-        feature.get("status").is_none(),
-        "a feature has no status (V7, US-110): {feature}"
-    );
-    assert!(
-        feature["created_at"]
-            .as_str()
-            .is_some_and(|t| !t.is_empty()),
-        "created_at is a timestamp: {feature}"
-    );
-
-    // The agent and the human read the same feature back.
-    let id = feature["id"].as_str().expect("an id");
-    for auth in [agent(f), human(f)] {
-        let shown = must(
-            call(client, "GET", &feature_path(f, &project, id), &auth, None),
-            200,
-            "show the feature",
-        );
-        assert_eq!(&shown["feature"], feature, "{shown}");
-    }
-}
-
-#[test]
-fn a_feature_needs_a_name() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    for body in [
-        json!({}),
-        json!({ "description": "No name." }),
-        json!({ "name": "" }),
-        json!({ "name": "   \n\t" }),
-        json!({ "name": null }),
-        json!({ "name": 7 }),
-    ] {
-        let response = create_feature_response(f, client, &project, &body);
-        assert_error(&response, 400, "invalid_request");
-    }
-    let response = call(client, "POST", &features_path(f, &project), &agent(f), None);
-    assert_eq!(response.status, 400, "no body: {}", response.text());
-    assert!(
-        list_features(f, client, &agent(f), &project).is_empty(),
-        "a refused request creates nothing"
-    );
-    assert!(
-        events_of(&project, "feature.created").is_empty(),
-        "a refused request emits nothing"
+        vec![track]
     );
 }
 
 #[test]
-fn feature_names_are_unique_in_a_project_ignoring_case() {
+fn linking_a_feature_that_is_not_an_undeleted_feature_of_the_tracks_part_is_422_feature_not_on_part()
+ {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let first = create_feature(f, client, &project, "Checkout");
-    for name in ["checkout", "CHECKOUT", "Checkout"] {
-        let response = create_feature_response(f, client, &project, &json!({ "name": name }));
-        assert_error(&response, 409, "name_taken");
-    }
-    let listed = list_features(f, client, &agent(f), &project);
-    assert_eq!(listed, [first], "the refused names created nothing");
-    assert_eq!(
-        events_of(&project, "feature.created").len(),
-        1,
-        "a refused request emits nothing"
-    );
+    let wision = create_part(f, client, &project, "Wision", "app");
+    let iot = create_part(f, client, &project, "iot-service", "service");
+    let track = create_track(f, client, &project, &wision, "Long windows");
 
-    // Another project of the workspace may use the name.
-    let other = new_project(f, client);
-    let reused = create_feature(f, client, &other, "checkout");
-    assert_eq!(reused["project_id"], other.as_str(), "{reused}");
-}
-
-#[test]
-fn only_an_agent_creates_a_feature() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let response = call(
+    let on_other_part = create_feature(f, client, &agent(f), &project, &iot, "Uplinks");
+    let other_project = new_project(f, client);
+    let other_wision = create_part(f, client, &other_project, "Wision", "app");
+    let in_other_project = create_feature(
+        f,
         client,
-        "POST",
-        &features_path(f, &project),
-        &human(f),
-        Some(&json!({ "name": "Checkout" })),
+        &agent(f),
+        &other_project,
+        &other_wision,
+        "Analyze",
     );
-    assert_error(&response, 403, "forbidden");
+    let deleted = create_feature(f, client, &agent(f), &project, &wision, "Alarms");
+    let gone = call(
+        client,
+        "DELETE",
+        &feature_path(f, &project, &wision, &deleted),
+        &agent(f),
+        None,
+    );
+    assert_eq!(gone.status, 204, "delete the feature: {}", gone.text());
+
+    let path = track_features_path(f, &project, &track);
+    for (what, feature) in [
+        ("a feature of another part", &on_other_part),
+        ("a feature of another project", &in_other_project),
+        ("a deleted feature of the track's part", &deleted),
+    ] {
+        let refused = call(
+            client,
+            "POST",
+            &path,
+            &agent(f),
+            Some(&json!({ "feature_id": feature })),
+        );
+        assert_eq!(refused.status, 422, "{what}: {}", refused.text());
+        assert_error(&refused, 422, "feature_not_on_part");
+    }
     assert_eq!(
-        feature_rows(&project),
-        0,
-        "a refused request creates nothing"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Reading features
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_feature_list_is_in_creation_order_for_the_agent_and_the_human() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    for auth in [agent(f), human(f)] {
-        assert!(
-            list_features(f, client, &auth, &project).is_empty(),
-            "a new project has no features"
-        );
-    }
-    let created: Vec<Value> = ["Zebra crossing", "Apple pay", "Mango theme"]
-        .into_iter()
-        .map(|name| create_feature(f, client, &project, name))
-        .collect();
-    let other = new_project(f, client);
-    create_feature(f, client, &other, "Elsewhere");
-
-    for auth in [agent(f), human(f)] {
-        let listed = list_features(f, client, &auth, &project);
-        assert_eq!(
-            listed, created,
-            "the project's features, in the order they were created"
-        );
-    }
-}
-
-#[test]
-fn an_unknown_project_or_feature_is_not_found() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let feature = create_feature(f, client, &project, "Checkout");
-    let id = feature["id"].as_str().expect("an id");
-    let other = new_project(f, client);
-
-    let response = create_feature_response(f, client, UNKNOWN_ID, &json!({ "name": "Lost" }));
-    assert_error(&response, 404, "not_found");
-    for auth in [agent(f), human(f)] {
-        for path in [
-            features_path(f, UNKNOWN_ID),
-            features_path(f, "not-a-uuid"),
-            feature_path(f, &project, UNKNOWN_ID),
-            feature_path(f, &project, "not-a-uuid"),
-            feature_path(f, UNKNOWN_ID, id),
-            // A feature is read through its own project only.
-            feature_path(f, &other, id),
-        ] {
-            let response = call(client, "GET", &path, &auth, None);
-            assert_error(&response, 404, "not_found");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The table
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_features_table_keeps_its_rules_in_the_database() {
-    let (f, client) = ready();
-    let project = new_project(f, client);
-    let workspace = f.workspace.as_str();
-
-    let insert = "insert into features (workspace_id, project_id, name) \
-                  values ($1::uuid, $2::uuid, $3)";
-    assert!(
-        accepted(insert, &[workspace, &project, "Checkout"]),
-        "a named feature of the row's own project is accepted"
-    );
-    for blank in ["", "   "] {
-        assert!(
-            !accepted(insert, &[workspace, &project, blank]),
-            "the blank name {blank:?} is refused"
-        );
-    }
-    assert!(
-        !accepted(insert, &[workspace, UNKNOWN_ID, "Nowhere"]),
-        "a feature needs a project"
+        ids_at(f, client, &path, "features"),
+        Vec::<String>::new(),
+        "no refused feature is linked"
     );
 }

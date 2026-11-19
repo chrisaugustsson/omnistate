@@ -36,7 +36,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # tests/stack.rs, tests/stack_attachments.rs, tests/stack_docs.rs,
 # tests/stack_bench_ops.rs, tests/stack_design_edits.rs,
 # tests/stack_bench_design.rs, tests/stack_import_penpot.rs, tests/stack_threads.rs,
-# tests/stack_comments.rs, tests/stack_features.rs and tests/stack_stories.rs
+# tests/stack_comments.rs, tests/stack_tracks.rs and tests/stack_stories.rs
 # need Postgres (and RustFS) and run against them, so they only build with this
 # feature, which the Compose test container turns on.
 stack-tests = []
@@ -78,7 +78,7 @@ name = "stack_comments"
 required-features = ["stack-tests"]
 
 [[test]]
-name = "stack_features"
+name = "stack_tracks"
 required-features = ["stack-tests"]
 
 [[test]]

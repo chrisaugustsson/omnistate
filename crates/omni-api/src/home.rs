@@ -2,12 +2,12 @@
 //! read. It lists the project's docs and threads, and what waits for the
 //! human: the comments whose latest reply is an agent's.
 //!
-//! A feature (Q51) is a level below the project: the home lists the features
+//! A track (Q51) is a level below the project: the home lists the tracks
 //! with their counts, and every comment that waits for the human carries the
-//! `feature_id` of its doc, so the web app can show the project and each
-//! feature on their own while `docs` and `threads` stay complete.
+//! `track_id` of its doc, so the web app can show the project and each
+//! track on their own while `docs` and `threads` stay complete.
 //!
-//! The scope pages (US-112) show the app level and each feature with their last
+//! The scope pages (US-112) show the app level and each track with their last
 //! activity, each doc with when and by which agent role it was last written
 //! and how many of its comments wait, and each thread with its post count and
 //! the time of its newest post.
@@ -21,10 +21,10 @@
 use crate::AppState;
 use crate::comments::{CommentBody, finish, waiting_of_project};
 use crate::docs::{DocBody, Scope, Tx, docs_of_project};
-use crate::features::{FEATURE_COLUMNS, FeatureBody};
 use crate::projects::require_project;
 use crate::session::{ApiError, ErrorBody};
 use crate::threads::{ThreadBody, threads_of_project};
+use crate::tracks::{TRACK_COLUMNS, TrackBody};
 use crate::workspace::{HumanRequest, parse_uuid};
 use axum::Json;
 use axum::extract::{Path, State};
@@ -39,10 +39,10 @@ pub struct WaitingBody {
     pub comments: Vec<CommentBody>,
 }
 
-/// How many stories a feature has.
+/// How many stories a track has.
 #[derive(Serialize, ToSchema)]
 pub struct StoryCounts {
-    /// The feature's stories that are not cancelled.
+    /// The track's stories that are not cancelled.
     pub total: i64,
     /// The stories that are neither `done` nor `cancelled`.
     pub open: i64,
@@ -50,30 +50,37 @@ pub struct StoryCounts {
     pub done: i64,
 }
 
-/// A feature of the project with what it holds.
+/// A track of the project with what it holds.
 #[derive(Serialize, ToSchema)]
-pub struct FeatureSummary {
-    pub feature: FeatureBody,
-    /// The docs of the feature.
+pub struct TrackSummary {
+    pub track: TrackBody,
+    /// The docs of the track.
     pub docs: i64,
-    /// The items of `waiting` that belong to the feature.
+    /// The items of `waiting` that belong to the track.
     pub waiting: i64,
-    /// The feature's stories by count. The API always sends it.
+    /// The track's stories by count. The API always sends it.
     #[schema(required = false)]
     pub stories: StoryCounts,
-    /// The time of the latest write to one of the feature's docs (a row of
+    /// The time of the latest write to one of the track's docs (a row of
     /// `doc_changes`: create, edit, rename or delete) or its threads (a
     /// thread's creation, a post or a conclusion); comments and replies do not
     /// count. `null` while there is none. The API always sends it.
     #[schema(required = false)]
     pub last_activity: Option<String>,
+    /// The name of the part the track is on. The API always sends it.
+    #[schema(required = false)]
+    pub part_name: String,
+    /// Whether that part was deleted; the track stays on it. The API always
+    /// sends it.
+    #[schema(required = false)]
+    pub part_deleted: bool,
 }
 
 /// The app level of the project.
 #[derive(Serialize, ToSchema)]
 pub struct AppSummary {
     /// The time of the latest write to an app-level doc or thread, counted as
-    /// a feature's `last_activity` is; `null` while there is none.
+    /// a track's `last_activity` is; `null` while there is none.
     pub last_activity: Option<String>,
 }
 
@@ -111,11 +118,11 @@ pub struct HomeThread {
 #[derive(Serialize, ToSchema)]
 pub struct HomeResponse {
     pub project_id: String,
-    /// Every feature of the project that is not deleted, oldest first. The
+    /// Every track of the project that is not deleted, oldest first. The
     /// API always sends it; it is not marked required so that the web app's
-    /// reader still accepts a home from before features.
+    /// reader still accepts a home from before tracks.
     #[schema(required = false)]
-    pub features: Vec<FeatureSummary>,
+    pub tracks: Vec<TrackSummary>,
     /// The app level. The API always sends it.
     #[schema(required = false)]
     pub app: Option<AppSummary>,
@@ -150,10 +157,17 @@ pub async fn show(
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    let features: Vec<FeatureBody> = sqlx::query_as(&format!(
-        "SELECT {FEATURE_COLUMNS} FROM features WHERE project_id = $1::uuid \
+    let tracks: Vec<TrackBody> = sqlx::query_as(&format!(
+        "SELECT {TRACK_COLUMNS} FROM tracks WHERE project_id = $1::uuid \
          AND deleted_at IS NULL ORDER BY created_at, id"
     ))
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let part_rows: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT id::text, name, deleted_at IS NOT NULL FROM parts WHERE project_id = $1::uuid",
+    )
     .bind(&project_id)
     .fetch_all(&mut *tx)
     .await
@@ -165,9 +179,9 @@ pub async fn show(
     let activity = last_activity(&mut tx, &project_id).await?;
     let post_stats = post_stats(&mut tx, &project_id).await?;
     let story_rows: Vec<(String, i64, i64)> = sqlx::query_as(
-        "SELECT feature_id::text, count(*) FILTER (WHERE status NOT IN ('done', 'cancelled')), \
+        "SELECT track_id::text, count(*) FILTER (WHERE status NOT IN ('done', 'cancelled')), \
          count(*) FILTER (WHERE status = 'done') \
-         FROM stories WHERE project_id = $1::uuid GROUP BY feature_id",
+         FROM stories WHERE project_id = $1::uuid GROUP BY track_id",
     )
     .bind(&project_id)
     .fetch_all(&mut *tx)
@@ -175,37 +189,39 @@ pub async fn show(
     .map_err(ApiError::database)?;
     tx.commit().await.map_err(ApiError::database)?;
     let comments = finish(&state, &request.workspace_id, &project_id, waiting_comments).await?;
-    let features = features
+    let tracks = tracks
         .into_iter()
-        .map(|feature| {
-            let own = Some(feature.id.as_str());
+        .map(|track| {
+            let own = Some(track.id.as_str());
             let waiting = comments
                 .iter()
-                .filter(|c| c.feature_id.as_deref() == own)
+                .filter(|c| c.track_id.as_deref() == own)
                 .count();
-            FeatureSummary {
-                docs: docs
-                    .iter()
-                    .filter(|d| d.feature_id.as_deref() == own)
-                    .count() as i64,
+            TrackSummary {
+                docs: docs.iter().filter(|d| d.track_id.as_deref() == own).count() as i64,
                 waiting: waiting as i64,
-                stories: story_rows
+                stories: story_rows.iter().find(|(id, _, _)| *id == track.id).map_or(
+                    StoryCounts {
+                        total: 0,
+                        open: 0,
+                        done: 0,
+                    },
+                    |(_, open, done)| StoryCounts {
+                        total: open + done,
+                        open: *open,
+                        done: *done,
+                    },
+                ),
+                last_activity: activity.get(Some(track.id.as_str())),
+                part_name: part_rows
                     .iter()
-                    .find(|(id, _, _)| *id == feature.id)
-                    .map_or(
-                        StoryCounts {
-                            total: 0,
-                            open: 0,
-                            done: 0,
-                        },
-                        |(_, open, done)| StoryCounts {
-                            total: open + done,
-                            open: *open,
-                            done: *done,
-                        },
-                    ),
-                last_activity: activity.get(Some(feature.id.as_str())),
-                feature,
+                    .find(|(id, _, _)| *id == track.part_id)
+                    .map(|(_, name, _)| name.clone())
+                    .unwrap_or_default(),
+                part_deleted: part_rows
+                    .iter()
+                    .any(|(id, _, deleted)| *id == track.part_id && *deleted),
+                track,
             }
         })
         .collect();
@@ -239,7 +255,7 @@ pub async fn show(
         .collect();
     Ok(Json(HomeResponse {
         project_id,
-        features,
+        tracks,
         app: Some(AppSummary {
             last_activity: activity.get(None),
         }),
@@ -276,8 +292,8 @@ async fn last_writes(
 struct Activity(HashMap<Option<String>, String>);
 
 impl Activity {
-    fn get(&self, feature: Option<&str>) -> Option<String> {
-        self.0.get(&feature.map(str::to_string)).cloned()
+    fn get(&self, track: Option<&str>) -> Option<String> {
+        self.0.get(&track.map(str::to_string)).cloned()
     }
 }
 
@@ -288,16 +304,16 @@ async fn last_activity(tx: &mut Tx, project_id: &str) -> Result<Activity, ApiErr
     let rows: Vec<(Option<String>, String)> = sqlx::query_as(
         "SELECT scope, to_char(max(at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
          FROM ( \
-           SELECT d.feature_id::text AS scope, c.created_at AS at \
+           SELECT d.track_id::text AS scope, c.created_at AS at \
              FROM doc_changes c JOIN docs d ON d.workspace_id = c.workspace_id AND d.id = c.doc_id \
              WHERE d.project_id = $1::uuid \
            UNION ALL \
-           SELECT feature_id::text, created_at FROM threads WHERE project_id = $1::uuid \
+           SELECT track_id::text, created_at FROM threads WHERE project_id = $1::uuid \
            UNION ALL \
-           SELECT feature_id::text, concluded_at FROM threads \
+           SELECT track_id::text, concluded_at FROM threads \
              WHERE project_id = $1::uuid AND concluded_at IS NOT NULL \
            UNION ALL \
-           SELECT t.feature_id::text, p.created_at \
+           SELECT t.track_id::text, p.created_at \
              FROM posts p JOIN threads t ON t.workspace_id = p.workspace_id AND t.id = p.thread_id \
              WHERE t.project_id = $1::uuid \
          ) writes GROUP BY scope",

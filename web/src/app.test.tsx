@@ -13,7 +13,8 @@
 //
 // The login page is /login: a form with "Email" and "Password" fields and a
 // "Log in" button, built from shadcn/ui components. A workspace's pages are
-// under /w/<workspace id>/ and have a "Log out" button.
+// under /w/<workspace id>/; Log out is in the account menu at the right of the
+// top bar.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -141,7 +142,8 @@ describe("login, logout and the workspace in the URL", () => {
     const login = api.calls.filter((c) => c.method === "POST" && c.path === "/api/v1/auth/login");
     expect(login).toHaveLength(1);
     expect(login[0].body).toEqual({ email: USER.email, password: PASSWORD });
-    expect(await screen.findByRole("button", { name: /log ?out|sign ?out/i })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /account/i }));
+    expect(screen.getByRole("menuitem", { name: /log ?out|sign ?out/i })).toBeTruthy();
   });
 
   test("a wrong password shows the refusal and stays on the login page", async () => {
@@ -167,7 +169,8 @@ describe("login, logout and the workspace in the URL", () => {
   test("logging out ends the session through the API and returns to the login page", async () => {
     const api = fakeApi({ loggedIn: true });
     const router = renderAt(`/w/${WORKSPACE_ID}`);
-    fireEvent.click(await screen.findByRole("button", { name: /log ?out|sign ?out/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /account/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /log ?out|sign ?out/i }));
 
     await expectPath(router, atLogin, "the login page");
     expect(
@@ -177,5 +180,37 @@ describe("login, logout and the workspace in the URL", () => {
 
     await router.navigate({ to: `/w/${WORKSPACE_ID}` as never });
     await expectPath(router, atLogin, "the login page again, the session being over");
+  });
+});
+
+// US-303: a track's pages moved from .../features/... to .../tracks/... with no
+// redirect, so an old URL is one the app does not know: it shows the plain
+// not-found screen, not the workspace with an empty page or an error.
+describe("an old /features URL after the rename to tracks", () => {
+  const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
+  const TRACK_ID = "0192d7a0-4444-7000-8000-000000000001";
+  const OLD = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features`;
+
+  beforeEach(() => {
+    vi.stubGlobal("scrollTo", () => {});
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  test.each([
+    ["the list", OLD],
+    ["a track's page", `${OLD}/${TRACK_ID}`],
+    ["a track's board", `${OLD}/${TRACK_ID}/board`],
+    ["a track's behaviour screen", `${OLD}/${TRACK_ID}/behaviour`],
+  ])("the old URL of %s shows the not-found screen without the workspace around it", async (_, path) => {
+    fakeApi({ loggedIn: true });
+    renderAt(path);
+
+    expect(await screen.findByText("Not Found")).toBeTruthy();
+    expect(screen.queryByText("Something went wrong!")).toBeNull();
+    expect(screen.queryByRole("button", { name: /account/i })).toBeNull();
   });
 });

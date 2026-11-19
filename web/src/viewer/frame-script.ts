@@ -9,12 +9,18 @@
 // described in web/src/doc-viewer-frame.test.ts):
 //
 // - to the page: `viewer.ready` once the script runs, and `viewer.select` with
-//   the node ID of the innermost block that the reviewer clicked;
+//   the node ID of the innermost block that the reviewer clicked, or `null`
+//   when they clicked outside every block or pressed Escape;
 // - from the page: `viewer.show` with the doc's `html`, the `pins`
 //   (`[{ node, count }]`), the `selected` node and `reveal`, a node ID that the
 //   frame scrolls into view when it is not the one it revealed last. When the
 //   doc's `html` changes, the frame draws it again and puts the scroll
-//   position back where it was.
+//   position back where it was;
+// - `viewer.show` with `fit: true`: the page sizes the frame to the doc, so the
+//   doc reads as page text and the page scrolls. The frame drops its own
+//   padding, and tells the page the doc's height with `viewer.size` (and again
+//   whenever it changes); a block to reveal is not scrolled to in the frame but
+//   told to the page with `viewer.reveal` and its `top`, for the page to scroll.
 //
 // A frame in a browser tab that loads in the background is 0 wide and 0 tall
 // until the tab is shown, and nothing can be measured in it. The doc's HTML
@@ -24,7 +30,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
   var page = window.parent;
   var doc = document.getElementById("doc");
   var pinLayer = document.getElementById("pins");
-  var shown = { html: null, pins: [], selected: null, revealed: null };
+  var shown = { html: null, pins: [], selected: null, revealed: null, fit: false, height: -1 };
   var hovered = null;
   var waiting = false;
 
@@ -107,6 +113,15 @@ export const FRAME_SCRIPT = String.raw`(function () {
     });
   }
 
+  // The doc's height, told to a page that sizes the frame to it.
+  function tellSize() {
+    if (!shown.fit) return;
+    var height = Math.ceil(doc.getBoundingClientRect().bottom + window.scrollY);
+    if (height === shown.height) return;
+    shown.height = height;
+    post({ type: "viewer.size", height: height });
+  }
+
   function markBlocks() {
     Array.prototype.forEach.call(doc.querySelectorAll(".is-selected"), function (block) {
       block.classList.remove("is-selected");
@@ -117,6 +132,10 @@ export const FRAME_SCRIPT = String.raw`(function () {
   }
 
   function show(message) {
+    if (message.fit === true && !shown.fit) {
+      shown.fit = true;
+      document.documentElement.classList.add("fit");
+    }
     shown.pins = Array.isArray(message.pins) ? message.pins : [];
     shown.selected = typeof message.selected === "string" ? message.selected : null;
     if (typeof message.html === "string" && message.html !== shown.html) {
@@ -136,9 +155,11 @@ export const FRAME_SCRIPT = String.raw`(function () {
       var target = find(message.reveal);
       if (target) {
         shown.revealed = message.reveal;
-        target.scrollIntoView({ block: "center" });
+        if (shown.fit) post({ type: "viewer.reveal", top: Math.round(target.getBoundingClientRect().top + window.scrollY) });
+        else target.scrollIntoView({ block: "center" });
       }
     }
+    tellSize();
   }
 
   window.addEventListener("message", function (event) {
@@ -162,7 +183,10 @@ export const FRAME_SCRIPT = String.raw`(function () {
     if (target && target.closest("a")) event.preventDefault();
     var pin = target && target.closest("[data-pin-for]");
     var block = pin ? find(pin.getAttribute("data-pin-for")) : blockOf(target);
-    if (block) post({ type: "viewer.select", node: block.getAttribute("data-omni-id") });
+    post({ type: "viewer.select", node: block ? block.getAttribute("data-omni-id") : null });
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") post({ type: "viewer.select", node: null });
   });
 
   var frameRequested = false;
@@ -172,6 +196,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
     window.requestAnimationFrame(function () {
       frameRequested = false;
       layoutPins();
+      tellSize();
     });
   }
   window.addEventListener("resize", relayout);

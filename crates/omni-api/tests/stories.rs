@@ -1,4 +1,4 @@
-//! US-131: stories as records, the work items of a feature.
+//! US-131: stories as records, the work items of a track.
 //! Run with `--features stack-tests` in the Compose test container, which
 //! reaches Postgres at `postgres:5432`.
 //!
@@ -7,7 +7,7 @@
 //! API's router on a local port against that database.
 //!
 //! The contract these tests pin down (all paths are under
-//! `/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}`):
+//! `/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}`):
 //!
 //! - `POST /stories` (agent and human) answers 201 `{"story": Story}`. The key
 //!   is `US-<number>`, counted per project: the first story is `US-1`, or
@@ -19,16 +19,17 @@
 //! - 422 `{"error": "invalid_<field>"}`: a title that is blank after trimming,
 //!   a priority outside 0 to 3, a link that is neither `{doc_id, node_id,
 //!   label}` nor `{thread_id, label}`, a `blocked_by` id that is not a story
-//!   of the same feature, a negative `number_from`. Duplicate `blocked_by` ids
+//!   of the same project (US-319: any track of it), a negative
+//!   `number_from`. Duplicate `blocked_by` ids
 //!   are kept once, in first-seen order.
 //! - `GET /stories` answers `{"stories": [Story, ...]}`, every status when
 //!   unfiltered, by priority and then number; `?status=<status>` filters and
 //!   an unknown status is 422. `GET /stories/{story_id}` is 404 for a story
-//!   of another feature or project.
-//! - Creating a story emits `story.created` with `{story_id, key, feature_id}`.
+//!   of another track or project.
+//! - Creating a story emits `story.created` with `{story_id, key, track_id}`.
 //! - US-132: `GET /stories?pickable=true` lists the `backlog` stories that are
 //!   not `blocked`, whose `blocked_by` stories are all `done` or `cancelled`,
-//!   and whose files share no path with a story of the feature in
+//!   and whose files share no path with a story of the track in
 //!   `implementing`, `implemented`, `review`, `reviewed` or `testing` (US-163;
 //!   a story's files are `files_changed` when not empty, else
 //!   `files_planned`). They come by priority, then by open (not done, not
@@ -41,7 +42,7 @@
 //!   `version` one higher and emits `story.changed` with `{story_id, key,
 //!   fields}`, every field of the body in that order. Checked in this order: a
 //!   body with no field but `expected_version`, or a `blocked_by` naming a
-//!   story of another feature or the story itself, is 422; a stale
+//!   story of another project or the story itself, is 422; a stale
 //!   `expected_version` is 409 `{"error": "conflict", "current_version": n}`;
 //!   a `done` or `cancelled` story is 409 `not_open`; `title, text, topic,
 //!   criteria, files_planned` outside `backlog` are 409 `not_in_backlog`. A
@@ -305,27 +306,48 @@ fn new_project(f: &Fixture, client: &Client) -> String {
         .to_string()
 }
 
-fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(f: &Fixture, client: &Client, project: &str) -> String {
     let created = must(
         call(
             client,
             "POST",
-            &format!("/api/v1/w/{}/projects/{project}/features", f.workspace),
+            &format!("/api/v1/w/{}/projects/{project}/parts", f.workspace),
             &agent(f),
-            Some(&json!({ "name": unique("story-feature") })),
+            Some(&json!({ "name": unique("story-part"), "kind": "app" })),
         ),
         201,
-        "create a feature",
+        "create a part",
     );
-    created["feature"]["id"]
+    created["part"]["id"]
         .as_str()
-        .expect("the feature has an id")
+        .expect("the part has an id")
         .to_string()
 }
 
-fn stories_path(f: &Fixture, project: &str, feature: &str) -> String {
+fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
+    let created = must(
+        call(
+            client,
+            "POST",
+            &format!("/api/v1/w/{}/projects/{project}/tracks", f.workspace),
+            &agent(f),
+            Some(
+                &json!({ "name": unique("story-track"), "part_id": new_part(f, client, project) }),
+            ),
+        ),
+        201,
+        "create a track",
+    );
+    created["track"]["id"]
+        .as_str()
+        .expect("the track has an id")
+        .to_string()
+}
+
+fn stories_path(f: &Fixture, project: &str, track: &str) -> String {
     format!(
-        "/api/v1/w/{}/projects/{project}/features/{feature}/stories",
+        "/api/v1/w/{}/projects/{project}/tracks/{track}/stories",
         f.workspace
     )
 }
@@ -344,26 +366,20 @@ fn body_with(title: &str, extra: Value) -> Value {
     body
 }
 
-fn post_story(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    feature: &str,
-    body: &Value,
-) -> Response {
+fn post_story(f: &Fixture, client: &Client, project: &str, track: &str, body: &Value) -> Response {
     call(
         client,
         "POST",
-        &stories_path(f, project, feature),
+        &stories_path(f, project, track),
         &agent(f),
         Some(body),
     )
 }
 
 /// Creates a story as the agent; returns the `story` of the answer.
-fn create_story(f: &Fixture, client: &Client, project: &str, feature: &str, body: &Value) -> Value {
+fn create_story(f: &Fixture, client: &Client, project: &str, track: &str, body: &Value) -> Value {
     must(
-        post_story(f, client, project, feature, body),
+        post_story(f, client, project, track, body),
         201,
         "create a story",
     )["story"]
@@ -468,8 +484,8 @@ fn set_holder(story: &str, holder: Value) {
     })
 }
 
-fn story_path(f: &Fixture, project: &str, feature: &str, story: &str) -> String {
-    format!("{}/{story}", stories_path(f, project, feature))
+fn story_path(f: &Fixture, project: &str, track: &str, story: &str) -> String {
+    format!("{}/{story}", stories_path(f, project, track))
 }
 
 /// `PATCH`es a story as the agent.
@@ -477,14 +493,14 @@ fn patch(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: &str,
+    track: &str,
     story: &str,
     body: Value,
 ) -> Response {
     call(
         client,
         "PATCH",
-        &story_path(f, project, feature, story),
+        &story_path(f, project, track, story),
         &agent(f),
         Some(&body),
     )
@@ -495,26 +511,26 @@ fn cancel(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: &str,
+    track: &str,
     story: &str,
     expected_version: i64,
 ) -> Response {
     call(
         client,
         "POST",
-        &format!("{}/cancel", story_path(f, project, feature, story)),
+        &format!("{}/cancel", story_path(f, project, track, story)),
         &agent(f),
         Some(&json!({ "expected_version": expected_version })),
     )
 }
 
 /// The story as `GET /stories/{story_id}` answers it.
-fn get_story(f: &Fixture, client: &Client, project: &str, feature: &str, story: &str) -> Value {
+fn get_story(f: &Fixture, client: &Client, project: &str, track: &str, story: &str) -> Value {
     must(
         call(
             client,
             "GET",
-            &story_path(f, project, feature, story),
+            &story_path(f, project, track, story),
             &agent(f),
             None,
         ),
@@ -525,12 +541,12 @@ fn get_story(f: &Fixture, client: &Client, project: &str, feature: &str, story: 
 }
 
 /// Creates a story with `extra`'s fields as the agent; returns its id.
-fn new_story(f: &Fixture, client: &Client, project: &str, feature: &str, extra: Value) -> String {
+fn new_story(f: &Fixture, client: &Client, project: &str, track: &str, extra: Value) -> String {
     id_of(&create_story(
         f,
         client,
         project,
-        feature,
+        track,
         &body_with("Story", extra),
     ))
 }
@@ -540,14 +556,14 @@ fn listed_keys(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: &str,
+    track: &str,
     query: &str,
 ) -> Vec<Value> {
     keys_of(&must(
         call(
             client,
             "GET",
-            &format!("{}?{query}", stories_path(f, project, feature)),
+            &format!("{}?{query}", stories_path(f, project, track)),
             &agent(f),
             None,
         ),
@@ -564,16 +580,16 @@ fn listed_keys(
 fn the_first_story_of_a_project_is_us_1_in_backlog_at_version_1() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let story = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &json!({
             "title": "Stories as records",
             "text": "As an agent, I want to save a story.",
-            "topic": "feature · api",
+            "topic": "track · api",
             "criteria": [{ "text": "a" }, { "text": "b", "human_check": true }],
             "priority": 2,
             "links": [{ "doc_id": UNKNOWN_ID, "node_id": "n1", "label": "design" }],
@@ -603,19 +619,19 @@ fn the_first_story_of_a_project_is_us_1_in_backlog_at_version_1() {
 fn number_from_sets_only_the_first_number_of_the_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let first = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("First", json!({ "number_from": 130 })),
     );
     let second = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Second", json!({ "number_from": 500 })),
     );
     assert_eq!(first["key"], "US-131", "{first}");
@@ -623,23 +639,23 @@ fn number_from_sets_only_the_first_number_of_the_project() {
 }
 
 #[test]
-fn story_numbers_are_counted_per_project_across_its_features() {
+fn story_numbers_are_counted_per_project_across_its_tracks() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let other_feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
+    let other_track = new_track(f, client, &project);
     let other_project = new_project(f, client);
-    let other_project_feature = new_feature(f, client, &other_project);
-    create_story(f, client, &project, &feature, &body("One"));
-    let in_other_feature = create_story(f, client, &project, &other_feature, &body("Two"));
+    let other_project_track = new_track(f, client, &other_project);
+    create_story(f, client, &project, &track, &body("One"));
+    let in_other_track = create_story(f, client, &project, &other_track, &body("Two"));
     let in_other_project = create_story(
         f,
         client,
         &other_project,
-        &other_project_feature,
+        &other_project_track,
         &body("Elsewhere"),
     );
-    assert_eq!(in_other_feature["key"], "US-2", "{in_other_feature}");
+    assert_eq!(in_other_track["key"], "US-2", "{in_other_track}");
     assert_eq!(in_other_project["key"], "US-1", "{in_other_project}");
 }
 
@@ -647,13 +663,13 @@ fn story_numbers_are_counted_per_project_across_its_features() {
 fn a_negative_number_from_is_refused_and_zero_is_accepted() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     assert_error(
         &post_story(
             f,
             client,
             &project,
-            &feature,
+            &track,
             &body_with("Below", json!({ "number_from": -1 })),
         ),
         422,
@@ -663,7 +679,7 @@ fn a_negative_number_from_is_refused_and_zero_is_accepted() {
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Zero", json!({ "number_from": 0 })),
     );
     assert_eq!(story["key"], "US-1", "{story}");
@@ -673,14 +689,14 @@ fn a_negative_number_from_is_refused_and_zero_is_accepted() {
 fn a_priority_outside_0_to_3_is_refused_and_creates_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     for priority in [-1, 4] {
         assert_error(
             &post_story(
                 f,
                 client,
                 &project,
-                &feature,
+                &track,
                 &body_with("Out of range", json!({ "priority": priority })),
             ),
             422,
@@ -694,22 +710,22 @@ fn a_priority_outside_0_to_3_is_refused_and_creates_nothing() {
 fn priority_0_and_3_are_accepted_and_3_is_the_default() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let fix = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Fix", json!({ "priority": 0 })),
     );
     let lowest = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Low", json!({ "priority": 3 })),
     );
-    let unset = create_story(f, client, &project, &feature, &body("Unset"));
+    let unset = create_story(f, client, &project, &track, &body("Unset"));
     assert_eq!(fix["priority"], 0, "{fix}");
     assert_eq!(lowest["priority"], 3, "{lowest}");
     assert_eq!(unset["priority"], 3, "{unset}");
@@ -719,9 +735,9 @@ fn priority_0_and_3_are_accepted_and_3_is_the_default() {
 fn a_title_blank_after_trimming_is_refused_and_creates_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     assert_error(
-        &post_story(f, client, &project, &feature, &body(" \t ")),
+        &post_story(f, client, &project, &track, &body(" \t ")),
         422,
         "invalid_title",
     );
@@ -733,8 +749,8 @@ fn a_title_blank_after_trimming_is_refused_and_creates_nothing() {
 fn empty_text_topic_and_criteria_are_accepted_but_a_missing_text_is_a_bad_request() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = create_story(f, client, &project, &feature, &body("Bare"));
+    let track = new_track(f, client, &project);
+    let story = create_story(f, client, &project, &track, &body("Bare"));
     assert_eq!(story["text"], "", "{story}");
     assert_eq!(story["topic"], "", "{story}");
     assert_eq!(story["criteria"], json!([]), "{story}");
@@ -743,7 +759,7 @@ fn empty_text_topic_and_criteria_are_accepted_but_a_missing_text_is_a_bad_reques
             f,
             client,
             &project,
-            &feature,
+            &track,
             &json!({ "title": "No text", "topic": "", "criteria": [] }),
         ),
         400,
@@ -755,7 +771,7 @@ fn empty_text_topic_and_criteria_are_accepted_but_a_missing_text_is_a_bad_reques
 fn a_link_of_neither_shape_is_refused_and_a_thread_link_is_accepted() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     for link in [
         json!({ "doc_id": UNKNOWN_ID, "label": "no node" }),
         json!({ "thread_id": UNKNOWN_ID }),
@@ -766,7 +782,7 @@ fn a_link_of_neither_shape_is_refused_and_a_thread_link_is_accepted() {
                 f,
                 client,
                 &project,
-                &feature,
+                &track,
                 &body_with("Bad link", json!({ "links": [link] })),
             ),
             422,
@@ -777,7 +793,7 @@ fn a_link_of_neither_shape_is_refused_and_a_thread_link_is_accepted() {
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with(
             "Thread link",
             json!({ "links": [{ "thread_id": UNKNOWN_ID, "label": "Q1" }] }),
@@ -791,16 +807,17 @@ fn a_link_of_neither_shape_is_refused_and_a_thread_link_is_accepted() {
 }
 
 #[test]
-fn a_blocker_must_be_a_story_of_the_same_feature() {
+fn a_blocker_must_be_a_story_of_the_same_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let other_feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
+    let other_project = new_project(f, client);
+    let other_track = new_track(f, client, &other_project);
     let elsewhere = id_of(&create_story(
         f,
         client,
-        &project,
-        &other_feature,
+        &other_project,
+        &other_track,
         &body("Elsewhere"),
     ));
     for blocker in [elsewhere.as_str(), UNKNOWN_ID, "not-a-uuid"] {
@@ -809,34 +826,71 @@ fn a_blocker_must_be_a_story_of_the_same_feature() {
                 f,
                 client,
                 &project,
-                &feature,
+                &track,
                 &body_with("Blocked", json!({ "blocked_by": [blocker] })),
             ),
             422,
             "invalid_blocked_by",
         );
     }
-    assert_eq!(story_rows(&project), 1, "a refused story is not stored");
+    assert_eq!(story_rows(&project), 0, "a refused story is not stored");
 }
 
 #[test]
-fn a_cancelled_story_of_the_feature_is_a_valid_blocker() {
+fn a_blocker_on_another_track_of_the_project_holds_its_story_until_done_or_cancelled() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let cancelled = id_of(&create_story(
+    let track = new_track(f, client, &project);
+    let other_track = new_track(f, client, &project);
+    let to_finish = new_story(f, client, &project, &other_track, json!({}));
+    let to_cancel = new_story(f, client, &project, &other_track, json!({}));
+    let story = create_story(
         f,
         client,
         &project,
-        &feature,
-        &body("Dropped"),
-    ));
+        &track,
+        &body_with("Blocked", json!({ "blocked_by": [to_finish] })),
+    );
+    assert_eq!(story["blocked_by"], json!([to_finish]), "{story}");
+    let patched = new_story(f, client, &project, &track, json!({}));
+    must(
+        patch(
+            f,
+            client,
+            &project,
+            &track,
+            &patched,
+            json!({ "expected_version": 1, "blocked_by": [to_cancel] }),
+        ),
+        200,
+        "patch a blocker on another track of the project",
+    );
+    assert_eq!(
+        listed_keys(f, client, &project, &track, "pickable=true"),
+        Vec::<Value>::new(),
+        "US-3 and US-4 wait for their open blockers on the other track"
+    );
+    set_status(&to_finish, "done");
+    set_status(&to_cancel, "cancelled");
+    assert_eq!(
+        listed_keys(f, client, &project, &track, "pickable=true"),
+        vec![json!("US-3"), json!("US-4")],
+        "a done or a cancelled blocker on another track releases its story"
+    );
+}
+
+#[test]
+fn a_cancelled_story_of_the_track_is_a_valid_blocker() {
+    let (f, client) = ready();
+    let project = new_project(f, client);
+    let track = new_track(f, client, &project);
+    let cancelled = id_of(&create_story(f, client, &project, &track, &body("Dropped")));
     set_status(&cancelled, "cancelled");
     let story = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Blocked", json!({ "blocked_by": [cancelled] })),
     );
     assert_eq!(story["blocked_by"], json!([cancelled]), "{story}");
@@ -846,28 +900,28 @@ fn a_cancelled_story_of_the_feature_is_a_valid_blocker() {
 fn duplicate_blockers_are_kept_once_in_first_seen_order() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let a = id_of(&create_story(f, client, &project, &feature, &body("A")));
-    let b = id_of(&create_story(f, client, &project, &feature, &body("B")));
+    let track = new_track(f, client, &project);
+    let a = id_of(&create_story(f, client, &project, &track, &body("A")));
+    let b = id_of(&create_story(f, client, &project, &track, &body("B")));
     let story = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Blocked", json!({ "blocked_by": [b, a, b] })),
     );
     assert_eq!(story["blocked_by"], json!([b, a]), "{story}");
 }
 
 #[test]
-fn creating_a_story_emits_story_created_with_its_id_key_and_feature() {
+fn creating_a_story_emits_story_created_with_its_id_key_and_track() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = create_story(f, client, &project, &feature, &body("Announced"));
+    let track = new_track(f, client, &project);
+    let story = create_story(f, client, &project, &track, &body("Announced"));
     assert_eq!(
         events_of(&project, "story.created"),
-        vec![json!({ "story_id": story["id"], "key": "US-1", "feature_id": feature })]
+        vec![json!({ "story_id": story["id"], "key": "US-1", "track_id": track })]
     );
 }
 
@@ -879,33 +933,33 @@ fn creating_a_story_emits_story_created_with_its_id_key_and_feature() {
 fn the_list_holds_every_status_ordered_by_priority_then_number() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("One", json!({ "priority": 3 })),
     );
     create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Two", json!({ "priority": 1 })),
     );
     let three = create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Three", json!({ "priority": 3 })),
     );
     create_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &body_with("Four", json!({ "priority": 1 })),
     );
     set_status(&id_of(&three), "cancelled");
@@ -913,7 +967,7 @@ fn the_list_holds_every_status_ordered_by_priority_then_number() {
         call(
             client,
             "GET",
-            &stories_path(f, &project, &feature),
+            &stories_path(f, &project, &track),
             &human(f),
             None,
         ),
@@ -930,11 +984,11 @@ fn the_list_holds_every_status_ordered_by_priority_then_number() {
 fn the_status_filter_lists_only_that_status_and_refuses_an_unknown_one() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    create_story(f, client, &project, &feature, &body("Waiting"));
-    let reviewed = create_story(f, client, &project, &feature, &body("Reviewed"));
+    let track = new_track(f, client, &project);
+    create_story(f, client, &project, &track, &body("Waiting"));
+    let reviewed = create_story(f, client, &project, &track, &body("Reviewed"));
     set_status(&id_of(&reviewed), "review");
-    let path = stories_path(f, &project, &feature);
+    let path = stories_path(f, &project, &track);
     let listed = must(
         call(
             client,
@@ -961,19 +1015,19 @@ fn the_status_filter_lists_only_that_status_and_refuses_an_unknown_one() {
 }
 
 #[test]
-fn a_story_is_not_found_under_another_feature_or_project() {
+fn a_story_is_not_found_under_another_track_or_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let other_feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
+    let other_track = new_track(f, client, &project);
     let other_project = new_project(f, client);
-    let story = create_story(f, client, &project, &feature, &body("Here"));
+    let story = create_story(f, client, &project, &track, &body("Here"));
     let id = id_of(&story);
     let shown = must(
         call(
             client,
             "GET",
-            &format!("{}/{id}", stories_path(f, &project, &feature)),
+            &format!("{}/{id}", stories_path(f, &project, &track)),
             &human(f),
             None,
         ),
@@ -982,8 +1036,8 @@ fn a_story_is_not_found_under_another_feature_or_project() {
     );
     assert_eq!(shown["story"], story);
     for path in [
-        stories_path(f, &project, &other_feature),
-        stories_path(f, &other_project, &feature),
+        stories_path(f, &project, &other_track),
+        stories_path(f, &other_project, &track),
     ] {
         assert_error(
             &call(client, "GET", &format!("{path}/{id}"), &agent(f), None),
@@ -1001,17 +1055,17 @@ fn a_story_is_not_found_under_another_feature_or_project() {
 fn pickable_lists_backlog_stories_whose_blockers_are_closed_and_whose_files_are_free() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let d = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let d = new_story(f, client, &project, &track, json!({}));
     set_status(&d, "cancelled");
-    let a = new_story(f, client, &project, &feature, json!({}));
-    new_story(f, client, &project, &feature, json!({ "blocked_by": [a] }));
-    new_story(f, client, &project, &feature, json!({ "blocked_by": [d] }));
+    let a = new_story(f, client, &project, &track, json!({}));
+    new_story(f, client, &project, &track, json!({ "blocked_by": [a] }));
+    new_story(f, client, &project, &track, json!({ "blocked_by": [d] }));
     let busy = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/a.rs"] }),
     );
     set_status(&busy, "implementing");
@@ -1019,11 +1073,11 @@ fn pickable_lists_backlog_stories_whose_blockers_are_closed_and_whose_files_are_
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/b.rs", "src/a.rs"] }),
     );
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         vec![json!("US-2"), json!("US-4")],
         "A (US-2) and C (US-4) only; not D (cancelled), B (blocked by backlog A), the implementing story or E (shares src/a.rs)"
     );
@@ -1033,18 +1087,18 @@ fn pickable_lists_backlog_stories_whose_blockers_are_closed_and_whose_files_are_
 fn a_done_blocker_releases_its_story() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let blocker = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let blocker = new_story(f, client, &project, &track, json!({}));
     set_status(&blocker, "done");
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "blocked_by": [blocker] }),
     );
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         vec![json!("US-2")]
     );
 }
@@ -1053,12 +1107,12 @@ fn a_done_blocker_releases_its_story() {
 fn a_story_from_implemented_to_testing_holds_its_files_and_a_done_or_cancelled_one_does_not() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let implemented = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/a.rs"] }),
     );
     set_status(&implemented, "implemented");
@@ -1066,18 +1120,18 @@ fn a_story_from_implemented_to_testing_holds_its_files_and_a_done_or_cancelled_o
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/b.rs"] }),
     );
     set_status(&review, "review");
-    let reviewed = new_story(f, client, &project, &feature, json!({}));
+    let reviewed = new_story(f, client, &project, &track, json!({}));
     set_files_changed(&reviewed, json!(["src/c.rs"]));
     set_status(&reviewed, "reviewed");
     let testing = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/d.rs"] }),
     );
     set_status(&testing, "testing");
@@ -1085,7 +1139,7 @@ fn a_story_from_implemented_to_testing_holds_its_files_and_a_done_or_cancelled_o
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/e.rs"] }),
     );
     set_status(&done, "done");
@@ -1093,7 +1147,7 @@ fn a_story_from_implemented_to_testing_holds_its_files_and_a_done_or_cancelled_o
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/f.rs"] }),
     );
     set_status(&cancelled, "cancelled");
@@ -1101,46 +1155,46 @@ fn a_story_from_implemented_to_testing_holds_its_files_and_a_done_or_cancelled_o
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/a.rs"] }),
     );
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/b.rs"] }),
     );
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/c.rs"] }),
     );
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/d.rs"] }),
     );
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/e.rs"] }),
     );
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/f.rs"] }),
     );
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         vec![json!("US-11"), json!("US-12")],
         "US-7 to US-10 share a file with the implemented, review, reviewed and testing stories; \
          US-11 and US-12 share one only with the done and the cancelled story"
@@ -1151,18 +1205,18 @@ fn a_story_from_implemented_to_testing_holds_its_files_and_a_done_or_cancelled_o
 fn a_story_blocked_by_a_reviewed_story_is_not_pickable() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let blocker = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let blocker = new_story(f, client, &project, &track, json!({}));
     set_status(&blocker, "reviewed");
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "blocked_by": [blocker] }),
     );
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         Vec::<Value>::new()
     );
 }
@@ -1171,18 +1225,18 @@ fn a_story_blocked_by_a_reviewed_story_is_not_pickable() {
 fn pickable_stories_come_by_priority_then_open_dependants_then_number() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    new_story(f, client, &project, &feature, json!({ "priority": 1 }));
-    let q = new_story(f, client, &project, &feature, json!({ "priority": 1 }));
-    new_story(f, client, &project, &feature, json!({ "priority": 0 }));
-    let r = new_story(f, client, &project, &feature, json!({ "priority": 1 }));
-    new_story(f, client, &project, &feature, json!({ "blocked_by": [q] }));
-    let done = new_story(f, client, &project, &feature, json!({ "blocked_by": [r] }));
+    let track = new_track(f, client, &project);
+    new_story(f, client, &project, &track, json!({ "priority": 1 }));
+    let q = new_story(f, client, &project, &track, json!({ "priority": 1 }));
+    new_story(f, client, &project, &track, json!({ "priority": 0 }));
+    let r = new_story(f, client, &project, &track, json!({ "priority": 1 }));
+    new_story(f, client, &project, &track, json!({ "blocked_by": [q] }));
+    let done = new_story(f, client, &project, &track, json!({ "blocked_by": [r] }));
     set_status(&done, "done");
-    let cancelled = new_story(f, client, &project, &feature, json!({ "blocked_by": [r] }));
+    let cancelled = new_story(f, client, &project, &track, json!({ "blocked_by": [r] }));
     set_status(&cancelled, "cancelled");
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         vec![json!("US-3"), json!("US-2"), json!("US-1"), json!("US-4")],
         "priority 0 first; then US-2 with one open dependant; then US-1 and US-4, \
          whose only dependants are done or cancelled, by number"
@@ -1193,12 +1247,12 @@ fn pickable_stories_come_by_priority_then_open_dependants_then_number() {
 fn a_blocked_story_is_never_pickable() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let flagged = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let flagged = new_story(f, client, &project, &track, json!({}));
     set_blocked(&flagged);
-    new_story(f, client, &project, &feature, json!({}));
+    new_story(f, client, &project, &track, json!({}));
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         vec![json!("US-2")]
     );
 }
@@ -1207,12 +1261,12 @@ fn a_blocked_story_is_never_pickable() {
 fn changed_files_replace_planned_files_on_both_sides_of_the_comparison() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let busy = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/planned.rs"] }),
     );
     set_files_changed(&busy, json!(["src/changed.rs"]));
@@ -1221,26 +1275,26 @@ fn changed_files_replace_planned_files_on_both_sides_of_the_comparison() {
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/planned.rs"] }),
     );
     new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/changed.rs"] }),
     );
     let moved = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/changed.rs"] }),
     );
     set_files_changed(&moved, json!(["src/other.rs"]));
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         vec![json!("US-2"), json!("US-4")],
         "the busy story holds src/changed.rs only, and US-4 occupies src/other.rs only"
     );
@@ -1250,12 +1304,12 @@ fn changed_files_replace_planned_files_on_both_sides_of_the_comparison() {
 fn paths_are_compared_as_exact_strings() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let busy = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/a.rs"] }),
     );
     set_status(&busy, "implementing");
@@ -1263,11 +1317,11 @@ fn paths_are_compared_as_exact_strings() {
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["./src/a.rs"] }),
     );
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=true"),
+        listed_keys(f, client, &project, &track, "pickable=true"),
         vec![json!("US-2")]
     );
 }
@@ -1276,12 +1330,12 @@ fn paths_are_compared_as_exact_strings() {
 fn pickable_with_a_status_filter_is_empty_unless_the_status_is_backlog() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let busy = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/a.rs"] }),
     );
     set_status(&busy, "implementing");
@@ -1289,18 +1343,12 @@ fn pickable_with_a_status_filter_is_empty_unless_the_status_is_backlog() {
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "files_planned": ["src/a.rs"] }),
     );
-    new_story(f, client, &project, &feature, json!({}));
+    new_story(f, client, &project, &track, json!({}));
     assert_eq!(
-        listed_keys(
-            f,
-            client,
-            &project,
-            &feature,
-            "pickable=true&status=backlog"
-        ),
+        listed_keys(f, client, &project, &track, "pickable=true&status=backlog"),
         vec![json!("US-3")],
         "the implementing story still holds src/a.rs when only backlog is listed"
     );
@@ -1309,7 +1357,7 @@ fn pickable_with_a_status_filter_is_empty_unless_the_status_is_backlog() {
             f,
             client,
             &project,
-            &feature,
+            &track,
             "pickable=true&status=implementing"
         ),
         Vec::<Value>::new()
@@ -1320,19 +1368,19 @@ fn pickable_with_a_status_filter_is_empty_unless_the_status_is_backlog() {
 fn pickable_false_gives_the_normal_list_and_another_value_is_refused() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let busy = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let busy = new_story(f, client, &project, &track, json!({}));
     set_status(&busy, "implementing");
-    new_story(f, client, &project, &feature, json!({}));
+    new_story(f, client, &project, &track, json!({}));
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "pickable=false"),
+        listed_keys(f, client, &project, &track, "pickable=false"),
         vec![json!("US-1"), json!("US-2")]
     );
     assert_error(
         &call(
             client,
             "GET",
-            &format!("{}?pickable=yes", stories_path(f, &project, &feature)),
+            &format!("{}?pickable=yes", stories_path(f, &project, &track)),
             &agent(f),
             None,
         ),
@@ -1349,9 +1397,9 @@ fn pickable_false_gives_the_normal_list_and_another_value_is_refused() {
 fn a_patch_at_the_current_version_bumps_it_and_the_old_one_conflicts_before_the_status_rules() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
-    let path = story_path(f, &project, &feature, &story);
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
+    let path = story_path(f, &project, &track, &story);
     let edit = json!({ "expected_version": 1, "priority": 1 });
     let edited = must(
         call(client, "PATCH", &path, &human(f), Some(&edit)),
@@ -1379,10 +1427,7 @@ fn a_patch_at_the_current_version_bumps_it_and_the_old_one_conflicts_before_the_
         stale.json(),
         json!({ "error": "conflict", "current_version": 2 })
     );
-    assert_eq!(
-        get_story(f, client, &project, &feature, &story)["version"],
-        2
-    );
+    assert_eq!(get_story(f, client, &project, &track, &story)["version"], 2);
     assert_eq!(events_of(&project, "story.changed").len(), 1);
 }
 
@@ -1390,8 +1435,8 @@ fn a_patch_at_the_current_version_bumps_it_and_the_old_one_conflicts_before_the_
 fn story_changed_names_every_field_of_the_body_in_schema_order_changed_or_not() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
     // `links` sorts before `title` by name, but comes after it in the schema;
     // the priority is the default 3, so it does not change.
     must(
@@ -1399,7 +1444,7 @@ fn story_changed_names_every_field_of_the_body_in_schema_order_changed_or_not() 
             f,
             client,
             &project,
-            &feature,
+            &track,
             &story,
             json!({ "expected_version": 1, "links": [], "priority": 3, "title": "Renamed" }),
         ),
@@ -1416,13 +1461,13 @@ fn story_changed_names_every_field_of_the_body_in_schema_order_changed_or_not() 
 fn outside_backlog_only_priority_blockers_and_links_change() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let blocker = new_story(f, client, &project, &feature, json!({}));
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let blocker = new_story(f, client, &project, &track, json!({}));
+    let story = new_story(f, client, &project, &track, json!({}));
     set_status(&story, "implementing");
     let refuse = |body: Value| {
         assert_error(
-            &patch(f, client, &project, &feature, &story, body),
+            &patch(f, client, &project, &track, &story, body),
             409,
             "not_in_backlog",
         )
@@ -1433,7 +1478,7 @@ fn outside_backlog_only_priority_blockers_and_links_change() {
     refuse(json!({ "expected_version": 1, "criteria": [{ "text": "New" }] }));
     refuse(json!({ "expected_version": 1, "files_planned": ["src/new.rs"] }));
     refuse(json!({ "expected_version": 1, "text": "New", "priority": 1 }));
-    let unchanged = get_story(f, client, &project, &feature, &story);
+    let unchanged = get_story(f, client, &project, &track, &story);
     assert_eq!(unchanged["version"], 1, "{unchanged}");
     assert_eq!(unchanged["priority"], 3, "{unchanged}");
     assert_eq!(unchanged["text"], "", "{unchanged}");
@@ -1442,7 +1487,7 @@ fn outside_backlog_only_priority_blockers_and_links_change() {
             f,
             client,
             &project,
-            &feature,
+            &track,
             &story,
             json!({
                 "expected_version": 1,
@@ -1469,17 +1514,17 @@ fn outside_backlog_only_priority_blockers_and_links_change() {
 fn a_done_or_cancelled_story_refuses_every_field_as_not_open() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let done = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let done = new_story(f, client, &project, &track, json!({}));
     set_status(&done, "done");
-    let cancelled = new_story(f, client, &project, &feature, json!({}));
+    let cancelled = new_story(f, client, &project, &track, json!({}));
     set_status(&cancelled, "cancelled");
     assert_error(
         &patch(
             f,
             client,
             &project,
-            &feature,
+            &track,
             &done,
             json!({ "expected_version": 1, "priority": 1 }),
         ),
@@ -1492,7 +1537,7 @@ fn a_done_or_cancelled_story_refuses_every_field_as_not_open() {
             f,
             client,
             &project,
-            &feature,
+            &track,
             &done,
             json!({ "expected_version": 1, "text": "New" }),
         ),
@@ -1504,17 +1549,14 @@ fn a_done_or_cancelled_story_refuses_every_field_as_not_open() {
             f,
             client,
             &project,
-            &feature,
+            &track,
             &cancelled,
             json!({ "expected_version": 1, "links": [] }),
         ),
         409,
         "not_open",
     );
-    assert_eq!(
-        get_story(f, client, &project, &feature, &done)["version"],
-        1
-    );
+    assert_eq!(get_story(f, client, &project, &track, &done)["version"], 1);
     assert!(events_of(&project, "story.changed").is_empty());
 }
 
@@ -1522,15 +1564,16 @@ fn a_done_or_cancelled_story_refuses_every_field_as_not_open() {
 fn an_invalid_body_is_refused_before_a_stale_version_is_reported() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let other_feature = new_feature(f, client, &project);
-    let elsewhere = new_story(f, client, &project, &other_feature, json!({}));
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let other_project = new_project(f, client);
+    let other_track = new_track(f, client, &other_project);
+    let elsewhere = new_story(f, client, &other_project, &other_track, json!({}));
+    let story = new_story(f, client, &project, &track, json!({}));
     let only_version = patch(
         f,
         client,
         &project,
-        &feature,
+        &track,
         &story,
         json!({ "expected_version": 7 }),
     );
@@ -1540,7 +1583,7 @@ fn an_invalid_body_is_refused_before_a_stale_version_is_reported() {
             f,
             client,
             &project,
-            &feature,
+            &track,
             &story,
             json!({ "expected_version": 7, "blocked_by": [elsewhere] }),
         ),
@@ -1550,19 +1593,20 @@ fn an_invalid_body_is_refused_before_a_stale_version_is_reported() {
 }
 
 #[test]
-fn a_patched_blocker_must_be_another_story_of_the_same_feature() {
+fn a_patched_blocker_must_be_another_story_of_the_same_project() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let other_feature = new_feature(f, client, &project);
-    let elsewhere = new_story(f, client, &project, &other_feature, json!({}));
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let other_project = new_project(f, client);
+    let other_track = new_track(f, client, &other_project);
+    let elsewhere = new_story(f, client, &other_project, &other_track, json!({}));
+    let story = new_story(f, client, &project, &track, json!({}));
     assert_error(
         &patch(
             f,
             client,
             &project,
-            &feature,
+            &track,
             &story,
             json!({ "expected_version": 1, "blocked_by": [elsewhere] }),
         ),
@@ -1574,14 +1618,14 @@ fn a_patched_blocker_must_be_another_story_of_the_same_feature() {
             f,
             client,
             &project,
-            &feature,
+            &track,
             &story,
             json!({ "expected_version": 1, "blocked_by": [story] }),
         ),
         422,
         "invalid_blocked_by",
     );
-    let unchanged = get_story(f, client, &project, &feature, &story);
+    let unchanged = get_story(f, client, &project, &track, &story);
     assert_eq!(unchanged["version"], 1, "{unchanged}");
     assert_eq!(unchanged["blocked_by"], json!([]), "{unchanged}");
 }
@@ -1590,15 +1634,15 @@ fn a_patched_blocker_must_be_another_story_of_the_same_feature() {
 fn two_stories_may_block_each_other() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let a = new_story(f, client, &project, &feature, json!({}));
-    let b = new_story(f, client, &project, &feature, json!({ "blocked_by": [a] }));
+    let track = new_track(f, client, &project);
+    let a = new_story(f, client, &project, &track, json!({}));
+    let b = new_story(f, client, &project, &track, json!({ "blocked_by": [a] }));
     let edited = must(
         patch(
             f,
             client,
             &project,
-            &feature,
+            &track,
             &a,
             json!({ "expected_version": 1, "blocked_by": [b] }),
         ),
@@ -1613,21 +1657,21 @@ fn two_stories_may_block_each_other() {
 fn cancelling_answers_the_cancelled_story_without_its_holder() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
     set_status(&story, "implementing");
     set_holder(
         &story,
         json!({ "run": "run-1", "stage": "implementing", "at": "2026-10-31T00:00:00Z" }),
     );
-    let stale = cancel(f, client, &project, &feature, &story, 7);
+    let stale = cancel(f, client, &project, &track, &story, 7);
     assert_eq!(stale.status, 409, "body: {}", stale.text());
     assert_eq!(
         stale.json(),
         json!({ "error": "conflict", "current_version": 1 })
     );
     let cancelled = must(
-        cancel(f, client, &project, &feature, &story, 1),
+        cancel(f, client, &project, &track, &story, 1),
         200,
         "cancel the story",
     )["story"]
@@ -1646,27 +1690,27 @@ fn cancelling_answers_the_cancelled_story_without_its_holder() {
 fn a_done_or_cancelled_story_cannot_be_cancelled() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let done = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let done = new_story(f, client, &project, &track, json!({}));
     set_status(&done, "done");
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let story = new_story(f, client, &project, &track, json!({}));
     must(
-        cancel(f, client, &project, &feature, &story, 1),
+        cancel(f, client, &project, &track, &story, 1),
         200,
         "cancel once",
     );
     assert_error(
-        &cancel(f, client, &project, &feature, &story, 2),
+        &cancel(f, client, &project, &track, &story, 2),
         409,
         "not_open",
     );
     assert_error(
-        &cancel(f, client, &project, &feature, &done, 1),
+        &cancel(f, client, &project, &track, &done, 1),
         409,
         "not_open",
     );
     assert_eq!(
-        get_story(f, client, &project, &feature, &done)["status"],
+        get_story(f, client, &project, &track, &done)["status"],
         "done"
     );
     assert_eq!(events_of(&project, "story.cancelled").len(), 1);
@@ -1710,9 +1754,9 @@ fn act(client: &Client, auth: &Auth, path: &str, action: &str, body: Value) -> R
 fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
-    let path = story_path(f, &project, &feature, &story);
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     let first = must(
         act(
@@ -1770,7 +1814,7 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
     assert_eq!(held.json()["error"], "held");
     assert_eq!(held.json()["holder"], again["holder"]);
     assert_eq!(
-        get_story(f, client, &project, &feature, &story)["version"],
+        get_story(f, client, &project, &track, &story)["version"],
         4,
         "a refused claim changes nothing"
     );
@@ -1807,10 +1851,10 @@ fn a_claim_holds_the_story_for_its_run_until_any_run_releases_it() {
 fn releasing_a_story_held_in_implementing_returns_it_to_backlog() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let a = agent(f);
-    let implementing = new_story(f, client, &project, &feature, json!({}));
-    let implementing = story_path(f, &project, &feature, &implementing);
+    let implementing = new_story(f, client, &project, &track, json!({}));
+    let implementing = story_path(f, &project, &track, &implementing);
     must(
         act(
             client,
@@ -1842,15 +1886,15 @@ fn releasing_a_story_held_in_implementing_returns_it_to_backlog() {
 fn a_release_moves_a_working_story_nothing_holds_and_leaves_a_waiting_one_unchanged() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let a = agent(f);
-    let stranded = new_story(f, client, &project, &feature, json!({}));
+    let stranded = new_story(f, client, &project, &track, json!({}));
     set_status(&stranded, "testing");
     let released = must(
         act(
             client,
             &a,
-            &story_path(f, &project, &feature, &stranded),
+            &story_path(f, &project, &track, &stranded),
             "release",
             json!({ "expected_version": 1, "run": "r2" }),
         ),
@@ -1860,13 +1904,13 @@ fn a_release_moves_a_working_story_nothing_holds_and_leaves_a_waiting_one_unchan
         .clone();
     assert_eq!(released["status"], "reviewed", "{released}");
     assert_eq!(released["holder"], Value::Null, "{released}");
-    let waiting = new_story(f, client, &project, &feature, json!({}));
+    let waiting = new_story(f, client, &project, &track, json!({}));
     set_status(&waiting, "implemented");
     let unchanged = must(
         act(
             client,
             &a,
-            &story_path(f, &project, &feature, &waiting),
+            &story_path(f, &project, &track, &waiting),
             "release",
             json!({ "expected_version": 1, "run": "r2" }),
         ),
@@ -1892,16 +1936,16 @@ fn a_release_moves_a_working_story_nothing_holds_and_leaves_a_waiting_one_unchan
 fn only_the_holding_run_moves_the_story_and_its_stage_follows_the_column() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let unheld = new_story(f, client, &project, &feature, json!({}));
-    let story = new_story(f, client, &project, &feature, json!({}));
-    let path = story_path(f, &project, &feature, &story);
+    let track = new_track(f, client, &project);
+    let unheld = new_story(f, client, &project, &track, json!({}));
+    let story = new_story(f, client, &project, &track, json!({}));
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     assert_error(
         &act(
             client,
             &a,
-            &story_path(f, &project, &feature, &unheld),
+            &story_path(f, &project, &track, &unheld),
             "move",
             json!({ "expected_version": 1, "run": "r1", "to": "implementing" }),
         ),
@@ -1961,7 +2005,7 @@ fn only_the_holding_run_moves_the_story_and_its_stage_follows_the_column() {
     assert_eq!(back["status"], "backlog", "{back}");
     assert_eq!(back["holder"], Value::Null, "{back}");
     assert_eq!(
-        get_story(f, client, &project, &feature, &unheld)["version"],
+        get_story(f, client, &project, &track, &unheld)["version"],
         1,
         "a refused move changes nothing"
     );
@@ -1971,10 +2015,10 @@ fn only_the_holding_run_moves_the_story_and_its_stage_follows_the_column() {
 fn the_holder_moves_an_implementing_story_to_implemented_which_clears_the_holder() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    new_story(f, client, &project, &feature, json!({}));
-    let story = new_story(f, client, &project, &feature, json!({}));
-    let path = story_path(f, &project, &feature, &story);
+    let track = new_track(f, client, &project);
+    new_story(f, client, &project, &track, json!({}));
+    let story = new_story(f, client, &project, &track, json!({}));
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     must(
         act(
@@ -2002,7 +2046,7 @@ fn the_holder_moves_an_implementing_story_to_implemented_which_clears_the_holder
     assert_eq!(moved["status"], "implemented", "{moved}");
     assert_eq!(moved["holder"], Value::Null, "{moved}");
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "status=implemented"),
+        listed_keys(f, client, &project, &track, "status=implemented"),
         vec![json!("US-2")]
     );
 }
@@ -2011,11 +2055,11 @@ fn the_holder_moves_an_implementing_story_to_implemented_which_clears_the_holder
 fn the_holder_moves_a_story_in_review_to_reviewed_which_clears_the_holder() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    new_story(f, client, &project, &feature, json!({}));
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    new_story(f, client, &project, &track, json!({}));
+    let story = new_story(f, client, &project, &track, json!({}));
     set_status(&story, "implemented");
-    let path = story_path(f, &project, &feature, &story);
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     must(
         act(
@@ -2043,7 +2087,7 @@ fn the_holder_moves_a_story_in_review_to_reviewed_which_clears_the_holder() {
     assert_eq!(moved["status"], "reviewed", "{moved}");
     assert_eq!(moved["holder"], Value::Null, "{moved}");
     assert_eq!(
-        listed_keys(f, client, &project, &feature, "status=reviewed"),
+        listed_keys(f, client, &project, &track, "status=reviewed"),
         vec![json!("US-2")]
     );
 }
@@ -2052,9 +2096,9 @@ fn the_holder_moves_a_story_in_review_to_reviewed_which_clears_the_holder() {
 fn a_claim_for_review_on_a_backlog_story_is_not_waiting_and_changes_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
-    let path = story_path(f, &project, &feature, &story);
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
+    let path = story_path(f, &project, &track, &story);
     let refused = act(
         client,
         &agent(f),
@@ -2067,7 +2111,7 @@ fn a_claim_for_review_on_a_backlog_story_is_not_waiting_and_changes_nothing() {
     assert_eq!(refused["error"], "not_waiting", "{refused}");
     assert_eq!(refused["status"], "backlog", "{refused}");
     assert_eq!(refused["stage"], "review", "{refused}");
-    let unchanged = get_story(f, client, &project, &feature, &story);
+    let unchanged = get_story(f, client, &project, &track, &story);
     assert_eq!(unchanged["status"], "backlog", "{unchanged}");
     assert_eq!(unchanged["holder"], Value::Null, "{unchanged}");
     assert_eq!(unchanged["version"], 1, "{unchanged}");
@@ -2078,10 +2122,10 @@ fn a_claim_for_review_on_a_backlog_story_is_not_waiting_and_changes_nothing() {
 fn the_holder_of_a_story_in_review_claims_it_for_testing_only_after_moving_it_to_reviewed() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
     set_status(&story, "implemented");
-    let path = story_path(f, &project, &feature, &story);
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     must(
         act(
@@ -2138,16 +2182,16 @@ fn the_holder_of_a_story_in_review_claims_it_for_testing_only_after_moving_it_to
 fn a_move_to_done_needs_every_criterion_ticked_and_clears_the_holder() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let story = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "criteria": [{ "text": "a" }, { "text": "b" }] }),
     );
     set_status(&story, "reviewed");
-    let path = story_path(f, &project, &feature, &story);
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     must(
         act(
@@ -2174,7 +2218,7 @@ fn a_move_to_done_needs_every_criterion_ticked_and_clears_the_holder() {
         json!({ "error": "criteria_open", "open": [1] })
     );
     assert_eq!(
-        get_story(f, client, &project, &feature, &story)["status"],
+        get_story(f, client, &project, &track, &story)["status"],
         "testing"
     );
     set_ticked(&story, json!([true, true]));
@@ -2199,15 +2243,15 @@ fn a_move_to_done_needs_every_criterion_ticked_and_clears_the_holder() {
 fn a_done_or_cancelled_story_cannot_be_claimed_or_moved() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let a = agent(f);
-    let cancelled = new_story(f, client, &project, &feature, json!({}));
+    let cancelled = new_story(f, client, &project, &track, json!({}));
     must(
-        cancel(f, client, &project, &feature, &cancelled, 1),
+        cancel(f, client, &project, &track, &cancelled, 1),
         200,
         "cancel",
     );
-    let cancelled = story_path(f, &project, &feature, &cancelled);
+    let cancelled = story_path(f, &project, &track, &cancelled);
     assert_error(
         &act(
             client,
@@ -2219,9 +2263,9 @@ fn a_done_or_cancelled_story_cannot_be_claimed_or_moved() {
         409,
         "not_open",
     );
-    let done = new_story(f, client, &project, &feature, json!({}));
+    let done = new_story(f, client, &project, &track, json!({}));
     set_status(&done, "done");
-    let done = story_path(f, &project, &feature, &done);
+    let done = story_path(f, &project, &track, &done);
     assert_error(
         &act(
             client,
@@ -2252,17 +2296,17 @@ fn a_done_or_cancelled_story_cannot_be_claimed_or_moved() {
 fn the_version_is_checked_before_the_claim_and_the_holder_before_the_criteria() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let a = agent(f);
     let story = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "criteria": [{ "text": "a" }] }),
     );
     set_status(&story, "reviewed");
-    let path = story_path(f, &project, &feature, &story);
+    let path = story_path(f, &project, &track, &story);
     must(
         act(
             client,
@@ -2321,12 +2365,12 @@ fn the_version_is_checked_before_the_claim_and_the_holder_before_the_criteria() 
         409,
         "not_holder",
     );
-    let closed = new_story(f, client, &project, &feature, json!({}));
+    let closed = new_story(f, client, &project, &track, json!({}));
     set_status(&closed, "done");
     let stale = act(
         client,
         &a,
-        &story_path(f, &project, &feature, &closed),
+        &story_path(f, &project, &track, &closed),
         "claim",
         json!({ "expected_version": 7, "run": "r1", "stage": "testing" }),
     );
@@ -2335,7 +2379,7 @@ fn the_version_is_checked_before_the_claim_and_the_holder_before_the_criteria() 
         stale.json(),
         json!({ "error": "conflict", "current_version": 1 })
     );
-    let held = get_story(f, client, &project, &feature, &story);
+    let held = get_story(f, client, &project, &track, &story);
     assert_eq!(held["version"], 2, "{held}");
     assert_eq!(held["holder"]["run"], "r1", "{held}");
 }
@@ -2344,9 +2388,9 @@ fn the_version_is_checked_before_the_claim_and_the_holder_before_the_criteria() 
 fn a_session_is_refused_on_claim_release_and_move() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
-    let path = story_path(f, &project, &feature, &story);
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
+    let path = story_path(f, &project, &track, &story);
     let h = human(f);
     assert_error(
         &act(
@@ -2381,7 +2425,7 @@ fn a_session_is_refused_on_claim_release_and_move() {
         403,
         "forbidden",
     );
-    let unchanged = get_story(f, client, &project, &feature, &story);
+    let unchanged = get_story(f, client, &project, &track, &story);
     assert_eq!(unchanged["version"], 1, "{unchanged}");
     assert_eq!(unchanged["status"], "backlog", "{unchanged}");
 }
@@ -2392,16 +2436,10 @@ fn a_session_is_refused_on_claim_release_and_move() {
 
 /// Creates a story with `criteria` waiting in `implemented` and has run `r1`
 /// claim it for review; returns its path. The story is at version 2.
-fn held_story(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    feature: &str,
-    criteria: Value,
-) -> String {
-    let story = new_story(f, client, project, feature, json!({ "criteria": criteria }));
+fn held_story(f: &Fixture, client: &Client, project: &str, track: &str, criteria: Value) -> String {
+    let story = new_story(f, client, project, track, json!({ "criteria": criteria }));
     set_status(&story, "implemented");
-    let path = story_path(f, project, feature, &story);
+    let path = story_path(f, project, track, &story);
     must(
         act(
             client,
@@ -2420,12 +2458,12 @@ fn held_story(
 fn the_holder_ticks_records_findings_decisions_and_changed_files() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let path = held_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!([{ "text": "a", "human_check": true }, { "text": "b" }]),
     );
     let a = agent(f);
@@ -2584,8 +2622,8 @@ fn the_holder_ticks_records_findings_decisions_and_changed_files() {
 fn another_run_cannot_tick_find_resolve_decide_or_set_files_on_a_held_story() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let path = held_story(f, client, &project, &feature, json!([{ "text": "a" }]));
+    let track = new_track(f, client, &project);
+    let path = held_story(f, client, &project, &track, json!([{ "text": "a" }]));
     let a = agent(f);
     must(
         act(
@@ -2669,9 +2707,9 @@ fn another_run_cannot_tick_find_resolve_decide_or_set_files_on_a_held_story() {
 fn any_run_blocks_decides_and_unblocks_a_story_nothing_holds() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let story = new_story(f, client, &project, &feature, json!({}));
-    let path = story_path(f, &project, &feature, &story);
+    let track = new_track(f, client, &project);
+    let story = new_story(f, client, &project, &track, json!({}));
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     let blocked = must(
         act(
@@ -2735,17 +2773,17 @@ fn any_run_blocks_decides_and_unblocks_a_story_nothing_holds() {
 fn blocking_a_story_held_in_review_returns_it_to_implemented_and_keeps_its_record() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let blocker = new_story(f, client, &project, &feature, json!({}));
+    let track = new_track(f, client, &project);
+    let blocker = new_story(f, client, &project, &track, json!({}));
     let story = new_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!({ "blocked_by": [blocker] }),
     );
     set_status(&story, "implemented");
-    let path = story_path(f, &project, &feature, &story);
+    let path = story_path(f, &project, &track, &story);
     let a = agent(f);
     must(
         act(
@@ -2810,10 +2848,10 @@ fn blocking_a_story_held_in_review_returns_it_to_implemented_and_keeps_its_recor
 fn blocking_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_reviewed() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let a = agent(f);
-    let implementing = new_story(f, client, &project, &feature, json!({}));
-    let implementing = story_path(f, &project, &feature, &implementing);
+    let implementing = new_story(f, client, &project, &track, json!({}));
+    let implementing = story_path(f, &project, &track, &implementing);
     must(
         act(
             client,
@@ -2825,9 +2863,9 @@ fn blocking_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_rev
         200,
         "r1 claims for implementing",
     );
-    let testing = new_story(f, client, &project, &feature, json!({}));
+    let testing = new_story(f, client, &project, &track, json!({}));
     set_status(&testing, "reviewed");
-    let testing = story_path(f, &project, &feature, &testing);
+    let testing = story_path(f, &project, &track, &testing);
     must(
         act(
             client,
@@ -2875,12 +2913,12 @@ fn blocking_a_story_held_in_implementing_or_testing_returns_it_to_backlog_or_rev
 fn the_human_clears_a_pending_check_on_a_done_story_and_only_the_human() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let path = held_story(
         f,
         client,
         &project,
-        &feature,
+        &track,
         json!([{ "text": "a", "human_check": true }]),
     );
     let a = agent(f);

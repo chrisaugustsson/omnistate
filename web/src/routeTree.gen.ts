@@ -13,20 +13,50 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as HealthRouteImport } from './routes/health'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as WWorkspaceIdRouteImport } from './routes/w.$workspaceId'
-import { Route as WWorkspaceIdIndexRouteImport } from './routes/w.$workspaceId.index'
-import { Route as WWorkspaceIdApiKeysRouteImport } from './routes/w.$workspaceId.api-keys'
+import { Route as WWorkspaceIdHomeRouteImport } from './routes/w.$workspaceId._home'
+import { Route as WWorkspaceIdHomeIndexRouteImport } from './routes/w.$workspaceId._home.index'
+import { Route as WWorkspaceIdHomeApiKeysRouteImport } from './routes/w.$workspaceId._home.api-keys'
+import { Route as WWorkspaceIdHomeInboxRouteImport } from './routes/w.$workspaceId._home.inbox'
+import { Route as WWorkspaceIdHomeMyTracksRouteImport } from './routes/w.$workspaceId._home.my-tracks'
+import { Route as WWorkspaceIdProjectsIndexRouteImport } from './routes/w.$workspaceId.projects.index'
 import { Route as WWorkspaceIdProjectsProjectIdRouteImport } from './routes/w.$workspaceId.projects.$projectId'
-import { Route as WWorkspaceIdProjectsProjectIdAppRouteImport } from './routes/w.$workspaceId.projects.$projectId_.app'
-import { Route as WWorkspaceIdProjectsProjectIdInboxRouteImport } from './routes/w.$workspaceId.projects.$projectId_.inbox'
-import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.docs.$docId'
-import { Route as WWorkspaceIdProjectsProjectIdFeaturesIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.features.index'
-import { Route as WWorkspaceIdProjectsProjectIdThreadsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.threads.index'
-import { Route as WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport } from './routes/w.$workspaceId.projects.$projectId_.threads.$threadId'
-import { Route as WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.features.$featureId.index'
-import { Route as WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRouteImport } from './routes/w.$workspaceId.projects.$projectId_.features.$featureId.behaviour'
-import { Route as WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRouteImport } from './routes/w.$workspaceId.projects.$projectId_.features.$featureId.board'
-import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId_.docs.$docId_.activity.index'
-import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRouteImport } from './routes/w.$workspaceId.projects.$projectId_.docs.$docId_.activity.$seq'
+import { Route as WWorkspaceIdProjectsProjectIdIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.index'
+import { Route as WWorkspaceIdProjectsProjectIdAppRouteImport } from './routes/w.$workspaceId.projects.$projectId.app'
+import { Route as WWorkspaceIdProjectsProjectIdDecisionsRouteImport } from './routes/w.$workspaceId.projects.$projectId.decisions'
+import { Route as WWorkspaceIdProjectsProjectIdInboxRouteImport } from './routes/w.$workspaceId.projects.$projectId.inbox'
+import { Route as WWorkspaceIdProjectsProjectIdMyTracksRouteImport } from './routes/w.$workspaceId.projects.$projectId.my-tracks'
+import { Route as WWorkspaceIdProjectsProjectIdDocsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.docs.index'
+import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.docs.$docId'
+import { Route as WWorkspaceIdProjectsProjectIdPartsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.index'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId'
+import { Route as WWorkspaceIdProjectsProjectIdThreadsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.threads.index'
+import { Route as WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.threads.$threadId'
+import { Route as WWorkspaceIdProjectsProjectIdTracksIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.index'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.index'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.decisions'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdTracksRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.tracks'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.index'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.behaviour'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.board'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.decisions'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.design'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdHowRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.how'
+import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.docs.$docId_.activity.index'
+import { Route as WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRouteImport } from './routes/w.$workspaceId.projects.$projectId.docs.$docId_.activity.$seq'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.docs.index'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.docs.$docId'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.index'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.$featureId'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.docs.$docId'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.threads.index'
+import { Route as WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.tracks.$trackId.threads.$threadId'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.$featureId.index'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.$featureId.decisions'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.$featureId.design'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.$featureId.tracks'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.$featureId.docs.index'
+import { Route as WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRouteImport } from './routes/w.$workspaceId.projects.$projectId.parts.$partId.features.$featureId.docs.$docId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -48,127 +78,376 @@ const WWorkspaceIdRoute = WWorkspaceIdRouteImport.update({
   path: '/w/$workspaceId',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WWorkspaceIdIndexRoute = WWorkspaceIdIndexRouteImport.update({
+const WWorkspaceIdHomeRoute = WWorkspaceIdHomeRouteImport.update({
+  id: '/_home',
+  getParentRoute: () => WWorkspaceIdRoute,
+} as any)
+const WWorkspaceIdHomeIndexRoute = WWorkspaceIdHomeIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => WWorkspaceIdRoute,
+  getParentRoute: () => WWorkspaceIdHomeRoute,
 } as any)
-const WWorkspaceIdApiKeysRoute = WWorkspaceIdApiKeysRouteImport.update({
+const WWorkspaceIdHomeApiKeysRoute = WWorkspaceIdHomeApiKeysRouteImport.update({
   id: '/api-keys',
   path: '/api-keys',
-  getParentRoute: () => WWorkspaceIdRoute,
+  getParentRoute: () => WWorkspaceIdHomeRoute,
 } as any)
+const WWorkspaceIdHomeInboxRoute = WWorkspaceIdHomeInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => WWorkspaceIdHomeRoute,
+} as any)
+const WWorkspaceIdHomeMyTracksRoute =
+  WWorkspaceIdHomeMyTracksRouteImport.update({
+    id: '/my-tracks',
+    path: '/my-tracks',
+    getParentRoute: () => WWorkspaceIdHomeRoute,
+  } as any)
+const WWorkspaceIdProjectsIndexRoute =
+  WWorkspaceIdProjectsIndexRouteImport.update({
+    id: '/projects/',
+    path: '/projects/',
+    getParentRoute: () => WWorkspaceIdRoute,
+  } as any)
 const WWorkspaceIdProjectsProjectIdRoute =
   WWorkspaceIdProjectsProjectIdRouteImport.update({
     id: '/projects/$projectId',
     path: '/projects/$projectId',
     getParentRoute: () => WWorkspaceIdRoute,
   } as any)
+const WWorkspaceIdProjectsProjectIdIndexRoute =
+  WWorkspaceIdProjectsProjectIdIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
+  } as any)
 const WWorkspaceIdProjectsProjectIdAppRoute =
   WWorkspaceIdProjectsProjectIdAppRouteImport.update({
-    id: '/projects/$projectId_/app',
-    path: '/projects/$projectId/app',
-    getParentRoute: () => WWorkspaceIdRoute,
+    id: '/app',
+    path: '/app',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdDecisionsRoute =
+  WWorkspaceIdProjectsProjectIdDecisionsRouteImport.update({
+    id: '/decisions',
+    path: '/decisions',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdInboxRoute =
   WWorkspaceIdProjectsProjectIdInboxRouteImport.update({
-    id: '/projects/$projectId_/inbox',
-    path: '/projects/$projectId/inbox',
-    getParentRoute: () => WWorkspaceIdRoute,
+    id: '/inbox',
+    path: '/inbox',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdMyTracksRoute =
+  WWorkspaceIdProjectsProjectIdMyTracksRouteImport.update({
+    id: '/my-tracks',
+    path: '/my-tracks',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdDocsIndexRoute =
+  WWorkspaceIdProjectsProjectIdDocsIndexRouteImport.update({
+    id: '/docs/',
+    path: '/docs/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdDocsDocIdRoute =
   WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport.update({
-    id: '/projects/$projectId_/docs/$docId',
-    path: '/projects/$projectId/docs/$docId',
-    getParentRoute: () => WWorkspaceIdRoute,
+    id: '/docs/$docId',
+    path: '/docs/$docId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
-const WWorkspaceIdProjectsProjectIdFeaturesIndexRoute =
-  WWorkspaceIdProjectsProjectIdFeaturesIndexRouteImport.update({
-    id: '/projects/$projectId_/features/',
-    path: '/projects/$projectId/features/',
-    getParentRoute: () => WWorkspaceIdRoute,
+const WWorkspaceIdProjectsProjectIdPartsIndexRoute =
+  WWorkspaceIdProjectsProjectIdPartsIndexRouteImport.update({
+    id: '/parts/',
+    path: '/parts/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdRouteImport.update({
+    id: '/parts/$partId',
+    path: '/parts/$partId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdThreadsIndexRoute =
   WWorkspaceIdProjectsProjectIdThreadsIndexRouteImport.update({
-    id: '/projects/$projectId_/threads/',
-    path: '/projects/$projectId/threads/',
-    getParentRoute: () => WWorkspaceIdRoute,
+    id: '/threads/',
+    path: '/threads/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute =
   WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport.update({
-    id: '/projects/$projectId_/threads/$threadId',
-    path: '/projects/$projectId/threads/$threadId',
-    getParentRoute: () => WWorkspaceIdRoute,
+    id: '/threads/$threadId',
+    path: '/threads/$threadId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
-const WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute =
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRouteImport.update({
-    id: '/projects/$projectId_/features/$featureId/',
-    path: '/projects/$projectId/features/$featureId/',
-    getParentRoute: () => WWorkspaceIdRoute,
+const WWorkspaceIdProjectsProjectIdTracksIndexRoute =
+  WWorkspaceIdProjectsProjectIdTracksIndexRouteImport.update({
+    id: '/tracks/',
+    path: '/tracks/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
-const WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute =
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRouteImport.update({
-    id: '/projects/$projectId_/features/$featureId/behaviour',
-    path: '/projects/$projectId/features/$featureId/behaviour',
-    getParentRoute: () => WWorkspaceIdRoute,
+const WWorkspaceIdProjectsProjectIdTracksTrackIdRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdRouteImport.update({
+    id: '/tracks/$trackId',
+    path: '/tracks/$trackId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
-const WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute =
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRouteImport.update({
-    id: '/projects/$projectId_/features/$featureId/board',
-    path: '/projects/$projectId/features/$featureId/board',
-    getParentRoute: () => WWorkspaceIdRoute,
+const WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRouteImport.update({
+    id: '/decisions',
+    path: '/decisions',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdTracksRouteImport.update({
+    id: '/tracks',
+    path: '/tracks',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRouteImport.update({
+    id: '/behaviour',
+    path: '/behaviour',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRouteImport.update({
+    id: '/board',
+    path: '/board',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRouteImport.update({
+    id: '/decisions',
+    path: '/decisions',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRouteImport.update({
+    id: '/design',
+    path: '/design',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdHowRouteImport.update({
+    id: '/how',
+    path: '/how',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute =
   WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRouteImport.update({
-    id: '/projects/$projectId_/docs/$docId_/activity/',
-    path: '/projects/$projectId/docs/$docId/activity/',
-    getParentRoute: () => WWorkspaceIdRoute,
+    id: '/docs/$docId_/activity/',
+    path: '/docs/$docId/activity/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
 const WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute =
   WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRouteImport.update({
-    id: '/projects/$projectId_/docs/$docId_/activity/$seq',
-    path: '/projects/$projectId/docs/$docId/activity/$seq',
-    getParentRoute: () => WWorkspaceIdRoute,
+    id: '/docs/$docId_/activity/$seq',
+    path: '/docs/$docId/activity/$seq',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdRoute,
   } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRouteImport.update({
+    id: '/docs/',
+    path: '/docs/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRouteImport.update({
+    id: '/docs/$docId',
+    path: '/docs/$docId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRouteImport.update({
+    id: '/features/',
+    path: '/features/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteImport.update({
+    id: '/features/$featureId',
+    path: '/features/$featureId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdPartsPartIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRouteImport.update({
+    id: '/docs/$docId',
+    path: '/docs/$docId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRouteImport.update({
+    id: '/threads/',
+    path: '/threads/',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRouteImport.update({
+    id: '/threads/$threadId',
+    path: '/threads/$threadId',
+    getParentRoute: () => WWorkspaceIdProjectsProjectIdTracksTrackIdRoute,
+  } as any)
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRouteImport.update(
+    {
+      id: '/',
+      path: '/',
+      getParentRoute: () =>
+        WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute,
+    } as any,
+  )
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRouteImport.update(
+    {
+      id: '/decisions',
+      path: '/decisions',
+      getParentRoute: () =>
+        WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute,
+    } as any,
+  )
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRouteImport.update(
+    {
+      id: '/design',
+      path: '/design',
+      getParentRoute: () =>
+        WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute,
+    } as any,
+  )
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRouteImport.update(
+    {
+      id: '/tracks',
+      path: '/tracks',
+      getParentRoute: () =>
+        WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute,
+    } as any,
+  )
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRouteImport.update(
+    {
+      id: '/docs/',
+      path: '/docs/',
+      getParentRoute: () =>
+        WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute,
+    } as any,
+  )
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRouteImport.update(
+    {
+      id: '/docs/$docId',
+      path: '/docs/$docId',
+      getParentRoute: () =>
+        WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute,
+    } as any,
+  )
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
-  '/w/$workspaceId/api-keys': typeof WWorkspaceIdApiKeysRoute
-  '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
-  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId/api-keys': typeof WWorkspaceIdHomeApiKeysRoute
+  '/w/$workspaceId/inbox': typeof WWorkspaceIdHomeInboxRoute
+  '/w/$workspaceId/my-tracks': typeof WWorkspaceIdHomeMyTracksRoute
+  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRouteWithChildren
+  '/w/$workspaceId/': typeof WWorkspaceIdHomeIndexRoute
+  '/w/$workspaceId/projects/': typeof WWorkspaceIdProjectsIndexRoute
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
+  '/w/$workspaceId/projects/$projectId/decisions': typeof WWorkspaceIdProjectsProjectIdDecisionsRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
+  '/w/$workspaceId/projects/$projectId/my-tracks': typeof WWorkspaceIdProjectsProjectIdMyTracksRoute
+  '/w/$workspaceId/projects/$projectId/': typeof WWorkspaceIdProjectsProjectIdIndexRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdRouteWithChildren
   '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
-  '/w/$workspaceId/projects/$projectId/features/': typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRouteWithChildren
+  '/w/$workspaceId/projects/$projectId/docs/': typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/': typeof WWorkspaceIdProjectsProjectIdPartsIndexRoute
   '/w/$workspaceId/projects/$projectId/threads/': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
-  '/w/$workspaceId/projects/$projectId/features/$featureId/behaviour': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute
-  '/w/$workspaceId/projects/$projectId/features/$featureId/board': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute
-  '/w/$workspaceId/projects/$projectId/features/$featureId/': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/': typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/decisions': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/tracks': typeof WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/board': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/design': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/how': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteWithChildren
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId/activity/': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/docs/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
-  '/w/$workspaceId/api-keys': typeof WWorkspaceIdApiKeysRoute
-  '/w/$workspaceId': typeof WWorkspaceIdIndexRoute
-  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
+  '/w/$workspaceId': typeof WWorkspaceIdHomeIndexRoute
+  '/w/$workspaceId/api-keys': typeof WWorkspaceIdHomeApiKeysRoute
+  '/w/$workspaceId/inbox': typeof WWorkspaceIdHomeInboxRoute
+  '/w/$workspaceId/my-tracks': typeof WWorkspaceIdHomeMyTracksRoute
+  '/w/$workspaceId/projects': typeof WWorkspaceIdProjectsIndexRoute
   '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
+  '/w/$workspaceId/projects/$projectId/decisions': typeof WWorkspaceIdProjectsProjectIdDecisionsRoute
   '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
+  '/w/$workspaceId/projects/$projectId/my-tracks': typeof WWorkspaceIdProjectsProjectIdMyTracksRoute
+  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdIndexRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
   '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
-  '/w/$workspaceId/projects/$projectId/features': typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
+  '/w/$workspaceId/projects/$projectId/docs': typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts': typeof WWorkspaceIdProjectsProjectIdPartsIndexRoute
   '/w/$workspaceId/projects/$projectId/threads': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
-  '/w/$workspaceId/projects/$projectId/features/$featureId/behaviour': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute
-  '/w/$workspaceId/projects/$projectId/features/$featureId/board': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute
-  '/w/$workspaceId/projects/$projectId/features/$featureId': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks': typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/decisions': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/tracks': typeof WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/board': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/design': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/how': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute
   '/w/$workspaceId/projects/$projectId/docs/$docId/activity': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/docs': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -176,20 +455,50 @@ export interface FileRoutesById {
   '/health': typeof HealthRoute
   '/login': typeof LoginRoute
   '/w/$workspaceId': typeof WWorkspaceIdRouteWithChildren
-  '/w/$workspaceId/api-keys': typeof WWorkspaceIdApiKeysRoute
-  '/w/$workspaceId/': typeof WWorkspaceIdIndexRoute
-  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRoute
-  '/w/$workspaceId/projects/$projectId_/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
-  '/w/$workspaceId/projects/$projectId_/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
-  '/w/$workspaceId/projects/$projectId_/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
-  '/w/$workspaceId/projects/$projectId_/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
-  '/w/$workspaceId/projects/$projectId_/features/': typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
-  '/w/$workspaceId/projects/$projectId_/threads/': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
-  '/w/$workspaceId/projects/$projectId_/features/$featureId/behaviour': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute
-  '/w/$workspaceId/projects/$projectId_/features/$featureId/board': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute
-  '/w/$workspaceId/projects/$projectId_/features/$featureId/': typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
-  '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/$seq': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
-  '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute
+  '/w/$workspaceId/_home': typeof WWorkspaceIdHomeRouteWithChildren
+  '/w/$workspaceId/_home/api-keys': typeof WWorkspaceIdHomeApiKeysRoute
+  '/w/$workspaceId/_home/inbox': typeof WWorkspaceIdHomeInboxRoute
+  '/w/$workspaceId/_home/my-tracks': typeof WWorkspaceIdHomeMyTracksRoute
+  '/w/$workspaceId/projects/$projectId': typeof WWorkspaceIdProjectsProjectIdRouteWithChildren
+  '/w/$workspaceId/_home/': typeof WWorkspaceIdHomeIndexRoute
+  '/w/$workspaceId/projects/': typeof WWorkspaceIdProjectsIndexRoute
+  '/w/$workspaceId/projects/$projectId/app': typeof WWorkspaceIdProjectsProjectIdAppRoute
+  '/w/$workspaceId/projects/$projectId/decisions': typeof WWorkspaceIdProjectsProjectIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/inbox': typeof WWorkspaceIdProjectsProjectIdInboxRoute
+  '/w/$workspaceId/projects/$projectId/my-tracks': typeof WWorkspaceIdProjectsProjectIdMyTracksRoute
+  '/w/$workspaceId/projects/$projectId/': typeof WWorkspaceIdProjectsProjectIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdRouteWithChildren
+  '/w/$workspaceId/projects/$projectId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRouteWithChildren
+  '/w/$workspaceId/projects/$projectId/docs/': typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/': typeof WWorkspaceIdProjectsProjectIdPartsIndexRoute
+  '/w/$workspaceId/projects/$projectId/threads/': typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/': typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/decisions': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/tracks': typeof WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/board': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/design': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/how': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/$seq': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteWithChildren
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute
+  '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/': typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/docs/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute
+  '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/': typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute
+  '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/': typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -199,58 +508,142 @@ export interface FileRouteTypes {
     | '/login'
     | '/w/$workspaceId'
     | '/w/$workspaceId/api-keys'
-    | '/w/$workspaceId/'
+    | '/w/$workspaceId/inbox'
+    | '/w/$workspaceId/my-tracks'
     | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/'
+    | '/w/$workspaceId/projects/'
     | '/w/$workspaceId/projects/$projectId/app'
+    | '/w/$workspaceId/projects/$projectId/decisions'
     | '/w/$workspaceId/projects/$projectId/inbox'
+    | '/w/$workspaceId/projects/$projectId/my-tracks'
+    | '/w/$workspaceId/projects/$projectId/'
     | '/w/$workspaceId/projects/$projectId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId'
     | '/w/$workspaceId/projects/$projectId/threads/$threadId'
-    | '/w/$workspaceId/projects/$projectId/features/'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId'
+    | '/w/$workspaceId/projects/$projectId/docs/'
+    | '/w/$workspaceId/projects/$projectId/parts/'
     | '/w/$workspaceId/projects/$projectId/threads/'
-    | '/w/$workspaceId/projects/$projectId/features/$featureId/behaviour'
-    | '/w/$workspaceId/projects/$projectId/features/$featureId/board'
-    | '/w/$workspaceId/projects/$projectId/features/$featureId/'
+    | '/w/$workspaceId/projects/$projectId/tracks/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/decisions'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/tracks'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/board'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/design'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/how'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/'
     | '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId/docs/$docId/activity/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/docs/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/health'
     | '/login'
-    | '/w/$workspaceId/api-keys'
     | '/w/$workspaceId'
-    | '/w/$workspaceId/projects/$projectId'
+    | '/w/$workspaceId/api-keys'
+    | '/w/$workspaceId/inbox'
+    | '/w/$workspaceId/my-tracks'
+    | '/w/$workspaceId/projects'
     | '/w/$workspaceId/projects/$projectId/app'
+    | '/w/$workspaceId/projects/$projectId/decisions'
     | '/w/$workspaceId/projects/$projectId/inbox'
+    | '/w/$workspaceId/projects/$projectId/my-tracks'
+    | '/w/$workspaceId/projects/$projectId'
     | '/w/$workspaceId/projects/$projectId/docs/$docId'
     | '/w/$workspaceId/projects/$projectId/threads/$threadId'
-    | '/w/$workspaceId/projects/$projectId/features'
+    | '/w/$workspaceId/projects/$projectId/docs'
+    | '/w/$workspaceId/projects/$projectId/parts'
     | '/w/$workspaceId/projects/$projectId/threads'
-    | '/w/$workspaceId/projects/$projectId/features/$featureId/behaviour'
-    | '/w/$workspaceId/projects/$projectId/features/$featureId/board'
-    | '/w/$workspaceId/projects/$projectId/features/$featureId'
+    | '/w/$workspaceId/projects/$projectId/tracks'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/decisions'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/tracks'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/board'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/design'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/how'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId'
     | '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId'
     | '/w/$workspaceId/projects/$projectId/docs/$docId/activity'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/docs'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs'
   id:
     | '__root__'
     | '/'
     | '/health'
     | '/login'
     | '/w/$workspaceId'
-    | '/w/$workspaceId/api-keys'
-    | '/w/$workspaceId/'
+    | '/w/$workspaceId/_home'
+    | '/w/$workspaceId/_home/api-keys'
+    | '/w/$workspaceId/_home/inbox'
+    | '/w/$workspaceId/_home/my-tracks'
     | '/w/$workspaceId/projects/$projectId'
-    | '/w/$workspaceId/projects/$projectId_/app'
-    | '/w/$workspaceId/projects/$projectId_/inbox'
-    | '/w/$workspaceId/projects/$projectId_/docs/$docId'
-    | '/w/$workspaceId/projects/$projectId_/threads/$threadId'
-    | '/w/$workspaceId/projects/$projectId_/features/'
-    | '/w/$workspaceId/projects/$projectId_/threads/'
-    | '/w/$workspaceId/projects/$projectId_/features/$featureId/behaviour'
-    | '/w/$workspaceId/projects/$projectId_/features/$featureId/board'
-    | '/w/$workspaceId/projects/$projectId_/features/$featureId/'
-    | '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/$seq'
-    | '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/'
+    | '/w/$workspaceId/_home/'
+    | '/w/$workspaceId/projects/'
+    | '/w/$workspaceId/projects/$projectId/app'
+    | '/w/$workspaceId/projects/$projectId/decisions'
+    | '/w/$workspaceId/projects/$projectId/inbox'
+    | '/w/$workspaceId/projects/$projectId/my-tracks'
+    | '/w/$workspaceId/projects/$projectId/'
+    | '/w/$workspaceId/projects/$projectId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId'
+    | '/w/$workspaceId/projects/$projectId/threads/$threadId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId'
+    | '/w/$workspaceId/projects/$projectId/docs/'
+    | '/w/$workspaceId/projects/$projectId/parts/'
+    | '/w/$workspaceId/projects/$projectId/threads/'
+    | '/w/$workspaceId/projects/$projectId/tracks/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/decisions'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/tracks'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/board'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/design'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/how'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/'
+    | '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/$seq'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId'
+    | '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/docs/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/'
+    | '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId'
+    | '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -290,18 +683,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkspaceIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/w/$workspaceId/': {
-      id: '/w/$workspaceId/'
-      path: '/'
-      fullPath: '/w/$workspaceId/'
-      preLoaderRoute: typeof WWorkspaceIdIndexRouteImport
+    '/w/$workspaceId/_home': {
+      id: '/w/$workspaceId/_home'
+      path: ''
+      fullPath: '/w/$workspaceId'
+      preLoaderRoute: typeof WWorkspaceIdHomeRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
-    '/w/$workspaceId/api-keys': {
-      id: '/w/$workspaceId/api-keys'
+    '/w/$workspaceId/_home/': {
+      id: '/w/$workspaceId/_home/'
+      path: '/'
+      fullPath: '/w/$workspaceId/'
+      preLoaderRoute: typeof WWorkspaceIdHomeIndexRouteImport
+      parentRoute: typeof WWorkspaceIdHomeRoute
+    }
+    '/w/$workspaceId/_home/api-keys': {
+      id: '/w/$workspaceId/_home/api-keys'
       path: '/api-keys'
       fullPath: '/w/$workspaceId/api-keys'
-      preLoaderRoute: typeof WWorkspaceIdApiKeysRouteImport
+      preLoaderRoute: typeof WWorkspaceIdHomeApiKeysRouteImport
+      parentRoute: typeof WWorkspaceIdHomeRoute
+    }
+    '/w/$workspaceId/_home/inbox': {
+      id: '/w/$workspaceId/_home/inbox'
+      path: '/inbox'
+      fullPath: '/w/$workspaceId/inbox'
+      preLoaderRoute: typeof WWorkspaceIdHomeInboxRouteImport
+      parentRoute: typeof WWorkspaceIdHomeRoute
+    }
+    '/w/$workspaceId/_home/my-tracks': {
+      id: '/w/$workspaceId/_home/my-tracks'
+      path: '/my-tracks'
+      fullPath: '/w/$workspaceId/my-tracks'
+      preLoaderRoute: typeof WWorkspaceIdHomeMyTracksRouteImport
+      parentRoute: typeof WWorkspaceIdHomeRoute
+    }
+    '/w/$workspaceId/projects/': {
+      id: '/w/$workspaceId/projects/'
+      path: '/projects'
+      fullPath: '/w/$workspaceId/projects/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsIndexRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
     '/w/$workspaceId/projects/$projectId': {
@@ -311,128 +732,455 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdRouteImport
       parentRoute: typeof WWorkspaceIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/app': {
-      id: '/w/$workspaceId/projects/$projectId_/app'
-      path: '/projects/$projectId/app'
+    '/w/$workspaceId/projects/$projectId/': {
+      id: '/w/$workspaceId/projects/$projectId/'
+      path: '/'
+      fullPath: '/w/$workspaceId/projects/$projectId/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/app': {
+      id: '/w/$workspaceId/projects/$projectId/app'
+      path: '/app'
       fullPath: '/w/$workspaceId/projects/$projectId/app'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdAppRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/inbox': {
-      id: '/w/$workspaceId/projects/$projectId_/inbox'
-      path: '/projects/$projectId/inbox'
+    '/w/$workspaceId/projects/$projectId/decisions': {
+      id: '/w/$workspaceId/projects/$projectId/decisions'
+      path: '/decisions'
+      fullPath: '/w/$workspaceId/projects/$projectId/decisions'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdDecisionsRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/inbox': {
+      id: '/w/$workspaceId/projects/$projectId/inbox'
+      path: '/inbox'
       fullPath: '/w/$workspaceId/projects/$projectId/inbox'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdInboxRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/docs/$docId': {
-      id: '/w/$workspaceId/projects/$projectId_/docs/$docId'
-      path: '/projects/$projectId/docs/$docId'
+    '/w/$workspaceId/projects/$projectId/my-tracks': {
+      id: '/w/$workspaceId/projects/$projectId/my-tracks'
+      path: '/my-tracks'
+      fullPath: '/w/$workspaceId/projects/$projectId/my-tracks'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdMyTracksRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/docs/': {
+      id: '/w/$workspaceId/projects/$projectId/docs/'
+      path: '/docs'
+      fullPath: '/w/$workspaceId/projects/$projectId/docs/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdDocsIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/docs/$docId': {
+      id: '/w/$workspaceId/projects/$projectId/docs/$docId'
+      path: '/docs/$docId'
       fullPath: '/w/$workspaceId/projects/$projectId/docs/$docId'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/features/': {
-      id: '/w/$workspaceId/projects/$projectId_/features/'
-      path: '/projects/$projectId/features'
-      fullPath: '/w/$workspaceId/projects/$projectId/features/'
-      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+    '/w/$workspaceId/projects/$projectId/parts/': {
+      id: '/w/$workspaceId/projects/$projectId/parts/'
+      path: '/parts'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/threads/': {
-      id: '/w/$workspaceId/projects/$projectId_/threads/'
-      path: '/projects/$projectId/threads'
+    '/w/$workspaceId/projects/$projectId/parts/$partId': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId'
+      path: '/parts/$partId'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/threads/': {
+      id: '/w/$workspaceId/projects/$projectId/threads/'
+      path: '/threads'
       fullPath: '/w/$workspaceId/projects/$projectId/threads/'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdThreadsIndexRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/threads/$threadId': {
-      id: '/w/$workspaceId/projects/$projectId_/threads/$threadId'
-      path: '/projects/$projectId/threads/$threadId'
+    '/w/$workspaceId/projects/$projectId/threads/$threadId': {
+      id: '/w/$workspaceId/projects/$projectId/threads/$threadId'
+      path: '/threads/$threadId'
       fullPath: '/w/$workspaceId/projects/$projectId/threads/$threadId'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/features/$featureId/': {
-      id: '/w/$workspaceId/projects/$projectId_/features/$featureId/'
-      path: '/projects/$projectId/features/$featureId'
-      fullPath: '/w/$workspaceId/projects/$projectId/features/$featureId/'
-      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+    '/w/$workspaceId/projects/$projectId/tracks/': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/'
+      path: '/tracks'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/features/$featureId/behaviour': {
-      id: '/w/$workspaceId/projects/$projectId_/features/$featureId/behaviour'
-      path: '/projects/$projectId/features/$featureId/behaviour'
-      fullPath: '/w/$workspaceId/projects/$projectId/features/$featureId/behaviour'
-      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId'
+      path: '/tracks/$trackId'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/features/$featureId/board': {
-      id: '/w/$workspaceId/projects/$projectId_/features/$featureId/board'
-      path: '/projects/$projectId/features/$featureId/board'
-      fullPath: '/w/$workspaceId/projects/$projectId/features/$featureId/board'
-      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+    '/w/$workspaceId/projects/$projectId/parts/$partId/': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/'
+      path: '/'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/': {
-      id: '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/'
-      path: '/projects/$projectId/docs/$docId/activity'
+    '/w/$workspaceId/projects/$projectId/parts/$partId/decisions': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/decisions'
+      path: '/decisions'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/decisions'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/tracks': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/tracks'
+      path: '/tracks'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/tracks'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdTracksRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/'
+      path: '/'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour'
+      path: '/behaviour'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/behaviour'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/board': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/board'
+      path: '/board'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/board'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions'
+      path: '/decisions'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/decisions'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/design': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/design'
+      path: '/design'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/design'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/how': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/how'
+      path: '/how'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/how'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdHowRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/': {
+      id: '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/'
+      path: '/docs/$docId/activity'
       fullPath: '/w/$workspaceId/projects/$projectId/docs/$docId/activity/'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
     }
-    '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/$seq': {
-      id: '/w/$workspaceId/projects/$projectId_/docs/$docId_/activity/$seq'
-      path: '/projects/$projectId/docs/$docId/activity/$seq'
+    '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/$seq': {
+      id: '/w/$workspaceId/projects/$projectId/docs/$docId_/activity/$seq'
+      path: '/docs/$docId/activity/$seq'
       fullPath: '/w/$workspaceId/projects/$projectId/docs/$docId/activity/$seq'
       preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRouteImport
-      parentRoute: typeof WWorkspaceIdRoute
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/docs/': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/docs/'
+      path: '/docs'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/docs/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId'
+      path: '/docs/$docId'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/docs/$docId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/'
+      path: '/features'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId'
+      path: '/features/$featureId'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId'
+      path: '/docs/$docId'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/docs/$docId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/'
+      path: '/threads'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId': {
+      id: '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId'
+      path: '/threads/$threadId'
+      fullPath: '/w/$workspaceId/projects/$projectId/tracks/$trackId/threads/$threadId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/'
+      path: '/'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions'
+      path: '/decisions'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/decisions'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design'
+      path: '/design'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/design'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks'
+      path: '/tracks'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/tracks'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/'
+      path: '/docs'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute
+    }
+    '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId': {
+      id: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId'
+      path: '/docs/$docId'
+      fullPath: '/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId'
+      preLoaderRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRouteImport
+      parentRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute
     }
   }
 }
 
-interface WWorkspaceIdRouteChildren {
-  WWorkspaceIdApiKeysRoute: typeof WWorkspaceIdApiKeysRoute
-  WWorkspaceIdIndexRoute: typeof WWorkspaceIdIndexRoute
-  WWorkspaceIdProjectsProjectIdRoute: typeof WWorkspaceIdProjectsProjectIdRoute
+interface WWorkspaceIdHomeRouteChildren {
+  WWorkspaceIdHomeApiKeysRoute: typeof WWorkspaceIdHomeApiKeysRoute
+  WWorkspaceIdHomeInboxRoute: typeof WWorkspaceIdHomeInboxRoute
+  WWorkspaceIdHomeMyTracksRoute: typeof WWorkspaceIdHomeMyTracksRoute
+  WWorkspaceIdHomeIndexRoute: typeof WWorkspaceIdHomeIndexRoute
+}
+
+const WWorkspaceIdHomeRouteChildren: WWorkspaceIdHomeRouteChildren = {
+  WWorkspaceIdHomeApiKeysRoute: WWorkspaceIdHomeApiKeysRoute,
+  WWorkspaceIdHomeInboxRoute: WWorkspaceIdHomeInboxRoute,
+  WWorkspaceIdHomeMyTracksRoute: WWorkspaceIdHomeMyTracksRoute,
+  WWorkspaceIdHomeIndexRoute: WWorkspaceIdHomeIndexRoute,
+}
+
+const WWorkspaceIdHomeRouteWithChildren =
+  WWorkspaceIdHomeRoute._addFileChildren(WWorkspaceIdHomeRouteChildren)
+
+interface WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteChildren {
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute
+}
+
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteChildren: WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteChildren =
+  {
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDecisionsRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDesignRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdTracksRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdIndexRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsDocIdRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdDocsIndexRoute,
+  }
+
+const WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteWithChildren =
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute._addFileChildren(
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteChildren,
+  )
+
+interface WWorkspaceIdProjectsProjectIdPartsPartIdRouteChildren {
+  WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteWithChildren
+  WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute
+}
+
+const WWorkspaceIdProjectsProjectIdPartsPartIdRouteChildren: WWorkspaceIdProjectsProjectIdPartsPartIdRouteChildren =
+  {
+    WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdDecisionsRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdTracksRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdIndexRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdDocsDocIdRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesFeatureIdRouteWithChildren,
+    WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdDocsIndexRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdFeaturesIndexRoute,
+  }
+
+const WWorkspaceIdProjectsProjectIdPartsPartIdRouteWithChildren =
+  WWorkspaceIdProjectsProjectIdPartsPartIdRoute._addFileChildren(
+    WWorkspaceIdProjectsProjectIdPartsPartIdRouteChildren,
+  )
+
+interface WWorkspaceIdProjectsProjectIdTracksTrackIdRouteChildren {
+  WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute
+}
+
+const WWorkspaceIdProjectsProjectIdTracksTrackIdRouteChildren: WWorkspaceIdProjectsProjectIdTracksTrackIdRouteChildren =
+  {
+    WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdBehaviourRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdBoardRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdDecisionsRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdDesignRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdHowRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdIndexRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdDocsDocIdRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsThreadIdRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdThreadsIndexRoute,
+  }
+
+const WWorkspaceIdProjectsProjectIdTracksTrackIdRouteWithChildren =
+  WWorkspaceIdProjectsProjectIdTracksTrackIdRoute._addFileChildren(
+    WWorkspaceIdProjectsProjectIdTracksTrackIdRouteChildren,
+  )
+
+interface WWorkspaceIdProjectsProjectIdRouteChildren {
   WWorkspaceIdProjectsProjectIdAppRoute: typeof WWorkspaceIdProjectsProjectIdAppRoute
+  WWorkspaceIdProjectsProjectIdDecisionsRoute: typeof WWorkspaceIdProjectsProjectIdDecisionsRoute
   WWorkspaceIdProjectsProjectIdInboxRoute: typeof WWorkspaceIdProjectsProjectIdInboxRoute
+  WWorkspaceIdProjectsProjectIdMyTracksRoute: typeof WWorkspaceIdProjectsProjectIdMyTracksRoute
+  WWorkspaceIdProjectsProjectIdIndexRoute: typeof WWorkspaceIdProjectsProjectIdIndexRoute
   WWorkspaceIdProjectsProjectIdDocsDocIdRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdRoute
+  WWorkspaceIdProjectsProjectIdPartsPartIdRoute: typeof WWorkspaceIdProjectsProjectIdPartsPartIdRouteWithChildren
   WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute: typeof WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute
-  WWorkspaceIdProjectsProjectIdFeaturesIndexRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesIndexRoute
+  WWorkspaceIdProjectsProjectIdTracksTrackIdRoute: typeof WWorkspaceIdProjectsProjectIdTracksTrackIdRouteWithChildren
+  WWorkspaceIdProjectsProjectIdDocsIndexRoute: typeof WWorkspaceIdProjectsProjectIdDocsIndexRoute
+  WWorkspaceIdProjectsProjectIdPartsIndexRoute: typeof WWorkspaceIdProjectsProjectIdPartsIndexRoute
   WWorkspaceIdProjectsProjectIdThreadsIndexRoute: typeof WWorkspaceIdProjectsProjectIdThreadsIndexRoute
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute: typeof WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute
+  WWorkspaceIdProjectsProjectIdTracksIndexRoute: typeof WWorkspaceIdProjectsProjectIdTracksIndexRoute
   WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute
   WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute: typeof WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute
 }
 
+const WWorkspaceIdProjectsProjectIdRouteChildren: WWorkspaceIdProjectsProjectIdRouteChildren =
+  {
+    WWorkspaceIdProjectsProjectIdAppRoute:
+      WWorkspaceIdProjectsProjectIdAppRoute,
+    WWorkspaceIdProjectsProjectIdDecisionsRoute:
+      WWorkspaceIdProjectsProjectIdDecisionsRoute,
+    WWorkspaceIdProjectsProjectIdInboxRoute:
+      WWorkspaceIdProjectsProjectIdInboxRoute,
+    WWorkspaceIdProjectsProjectIdMyTracksRoute:
+      WWorkspaceIdProjectsProjectIdMyTracksRoute,
+    WWorkspaceIdProjectsProjectIdIndexRoute:
+      WWorkspaceIdProjectsProjectIdIndexRoute,
+    WWorkspaceIdProjectsProjectIdDocsDocIdRoute:
+      WWorkspaceIdProjectsProjectIdDocsDocIdRoute,
+    WWorkspaceIdProjectsProjectIdPartsPartIdRoute:
+      WWorkspaceIdProjectsProjectIdPartsPartIdRouteWithChildren,
+    WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute:
+      WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute,
+    WWorkspaceIdProjectsProjectIdTracksTrackIdRoute:
+      WWorkspaceIdProjectsProjectIdTracksTrackIdRouteWithChildren,
+    WWorkspaceIdProjectsProjectIdDocsIndexRoute:
+      WWorkspaceIdProjectsProjectIdDocsIndexRoute,
+    WWorkspaceIdProjectsProjectIdPartsIndexRoute:
+      WWorkspaceIdProjectsProjectIdPartsIndexRoute,
+    WWorkspaceIdProjectsProjectIdThreadsIndexRoute:
+      WWorkspaceIdProjectsProjectIdThreadsIndexRoute,
+    WWorkspaceIdProjectsProjectIdTracksIndexRoute:
+      WWorkspaceIdProjectsProjectIdTracksIndexRoute,
+    WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute:
+      WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute,
+    WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute:
+      WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute,
+  }
+
+const WWorkspaceIdProjectsProjectIdRouteWithChildren =
+  WWorkspaceIdProjectsProjectIdRoute._addFileChildren(
+    WWorkspaceIdProjectsProjectIdRouteChildren,
+  )
+
+interface WWorkspaceIdRouteChildren {
+  WWorkspaceIdHomeRoute: typeof WWorkspaceIdHomeRouteWithChildren
+  WWorkspaceIdProjectsProjectIdRoute: typeof WWorkspaceIdProjectsProjectIdRouteWithChildren
+  WWorkspaceIdProjectsIndexRoute: typeof WWorkspaceIdProjectsIndexRoute
+}
+
 const WWorkspaceIdRouteChildren: WWorkspaceIdRouteChildren = {
-  WWorkspaceIdApiKeysRoute: WWorkspaceIdApiKeysRoute,
-  WWorkspaceIdIndexRoute: WWorkspaceIdIndexRoute,
-  WWorkspaceIdProjectsProjectIdRoute: WWorkspaceIdProjectsProjectIdRoute,
-  WWorkspaceIdProjectsProjectIdAppRoute: WWorkspaceIdProjectsProjectIdAppRoute,
-  WWorkspaceIdProjectsProjectIdInboxRoute:
-    WWorkspaceIdProjectsProjectIdInboxRoute,
-  WWorkspaceIdProjectsProjectIdDocsDocIdRoute:
-    WWorkspaceIdProjectsProjectIdDocsDocIdRoute,
-  WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute:
-    WWorkspaceIdProjectsProjectIdThreadsThreadIdRoute,
-  WWorkspaceIdProjectsProjectIdFeaturesIndexRoute:
-    WWorkspaceIdProjectsProjectIdFeaturesIndexRoute,
-  WWorkspaceIdProjectsProjectIdThreadsIndexRoute:
-    WWorkspaceIdProjectsProjectIdThreadsIndexRoute,
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute:
-    WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBehaviourRoute,
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute:
-    WWorkspaceIdProjectsProjectIdFeaturesFeatureIdBoardRoute,
-  WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute:
-    WWorkspaceIdProjectsProjectIdFeaturesFeatureIdIndexRoute,
-  WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute:
-    WWorkspaceIdProjectsProjectIdDocsDocIdActivitySeqRoute,
-  WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute:
-    WWorkspaceIdProjectsProjectIdDocsDocIdActivityIndexRoute,
+  WWorkspaceIdHomeRoute: WWorkspaceIdHomeRouteWithChildren,
+  WWorkspaceIdProjectsProjectIdRoute:
+    WWorkspaceIdProjectsProjectIdRouteWithChildren,
+  WWorkspaceIdProjectsIndexRoute: WWorkspaceIdProjectsIndexRoute,
 }
 
 const WWorkspaceIdRouteWithChildren = WWorkspaceIdRoute._addFileChildren(

@@ -5,7 +5,7 @@
 //! the CLI resolves through the feature's node list.
 //!
 //! The contract (all paths under `/api/v1/w/{workspace}/projects/{project}`
-//! `/features/{feature}/behaviour`):
+//! `/tracks/{feature}/behaviour`):
 //!
 //! - `omni behaviour add --parent <node>` posts the `parent_id` of the node
 //!   the list gives at that path, and prints the new node's path. A path the
@@ -37,7 +37,7 @@
 //! - `--same-as <node>` and `--handoff <node>` on `add` and `edit` send the
 //!   listed id of that node as `same_as` or `handoff`; `--same-as ""` in
 //!   `edit` sends `null`. A uuid the list does not have is exit 1 with
-//!   `not_found: no node <id> in this feature`, and nothing is sent. Both
+//!   `not_found: no node <id> in this track`, and nothing is sent. Both
 //!   flags together are sent, and the API's 422 is the error. `list` ends
 //!   the line of a node with a pointer in ` → same-as <path>` or
 //!   ` → handoff <path>`.
@@ -95,7 +95,7 @@ const ROOT_QUESTION: &str = "01900000-0000-7000-8000-000000000302";
 const SOLD_OUT: &str = "What if the product sold out between page load and the click?";
 
 fn tree_path() -> String {
-    format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features/{FEATURE}/behaviour")
+    format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks/{FEATURE}/behaviour")
 }
 
 fn summary(id: &str, parent: Option<&str>, path: &str, level: i64, title: &str) -> Value {
@@ -272,7 +272,7 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
     omni(&home.path)
         .args(&["--as", "t1/grill"])
         .args(args)
-        .args(&["--project", PROJECT, "--feature", FEATURE])
+        .args(&["--project", PROJECT, "--track", FEATURE])
         .run()
 }
 
@@ -663,7 +663,7 @@ fn a_pointer_to_a_uuid_the_feature_does_not_have_exits_1_with_not_found_and_send
     assert_eq!(out.code, 1, "stdout: {}", out.stdout);
     assert!(
         out.stderr
-            .contains(&format!("not_found: no node {foreign} in this feature")),
+            .contains(&format!("not_found: no node {foreign} in this track")),
         "{:?}",
         out.stderr
     );
@@ -1304,20 +1304,20 @@ fn withdrawn_rule() -> Value {
 }
 
 /// An API that lists `listed()`, gives a feature rule on the root, the
-/// story's rule and a withdrawn rule on the story, answers `?scope=feature`
+/// story's rule and a withdrawn rule on the story, answers `?scope=track`
 /// with the root's rule and `?under=` the story with the story's two, and
 /// answers a new rule on the story and an edit of its rule.
 fn rules_mock() -> MockServer {
     MockServer::start(|request| {
         let base = tree_path();
-        let root_rule = rule(ROOT_RULE, ROOT, "", "feature", "Prices include VAT.");
+        let root_rule = rule(ROOT_RULE, ROOT, "", "track", "Prices include VAT.");
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", path) if path == base => Reply::json(200, &listed()),
             ("GET", path) if path == format!("{base}/rules") => Reply::json(
                 200,
                 &json!({ "rules": [root_rule, story_rule(), withdrawn_rule()] }),
             ),
-            ("GET", path) if path == format!("{base}/rules?scope=feature") => {
+            ("GET", path) if path == format!("{base}/rules?scope=track") => {
                 Reply::json(200, &json!({ "rules": [root_rule] }))
             }
             ("GET", path) if path == format!("{base}/rules?under={STORY}") => {
@@ -1371,7 +1371,7 @@ fn rules_prints_scope_path_id_and_text_per_line_without_the_withdrawn_and_the_ro
     assert_eq!(
         out.stdout,
         format!(
-            "feature  .  {ROOT_RULE}  Prices include VAT.\n\
+            "track  .  {ROOT_RULE}  Prices include VAT.\n\
              story  customer-buys-product  {RULE}  {BUY_DISABLED}\n"
         )
     );
@@ -1400,7 +1400,7 @@ fn rules_scope_feature_asks_for_the_feature_rules() {
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert_eq!(
         out.stdout,
-        format!("feature  .  {ROOT_RULE}  Prices include VAT.\n")
+        format!("track  .  {ROOT_RULE}  Prices include VAT.\n")
     );
 }
 
@@ -1434,7 +1434,7 @@ fn rule_edit_sends_the_listed_version_with_the_scope_or_withdrawn_true() {
     assert_eq!(
         sent(&server, "PATCH"),
         vec![
-            json!({ "expected_version": 3, "scope": "feature" }),
+            json!({ "expected_version": 3, "scope": "track" }),
             json!({ "expected_version": 3, "withdrawn": true })
         ]
     );
@@ -1524,7 +1524,7 @@ fn read_prints_the_branch_root_first_with_each_nodes_decisions_then_rules_childr
             answered(NEW, OUT, OUT_PATH, "Region delivery check here?", "No, handled at checkout.", "human")
         ],
         "rules": [
-            rule(ROOT_RULE, ROOT, "", "feature", "Prices include VAT."),
+            rule(ROOT_RULE, ROOT, "", "track", "Prices include VAT."),
             rule(RULE, STORY, "customer-buys-product", "story", BUY_DISABLED)
         ],
         "children": [
@@ -1572,7 +1572,7 @@ Open questions:
 - What if quantity is zero?  [{ZERO}]
 
 Rules that apply here:
-- Prices include VAT. (feature, from .)
+- Prices include VAT. (track, from .)
 - {BUY_DISABLED} (story, from customer-buys-product)
 
 Children:

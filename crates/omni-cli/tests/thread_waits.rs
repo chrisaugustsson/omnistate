@@ -65,7 +65,7 @@ fn thread_json(id: &str, posts: usize) -> Value {
         "id": id,
         "project_id": PROJECT,
         "scope": "app",
-        "feature_id": null,
+        "track_id": null,
         "question": "Which hero layout?",
         "sealed": true,
         "conclusion": null,

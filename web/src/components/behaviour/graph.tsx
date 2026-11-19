@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TreeNode } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
-import { animateTo, bringIntoView, centreOn, fit, fitBlock, tween, zoomAt, type View } from "./camera";
+import { allInView, animateTo, bringIntoView, centreOn, fit, fitBlock, keepInView, tween, zoomAt, type View } from "./camera";
 import { elbow, layoutBlocks, planColumns, type Rect } from "./layout";
-import { Minimap } from "./minimap";
+import { Minimap, minimapCorner } from "./minimap";
 import { Legend, Marks } from "./marks";
 import { ancestorsOf, childrenOf, descendantsOf, shortTitle } from "./tree";
 
@@ -16,6 +16,8 @@ const BARS_BELOW = 0.3;
 const LABELS_BELOW = 0.46;
 const BUTTON_ZOOM = 1.4;
 const FOLD_MS = 220;
+// The corner the zoom controls take, bottom left: four 30px buttons and their 12px inset.
+const ZOOM_CORNER = { side: "left", w: 48, h: 136 } as const;
 // A press that moves less than this is a click, not a drag.
 const DRAG_FROM = 4;
 
@@ -99,9 +101,23 @@ export function Graph({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  const columns = useMemo(() => (area ? planColumns(nodes, shown, area) : []), [nodes, shown, area]);
+  // The stories are laid out in columns for the area the graph first had: the
+  // details opening or the window resizing moves the view, not the boxes.
+  const [planArea, setPlanArea] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    if (!planArea && area && area.w > 0 && area.h > 0) setPlanArea(area);
+  }, [area, planArea]);
+  const columns = useMemo(() => (planArea ? planColumns(nodes, shown, planArea) : []), [nodes, shown, planArea]);
   const { boxes, bounds, blocks } = useMemo(() => layoutBlocks(nodes, { shown, folded, columns }), [nodes, shown, folded, columns]);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  // What the boxes take, with their fold pills (the drawing's bounds also hold room around its blocks).
+  const extent = useMemo(() => {
+    const every = [...boxes.values()];
+    if (every.length === 0) return bounds;
+    const x = Math.min(...every.map((one) => one.x));
+    const y = Math.min(...every.map((one) => one.y));
+    return { x, y, w: Math.max(...every.map((one) => one.x + one.w)) - x + 28, h: Math.max(...every.map((one) => one.y + one.h)) - y };
+  }, [boxes, bounds]);
   // While a fold moves, the boxes slide from where they stood in the same frames as the view, so the pressed box stays still.
   const [slide, setSlideState] = useState<Slide>(null);
   const slideRef = useRef<Slide>(null);
@@ -212,6 +228,35 @@ export function Graph({
     if (block && areaRef.current) moveTo(fitBlock(block, areaRef.current), 260);
   };
 
+  // When the area changes size (the details open or close, the window resizes), the chosen node and its children stay in sight.
+  const lastArea = useRef(area);
+  useEffect(() => {
+    const before = lastArea.current;
+    lastArea.current = area;
+    if (!area || !before || (before.w === area.w && before.h === area.h)) return;
+    const current = viewRef.current;
+    const box = chosenId ? boxes.get(chosenId) : undefined;
+    if (!current || !box) return;
+    const group = [box, ...nodes.filter((node) => node.parent_id === chosenId).flatMap((node) => boxes.get(node.id) ?? [])];
+    const x = Math.min(...group.map((one) => one.x));
+    const y = Math.min(...group.map((one) => one.y));
+    // 28 more on the right for the fold pills beside the boxes.
+    const w = Math.max(...group.map((one) => one.x + one.w)) - x + 28;
+    const h = Math.max(...group.map((one) => one.y + one.h)) - y;
+    // The whole drawing, when it fits, so nothing is hidden and no minimap is needed.
+    const all = boundsRef.current;
+    const m = 32;
+    const whole = extent;
+    // It fits at this zoom, or at three quarters of it or more: zooming out a little keeps everything in sight.
+    if (Math.min((area.w - 32) / whole.w, (area.h - 32) / whole.h) >= current.k * 0.75) {
+      const target = keepInView(current, whole, area, 16, [ZOOM_CORNER]);
+      if (target) moveTo(target, 200);
+      return;
+    }
+    const target = keepInView(current, { x, y, w, h }, area, m, [ZOOM_CORNER, { side: "right", ...minimapCorner(all) }]);
+    if (target) moveTo(target, 200);
+  }, [area, chosenId, boxes, nodes, extent, moveTo]);
+
   // A node chosen outside the graph is brought into sight by the rules of bringIntoView.
   const handled = useRef<number | null>(null);
   useEffect(() => {
@@ -219,7 +264,7 @@ export function Graph({
     if (!reveal || !current || !areaRef.current || handled.current === reveal.n) return;
     handled.current = reveal.n;
     const box = boxes.get(reveal.id);
-    // The feature's root has no box: choosing it fits the whole drawing.
+    // The track's root has no box: choosing it fits the whole drawing.
     if (!box) {
       moveTo(fit(boundsRef.current, areaRef.current), reveal.ms);
       return;
@@ -481,7 +526,8 @@ export function Graph({
               </button>
             ))}
           </div>
-          <Minimap boxes={boxes} bounds={bounds} waiting={waiting} view={view} area={area} onGo={goTo} />
+          {/* The map only while some of the drawing lies outside the area: with all of it in view it adds nothing. */}
+          {!allInView(view, extent, area) && <Minimap boxes={boxes} bounds={bounds} waiting={waiting} view={view} area={area} onGo={goTo} />}
         </>
       )}
     </div>

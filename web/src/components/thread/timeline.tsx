@@ -1,8 +1,10 @@
 import { Link } from "@tanstack/react-router";
 import { Crosshair, Link2, Paperclip } from "lucide-react";
 import type { PostBody } from "@/api/generated";
-import { AgentAvatar } from "@/components/agent-chip";
+import { authorOf, useMemberNames } from "@/components/project/project-data";
+import { Avatar } from "@/components/shell/avatar";
 import { timeAgo } from "@/lib/format";
+import { useMe } from "@/lib/use-workspace";
 import { cn } from "@/lib/utils";
 
 /** Styles for a post's body, Markdown the API has rendered to safe HTML. */
@@ -12,12 +14,13 @@ const PROSE =
 const CHIP =
   "inline-flex max-w-full items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border ring-inset";
 
-/** Who wrote a post: "You" for the human, otherwise the agent's role and model. */
-export function postAuthor(author: Record<string, unknown>): { name: string; label: string } {
-  if (author.kind === "human") return { name: "You", label: "You" };
-  const role = typeof author.role === "string" && author.role ? author.role : "agent";
-  const model = typeof author.model === "string" && author.model ? author.model : null;
-  return { name: role, label: model ? `${role} · ${model}` : role };
+/** Who wrote a post, as the app names authors elsewhere: "You", a member's name, or "Architect agent" with its model as quiet meta. */
+type PostWriter = { name: string; agent: boolean; key: string; model: string | null };
+
+function postWriter(author: Record<string, unknown>, names: ReadonlyMap<string, string> | null, me: string | null): PostWriter {
+  const who = authorOf(author, names);
+  if (!who.agent) return { ...who, name: author.user_id === me ? "You" : who.name, model: null };
+  return { ...who, model: typeof author.model === "string" && author.model ? author.model : null };
 }
 
 /** The thread's posts, oldest first; the one named by `highlighted` stands out. */
@@ -32,11 +35,20 @@ export function Posts({
   posts: PostBody[];
   highlighted: string | null;
 }) {
+  const names = useMemberNames(workspaceId);
+  const me = useMe(workspaceId);
   if (posts.length === 0) return <p className="text-sm text-muted-foreground">No posts yet.</p>;
   return (
     <ol className="relative before:absolute before:top-3 before:bottom-3 before:left-[13px] before:w-px before:bg-border">
       {posts.map((post) => (
-        <PostItem key={post.id} workspaceId={workspaceId} projectId={projectId} post={post} highlighted={post.id === highlighted} />
+        <PostItem
+          key={post.id}
+          workspaceId={workspaceId}
+          projectId={projectId}
+          post={post}
+          writer={postWriter(post.author, names, me)}
+          highlighted={post.id === highlighted}
+        />
       ))}
     </ol>
   );
@@ -46,24 +58,19 @@ function PostItem({
   workspaceId,
   projectId,
   post,
+  writer,
   highlighted,
 }: {
   workspaceId: string;
   projectId: string;
   post: PostBody;
+  writer: PostWriter;
   highlighted: boolean;
 }) {
-  const { name, label } = postAuthor(post.author);
   const human = post.author.kind === "human";
   return (
     <li id={`post-${post.id}`} className="relative flex scroll-mt-6 gap-3 pb-6 last:pb-0">
-      <AgentAvatar
-        name={name}
-        className={cn(
-          "relative z-10 size-7 text-[10px] ring-4 ring-background",
-          human && "bg-signal! text-signal-foreground!",
-        )}
-      />
+      <Avatar name={writer.name} agent={writer.agent} tintKey={writer.key} size="lg" className="relative z-10 ring-4 ring-sheet" />
       <div
         className={cn(
           "min-w-0 flex-1 rounded-lg",
@@ -73,16 +80,13 @@ function PostItem({
         data-highlighted={highlighted || undefined}
       >
         <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
-          <span className={cn("font-mono text-[12px]", human ? "font-medium text-foreground" : "text-foreground/80")}>
-            {label}
+          <span className="font-medium text-ink">{writer.name}</span>
+          <span className="text-meta text-ink-3">
+            {writer.model && <>{writer.model} · </>}
+            <time dateTime={post.created_at} title={new Date(post.created_at).toLocaleString()}>
+              {timeAgo(post.created_at)}
+            </time>
           </span>
-          <time
-            dateTime={post.created_at}
-            title={new Date(post.created_at).toLocaleString()}
-            className="text-[11px] text-muted-foreground"
-          >
-            {timeAgo(post.created_at)}
-          </time>
         </div>
         <h3 className="mt-1 text-[14px] leading-snug font-medium text-foreground">{post.summary}</h3>
         {/* The API has already made the body safe: Markdown without raw HTML. */}

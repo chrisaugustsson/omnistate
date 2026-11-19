@@ -112,7 +112,7 @@ fn every_registered_route_is_served_by_the_router() {
 }
 
 /// Every live event the API emits, by name (`<entity>.<action>`).
-const LIVE_EVENTS: [&str; 14] = [
+const LIVE_EVENTS: [&str; 21] = [
     "comment.created",
     "comment.deleted",
     "comment.replied",
@@ -123,6 +123,13 @@ const LIVE_EVENTS: [&str; 14] = [
     "feature.created",
     "feature.deleted",
     "feature.renamed",
+    "part.created",
+    "part.deleted",
+    "part.renamed",
+    "track.created",
+    "track.deleted",
+    "track.moved",
+    "track.renamed",
     "post.created",
     "project.renamed",
     "thread.concluded",
@@ -241,11 +248,11 @@ fn the_web_app_has_the_current_openapi_document() {
     );
 }
 
-// US-061: a doc belongs to the project or one of its features, so the doc
-// body carries `feature_id`, and the project's docs are listed with the
-// `feature` filter.
+// US-061: a doc belongs to the project or one of its tracks, so the doc
+// body carries `track_id`, and the project's docs are listed with the
+// `track` filter.
 #[test]
-fn the_document_describes_the_feature_of_docs_and_the_doc_list() {
+fn the_document_describes_the_track_of_docs_and_the_doc_list() {
     let docs = "/api/v1/w/{workspace_id}/projects/{project_id}/docs";
     let routes = registry();
     let entry = find(&routes, "GET", docs)
@@ -256,8 +263,8 @@ fn the_document_describes_the_feature_of_docs_and_the_doc_list() {
     let document = openapi(&server);
     let body = component(&document, "DocBody");
     assert!(
-        body["properties"]["feature_id"].is_object(),
-        "DocBody has the field feature_id: {body}"
+        body["properties"]["track_id"].is_object(),
+        "DocBody has the field track_id: {body}"
     );
     let list = component(&document, "DocListResponse");
     assert!(
@@ -269,8 +276,8 @@ fn the_document_describes_the_feature_of_docs_and_the_doc_list() {
     assert!(
         parameters
             .iter()
-            .any(|p| p["name"] == "feature" && p["in"] == "query"),
-        "GET .../docs documents the query parameter `feature`: {get}"
+            .any(|p| p["name"] == "track" && p["in"] == "query"),
+        "GET .../docs documents the query parameter `track`: {get}"
     );
 }
 

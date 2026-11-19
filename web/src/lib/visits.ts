@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-/** A place the reviewer visited: its scope ("app" or a feature's ID), and the doc or thread when there is one. */
+/** A place the reviewer visited: its scope ("app" or a track's ID), and the doc or thread when there is one. */
 export type Visit = { scope: string; doc?: string; thread?: string; at: number };
 
 const MOST_VISITS = 50;

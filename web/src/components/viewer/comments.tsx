@@ -98,7 +98,7 @@ function HtmlSnapshot({ html }: { html: string }) {
  */
 export function ElementSnapshot({ kind, snapshot }: { kind: SnapshotKind; snapshot: string }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-dashed p-2 text-[12.5px] text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg bg-frame p-2 text-[12.5px] text-muted-foreground">
       {snapshot && (kind === "design" ? <DesignSnapshot tags={snapshot} /> : <HtmlSnapshot html={snapshot} />)}
       <span className="ml-auto inline-flex h-5 shrink-0 items-center rounded-md bg-signal-soft px-1.5 text-[11.5px] font-medium text-signal">
         Element removed

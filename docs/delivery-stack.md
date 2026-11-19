@@ -771,3 +771,30 @@ The report's note on the lane stop names that likely cause, and
 `docker compose -p omnistate-test logs api` shows it: `migration <n> was
 previously applied but is missing in the resolved migrations`. Run
 `make test-stack-down` before the next run.
+
+## The next stack
+
+The build of the projects, parts and tracks branch runs as a third compose
+project, `omnistate-next`, with an empty database, so that the human's
+`omnistate` keeps its data and keeps working. It is http://omnistate-next.localhost
+through the edge (http://localhost:8422 without it). Its router and service
+names in the edge follow the project name, so `http://omnistate.localhost` still
+serves `omnistate` only. Its images are `omnistate-next-*` and its volumes
+`omnistate-next_postgres-data` and `omnistate-next_rustfs-data`.
+
+```bash
+make next-up     # builds from the current tree, starts the edge if needed, seeds nothing
+make next-down   # removes the containers and network, keeps the volumes
+```
+
+To sign in, create the first member with the API's own setup command, which
+works on an empty database and gives the first member the highest role (admin):
+
+```bash
+docker compose -p omnistate-next exec api omni-api setup --email <you>@example.com --workspace <name> --password-stdin
+```
+
+It reads the password from stdin (at least 8 characters; end the line with
+Enter). Then sign in at http://omnistate-next.localhost with that email and
+password. The database has no projects until you create them. To start over,
+`docker compose -p omnistate-next down --volumes`.

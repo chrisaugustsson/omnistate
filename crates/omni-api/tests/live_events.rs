@@ -275,55 +275,69 @@ fn new_project(f: &Fixture, client: &Client, label: &str) -> String {
     new_project_in(client, &f.a, &f.key_a, label)
 }
 
-fn features_path(workspace: &str, project: &str) -> String {
-    format!("/api/v1/w/{workspace}/projects/{project}/features")
+fn tracks_path(workspace: &str, project: &str) -> String {
+    format!("/api/v1/w/{workspace}/projects/{project}/tracks")
 }
 
-/// Creates a feature in a project of workspace A as its agent; returns its ID.
-/// This emits `feature.created`.
-fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
+/// Inserts a part in a project of workspace A at the database, for a track to
+/// sit on (US-305); returns its ID. It emits no event, so the tests here
+/// count only the events of tracks.
+fn new_part(f: &Fixture, project: &str) -> String {
+    block(async {
+        let mut conn = admin_connection().await;
+        sqlx::query_scalar::<_, String>(
+            "insert into parts (workspace_id, project_id, name, kind) \
+             values ($1::uuid, $2::uuid, $3, 'app') returning id::text",
+        )
+        .bind(&f.a)
+        .bind(project)
+        .bind(unique("part"))
+        .fetch_one(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("insert a part: {e}"))
+    })
+}
+
+/// Creates a track in a project of workspace A as its agent; returns its ID.
+/// This emits `track.created`.
+fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
     let response = call(
         client,
         "POST",
-        &features_path(&f.a, project),
+        &tracks_path(&f.a, project),
         &Auth::Key(&f.key_a),
-        Some(&json!({ "name": unique("feature") })),
+        Some(&json!({ "name": unique("track"), "part_id": new_part(f, project) })),
     );
-    assert_eq!(
-        response.status,
-        201,
-        "create a feature: {}",
-        response.text()
-    );
-    response.json()["feature"]["id"]
+    assert_eq!(response.status, 201, "create a track: {}", response.text());
+    response.json()["track"]["id"]
         .as_str()
-        .expect("the feature has an id")
+        .expect("the track has an id")
         .to_string()
 }
 
-/// Renames a feature, as `auth`; returns the status.
+/// Renames a track, as `auth`; returns the status.
 fn rename(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: &str,
+    track: &str,
     name: &str,
     auth: &Auth,
 ) -> u16 {
-    let path = format!("{}/{feature}", features_path(&f.a, project));
+    let path = format!("{}/{track}", tracks_path(&f.a, project));
     call(client, "PATCH", &path, auth, Some(&json!({ "name": name }))).status
 }
 
-/// The agent renames a feature, which emits `feature.renamed`.
-fn renamed(f: &Fixture, client: &Client, project: &str, feature: &str) {
+/// The agent renames a track, which emits `track.renamed`.
+fn renamed(f: &Fixture, client: &Client, project: &str, track: &str) {
     let name = unique("renamed");
-    let status = rename(f, client, project, feature, &name, &Auth::Key(&f.key_a));
-    assert_eq!(status, 200, "rename the feature as the agent");
+    let status = rename(f, client, project, track, &name, &Auth::Key(&f.key_a));
+    assert_eq!(status, 200, "rename the track as the agent");
 }
 
-/// The agent deletes a feature, which emits `feature.deleted`.
-fn deleted(f: &Fixture, client: &Client, project: &str, feature: &str) {
-    let path = format!("{}/{feature}", features_path(&f.a, project));
+/// The agent deletes a track, which emits `track.deleted`.
+fn deleted(f: &Fixture, client: &Client, project: &str, track: &str) {
+    let path = format!("{}/{track}", tracks_path(&f.a, project));
     let response = call(client, "DELETE", &path, &Auth::Key(&f.key_a), None);
     assert_eq!(response.status, 204, "{}", response.text());
 }
@@ -674,15 +688,15 @@ fn text_that_is_not_a_message_is_an_error_and_the_socket_stays_open() {
 fn a_request_that_changes_nothing_pushes_no_event() {
     let (f, client) = ready();
     let project = new_project(f, client, "nothing");
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let mut ws = open(client, &f.a, &Auth::Key(&f.key_a));
     ws.subscribe(&project, None);
 
     // A blank name is refused, and so is the human renaming.
     let key = Auth::Key(&f.key_a);
     let human = Auth::Session(&f.alice_token);
-    assert_eq!(rename(f, client, &project, &feature, "  ", &key), 400);
-    assert_eq!(rename(f, client, &project, &feature, "New", &human), 403);
+    assert_eq!(rename(f, client, &project, &track, "  ", &key), 400);
+    assert_eq!(rename(f, client, &project, &track, "New", &human), 403);
     ws.assert_no_event("none of those requests changed anything");
 }
 
@@ -695,13 +709,13 @@ fn a_client_only_gets_the_events_of_the_projects_it_subscribed_to() {
     let mut unsubscribed = open(client, &f.a, &Auth::Session(&f.alice_token));
     subscribed.subscribe(&watched, None);
 
-    new_feature(f, client, &other);
-    let feature = new_feature(f, client, &watched);
+    new_track(f, client, &other);
+    let track = new_track(f, client, &watched);
 
     let events = subscribed.events(1);
     assert_eq!(events[0]["project_id"], watched.as_str());
-    assert_eq!(events[0]["data"]["feature_id"], feature.as_str());
-    subscribed.assert_no_event("the other project's feature was never announced");
+    assert_eq!(events[0]["data"]["track_id"], track.as_str());
+    subscribed.assert_no_event("the other project's track was never announced");
     unsubscribed.assert_no_event("this client subscribed to no project");
 }
 
@@ -715,16 +729,16 @@ fn events_reach_a_subscribed_client_within_250_ms_of_the_change() {
     let mut slowest = Duration::ZERO;
     for _ in 0..5 {
         let started = Instant::now();
-        let feature = new_feature(f, client, &project);
+        let track = new_track(f, client, &project);
         let created = ws.events(1);
         let created_in = started.elapsed();
-        assert_eq!(name_of(&created[0]), "feature.created");
+        assert_eq!(name_of(&created[0]), "track.created");
 
         let started = Instant::now();
-        renamed(f, client, &project, &feature);
+        renamed(f, client, &project, &track);
         let changed = ws.events(1);
         let changed_in = started.elapsed();
-        assert_eq!(name_of(&changed[0]), "feature.renamed");
+        assert_eq!(name_of(&changed[0]), "track.renamed");
         slowest = slowest.max(created_in).max(changed_in);
     }
     assert!(
@@ -747,10 +761,10 @@ fn sequence_numbers_go_up_by_one_per_project() {
     let quiet_from = ws.subscribe(&quiet, None)["last_seq"].as_i64().unwrap();
 
     for _ in 0..3 {
-        let feature = new_feature(f, client, &busy);
-        renamed(f, client, &busy, &feature);
+        let track = new_track(f, client, &busy);
+        renamed(f, client, &busy, &track);
     }
-    new_feature(f, client, &quiet);
+    new_track(f, client, &quiet);
 
     let events = ws.events(7);
     let of = |project: &str| -> Vec<Value> {
@@ -783,8 +797,8 @@ fn events_of_changes_made_at_the_same_time_arrive_in_sequence_order_without_gaps
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                let feature = new_feature(f, client, &project);
-                renamed(f, client, &project, &feature);
+                let track = new_track(f, client, &project);
+                renamed(f, client, &project, &track);
             });
         }
     });
@@ -793,12 +807,12 @@ fn events_of_changes_made_at_the_same_time_arrive_in_sequence_order_without_gaps
     assert_gapless(&events);
     let mut seen_created = Vec::new();
     for event in &events {
-        let id = event["data"]["feature_id"].as_str().unwrap().to_string();
+        let id = event["data"]["track_id"].as_str().unwrap().to_string();
         match name_of(event) {
-            "feature.created" => seen_created.push(id),
-            "feature.renamed" => assert!(
+            "track.created" => seen_created.push(id),
+            "track.renamed" => assert!(
                 seen_created.contains(&id),
-                "a feature is announced as created before it is renamed: {events:#?}"
+                "a track is announced as created before it is renamed: {events:#?}"
             ),
             other => panic!("unexpected event {other}"),
         }
@@ -818,7 +832,7 @@ fn a_client_that_reconnects_with_its_last_sequence_number_gets_everything_after_
     let mut first = open(client, &f.a, &Auth::Key(&f.key_a));
     first.subscribe(&project, None);
 
-    let one = new_feature(f, client, &project);
+    let one = new_track(f, client, &project);
     renamed(f, client, &project, &one);
     let seen = first.events(2);
     let last_seen = seq_of(&seen[1]);
@@ -826,7 +840,7 @@ fn a_client_that_reconnects_with_its_last_sequence_number_gets_everything_after_
 
     // Changes while the client is away.
     deleted(f, client, &project, &one);
-    let two = new_feature(f, client, &project);
+    let two = new_track(f, client, &project);
     renamed(f, client, &project, &two);
 
     // The human's browser comes back with its last number (the same client
@@ -837,18 +851,18 @@ fn a_client_that_reconnects_with_its_last_sequence_number_gets_everything_after_
     let missed = second.events(3);
     assert_eq!(
         names(&missed),
-        ["feature.deleted", "feature.created", "feature.renamed"]
+        ["track.deleted", "track.created", "track.renamed"]
     );
     assert_eq!(seq_of(&missed[0]), last_seen + 1);
     assert_gapless(&missed);
-    assert_eq!(missed[0]["data"]["feature_id"], one.as_str());
-    assert_eq!(missed[2]["data"]["feature_id"], two.as_str());
+    assert_eq!(missed[0]["data"]["track_id"], one.as_str());
+    assert_eq!(missed[2]["data"]["track_id"], two.as_str());
     second.assert_no_event("each missed event is sent once");
 
     // Live events carry on right after the replay, without a gap or a repeat.
     renamed(f, client, &project, &two);
     let live = second.events(1);
-    assert_eq!(name_of(&live[0]), "feature.renamed");
+    assert_eq!(name_of(&live[0]), "track.renamed");
     assert_eq!(seq_of(&live[0]), last_seen + 4);
     second.assert_no_event("nothing is repeated after the replay");
 }
@@ -859,9 +873,9 @@ fn resuming_from_zero_replays_the_whole_history_as_it_was_first_sent() {
     let project = new_project(f, client, "history");
     let mut first = open(client, &f.a, &Auth::Key(&f.key_a));
     first.subscribe(&project, None);
-    let feature = new_feature(f, client, &project);
-    renamed(f, client, &project, &feature);
-    deleted(f, client, &project, &feature);
+    let track = new_track(f, client, &project);
+    renamed(f, client, &project, &track);
+    deleted(f, client, &project, &track);
     let original = first.events(3);
 
     let mut late = open(client, &f.a, &Auth::Session(&f.alice_token));
@@ -878,8 +892,8 @@ fn resuming_from_zero_replays_the_whole_history_as_it_was_first_sent() {
 fn resuming_from_the_newest_number_or_without_one_replays_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client, "caught-up");
-    let feature = new_feature(f, client, &project);
-    renamed(f, client, &project, &feature);
+    let track = new_track(f, client, &project);
+    renamed(f, client, &project, &track);
     let newest = open(client, &f.a, &Auth::Key(&f.key_a)).subscribe(&project, None)["last_seq"]
         .as_i64()
         .unwrap();
@@ -894,21 +908,21 @@ fn resuming_from_the_newest_number_or_without_one_replays_nothing() {
     fresh.assert_no_event("without a sequence number only new events are sent");
 
     // Both go on with the next event, which is newest + 1.
-    renamed(f, client, &project, &feature);
+    renamed(f, client, &project, &track);
     for ws in [&mut caught_up, &mut fresh] {
         let events = ws.events(1);
         assert_eq!(seq_of(&events[0]), newest + 1);
     }
 }
 
-// US-059: creating a feature is an event of its project, `feature.created`
-// with `data` that has at least `{"feature_id", "name"}`, pushed live and
+// US-059: creating a track is an event of its project, `track.created`
+// with `data` that has at least `{"track_id", "name"}`, pushed live and
 // replayed to a client that resumes from an earlier sequence number.
 #[test]
-fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
+fn a_new_track_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
     let (f, client) = ready();
-    let project = new_project(f, client, "features");
-    new_feature(f, client, &project);
+    let project = new_project(f, client, "tracks");
+    new_track(f, client, &project);
     let before = open(client, &f.a, &Auth::Key(&f.key_a)).subscribe(&project, None)["last_seq"]
         .as_i64()
         .unwrap();
@@ -920,24 +934,19 @@ fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
     let response = call(
         client,
         "POST",
-        &features_path(&f.a, &project),
+        &tracks_path(&f.a, &project),
         &Auth::Key(&f.key_a),
-        Some(&json!({ "name": name })),
+        Some(&json!({ "name": name, "part_id": new_part(f, &project) })),
     );
-    assert_eq!(
-        response.status,
-        201,
-        "create a feature: {}",
-        response.text()
-    );
-    let feature = response.json()["feature"]["id"]
+    assert_eq!(response.status, 201, "create a track: {}", response.text());
+    let track = response.json()["track"]["id"]
         .as_str()
-        .expect("the feature has an id")
+        .expect("the track has an id")
         .to_string();
 
     let pushed = live.events(1);
     assert_eq!(pushed[0]["type"], "event", "{}", pushed[0]);
-    assert_eq!(name_of(&pushed[0]), "feature.created", "{}", pushed[0]);
+    assert_eq!(name_of(&pushed[0]), "track.created", "{}", pushed[0]);
     assert!(
         pushed[0]["at"].as_str().is_some_and(|t| !t.is_empty()),
         "{}",
@@ -945,7 +954,7 @@ fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
     );
     assert_eq!(seq_of(&pushed[0]), before + 1);
     assert_eq!(pushed[0]["project_id"], project.as_str());
-    assert_eq!(pushed[0]["data"]["feature_id"], feature.as_str());
+    assert_eq!(pushed[0]["data"]["track_id"], track.as_str());
     assert_eq!(pushed[0]["data"]["name"], name.as_str());
 
     let mut late = open(client, &f.a, &Auth::Key(&f.key_a));
@@ -955,5 +964,5 @@ fn a_new_feature_is_pushed_and_replayed_to_a_client_that_resumes_before_it() {
         replayed[0], pushed[0],
         "the replayed event is the one that was pushed live"
     );
-    late.assert_no_event("the feature's event is sent once");
+    late.assert_no_event("the track's event is sent once");
 }

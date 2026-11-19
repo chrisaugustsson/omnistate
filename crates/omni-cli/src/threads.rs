@@ -1,5 +1,5 @@
-//! `omni thread create`, `list`, `read`, `conclude` and `digest`: threads at the
-//! app level of a project or in one of its features. A
+//! `omni thread create`, `list`, `read`, `conclude` and `digest`: threads on a
+//! track of a project. A
 //! thread is a question that agents work out together: they post to it with
 //! `omni post`, and one of them writes the conclusion. A sealed thread hides
 //! the posts of other agents from an agent until it has posted itself. The
@@ -9,9 +9,9 @@ use crate::args::Args;
 use crate::commands::{agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{creation_feature, is_uuid, project_id};
+use crate::projects::{creation_track, is_uuid, project_id};
 
-const CREATE_USAGE: &str = "omni thread create <question> [--feature <name or id>] [--sealed]";
+const CREATE_USAGE: &str = "omni thread create <question> [--track <name or id>] [--sealed]";
 const READ_USAGE: &str = "omni thread read <thread>";
 const CONCLUDE_USAGE: &str = "omni thread conclude <thread> <text>";
 const DIGEST_USAGE: &str = "omni thread digest <thread>";
@@ -29,7 +29,7 @@ fn thread_id(thread: &str, usage: &str) -> Result<String> {
     }
 }
 
-/// `omni thread create <question> [--feature <name or id>] [--sealed]`
+/// `omni thread create <question> [--track <name or id>] [--sealed]`
 pub fn create(args: &Args, question: Option<&str>) -> Result<()> {
     let question = question.map(str::trim).unwrap_or_default();
     if question.is_empty() {
@@ -38,25 +38,20 @@ pub fn create(args: &Args, question: Option<&str>) -> Result<()> {
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let feature = creation_feature(args, &agent, &project)?;
+    let Some(track) = creation_track(args, &agent, &project)? else {
+        bail!(
+            "track_required: a thread starts on a track; give --track <name or id> or set OMNI_TRACK"
+        );
+    };
     let body = format!(
         "{{\"question\":{},\"sealed\":{}}}",
         quote(question),
         args.sealed
     );
     let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
-    let (path, not_found) = match feature {
-        Some(feature) => (
-            format!("{base}/features/{feature}/threads"),
-            format!(
-                "not_found: no feature {feature} in this project; `omni feature list` shows them"
-            ),
-        ),
-        None => (
-            format!("{base}/threads"),
-            format!("not_found: no project {project} in this workspace"),
-        ),
-    };
+    let path = format!("{base}/tracks/{track}/threads");
+    let not_found =
+        format!("not_found: no track {track} in this project; `omni track list` shows them");
     let response = agent.request_or_not_found("POST", &path, Some(body.as_bytes()), &not_found)?;
     let text = response.text();
     if args.json {

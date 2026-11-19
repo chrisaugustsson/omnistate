@@ -5,7 +5,7 @@
 //! body, and the short text of `list` and `read`.
 //!
 //! The contract (all paths under `/api/v1/w/{workspace}/projects/{project}`
-//! `/features/{feature}/stories`, the API answering `{"story": Story}` or
+//! `/tracks/{feature}/stories`, the API answering `{"story": Story}` or
 //! `{"stories": [Story, ...]}`):
 //!
 //! - `omni story add <file>` posts `title` (a `US-<n>:` heading prefix
@@ -17,7 +17,7 @@
 //!   browser using dev-browser skill` or holding `(human check)`),
 //!   `blocked_by` (keys resolved by listing the feature), `priority` and
 //!   `links`. It prints only the new key. An unknown blocker key is
-//!   `not_found: no story US-<n> in this feature`, exit 1. `--link`'s doc is
+//!   `not_found: no story US-<n> in this track`, exit 1. `--link`'s doc is
 //!   a doc ID only, as for `omni doc read`.
 //! - `omni story list [--status <s>] [--pickable]` prints `US-<n>  P<priority>
 //!   <status>  <title>` per story in the API's order; `--json` the API's list.
@@ -55,14 +55,14 @@ const STORY_132: &str = "01900000-0000-7000-8000-000000000132";
 const STORY_133: &str = "01900000-0000-7000-8000-000000000133";
 
 fn stories_path() -> String {
-    format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features/{FEATURE}/stories")
+    format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks/{FEATURE}/stories")
 }
 
 fn story_json(id: &str, key: &str, priority: i64, status: &str, title: &str) -> Value {
     json!({
         "id": id,
         "project_id": PROJECT,
-        "feature_id": FEATURE,
+        "track_id": FEATURE,
         "key": key,
         "status": status,
         "priority": priority,
@@ -155,7 +155,7 @@ fn run(home: &Scratch, args: &[&str]) -> Out {
         .args(&[
             "--project",
             PROJECT,
-            "--feature",
+            "--track",
             FEATURE,
             "--as",
             "run-7/implementer",
@@ -319,7 +319,7 @@ fn add_with_a_blocker_the_feature_does_not_have_exits_1_and_posts_nothing() {
     let lines = out.stderr_lines();
     assert_eq!(lines.len(), 1, "{:?}", out.stderr);
     assert!(
-        lines[0].contains("not_found: no story US-9 in this feature"),
+        lines[0].contains("not_found: no story US-9 in this track"),
         "{:?}",
         lines[0]
     );

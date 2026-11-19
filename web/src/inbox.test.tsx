@@ -1,340 +1,188 @@
 // @vitest-environment jsdom
-// US-113: the Inbox, /w/<workspace id>/projects/<project id>/inbox. It lists
-// the comments of GET .../home's `waiting.comments` (those whose latest reply
-// is an agent's), grouped by scope and updated live. The app is rendered with
-// its own router on a memory history, the browser's fetch is replaced by a
-// fake of the API, and the browser's WebSocket by a fake socket that the test
-// drives.
+// The workspace's Inbox, /w/<workspace> (tasks/ui-redesign/build-f.md,
+// "Workspace = Inbox"; nav5/option-f.html, screen 1): what waits on the member
+// across the workspace's projects, newest first, as a list with the open item
+// beside it. A comment waits when an agent replied last on a track the member
+// owns; the member answers it or resolves it in place. A track of theirs with
+// behaviour questions an agent asked is a row too. The open row is in the URL.
+// On the phone the list is the page. The app is rendered with its own router
+// on a memory history, against the fake API of ./testing/home-workspace.
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getRouter } from "./router";
+import { API, CHECKOUT, FakeWebSocket, MERGED, MOVED, PICK_LISTS, SCANNER_FLOW, STOREFRONT, WAREHOUSE, WS, fakeApi } from "./testing/home-workspace";
 
-const WORKSPACE_ID = "0192d7a0-0000-7000-8000-00000000000a";
-const PROJECT_ID = "0192d7a0-2222-7000-8000-000000000001";
-const CHECKOUT = "0192d7a0-4444-7000-8000-000000000001";
-const WALLETS = "0192d7a0-4444-7000-8000-000000000002";
-const USER = { id: "0192d7a0-1111-7000-8000-000000000001", email: "alice@example.com" };
-const PROJECT_PATH = `/w/${WORKSPACE_ID}/projects/${PROJECT_ID}`;
-const INBOX_PATH = `${PROJECT_PATH}/inbox`;
-const AT = "2026-10-21T09:00:00Z";
-const HUMAN = { kind: "human", user_id: USER.id };
-
-let counter = 0;
-/** A UUIDv7-shaped ID that no other fixture has. */
-function newId() {
-  counter += 1;
-  return `0192d7a0-3333-7000-8000-${counter.toString(16).padStart(12, "0")}`;
-}
-
-function doc(pillar: string, kind: string, title: string, feature: string | null = null) {
-  return {
-    id: newId(),
-    project_id: PROJECT_ID,
-    feature_id: feature,
-    kind,
-    pillar,
-    title,
-    created_at: AT,
-    drafts: [],
-    claims: [],
-  };
-}
-
-type Doc = ReturnType<typeof doc>;
-
-function reply(author: Record<string, unknown>, text: string, at: string) {
-  return { id: newId(), author, text, created_at: at };
-}
-
-function agent(role: string) {
-  return { kind: "agent", run: "run-1", role, model: "test-model", harness: "test-harness" };
-}
-
-/** A comment of yours on `on` whose replies end with an agent's. */
-function waiting(on: Doc, text: string, replies: ReturnType<typeof reply>[]) {
-  return {
-    id: newId(),
-    project_id: PROJECT_ID,
-    feature_id: on.feature_id,
-    doc_id: on.id,
-    node: "p0000001",
-    author: HUMAN,
-    text,
-    replies,
-    orphaned: false,
-    waiting_on_you: true,
-    created_at: AT,
-    snapshot: undefined as string | undefined,
-  };
-}
-
-function feature(id: string, name: string) {
-  return {
-    feature: { id, project_id: PROJECT_ID, name, description: "", created_at: AT },
-    docs: 1,
-    waiting: 1,
-    last_activity: null,
-  };
-}
-
-/**
- * Comments that wait in the app (agent replies at 11:00 and 14:00), in
- * Checkout (13:00) and in Wallets (12:30), listed in an order that is none of
- * the orders the Inbox shows.
- */
-function seeded() {
-  const docs = {
-    returns: doc("spec", "html", "Returns PRD"),
-    schema: doc("db", "html", "Orders schema"),
-    pay: doc("ui", "html", "Pay screens notes", CHECKOUT),
-    wallets: doc("research", "html", "Wallet interviews", WALLETS),
-  };
-  const comments = {
-    wallets: waiting(docs.wallets, "Which wallets did they name?", [
-      reply(agent("researcher"), "Apple Pay and Klarna.", "2026-10-21T12:30:00Z"),
-    ]),
-    schema: waiting(docs.schema, "Index the order date.", [
-      reply(agent("architect"), "Added the index.", "2026-10-21T11:00:00Z"),
-    ]),
-    pay: waiting(docs.pay, "Drop the second step.", [
-      reply(agent("designer"), "Merged it into one.", "2026-10-21T13:00:00Z"),
-    ]),
-    returns: waiting(docs.returns, "Say which week.", [
-      reply(agent("writer"), "Seven days, I think.", "2026-10-21T10:00:00Z"),
-      reply(HUMAN, "Check the policy.", "2026-10-21T10:30:00Z"),
-      reply(agent("writer"), "Changed it to seven days, as the policy says.", "2026-10-21T14:00:00Z"),
-    ]),
-  };
-  const home = {
-    project_id: PROJECT_ID,
-    app: { last_activity: null },
-    features: [feature(CHECKOUT, "Checkout"), feature(WALLETS, "Wallets")],
-    docs: Object.values(docs),
-    threads: [],
-    waiting: {
-      comments: [comments.wallets, comments.schema, comments.pay, comments.returns],
-    },
-  };
-  return { home, docs, comments };
-}
-
-type Home = ReturnType<typeof seeded>["home"];
-
-/** A fake of the API: the auth routes, the workspace's one project and its home, which the test may change. */
-function fakeApi(home: Home) {
-  const api = { home };
-  const json = (status: number, body: unknown) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
-  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const path = new URL(url, "http://localhost:3000").pathname;
-    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-    switch (`${method} ${path}`) {
-      case "GET /api/v1/auth/me":
-        return json(200, { user: USER });
-      case "GET /api/v1/auth/workspaces":
-        return json(200, { workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
-      case `GET /api/v1/w/${WORKSPACE_ID}/projects`:
-        return json(200, { projects: [{ id: PROJECT_ID, name: "Storefront", created_at: AT }] });
-      case `GET /api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/home`:
-        return json(200, api.home);
-      default:
-        return json(404, { error: "not_found" });
-    }
-  });
-  vi.stubGlobal("fetch", fetch);
-  return api;
-}
-
-/** A WebSocket the test drives: it records what the client sends. */
-class FakeWebSocket extends EventTarget {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-  static instances: FakeWebSocket[] = [];
-
-  readonly CONNECTING = 0;
-  readonly OPEN = 1;
-  readonly CLOSING = 2;
-  readonly CLOSED = 3;
-  readyState = FakeWebSocket.CONNECTING;
-  sent: unknown[] = [];
-  onopen: ((event: Event) => void) | null = null;
-  onmessage: ((event: Event) => void) | null = null;
-  onclose: ((event: Event) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-
-  constructor(readonly url: string) {
-    super();
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(data: string) {
-    if (this.readyState !== FakeWebSocket.OPEN) {
-      throw new Error("InvalidStateError: the socket is not open");
-    }
-    this.sent.push(JSON.parse(data));
-  }
-
-  close() {
-    if (this.readyState === FakeWebSocket.CLOSED) return;
-    this.readyState = FakeWebSocket.CLOSED;
-    this.fire("close", { code: 1000, reason: "", wasClean: true });
-  }
-
-  /** The server accepted the connection. */
-  open() {
-    this.readyState = FakeWebSocket.OPEN;
-    this.fire("open", {});
-  }
-
-  /** The server sent a JSON text frame. */
-  receive(message: unknown) {
-    this.fire("message", { data: JSON.stringify(message) });
-  }
-
-  private fire(type: string, fields: Record<string, unknown>) {
-    const event = Object.assign(new Event(type), fields);
-    const handler = (this as unknown as Record<string, unknown>)[`on${type}`];
-    if (typeof handler === "function") handler.call(this, event);
-    this.dispatchEvent(event);
-  }
-}
+const INBOX = `/w/${WS}`;
 
 function renderAt(path: string) {
   const router = getRouter();
-  router.update({
-    ...router.options,
-    history: createMemoryHistory({ initialEntries: [path] }),
-  });
+  router.update({ ...router.options, history: createMemoryHistory({ initialEntries: [path] }) });
   render(<RouterProvider router={router} />);
   return router;
 }
 
-/** The page itself, without the sidebar. */
-async function page() {
-  return screen.findByRole("main");
+/** Makes the window phone-wide (under 768px) or not. */
+function windowWidth(phone: boolean) {
+  vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: phone, addEventListener() {}, removeEventListener() {} }));
 }
 
-/** The Inbox's groups, each as its name and the comments of its items, in order. */
-function groups(main: HTMLElement) {
-  return within(main)
-    .getAllByRole("region")
-    .map((region) => ({
-      name: (region.querySelector("h2")?.textContent ?? "").trim(),
-      items: within(region)
-        .getAllByRole("listitem")
-        .map((item) => item.querySelector("a")?.textContent ?? ""),
-    }));
+const list = () => screen.getByRole("list", { name: "Waiting on you" });
+const openItem = () => screen.getByRole("region", { name: "Open item" });
+
+/** The list's rows, each as its two lines. */
+function rows() {
+  return within(list())
+    .getAllByRole("link")
+    .map((row) => Array.from(row.querySelectorAll("span span"), (line) => line.textContent));
 }
 
-/** The item of the Inbox that shows `text`. */
-function itemShowing(main: HTMLElement, text: string) {
-  const link = within(main).getByText(text).closest("a");
-  expect(link, `the item showing ${text} is a link`).toBeTruthy();
-  return link as HTMLAnchorElement;
-}
+/** The row whose first line is `title`, the `nth` of them. */
+const row = (title: string, nth = 0) => within(list()).getAllByText(title)[nth].closest("a")!;
+
+/** The open item's thread: each message's text, in order. */
+const thread = () =>
+  within(within(openItem()).getByRole("list", { name: "Thread" }))
+    .getAllByRole("listitem")
+    .map((message) => message.querySelector("p")?.textContent);
+
+beforeEach(() => {
+  // 21 October 2026, three in the afternoon where the reader is.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 9, 21, 15, 0));
+  vi.stubGlobal("scrollTo", () => {});
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+  windowWidth(false);
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("the Inbox", () => {
-  beforeEach(() => {
-    // An hour after the newest agent reply.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-10-21T15:00:00Z"));
-    vi.stubGlobal("scrollTo", () => {});
-    FakeWebSocket.instances = [];
-    vi.stubGlobal("WebSocket", FakeWebSocket);
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-  });
-
-  test("the waiting comments come by scope, the newest agent reply first in the groups and in each group", async () => {
-    fakeApi(seeded().home);
-    renderAt(INBOX_PATH);
-    const main = await page();
-    await within(main).findByText("Say which week.");
-    expect(groups(main)).toEqual([
-      {
-        name: "App",
-        items: [expect.stringContaining("Say which week."), expect.stringContaining("Index the order date.")],
-      },
-      { name: "Checkout", items: [expect.stringContaining("Drop the second step.")] },
-      { name: "Wallets", items: [expect.stringContaining("Which wallets did they name?")] },
+  test("lists what waits on the member across projects, newest first: who replied on which doc over the track and when, and their track's behaviour questions", async () => {
+    fakeApi();
+    renderAt(INBOX);
+    await screen.findByText("3 behaviour questions");
+    expect(rows()).toEqual([
+      ["Writer agent replied on Pick list spec", "Pick lists · 1 h"],
+      ["Designer agent replied on Pay screens", "Checkout · 2 h"],
+      ["Designer agent replied on Pay screens", "Checkout · 4 h"],
+      ["3 behaviour questions", "Checkout · 1 Oct"],
     ]);
   });
 
-  test("an item shows the doc and its pillar, your comment and the agent's latest reply with its role and age, and opens the comment", async () => {
-    const { home, docs, comments } = seeded();
-    fakeApi(home);
-    renderAt(INBOX_PATH);
-    const main = await page();
-    await within(main).findByText("Say which week.");
-    const item = itemShowing(main, "Say which week.");
-    expect(within(item).getByText("Returns PRD")).toBeTruthy();
-    expect(within(item).getByText("Spec")).toBeTruthy();
-    expect(within(item).getByText("Changed it to seven days, as the policy says.")).toBeTruthy();
-    expect(within(item).getByText("writer")).toBeTruthy();
-    expect(within(item).getByText("1 h ago")).toBeTruthy();
-    expect(item.textContent, "only the latest reply").not.toMatch(/Seven days, I think|Check the policy/);
-    expect(item.getAttribute("href")).toBe(`${PROJECT_PATH}/docs/${docs.returns.id}?comment=${comments.returns.id}`);
+  test("the header's Inbox count matches the list: three replies and one track with questions make 4", async () => {
+    fakeApi();
+    renderAt(INBOX);
+    expect(await screen.findByRole("link", { name: "Inbox, 4 waiting" })).toBeTruthy();
   });
 
-  test("a comment whose element was removed shows the element's snapshot, labelled Element removed", async () => {
-    const { home, comments } = seeded();
-    comments.pay.orphaned = true;
-    comments.pay.snapshot = '<li data-omni-id="l0000001">Pay with Klarna</li>';
-    fakeApi(home);
-    renderAt(INBOX_PATH);
-    const main = await page();
-    await within(main).findByText("Drop the second step.");
-    const item = itemShowing(main, "Drop the second step.");
-    expect(within(item).getByText("Element removed")).toBeTruthy();
-    expect(within(item).getByText("<li>")).toBeTruthy();
-    expect(within(item).getByText("Pay with Klarna")).toBeTruthy();
-    expect(within(itemShowing(main, "Say which week.")).queryByText("Element removed")).toBeNull();
+  test("opens the newest item, and a row opens its own: the doc's quoted text and the whole thread, kept in the URL so Back returns", async () => {
+    fakeApi();
+    const router = renderAt(INBOX);
+    await screen.findByText("3 behaviour questions");
+    expect(within(openItem()).getByRole("heading", { level: 2 }).textContent).toBe("Pick list spec");
+    expect(thread()).toEqual(["How does the scanner start?", "Added the scanner flow."]);
+
+    fireEvent.click(row("Designer agent replied on Pay screens"));
+    await waitFor(() => expect(router.state.location.search).toEqual({ comment: MERGED }));
+    expect(within(openItem()).getByRole("heading", { level: 2 }).textContent).toBe("Pay screens");
+    expect(thread()).toEqual(["Drop the second step.", "I would keep it.", "Drop it anyway.", "Merged the two steps into one."]);
+    expect(await within(openItem()).findByText("“Pay with card, in one step.”")).toBeTruthy();
+    expect(row("Designer agent replied on Pay screens").getAttribute("aria-current")).toBe("page");
+
+    router.history.back();
+    await waitFor(() => expect(within(openItem()).getByRole("heading", { level: 2 }).textContent).toBe("Pick list spec"));
   });
 
-  test("a comment you replied to leaves the open Inbox as the reply's event comes in", async () => {
-    const { home, comments } = seeded();
-    const api = fakeApi(home);
-    renderAt(INBOX_PATH);
-    const main = await page();
-    await within(main).findByText("Say which week.");
+  test("a reply goes to the comment, which leaves the list, and the next item opens", async () => {
+    const api = fakeApi();
+    renderAt(`${INBOX}?comment=${MERGED}`);
+    await waitFor(() => expect(within(openItem()).getByRole("heading", { level: 2 }).textContent).toBe("Pay screens"));
 
-    await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(0));
-    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
-    socket.open();
+    fireEvent.change(within(openItem()).getByRole("textbox", { name: "Reply on Pay screens" }), { target: { value: "Good, ship it." } });
+    fireEvent.click(within(openItem()).getByRole("button", { name: "Reply" }));
+
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    expect(api.replies).toEqual([{ path: `${API}/projects/${STOREFRONT}/comments/${MERGED}/replies`, text: "Good, ship it." }]);
+    expect(rows().map(([title, sub]) => `${title} / ${sub}`)).not.toContain("Designer agent replied on Pay screens / Checkout · 2 h");
+    expect(thread().at(-1)).toBe("Moved the button above the fold.");
+  });
+
+  test("an empty reply is not sent, and asks for words", async () => {
+    const api = fakeApi();
+    renderAt(`${INBOX}?comment=${MOVED}`);
+    await waitFor(() => expect(thread().at(-1)).toBe("Moved the button above the fold."));
+    fireEvent.click(within(openItem()).getByRole("button", { name: "Reply" }));
+    expect(within(openItem()).getByText("Write a reply before you send it.")).toBeTruthy();
+    expect(api.replies).toEqual([]);
+  });
+
+  test("Open in track opens the track's section that shows the doc, with the comment open", async () => {
+    fakeApi();
+    renderAt(`${INBOX}?comment=${MERGED}`);
+    const open = await within(await screen.findByRole("region", { name: "Open item" })).findByRole("link", { name: "Open in track" });
+    expect(open.getAttribute("href")).toBe(`/w/${WS}/projects/${STOREFRONT}/tracks/${CHECKOUT}/design?comment=${MERGED}`);
+
+    fireEvent.click(row("Writer agent replied on Pick list spec"));
     await waitFor(() =>
-      expect(socket.sent).toContainEqual(expect.objectContaining({ type: "subscribe", project_id: PROJECT_ID })),
+      expect(within(openItem()).getByRole("link", { name: "Open in track" }).getAttribute("href")).toBe(
+        `/w/${WS}/projects/${WAREHOUSE}/tracks/${PICK_LISTS}?comment=${SCANNER_FLOW}`,
+      ),
     );
-    socket.receive({ type: "subscribed", project_id: PROJECT_ID, last_seq: 10 });
+  });
 
-    api.home = {
-      ...api.home,
-      waiting: { ...api.home.waiting, comments: [comments.wallets, comments.schema, comments.pay] },
-    };
-    socket.receive({
-      type: "event",
-      seq: 11,
-      event: "comment.replied",
-      project_id: PROJECT_ID,
-      at: "2026-10-21T15:00:00Z",
-      data: { comment_id: comments.returns.id, doc_id: comments.returns.doc_id },
-    });
-    await waitFor(() => expect(within(main).queryByText("Say which week.")).toBeNull());
-    // The app's newest agent reply is now the one of 11:00, so the app comes last.
-    expect(groups(main)).toEqual([
-      { name: "Checkout", items: [expect.stringContaining("Drop the second step.")] },
-      { name: "Wallets", items: [expect.stringContaining("Which wallets did they name?")] },
-      { name: "App", items: [expect.stringContaining("Index the order date.")] },
-    ]);
+  test("the behaviour questions row opens the questions an agent asked, and leads to the track's Behaviour", async () => {
+    fakeApi();
+    const router = renderAt(INBOX);
+    await screen.findByText("3 behaviour questions");
+    fireEvent.click(row("3 behaviour questions"));
+    await waitFor(() => expect(router.state.location.search).toEqual({ questions: CHECKOUT }));
+    expect(within(openItem()).getByText("Question 1?")).toBeTruthy();
+    expect(within(openItem()).queryByText("Question 3?")).toBeNull();
+    expect(within(openItem()).getByRole("link", { name: "Answer on Behaviour" }).getAttribute("href")).toBe(
+      `/w/${WS}/projects/${STOREFRONT}/tracks/${CHECKOUT}/behaviour`,
+    );
+  });
+
+  test("with nothing waiting, says so quietly and leads to My tracks", async () => {
+    const api = fakeApi();
+    for (const home of Object.values(api.homes)) home.waiting.comments = [];
+    vi.stubGlobal("fetch", wrapQuestionsEmpty(globalThis.fetch));
+    renderAt(INBOX);
+    const line = await screen.findByText(/^Nothing waits on you\./);
+    expect(within(line).getByRole("link", { name: "My tracks" }).getAttribute("href")).toBe(`/w/${WS}/my-tracks`);
+    expect(screen.queryByRole("region", { name: "Open item" })).toBeNull();
   });
 });
+
+describe("the Inbox on the phone", () => {
+  test("the list is the page, a row opens its item full screen, and ‹ Inbox goes back to the list", async () => {
+    windowWidth(true);
+    fakeApi();
+    const router = renderAt(INBOX);
+    await screen.findByText("3 behaviour questions");
+    expect(screen.queryByRole("region", { name: "Open item" })).toBeNull();
+
+    fireEvent.click(row("Designer agent replied on Pay screens"));
+    await waitFor(() => expect(thread().at(-1)).toBe("Merged the two steps into one."));
+    expect(screen.queryByRole("list", { name: "Waiting on you" })).toBeNull();
+
+    fireEvent.click(within(openItem()).getByRole("link", { name: "Inbox" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({}));
+    expect(rows()).toHaveLength(4);
+    expect(screen.queryByRole("region", { name: "Open item" })).toBeNull();
+  });
+});
+
+/** The fake API, but with no behaviour questions on any track. */
+function wrapQuestionsEmpty(fetch: typeof globalThis.fetch): typeof globalThis.fetch {
+  return async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/behaviour/questions")) return new Response(JSON.stringify({ questions: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    return fetch(input, init);
+  };
+}

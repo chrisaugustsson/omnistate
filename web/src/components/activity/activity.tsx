@@ -45,7 +45,7 @@ function agentLabel(agent: ActivityAgent): string {
 function DocShell({ workspaceId, projectId, docId, children }: Params & { children: (doc: DocBody) => ReactNode }) {
   const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
   const loaded = doc.value?.id === docId ? doc.value : null;
-  useVisit(projectId, loaded ? (loaded.feature_id ?? "app") : undefined, loaded ? docId : undefined);
+  useVisit(projectId, loaded ? (loaded.track_id ?? "app") : undefined, loaded ? docId : undefined);
   return (
     <main className="flex min-h-full flex-col">
       <ViewerToolbar
@@ -131,7 +131,7 @@ function ActivityList({ workspaceId, projectId, docId }: Params) {
       )}
       {entries === null && !failed && <div className="h-14 animate-pulse rounded-xl bg-muted" aria-hidden />}
       {entries?.length === 0 && (
-        <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+        <p className="py-8 text-center text-ink-3">
           Nothing has been written to this doc yet.
         </p>
       )}
@@ -381,9 +381,9 @@ function Pair({
 function Side({ caption, children }: { caption: string; children: ReactNode }) {
   return (
     <div className="min-w-0 space-y-1.5">
-      <div className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">{caption}</div>
+      <div className="text-meta font-medium text-ink-3">{caption}</div>
       {children ?? (
-        <p className="rounded-lg border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">Not present</p>
+        <p className="py-6 text-center text-ink-3">Not present</p>
       )}
     </div>
   );
@@ -474,7 +474,7 @@ function Picture({ load }: { load: () => Promise<Drawn> }) {
   return (
     <div className="space-y-1.5">
       {state === "failed" && (
-        <p className="rounded-lg border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+        <p className="py-6 text-center text-ink-3">
           This could not be drawn
         </p>
       )}

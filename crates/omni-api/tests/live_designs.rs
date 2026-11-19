@@ -364,36 +364,49 @@ fn new_project(ws: &Ws, client: &Client) -> String {
     .to_string()
 }
 
-fn new_feature(ws: &Ws, client: &Client, project: &str) -> String {
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(ws: &Ws, client: &Client, project: &str) -> String {
     str_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/features", project_base(ws, project)),
+                &format!("{}/parts", project_base(ws, project)),
                 &agent(ws),
-                Some(&json!({ "name": unique("Checkout") })),
+                Some(&json!({ "name": unique("part"), "kind": "app" })),
             ),
             201,
-            "create a feature",
-        )["feature"],
+            "create a part",
+        )["part"],
+        "id",
+    )
+    .to_string()
+}
+
+fn new_track(ws: &Ws, client: &Client, project: &str) -> String {
+    str_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/tracks", project_base(ws, project)),
+                &agent(ws),
+                Some(&json!({ "name": unique("Checkout"), "part_id": new_part(ws, client, project) })),
+            ),
+            201,
+            "create a track",
+        )["track"],
         "id",
     )
     .to_string()
 }
 
 /// Creates a doc of `kind` in the UI pillar (US-102), at
-/// the app level or in `feature`; returns its ID.
-fn new_ui_doc(
-    ws: &Ws,
-    client: &Client,
-    project: &str,
-    feature: Option<&str>,
-    kind: &str,
-) -> String {
-    let path = match feature {
+/// the app level or in `track`; returns its ID.
+fn new_ui_doc(ws: &Ws, client: &Client, project: &str, track: Option<&str>, kind: &str) -> String {
+    let path = match track {
         None => format!("{}/docs", project_base(ws, project)),
-        Some(feature) => format!("{}/features/{feature}/docs", project_base(ws, project)),
+        Some(track) => format!("{}/tracks/{track}/docs", project_base(ws, project)),
     };
     str_of(
         &must(
@@ -1245,12 +1258,12 @@ fn designs_resolve_instances_and_tokens_against_the_design_systems_head() {
     let (ws, client) = ready();
     let project = new_project(ws, client);
     let (_, button) = design_system(ws, client, &project, "#2563eb");
-    let feature = new_feature(ws, client, &project);
+    let track = new_track(ws, client, &project);
 
     // Two designs that use the Button and the brand token: one at the app
-    // level and one in a feature.
+    // level and one in a track.
     let mut designs = Vec::new();
-    for (scope, name) in [(None, "App"), (Some(feature.as_str()), "Feature")] {
+    for (scope, name) in [(None, "App"), (Some(track.as_str()), "Track")] {
         let doc = new_ui_doc(ws, client, &project, scope, "design");
         let page = first_page(ws, client, &project, &doc);
         let results = edit(

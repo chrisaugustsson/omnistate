@@ -181,10 +181,32 @@ fn a_story_added_claimed_ticked_and_moved_to_done_reads_back_as_done() {
     let project = unique("board");
     let created = run_as(&home, AGENT, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let part = run_as(
+        &home,
+        AGENT,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
     let feature = run_as(
         &home,
         AGENT,
-        &["feature", "create", "stories", "--project", &project],
+        &[
+            "track",
+            "create",
+            "stories",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
     );
     assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
     let file = home.join("story.md");
@@ -197,7 +219,7 @@ fn a_story_added_claimed_ticked_and_moved_to_done_reads_back_as_done() {
          - [ ] It is done\n",
     )
     .unwrap();
-    let scope = ["--project", project.as_str(), "--feature", "stories"];
+    let scope = ["--project", project.as_str(), "--track", "stories"];
     let story = |args: &[&str]| run_as(&home, AGENT, &[args, &scope[..]].concat());
 
     let added = story(&["story", "add", &file.display().to_string()]);
@@ -225,4 +247,400 @@ fn a_story_added_claimed_ticked_and_moved_to_done_reads_back_as_done() {
     assert_eq!(back["status"], "done");
     assert_eq!(back["criteria"][0]["ticked"], true);
     assert_eq!(back["holder"], serde_json::Value::Null);
+}
+
+/// Adds a story with one criterion from a prd-format file; returns its key.
+fn add_story(home: &Scratch, scope: &[&str], title: &str) -> String {
+    let file = home.join(&format!("{}.md", unique("story")));
+    std::fs::write(
+        &file,
+        format!(
+            "### {title}\n\
+             **Description:** As the workflow, I want {title}.\n\
+             \n\
+             **Acceptance Criteria:**\n\
+             - [ ] It is done\n"
+        ),
+    )
+    .unwrap();
+    let added = run_as(
+        home,
+        AGENT,
+        &[&["story", "add", &file.display().to_string()], scope].concat(),
+    );
+    assert_eq!(added.code, 0, "story add: {}", added.stderr);
+    added.stdout.trim().to_string()
+}
+
+/// US-319: a story is blocked by a story on another part's track of the same
+/// project; `read` names the blocker's track and status, and the story is not
+/// pickable until the blocker is done.
+#[test]
+fn a_story_blocked_from_another_track_reads_its_track_and_status_and_waits_until_it_is_done() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("board");
+    let created = run_as(&home, AGENT, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    for (part, kind, track) in [
+        ("Wision", "app", "Analyze"),
+        ("iot-service", "service", "Ingest"),
+    ] {
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "part",
+                "create",
+                part,
+                "--kind",
+                kind,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "part create {part}: {}", made.stderr);
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "track",
+                "create",
+                track,
+                "--part",
+                part,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "track create {track}: {}", made.stderr);
+    }
+    let on_analyze = ["--project", project.as_str(), "--track", "Analyze"];
+    let on_ingest = ["--project", project.as_str(), "--track", "Ingest"];
+    let blocked = add_story(&home, &on_analyze, "Show the windows");
+    let blocker = add_story(&home, &on_ingest, "Store the windows");
+    let analyze = |args: &[&str]| run_as(&home, AGENT, &[args, &on_analyze[..]].concat());
+    let ingest = |args: &[&str]| run_as(&home, AGENT, &[args, &on_ingest[..]].concat());
+    let blocked_by_line = || {
+        let read = analyze(&["story", "read", &blocked]);
+        assert_eq!(read.code, 0, "story read: {}", read.stderr);
+        read.stdout
+            .lines()
+            .find(|line| line.starts_with("blocked by:"))
+            .unwrap_or_else(|| panic!("read shows no blocker: {}", read.stdout))
+            .to_string()
+    };
+    let pickable = || {
+        let listed = analyze(&["story", "list", "--pickable"]);
+        assert_eq!(listed.code, 0, "story list: {}", listed.stderr);
+        listed
+            .stdout
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(blocked.as_str()))
+    };
+
+    let edited = analyze(&["story", "edit", &blocked, "--blocked-by", &blocker]);
+    assert_eq!(edited.code, 0, "story edit: {}", edited.stderr);
+    let line = blocked_by_line();
+    for part in [blocker.as_str(), "Ingest", "backlog"] {
+        assert!(line.contains(part), "{part:?} missing from {line:?}");
+    }
+    assert!(!pickable(), "{blocked} waits for {blocker}");
+
+    for step in [
+        &[
+            "story",
+            "claim",
+            &blocker,
+            "--run",
+            "r1",
+            "--stage",
+            "implementing",
+        ][..],
+        &["story", "tick", &blocker, "--run", "r1", "--criterion", "0"],
+        &["story", "move", &blocker, "--run", "r1", "--to", "done"],
+    ] {
+        let done = ingest(step);
+        assert_eq!(done.code, 0, "{step:?}: {}", done.stderr);
+    }
+    let line = blocked_by_line();
+    for part in [blocker.as_str(), "Ingest", "done"] {
+        assert!(line.contains(part), "{part:?} missing from {line:?}");
+    }
+    assert!(pickable(), "{blocked} is pickable once {blocker} is done");
+}
+
+/// US-320: a track is split off onto another part, both tracks show the link,
+/// and a story moved to the new track keeps its key and its blockers.
+#[test]
+fn a_track_is_split_off_and_a_story_moved_to_it_keeps_its_key_and_blockers() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("monitoring");
+    let created = run_as(&home, AGENT, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    for (part, kind) in [("Wision", "app"), ("iot-service", "service")] {
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "part",
+                "create",
+                part,
+                "--kind",
+                kind,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "part create {part}: {}", made.stderr);
+    }
+    let made = run_as(
+        &home,
+        AGENT,
+        &[
+            "track",
+            "create",
+            "Long windows",
+            "--part",
+            "Wision",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(made.code, 0, "track create: {}", made.stderr);
+    let split = run_as(
+        &home,
+        AGENT,
+        &[
+            "track",
+            "split",
+            "Aggregated readings",
+            "--part",
+            "iot-service",
+            "--from",
+            "Long windows",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(split.code, 0, "track split: {}", split.stderr);
+
+    // Each track's show names the other under its side of the link.
+    for (track, heading, other) in [
+        ("Aggregated readings", "split off from:", "Long windows"),
+        ("Long windows", "split off to:", "Aggregated readings"),
+    ] {
+        let shown = run_as(
+            &home,
+            AGENT,
+            &["track", "show", track, "--project", &project],
+        );
+        assert_eq!(shown.code, 0, "track show {track}: {}", shown.stderr);
+        let lines: Vec<&str> = shown.stdout.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.trim() == heading)
+            .unwrap_or_else(|| panic!("{track}: no {heading:?} in {:?}", shown.stdout));
+        assert!(
+            lines.get(at + 1).is_some_and(|line| line.contains(other)),
+            "{track}: {other:?} follows {heading:?}: {:?}",
+            shown.stdout
+        );
+    }
+    let shown = run_as(
+        &home,
+        AGENT,
+        &[
+            "track",
+            "show",
+            "Aggregated readings",
+            "--project",
+            &project,
+        ],
+    );
+    assert!(
+        shown.stdout.contains("planning"),
+        "the split-off track is planning: {:?}",
+        shown.stdout
+    );
+
+    let on_long = ["--project", project.as_str(), "--track", "Long windows"];
+    let on_aggregated = [
+        "--project",
+        project.as_str(),
+        "--track",
+        "Aggregated readings",
+    ];
+    let blocker = add_story(&home, &on_long, "Read the windows");
+    let moving = add_story(&home, &on_long, "Aggregate the readings");
+    let dependant = add_story(&home, &on_long, "Show the aggregates");
+    let long = |args: &[&str]| run_as(&home, AGENT, &[args, &on_long[..]].concat());
+    let aggregated = |args: &[&str]| run_as(&home, AGENT, &[args, &on_aggregated[..]].concat());
+    let edited = long(&["story", "edit", &moving, "--blocked-by", &blocker]);
+    assert_eq!(edited.code, 0, "story edit: {}", edited.stderr);
+    let edited = long(&["story", "edit", &dependant, "--blocked-by", &moving]);
+    assert_eq!(edited.code, 0, "story edit: {}", edited.stderr);
+
+    let moved = long(&[
+        "story",
+        "move-track",
+        &moving,
+        "--to",
+        "Aggregated readings",
+    ]);
+    assert_eq!(moved.code, 0, "story move-track: {}", moved.stderr);
+
+    let keys = |out: Out| -> Vec<String> {
+        assert_eq!(out.code, 0, "story list: {}", out.stderr);
+        out.stdout
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|word| word.starts_with("US-"))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        keys(aggregated(&["story", "list"])),
+        vec![moving.clone()],
+        "the story is on Aggregated readings"
+    );
+    assert_eq!(
+        keys(long(&["story", "list"])),
+        vec![blocker.clone(), dependant.clone()],
+        "the story has left Long windows"
+    );
+    let blocked_by_line = |read: Out| -> String {
+        assert_eq!(read.code, 0, "story read: {}", read.stderr);
+        read.stdout
+            .lines()
+            .find(|line| line.starts_with("blocked by:"))
+            .unwrap_or_else(|| panic!("read shows no blocker: {}", read.stdout))
+            .to_string()
+    };
+    let line = blocked_by_line(aggregated(&["story", "read", &moving]));
+    assert!(
+        line.contains(&blocker) && line.contains("Long windows"),
+        "the moved story is still blocked by {blocker} on Long windows: {line:?}"
+    );
+    let line = blocked_by_line(long(&["story", "read", &dependant]));
+    assert!(
+        line.contains(&moving) && line.contains("Aggregated readings"),
+        "{dependant} is still blocked by {moving}, now on Aggregated readings: {line:?}"
+    );
+}
+
+/// US-321: when the blocker's track is dropped, `read` prints "blocker
+/// dropped" next to that blocker and the story stays unpickable; only the
+/// blocker becoming done releases it, and then the mark goes.
+#[test]
+fn a_blocker_on_a_dropped_track_reads_blocker_dropped_and_keeps_blocking_until_it_is_done() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("monitoring");
+    let created = run_as(&home, AGENT, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    for (part, kind, track) in [
+        ("Wision", "app", "Wision track"),
+        ("iot-service", "service", "Ingest"),
+    ] {
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "part",
+                "create",
+                part,
+                "--kind",
+                kind,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "part create {part}: {}", made.stderr);
+        let made = run_as(
+            &home,
+            AGENT,
+            &[
+                "track",
+                "create",
+                track,
+                "--part",
+                part,
+                "--project",
+                &project,
+            ],
+        );
+        assert_eq!(made.code, 0, "track create {track}: {}", made.stderr);
+    }
+    let on_wision = ["--project", project.as_str(), "--track", "Wision track"];
+    let on_ingest = ["--project", project.as_str(), "--track", "Ingest"];
+    let blocker = add_story(&home, &on_ingest, "Store the windows");
+    let blocked = add_story(&home, &on_wision, "Show the windows");
+    let wision = |args: &[&str]| run_as(&home, AGENT, &[args, &on_wision[..]].concat());
+    let ingest = |args: &[&str]| run_as(&home, AGENT, &[args, &on_ingest[..]].concat());
+    let blocked_by_line = || {
+        let read = wision(&["story", "read", &blocked]);
+        assert_eq!(read.code, 0, "story read: {}", read.stderr);
+        read.stdout
+            .lines()
+            .find(|line| line.starts_with("blocked by:"))
+            .unwrap_or_else(|| panic!("read shows no blocker: {}", read.stdout))
+            .to_string()
+    };
+    let pickable = || {
+        let listed = wision(&["story", "list", "--pickable"]);
+        assert_eq!(listed.code, 0, "story list: {}", listed.stderr);
+        listed
+            .stdout
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(blocked.as_str()))
+    };
+
+    let edited = wision(&["story", "edit", &blocked, "--blocked-by", &blocker]);
+    assert_eq!(edited.code, 0, "story edit: {}", edited.stderr);
+    let line = blocked_by_line();
+    assert!(line.contains(&blocker), "{line:?}");
+    assert!(
+        !line.contains("blocker dropped"),
+        "the track is live: {line:?}"
+    );
+
+    let dropped = run_as(
+        &home,
+        AGENT,
+        &["track", "state", "Ingest", "dropped", "--project", &project],
+    );
+    assert_eq!(dropped.code, 0, "track state: {}", dropped.stderr);
+    let line = blocked_by_line();
+    assert!(line.contains(&blocker), "{line:?}");
+    assert!(line.contains("blocker dropped"), "{line:?}");
+    assert!(
+        !pickable(),
+        "{blocked} stays blocked by {blocker} on the dropped track"
+    );
+
+    for step in [
+        &[
+            "story",
+            "claim",
+            &blocker,
+            "--run",
+            "r1",
+            "--stage",
+            "implementing",
+        ][..],
+        &["story", "tick", &blocker, "--run", "r1", "--criterion", "0"],
+        &["story", "move", &blocker, "--run", "r1", "--to", "done"],
+    ] {
+        let done = ingest(step);
+        assert_eq!(done.code, 0, "{step:?}: {}", done.stderr);
+    }
+    let line = blocked_by_line();
+    assert!(line.contains("done"), "{line:?}");
+    assert!(
+        !line.contains("blocker dropped"),
+        "a done blocker holds nothing: {line:?}"
+    );
+    assert!(pickable(), "{blocked} is pickable once {blocker} is done");
 }

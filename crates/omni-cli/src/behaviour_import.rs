@@ -1,5 +1,5 @@
 //! `omni behaviour import <folder> [--check]`: reads a grill-tree folder (a
-//! `node.md` in every node folder) into the empty behaviour tree of a feature
+//! `node.md` in every node folder) into the empty behaviour tree of a track
 //! with one request. Everything is read and checked before anything is sent.
 
 use std::collections::{HashMap, HashSet};
@@ -203,7 +203,7 @@ fn read_folder(
     let mut rules = Vec::new();
     let at = shown(path);
     let scope = if path.is_empty() {
-        "feature"
+        "track"
     } else if !path.contains('/') {
         "story"
     } else {

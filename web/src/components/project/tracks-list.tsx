@@ -1,0 +1,178 @@
+import { useState } from "react";
+import { ListFilter } from "lucide-react";
+import type { TrackSummary } from "@/api/generated";
+import { Select } from "@/components/shell/select";
+import { useIsPhone } from "@/components/shell/shell-context";
+import { StateIcon, TRACK_STATES, stateLabel } from "@/components/shell/state-icon";
+import { useHome } from "@/lib/use-home";
+import { cn } from "@/lib/utils";
+import { StartTrackForm } from "./forms";
+import { PartNotFound } from "./overview";
+import { useMemberNames, useRowFlags, useProjectMap } from "./project-data";
+import { Band, btnPrimary, ScopePage } from "./rows";
+import { TrackLine } from "./track-lines";
+
+// The Tracks of a project or a part, grouped by state like Linear: a band per
+// state (Planning, Building, Done, Dropped) with its count, the most recently
+// active track first in each. A filter bar narrows them by state, owner and
+// (on the project) part; Start track at its end (under the list on the phone)
+// opens the form. The
+// sidebar names the section, so the page has no visible title.
+
+type Params = { workspaceId: string; projectId: string };
+
+const activity = ({ track, last_activity }: TrackSummary) => Date.parse(last_activity ?? track.created_at) || 0;
+const byActivity = (a: TrackSummary, b: TrackSummary) => activity(b) - activity(a) || a.track.name.localeCompare(b.track.name);
+
+/** A filter of the bar: a quiet chip that opens its options, lit while it holds one. */
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly { value: string; label: string }[];
+}) {
+  return <Select look="filter" aria-label={label} value={value} onChange={onChange} options={options} />;
+}
+
+/** The Tracks page of a project, or with `partId` of a part. */
+export function TracksPage({ workspaceId, projectId, partId }: Params & { partId?: string }) {
+  const params = { workspaceId, projectId };
+  const { home, failed, reload } = useHome(workspaceId, projectId);
+  const { map } = useProjectMap(workspaceId, projectId);
+  const names = useMemberNames(workspaceId);
+  const phone = useIsPhone();
+  const [starting, setStarting] = useState(false);
+  const [state, setState] = useState("");
+  const [owner, setOwner] = useState("");
+  const [part, setPart] = useState("");
+
+  const all = home?.tracks ?? [];
+  const scoped = partId ? all.filter(({ track }) => track.part_id === partId) : all;
+  const questions = useRowFlags(workspaceId, home ? scoped : null);
+  const thePart = partId ? map?.parts.find((candidate) => candidate.id === partId) : undefined;
+  if (partId && map && !thePart) return <PartNotFound params={params} />;
+
+  const shown = scoped.filter(
+    ({ track }) => (!state || track.state === state) && (!owner || track.owner_user_id === owner) && (!part || track.part_id === part),
+  );
+  const owners = [...new Set(scoped.map(({ track }) => track.owner_user_id).filter((id): id is string => Boolean(id)))];
+  const filtered = Boolean(state || owner || part);
+
+  return (
+    <ScopePage>
+      <h1 className="sr-only">Tracks</h1>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {home && (
+          <div role="group" aria-label="Filter" className="flex min-w-0 flex-1 basis-72 flex-wrap items-center gap-1">
+            <ListFilter aria-hidden className="mr-1 size-(--icon-sm) text-ink-3" />
+            <FilterSelect
+              label="State"
+              value={state}
+              onChange={setState}
+              options={[{ value: "", label: "Any state" }, ...TRACK_STATES.map((one) => ({ value: one, label: stateLabel(one) }))]}
+            />
+            <FilterSelect
+              label="Owner"
+              value={owner}
+              onChange={setOwner}
+              options={[{ value: "", label: "Anyone" }, ...owners.map((id) => ({ value: id, label: names?.get(id) ?? "Owner" }))]}
+            />
+            {!partId && (
+              <FilterSelect
+                label="Part"
+                value={part}
+                onChange={setPart}
+                options={[{ value: "", label: "Any part" }, ...(map?.parts ?? []).map((one) => ({ value: one.id, label: one.name }))]}
+              />
+            )}
+            {filtered && (
+              <button
+                type="button"
+                className="ml-1 h-6 rounded-badge px-1.5 text-meta font-medium text-ink-3 hover:bg-hover hover:text-ink"
+                onClick={() => {
+                  setState("");
+                  setOwner("");
+                  setPart("");
+                }}
+              >
+                Clear
+              </button>
+            )}
+            <span aria-live="polite" className="ml-auto text-meta text-ink-3 tabular-nums">
+              {filtered ? `${shown.length} of ${scoped.length}` : scoped.length} {scoped.length === 1 ? "track" : "tracks"}
+            </span>
+          </div>
+        )}
+        {!phone && (
+          <button type="button" className={cn(btnPrimary, "ml-auto")} aria-expanded={starting} onClick={() => setStarting(!starting)}>
+            Start track
+          </button>
+        )}
+      </div>
+      {starting && map && (
+        <StartTrackForm
+          {...params}
+          fixedPartId={partId}
+          parts={map.parts}
+          onDone={(created) => {
+            setStarting(false);
+            if (created) reload();
+          }}
+        />
+      )}
+      {failed && (
+        <p role="alert" className="mt-4 text-danger-ink">
+          The tracks could not be loaded. Try again in a moment.
+        </p>
+      )}
+      {home && (
+        <>
+          {scoped.length === 0 ? (
+            <p className="mt-3 border-y border-line py-2.5 text-ink-3">
+              No tracks yet. A track is one piece of work on a part; start one to change something.
+            </p>
+          ) : shown.length === 0 ? (
+            <p className="mt-3 border-y border-line py-2.5 text-ink-3">No track matches the filter.</p>
+          ) : (
+            <div className="mt-3">
+              {TRACK_STATES.map((band) => {
+                const tracks = shown.filter(({ track }) => track.state === band).sort(byActivity);
+                if (tracks.length === 0) return null;
+                return (
+                  <section key={band} aria-label={stateLabel(band)} className="mb-2">
+                    <Band icon={<StateIcon state={band} />} count={tracks.length}>
+                      {stateLabel(band)}
+                    </Band>
+                    <ul className="border-b border-line [&>li:first-child>a]:border-t-0">
+                      {tracks.map((summary) => (
+                        <TrackLine
+                          key={summary.track.id}
+                          summary={summary}
+                          all={all}
+                          params={params}
+                          map={map}
+                          questions={questions}
+                          showPart={!partId}
+                        />
+                      ))}
+                    </ul>
+                  </section>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+      {phone && (
+        <button type="button" className={cn(btnPrimary, "mt-4 h-(--control-h-lg) w-full")} aria-expanded={starting} onClick={() => setStarting(!starting)}>
+          Start track
+        </button>
+      )}
+    </ScopePage>
+  );
+}

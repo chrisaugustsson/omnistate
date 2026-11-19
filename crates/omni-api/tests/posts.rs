@@ -359,7 +359,39 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
+/// A new track of the project, on a new part, for a thread to start on
+/// (US-325: threads live only on tracks).
+fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
+    let part = id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/parts", project_base(f, project)),
+                &agent(f),
+                Some(&json!({ "name": unique("part"), "kind": "app" })),
+            ),
+            201,
+            "create a part",
+        )["part"],
+    );
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/tracks", project_base(f, project)),
+                &agent(f),
+                Some(&json!({ "name": unique("Checkout"), "part_id": part })),
+            ),
+            201,
+            "create a track",
+        )["track"],
+    )
+}
+
 fn new_thread(f: &Fixture, client: &Client, project: &str) -> String {
+    let track = new_track(f, client, project);
     id_of(
         &must(
             call(
@@ -367,7 +399,7 @@ fn new_thread(f: &Fixture, client: &Client, project: &str) -> String {
                 "POST",
                 &format!("{}/threads", project_base(f, project)),
                 &agent(f),
-                Some(&json!({ "question": unique("Which hero layout?") })),
+                Some(&json!({ "question": unique("Which hero layout?"), "track_id": track })),
             ),
             201,
             "start a thread",

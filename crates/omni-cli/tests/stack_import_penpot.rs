@@ -1,4 +1,4 @@
-//! US-051, US-105: `omni import penpot <file.penpot> --project <id> [--feature
+//! US-051, US-105: `omni import penpot <file.penpot> --project <id> [--track
 //! <name>]` against the real API. Run with `--features stack-tests` in the
 //! Compose test container, which reaches Postgres at `postgres:5432` and
 //! RustFS at `rustfs:9000`.
@@ -38,7 +38,7 @@
 //!   /components`) writes into that same doc: its tokens and components stay,
 //!   with the IDs they had, the export's are added, and a token of the same
 //!   path takes the export's value.
-//! - With `--feature <name>` the design doc lands in that feature's UI pillar,
+//! - With `--track <name>` the design doc lands in that feature's UI pillar,
 //!   and the tokens and components land in the project's app-level design
 //!   system.
 //! - The fonts its texts use, when their files sit beside the export in
@@ -1152,13 +1152,13 @@ fn import_penpot_writes_the_design_and_its_design_system() {
 
     let design = doc_of(f, &home, &project, &imported.design_doc);
     assert_eq!(
-        (&design["kind"], &design["pillar"], &design["feature_id"]),
+        (&design["kind"], &design["pillar"], &design["track_id"]),
         (&json!("design"), &json!("ui"), &Value::Null),
         "a design doc of the app level's UI pillar: {design}"
     );
     let system = doc_of(f, &home, &project, &imported.design_system_doc);
     assert_eq!(
-        (&system["kind"], &system["pillar"], &system["feature_id"]),
+        (&system["kind"], &system["pillar"], &system["track_id"]),
         (&json!("design-system"), &json!("ui"), &Value::Null),
         "the project's design system: {system}"
     );
@@ -1375,28 +1375,50 @@ fn with_feature_the_design_lands_in_the_feature_and_the_design_system_at_the_app
     let home = agent_home(f);
     let project = new_project(&home);
     let name = unique("Kassaflöde");
+    let part = run(
+        &home,
+        &[
+            "part",
+            "create",
+            "Wision",
+            "--kind",
+            "app",
+            "--project",
+            &project,
+        ],
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
     let created = json_of(
         &run(
             &home,
-            &["feature", "create", &name, "--project", &project, "--json"],
+            &[
+                "track",
+                "create",
+                &name,
+                "--part",
+                "Wision",
+                "--project",
+                &project,
+                "--json",
+            ],
         ),
         "feature create",
     );
-    let feature = created["feature"]["id"]
+    let feature = created["track"]["id"]
         .as_str()
         .expect("a feature id")
         .to_string();
 
-    let imported = import_with(&home, &project, &write_export(&home), &["--feature", &name]);
+    let imported = import_with(&home, &project, &write_export(&home), &["--track", &name]);
     let design = doc_of(f, &home, &project, &imported.design_doc);
     assert_eq!(
-        (&design["kind"], &design["pillar"], &design["feature_id"]),
+        (&design["kind"], &design["pillar"], &design["track_id"]),
         (&json!("design"), &json!("ui"), &json!(feature)),
         "the design is in the feature's UI pillar: {design}"
     );
     let system = doc_of(f, &home, &project, &imported.design_system_doc);
     assert_eq!(
-        (&system["kind"], &system["pillar"], &system["feature_id"]),
+        (&system["kind"], &system["pillar"], &system["track_id"]),
         (&json!("design-system"), &json!("ui"), &Value::Null),
         "the design system is the app level's: {system}"
     );

@@ -215,12 +215,21 @@ fn an_agent_creates_docs_and_reads_them_at_once() {
     let created = run(&home, &["project", "create", &project]);
     assert_eq!(created.code, 0, "project create: {}", created.stderr);
     let p = ["--project", project.as_str()];
+    let part = run(
+        &home,
+        &[&["part", "create", "Wision", "--kind", "app"][..], &p].concat(),
+    );
+    assert_eq!(part.code, 0, "part create: {}", part.stderr);
     let feature = run(
         &home,
-        &[&["feature", "create", "Checkout", "--json"][..], &p].concat(),
+        &[
+            &["track", "create", "Checkout", "--part", "Wision", "--json"][..],
+            &p,
+        ]
+        .concat(),
     );
     assert_eq!(feature.code, 0, "feature create: {}", feature.stderr);
-    let checkout = feature.json()["feature"]["id"]
+    let checkout = feature.json()["track"]["id"]
         .as_str()
         .expect("a feature id")
         .to_string();
@@ -242,20 +251,20 @@ fn an_agent_creates_docs_and_reads_them_at_once() {
         out.json()["doc"].clone()
     };
     let plan = create(&[], "html", "spec", "Checkout plan");
-    assert_eq!(plan["feature_id"], Value::Null, "{plan}");
+    assert_eq!(plan["track_id"], Value::Null, "{plan}");
     let architecture = create(
-        &["--feature", "checkout"],
+        &["--track", "checkout"],
         "html",
         "architecture",
         "Checkout architecture",
     );
     assert_eq!(
-        architecture["feature_id"],
+        architecture["track_id"],
         checkout.as_str(),
         "the doc is in the feature: {architecture}"
     );
-    let screens = create(&["--feature", "Checkout"], "design", "ui", "Screens");
-    assert_eq!(screens["feature_id"], checkout.as_str(), "{screens}");
+    let screens = create(&["--track", "Checkout"], "design", "ui", "Screens");
+    assert_eq!(screens["track_id"], checkout.as_str(), "{screens}");
 
     for doc in [&plan, &architecture] {
         let id = doc["id"].as_str().expect("a doc id");
@@ -445,4 +454,99 @@ fn an_agent_renames_and_deletes_a_live_doc_from_the_command_line() {
         ["create", "rename", "delete"],
         "the creation, the rename and the delete are logged"
     );
+}
+
+// US-328: a doc created on a part is listed by that part's list and by no
+// other scope's list; the part's list holds none of its features' or tracks'
+// docs.
+#[test]
+fn a_doc_on_a_part_is_listed_by_that_part_and_by_no_other_scope() {
+    let f = fixture();
+    let home = agent_home(f);
+    let project = unique("parts");
+    let created = run(&home, &["project", "create", &project]);
+    assert_eq!(created.code, 0, "project create: {}", created.stderr);
+    let p = ["--project", project.as_str()];
+    let must = |args: &[&str]| -> Out {
+        let out = run(&home, &[args, &p].concat());
+        assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
+        out
+    };
+    must(&["part", "create", "iot-service", "--kind", "service"]);
+    must(&["part", "create", "Wision", "--kind", "app"]);
+    must(&["feature", "create", "Gateway", "--part", "iot-service"]);
+    must(&["track", "create", "Ingest", "--part", "iot-service"]);
+    let doc_id = |out: Out| -> String {
+        out.json()["doc"]["id"]
+            .as_str()
+            .expect("a doc id")
+            .to_string()
+    };
+    let architecture = doc_id(must(&[
+        "doc",
+        "create",
+        "--part",
+        "iot-service",
+        "--kind",
+        "html",
+        "--pillar",
+        "architecture",
+        "--title",
+        "Architecture",
+        "--json",
+    ]));
+    let on_feature = doc_id(must(&[
+        "doc",
+        "create",
+        "--feature",
+        "Gateway",
+        "--part",
+        "iot-service",
+        "--kind",
+        "html",
+        "--pillar",
+        "spec",
+        "--title",
+        "Gateway",
+        "--json",
+    ]));
+    let on_track = doc_id(must(&[
+        "doc",
+        "create",
+        "--track",
+        "Ingest",
+        "--kind",
+        "html",
+        "--pillar",
+        "spec",
+        "--title",
+        "Ingest plan",
+        "--json",
+    ]));
+    let global = doc_id(must(&[
+        "doc", "create", "--global", "--kind", "html", "--pillar", "spec", "--title", "Brief",
+        "--json",
+    ]));
+    let listed = |args: &[&str]| -> Vec<String> {
+        must(&[&["doc", "list"][..], args].concat())
+            .stdout
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|word| word.len() == 36)
+            .map(str::to_string)
+            .collect()
+    };
+
+    assert_eq!(
+        listed(&["--part", "iot-service"]),
+        [architecture.clone()],
+        "the part's list has its own doc, not those of its feature or track"
+    );
+    assert_eq!(listed(&["--part", "Wision"]), Vec::<String>::new());
+    assert_eq!(
+        listed(&["--feature", "Gateway", "--part", "iot-service"]),
+        [on_feature]
+    );
+    assert_eq!(listed(&["--track", "Ingest"]), [on_track]);
+    assert_eq!(listed(&["--global"]), [global]);
 }

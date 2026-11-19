@@ -6,7 +6,7 @@
 //! The suite migrates a scratch database and seeds two workspaces, Alpha (A)
 //! and Beta (B), through the API itself, so that every tenant table has rows of
 //! both. Each has a member (alice, bob), a session, an API key, a spare key, two
-//! projects, a feature with a doc, a file, a doc with one paragraph (the human
+//! projects, a track with a doc, a file, a doc with one paragraph (the human
 //! commented on it and the agent replied) and a sealed thread with a post of the
 //! agent. The API's router is served on a local port.
 //!
@@ -18,7 +18,10 @@
 //!   placeholders of a path with the IDs of the seeded records; a path with
 //!   another placeholder, or a registry route without a case, fails the suite.
 //!   A body may hold `<comment_node>`, the paragraph of `{doc_id}` that the
-//!   seeded comment is pinned to, and `<node>`, the `{node_id}` behaviour node.
+//!   seeded comment is pinned to, `<node>`, the `{node_id}` behaviour node,
+//!   `<part>`, the `{part_id}` part, `<feature>`, the `{feature_id}`
+//!   feature, `<track>`, the `{track_id}` track, and `<membership>`, the
+//!   workspace's membership.
 //! - Workspace A's credentials against workspace B's workspace and IDs, and
 //!   against B's IDs under A's own workspace, are always 404
 //!   `{"error": "not_found"}` with nothing of B in the body, and the answer is
@@ -272,139 +275,145 @@ const CASES: &[Case] = &[
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour",
         None,
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes",
         Some(r#"{"title":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}",
         None,
         Kind::Workspace,
     ),
     case(
         "PATCH",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}",
         Some(r#"{"expected_version":1,"title":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/move",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/move",
         Some(r#"{"expected_version":1,"parent_id":"<node>"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/questions",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/questions",
         Some(r#"{"question":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/nodes/{node_id}/rules",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/nodes/{node_id}/rules",
         Some(r#"{"text":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules",
         None,
         Kind::Workspace,
     ),
     case(
         "PATCH",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/rules/{rule_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/rules/{rule_id}",
         Some(r#"{"expected_version":1,"text":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions",
         None,
         Kind::Workspace,
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}",
         None,
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/questions/{question_id}/answers",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/questions/{question_id}/answers",
         Some(r#"{"expected_version":1,"answer":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/behaviour/import",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/behaviour/import",
         Some(r#"{"nodes":[{"key":"r","parent":null,"title":"intruder"}]}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories",
         Some(r#"{"title":"intruder","text":"","topic":"","criteria":[]}"#),
         Kind::Workspace,
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories",
         None,
         Kind::Workspace,
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}",
         None,
         Kind::Workspace,
     ),
     case(
         "PATCH",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}",
         Some(r#"{"expected_version":1,"priority":1}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/cancel",
         Some(r#"{"expected_version":1}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track",
+        Some(r#"{"expected_version":1,"to_track_id":"<track>"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/claim",
         Some(r#"{"expected_version":1,"run":"intruder","stage":"implementing"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/release",
         Some(r#"{"expected_version":1,"run":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/move",
         Some(r#"{"expected_version":1,"run":"intruder","to":"review"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/tick",
         Some(r#"{"expected_version":1,"run":"intruder","criterion":0,"ticked":true}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings",
         Some(
             r#"{"expected_version":1,"run":"intruder","stage":"review","text":"intruder","files":[]}"#,
         ),
@@ -412,13 +421,13 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings/{index}/resolve",
         Some(r#"{"expected_version":1,"run":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/decisions",
         Some(
             r#"{"expected_version":1,"run":"intruder","question":"intruder","choice":"intruder","by":"agent"}"#,
         ),
@@ -426,37 +435,37 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/files",
         Some(r#"{"expected_version":1,"run":"intruder","files_changed":[]}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/block",
         Some(r#"{"expected_version":1,"run":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/unblock",
         Some(r#"{"expected_version":1,"run":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/check",
         Some(r#"{"expected_version":1,"criterion":0}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
         "/api/v1/w/{workspace_id}/projects/{project_id}/threads",
-        Some(r#"{"question":"intruder"}"#),
+        Some(r#"{"question":"intruder","track_id":"<track>"}"#),
         Kind::Workspace,
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/threads",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/threads",
         Some(r#"{"question":"intruder","sealed":true}"#),
         Kind::Workspace,
     ),
@@ -521,32 +530,170 @@ const CASES: &[Case] = &[
         Kind::Workspace,
     ),
     case(
-        "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
-        Some(r#"{"name":"intruder","description":"intruder"}"#),
-        Kind::Workspace,
-    ),
-    case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts",
         None,
         Kind::Workspace,
     ),
     case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts",
+        Some(r#"{"name":"intruder","kind":"app"}"#),
+        Kind::Workspace,
+    ),
+    case(
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
         None,
         Kind::Workspace,
     ),
     case(
         "PATCH",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
         Some(r#"{"name":"intruder"}"#),
         Kind::Workspace,
     ),
     case(
         "DELETE",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features",
+        Some(r#"{"name":"intruder","description":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}",
+        Some(r#"{"name":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
+        Some(r#"{"name":"intruder","description":"intruder","part_id":"<part>"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "PATCH",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
+        Some(r#"{"name":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/move",
+        Some(r#"{"part_id":"<part>"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/state",
+        Some(r#"{"state":"building"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/owner",
+        Some(r#"{"membership_id":"<membership>"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/members",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features",
+        Some(r#"{"feature_id":"<feature>"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "DELETE",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/features/{feature_id}",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/tracks",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "POST",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/decisions",
+        Some(r#"{"question":"intruder","decision":"intruder","why":"intruder"}"#),
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/features/{feature_id}/decisions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/parts/{part_id}/decisions",
+        None,
+        Kind::Workspace,
+    ),
+    case(
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/decisions",
         None,
         Kind::Workspace,
     ),
@@ -564,7 +711,7 @@ const CASES: &[Case] = &[
     ),
     case(
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/docs",
         Some(r#"{"kind":"html","pillar":"spec","title":"intruder"}"#),
         Kind::Workspace,
     ),
@@ -865,6 +1012,8 @@ fn upload_attachment(
 struct Side {
     id: String,
     email: String,
+    /// The member's membership of the workspace.
+    membership_id: String,
     token: String,
     /// The key that the workspace's tests use; never revoked.
     key: String,
@@ -899,15 +1048,24 @@ struct Side {
     comment_id: String,
     comment_node: String,
     comment_text: String,
-    /// The feature that the workspace's agent created in `project_id`, and its
+    /// The part that the workspace's agent created in `project_id`, and its
     /// name, which nothing else holds.
+    part_id: String,
+    part_name: String,
+    /// The feature that the workspace's agent created on `part_id`, and its
+    /// name and description, which nothing else holds.
     feature_id: String,
     feature_name: String,
-    /// The story that the workspace's agent created in `feature_id`, and its
+    feature_description: String,
+    /// The track that the workspace's agent created in `project_id`, and its
+    /// name, which nothing else holds.
+    track_id: String,
+    track_name: String,
+    /// The story that the workspace's agent created in `track_id`, and its
     /// title, which nothing else holds.
     story_id: String,
     story_title: String,
-    /// The behaviour node that the workspace's agent added to `feature_id`,
+    /// The behaviour node that the workspace's agent added to `track_id`,
     /// and its title, which nothing else holds.
     node_id: String,
     node_title: String,
@@ -927,6 +1085,7 @@ impl Side {
         Side {
             id: same(),
             email: String::new(),
+            membership_id: same(),
             token: String::new(),
             key: String::new(),
             key_id: same(),
@@ -947,8 +1106,13 @@ impl Side {
             comment_id: same(),
             comment_node: UNKNOWN_NODE.to_string(),
             comment_text: String::new(),
+            part_id: same(),
+            part_name: String::new(),
             feature_id: same(),
             feature_name: String::new(),
+            feature_description: String::new(),
+            track_id: same(),
+            track_name: String::new(),
             story_id: same(),
             story_title: String::new(),
             node_id: same(),
@@ -965,6 +1129,7 @@ impl Side {
         [
             &self.id,
             &self.email,
+            &self.membership_id,
             &self.key_id,
             &self.key_prefix,
             &self.project_id,
@@ -982,8 +1147,13 @@ impl Side {
             &self.post_summary,
             &self.comment_id,
             &self.comment_text,
+            &self.part_id,
+            &self.part_name,
             &self.feature_id,
             &self.feature_name,
+            &self.feature_description,
+            &self.track_id,
+            &self.track_name,
             &self.story_id,
             &self.story_title,
             &self.node_id,
@@ -1066,19 +1236,20 @@ fn fixture() -> &'static Fixture {
                     &[&user, &session_token(name)],
                 )
                 .await;
-                text(
+                let membership = text(
                     "insert into memberships (workspace_id, user_id) \
                      values ($1::uuid, $2::uuid) returning id::text",
                     &[&workspace, &user],
                 )
                 .await;
-                found.push((name, workspace));
+                found.push((name, workspace, membership));
             }
             found
         });
         let server = TestServer::start(&config());
         let client = &server.client;
-        let mut sides = workspaces.into_iter().map(|(name, workspace)| {
+        let mut sides = workspaces.into_iter().map(|seeded| {
+            let (name, workspace, membership_id) = seeded;
             let token = session_token(name);
             let human = Auth::Session(&token);
             let keys_path = format!("/api/v1/w/{workspace}/api-keys");
@@ -1114,15 +1285,33 @@ fn fixture() -> &'static Fixture {
             let (project_id, project_name) = project("roadmap");
             let (other_project_id, _) = project("backlog");
             let base = format!("/api/v1/w/{workspace}/projects/{project_id}");
-            // A feature of the project with a doc in it, so the features table
-            // and the docs of a feature have rows of the workspace.
-            let feature_name = unique(&format!("{name}-feature"));
-            let body = json!({ "name": feature_name }).to_string();
+            // A part of the project, so the parts table has rows of the
+            // workspace.
+            let part_name = unique(&format!("{name}-part"));
+            let body = json!({ "name": part_name, "kind": "service" }).to_string();
             let created = must(
                 call(
                     client,
                     "POST",
-                    &format!("{base}/features"),
+                    &format!("{base}/parts"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "create a part",
+            );
+            let part_id = created["part"]["id"].as_str().expect("an id").to_string();
+            // A feature of the part, so the features table has rows of the
+            // workspace.
+            let feature_name = unique(&format!("{name}-feature"));
+            let feature_description = unique(&format!("{name}-feature-description"));
+            let body =
+                json!({ "name": feature_name, "description": feature_description }).to_string();
+            let created = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/parts/{part_id}/features"),
                     &agent,
                     Some(&body),
                 ),
@@ -1133,24 +1322,83 @@ fn fixture() -> &'static Fixture {
                 .as_str()
                 .expect("an id")
                 .to_string();
+            // A track on the part with a doc in it, so the tracks table
+            // and the docs of a track have rows of the workspace.
+            let track_name = unique(&format!("{name}-track"));
+            let body = json!({ "name": track_name, "part_id": part_id }).to_string();
+            let created = must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/tracks"),
+                    &agent,
+                    Some(&body),
+                ),
+                201,
+                "create a track",
+            );
+            let track_id = created["track"]["id"].as_str().expect("an id").to_string();
+            // The track changes the feature, so the track_features table has
+            // rows of the workspace.
+            let body = json!({ "feature_id": feature_id }).to_string();
+            must(
+                call(
+                    client,
+                    "POST",
+                    &format!("{base}/tracks/{track_id}/features"),
+                    &agent,
+                    Some(&body),
+                ),
+                200,
+                "link the track to the feature",
+            );
+            // Decisions on the track about the feature, the part and the
+            // project, so the decisions table has rows of the workspace and
+            // each level's list has one.
+            for level in [
+                json!({ "feature_id": feature_id }),
+                json!({ "part_id": part_id }),
+                json!({ "about_project": true }),
+            ] {
+                let mut body = json!({
+                    "question": unique(&format!("{name}-question")),
+                    "decision": "decided",
+                    "why": "because"
+                });
+                body.as_object_mut()
+                    .expect("an object")
+                    .extend(level.as_object().expect("an object").clone());
+                let body = body.to_string();
+                must(
+                    call(
+                        client,
+                        "POST",
+                        &format!("{base}/tracks/{track_id}/decisions"),
+                        &agent,
+                        Some(&body),
+                    ),
+                    201,
+                    "record a decision on the track",
+                );
+            }
             let body = json!({
                 "kind": "html",
                 "pillar": "spec",
-                "title": unique(&format!("{name}-feature-doc"))
+                "title": unique(&format!("{name}-track-doc"))
             })
             .to_string();
             must(
                 call(
                     client,
                     "POST",
-                    &format!("{base}/features/{feature_id}/docs"),
+                    &format!("{base}/tracks/{track_id}/docs"),
                     &agent,
                     Some(&body),
                 ),
                 201,
-                "create a doc in the feature",
+                "create a doc in the track",
             );
-            // A story of the feature, so the stories table has rows of the
+            // A story of the track, so the stories table has rows of the
             // workspace.
             let story_title = unique(&format!("{name}-story"));
             let body = json!({
@@ -1164,15 +1412,15 @@ fn fixture() -> &'static Fixture {
                 call(
                     client,
                     "POST",
-                    &format!("{base}/features/{feature_id}/stories"),
+                    &format!("{base}/tracks/{track_id}/stories"),
                     &agent,
                     Some(&body),
                 ),
                 201,
-                "create a story in the feature",
+                "create a story in the track",
             );
             let story_id = created["story"]["id"].as_str().expect("an id").to_string();
-            // A node of the feature's behaviour tree, so the behaviour_nodes
+            // A node of the track's behaviour tree, so the behaviour_nodes
             // table has rows of the workspace.
             let node_title = unique(&format!("{name}-node"));
             let body = json!({ "title": node_title }).to_string();
@@ -1180,12 +1428,12 @@ fn fixture() -> &'static Fixture {
                 call(
                     client,
                     "POST",
-                    &format!("{base}/features/{feature_id}/behaviour/nodes"),
+                    &format!("{base}/tracks/{track_id}/behaviour/nodes"),
                     &agent,
                     Some(&body),
                 ),
                 201,
-                "add a node to the feature's behaviour tree",
+                "add a node to the track's behaviour tree",
             );
             let node_id = created["node"]["id"].as_str().expect("an id").to_string();
             // A question on that node and its answer, so the
@@ -1197,7 +1445,7 @@ fn fixture() -> &'static Fixture {
                 call(
                     client,
                     "POST",
-                    &format!("{base}/features/{feature_id}/behaviour/nodes/{node_id}/questions"),
+                    &format!("{base}/tracks/{track_id}/behaviour/nodes/{node_id}/questions"),
                     &agent,
                     Some(&body),
                 ),
@@ -1214,9 +1462,7 @@ fn fixture() -> &'static Fixture {
                 call(
                     client,
                     "POST",
-                    &format!(
-                        "{base}/features/{feature_id}/behaviour/questions/{question_id}/answers"
-                    ),
+                    &format!("{base}/tracks/{track_id}/behaviour/questions/{question_id}/answers"),
                     &agent,
                     Some(&body),
                 ),
@@ -1231,7 +1477,7 @@ fn fixture() -> &'static Fixture {
                 call(
                     client,
                     "POST",
-                    &format!("{base}/features/{feature_id}/behaviour/nodes/{node_id}/rules"),
+                    &format!("{base}/tracks/{track_id}/behaviour/nodes/{node_id}/rules"),
                     &agent,
                     Some(&body),
                 ),
@@ -1287,10 +1533,15 @@ fn fixture() -> &'static Fixture {
                 .as_str()
                 .expect("the new paragraph")
                 .to_string();
-            // A sealed thread with a post, so whatever holds threads, phases
-            // and posts has rows of the workspace.
+            // A sealed thread on the track with a post, so whatever holds
+            // threads, phases and posts has rows of the workspace.
             let thread_question = unique(&format!("{name}-question"));
-            let body = json!({ "question": thread_question, "sealed": true }).to_string();
+            let body = json!({
+                "question": thread_question,
+                "sealed": true,
+                "track_id": track_id
+            })
+            .to_string();
             let created = must(
                 call(
                     client,
@@ -1353,6 +1604,7 @@ fn fixture() -> &'static Fixture {
             Side {
                 id: workspace,
                 email: format!("{name}@example.test"),
+                membership_id,
                 token: token.clone(),
                 key: key.clone(),
                 key_id: spare["key"]["id"].as_str().expect("an id").to_string(),
@@ -1376,8 +1628,13 @@ fn fixture() -> &'static Fixture {
                 comment_id,
                 comment_node,
                 comment_text,
+                part_id,
+                part_name,
                 feature_id,
                 feature_name,
+                feature_description,
+                track_id,
+                track_name,
                 story_id,
                 story_title,
                 node_id,
@@ -1418,7 +1675,9 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
             "thread_id" => &record.thread_id,
             "post_id" => &record.post_id,
             "comment_id" => &record.comment_id,
+            "part_id" => &record.part_id,
             "feature_id" => &record.feature_id,
+            "track_id" => &record.track_id,
             // An attack on a board is refused at the workspace or the
             // project, before any board is looked up, so a node ID that no
             // board has stands in for one.
@@ -1447,12 +1706,18 @@ fn fill(template: &str, workspace: &Side, record: &Side) -> String {
 }
 
 /// The body of `case` for calls about the records of `record`: its
-/// `<comment_node>` is the node of `record`'s seeded comment, and its
-/// `<node>` is `record`'s behaviour node.
+/// `<comment_node>` is the node of `record`'s seeded comment, its `<node>`
+/// is `record`'s behaviour node, its `<part>` is `record`'s part, its
+/// `<feature>` is `record`'s feature, its `<track>` is `record`'s track and
+/// its `<membership>` is `record`'s membership.
 fn body_of(case: &Case, record: &Side) -> Option<String> {
     case.body.map(|body| {
         body.replace("<comment_node>", &record.comment_node)
             .replace("<node>", &record.node_id)
+            .replace("<part>", &record.part_id)
+            .replace("<feature>", &record.feature_id)
+            .replace("<track>", &record.track_id)
+            .replace("<membership>", &record.membership_id)
     })
 }
 
@@ -1732,7 +1997,11 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
             if entry.path.contains("/components/{component_id}") {
                 continue;
             }
-            let path = fill(&entry.path, own, own);
+            let mut path = fill(&entry.path, own, own);
+            // The project's decision list is only of the project level.
+            if entry.path.ends_with("/projects/{project_id}/decisions") {
+                path.push_str("?scope=project");
+            }
             for auth in credentials(entry.access, own) {
                 let what = format!("{} with {}", route_name(&entry.method, &path), auth.label());
                 let response = call(client, &entry.method, &path, &auth, None);
@@ -2542,40 +2811,40 @@ fn the_comment_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
 }
 
 // ---------------------------------------------------------------------------
-// Features
+// Tracks
 // ---------------------------------------------------------------------------
 
-const FEATURE_ROUTES: [(&str, &str, Access); 5] = [
+const TRACK_ROUTES: [(&str, &str, Access); 5] = [
     (
         "POST",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
-        Access::Agent,
-    ),
-    (
-        "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
         Access::Both,
     ),
     (
         "GET",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks",
+        Access::Both,
+    ),
+    (
+        "GET",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
         Access::Both,
     ),
     (
         "PATCH",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
         Access::Agent,
     ),
     (
         "DELETE",
-        "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}",
+        "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}",
         Access::Agent,
     ),
 ];
 
 #[test]
-fn the_feature_routes_are_in_the_registry_and_the_suite_attacks_them() {
-    for (method, path, access) in FEATURE_ROUTES {
+fn the_track_routes_are_in_the_registry_and_the_suite_attacks_them() {
+    for (method, path, access) in TRACK_ROUTES {
         let entry = registry()
             .into_iter()
             .find(|r| r.method == method && r.path == path)
@@ -2590,20 +2859,20 @@ fn the_feature_routes_are_in_the_registry_and_the_suite_attacks_them() {
     let (f, _) = ready();
     for side in [&f.a, &f.b] {
         assert!(
-            !side.feature_id.is_empty(),
-            "the suite seeded no feature for {}",
+            !side.track_id.is_empty(),
+            "the suite seeded no track for {}",
             side.id
         );
     }
 }
 
 #[test]
-fn the_feature_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
-    // The control for the feature routes: in the owner's workspace, the
-    // owner's agent creates a feature with the body of the case, and both the
-    // agent and the human list the project's features, in creation order, and
+fn the_track_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records() {
+    // The control for the track routes: in the owner's workspace, the
+    // owner's agent creates a track with the body of the case, and both the
+    // agent and the human list the project's tracks, in creation order, and
     // read the new one and the seeded one. Then the agent renames the new
-    // feature and deletes it with the calls of the cases, and the seeded one
+    // track and deletes it with the calls of the cases, and the seeded one
     // is still there.
     let (f, client) = ready();
     let _guard = serial();
@@ -2611,60 +2880,55 @@ fn the_feature_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
     let human = Auth::Session(&f.a.token);
     let path = |template: &str| fill(template, &f.a, &f.a);
 
-    let (method, template, _) = FEATURE_ROUTES[0];
-    let body = case_named(method, template)
-        .body
+    let (method, template, _) = TRACK_ROUTES[0];
+    let body = body_of(case_named(method, template), &f.a)
         .map(|b| b.replace("intruder", &unique("owner")));
     let created = must(
         call(client, method, &path(template), &key, body.as_deref()),
         201,
-        "create a feature",
+        "create a track",
     );
-    let feature = created["feature"]["id"].as_str().expect("an id");
+    let track = created["track"]["id"].as_str().expect("an id");
     let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
     for auth in [&key, &human] {
         let listed = must(
-            call(client, "GET", &path(FEATURE_ROUTES[1].1), auth, None),
+            call(client, "GET", &path(TRACK_ROUTES[1].1), auth, None),
             200,
-            "list the features",
+            "list the tracks",
         );
-        let ids: Vec<&str> = listed["features"]
+        let ids: Vec<&str> = listed["tracks"]
             .as_array()
-            .unwrap_or_else(|| panic!("a list of features: {listed}"))
+            .unwrap_or_else(|| panic!("a list of tracks: {listed}"))
             .iter()
             .filter_map(|item| item["id"].as_str())
             .collect();
-        let seeded = ids.iter().position(|id| *id == f.a.feature_id);
-        let new = ids.iter().position(|id| *id == feature);
+        let seeded = ids.iter().position(|id| *id == f.a.track_id);
+        let new = ids.iter().position(|id| *id == track);
         assert!(
             seeded.is_some() && new.is_some() && seeded < new,
-            "the list has the seeded feature before the new one: {listed}"
+            "the list has the seeded track before the new one: {listed}"
         );
         let read = must(
             call(
                 client,
                 "GET",
-                &format!("{project}/features/{feature}"),
+                &format!("{project}/tracks/{track}"),
                 auth,
                 None,
             ),
             200,
-            "read the feature",
+            "read the track",
         );
-        assert_eq!(read["feature"]["id"], feature, "{read}");
+        assert_eq!(read["track"]["id"], track, "{read}");
         let seeded = must(
-            call(client, "GET", &path(FEATURE_ROUTES[2].1), auth, None),
+            call(client, "GET", &path(TRACK_ROUTES[2].1), auth, None),
             200,
-            "read the seeded feature",
+            "read the seeded track",
         );
-        assert_eq!(
-            seeded["feature"]["name"],
-            f.a.feature_name.as_str(),
-            "{seeded}"
-        );
+        assert_eq!(seeded["track"]["name"], f.a.track_name.as_str(), "{seeded}");
     }
 
-    let (method, template, _) = FEATURE_ROUTES[3];
+    let (method, template, _) = TRACK_ROUTES[3];
     let name = unique("renamed");
     let body = case_named(method, template)
         .body
@@ -2673,41 +2937,41 @@ fn the_feature_calls_of_the_attacks_work_for_the_workspace_that_owns_the_records
         call(
             client,
             method,
-            &format!("{project}/features/{feature}"),
+            &format!("{project}/tracks/{track}"),
             &key,
             body.as_deref(),
         ),
         200,
-        "rename the feature",
+        "rename the track",
     );
-    assert_eq!(renamed["feature"]["id"], feature, "{renamed}");
-    assert_eq!(renamed["feature"]["name"], name.as_str(), "{renamed}");
-    let (method, _, _) = FEATURE_ROUTES[4];
+    assert_eq!(renamed["track"]["id"], track, "{renamed}");
+    assert_eq!(renamed["track"]["name"], name.as_str(), "{renamed}");
+    let (method, _, _) = TRACK_ROUTES[4];
     let response = call(
         client,
         method,
-        &format!("{project}/features/{feature}"),
+        &format!("{project}/tracks/{track}"),
         &key,
         None,
     );
     assert_eq!(
         response.status,
         204,
-        "delete the feature: {}",
+        "delete the track: {}",
         response.text()
     );
     let gone = call(
         client,
         "GET",
-        &format!("{project}/features/{feature}"),
+        &format!("{project}/tracks/{track}"),
         &human,
         None,
     );
-    assert_eq!(gone.status, 404, "the deleted feature: {}", gone.text());
+    assert_eq!(gone.status, 404, "the deleted track: {}", gone.text());
     must(
-        call(client, "GET", &path(FEATURE_ROUTES[2].1), &human, None),
+        call(client, "GET", &path(TRACK_ROUTES[2].1), &human, None),
         200,
-        "the seeded feature is still there",
+        "the seeded track is still there",
     );
 }
 
@@ -3057,11 +3321,11 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
     let created = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/projects/{}/features", f.b.id, f.b.project_id),
+        &format!("/api/v1/w/{}/projects/{}/tracks", f.b.id, f.b.project_id),
         &Auth::Key(&f.b.key),
-        Some(&json!({ "name": unique("b-only") }).to_string()),
+        Some(&json!({ "name": unique("b-only"), "part_id": f.b.part_id }).to_string()),
     );
-    must(created, 201, "B's agent creates a feature");
+    must(created, 201, "B's agent creates a track");
     let heard = ws.drain();
     assert!(
         heard.is_empty(),
@@ -3072,14 +3336,14 @@ fn a_socket_of_workspace_a_cannot_subscribe_to_a_project_of_workspace_b() {
     let created = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/projects/{}/features", f.a.id, f.a.project_id),
+        &format!("/api/v1/w/{}/projects/{}/tracks", f.a.id, f.a.project_id),
         &Auth::Key(&f.a.key),
-        Some(&json!({ "name": unique("a-only") }).to_string()),
+        Some(&json!({ "name": unique("a-only"), "part_id": f.a.part_id }).to_string()),
     );
-    must(created, 201, "A's agent creates a feature");
+    must(created, 201, "A's agent creates a track");
     let event = ws.next(PATIENCE).expect("A hears its own event");
     assert_eq!(event["type"], "event", "{event}");
-    assert_eq!(event["event"], "feature.created", "{event}");
+    assert_eq!(event["event"], "track.created", "{event}");
 }
 
 // ---------------------------------------------------------------------------
@@ -3275,12 +3539,12 @@ fn row_level_security_stops_workspace_a_from_changing_inserting_moving_or_deleti
 }
 
 // ---------------------------------------------------------------------------
-// Docs at the app level and in a feature
+// Docs at the app level and in a track
 // ---------------------------------------------------------------------------
 
 const LIVE_DOC_ROUTES: [&str; 2] = [
     "/api/v1/w/{workspace_id}/projects/{project_id}/docs",
-    "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/docs",
+    "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/docs",
 ];
 
 #[test]
@@ -3293,9 +3557,9 @@ fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the
     let key = Auth::Key(&f.a.key);
     let human = Auth::Session(&f.a.token);
     let project = format!("/api/v1/w/{}/projects/{}", f.a.id, f.a.project_id);
-    for (path, feature) in [
+    for (path, track) in [
         (LIVE_DOC_ROUTES[0], Value::Null),
-        (LIVE_DOC_ROUTES[1], json!(f.a.feature_id)),
+        (LIVE_DOC_ROUTES[1], json!(f.a.track_id)),
     ] {
         let title = unique("owner");
         let body = case_named("POST", path)
@@ -3313,7 +3577,7 @@ fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the
             "create a doc",
         );
         let doc = created["doc"]["id"].as_str().expect("an id");
-        assert_eq!(created["doc"]["feature_id"], feature, "{created}");
+        assert_eq!(created["doc"]["track_id"], track, "{created}");
         for auth in [&key, &human] {
             let read = must(
                 call(client, "GET", &format!("{project}/docs/{doc}"), auth, None),
@@ -3321,7 +3585,7 @@ fn the_scope_level_doc_calls_of_the_attacks_work_for_the_workspace_that_owns_the
                 "read the doc",
             );
             assert_eq!(read["doc"]["title"], title.as_str(), "{read}");
-            assert_eq!(read["doc"]["feature_id"], feature, "{read}");
+            assert_eq!(read["doc"]["track_id"], track, "{read}");
         }
     }
 }

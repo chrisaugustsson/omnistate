@@ -1,36 +1,16 @@
-//! US-059: `omni feature`, tested as the built binary against a mock HTTP
-//! server. None of these tests needs Postgres; the real round trip against the
-//! API is in tests/stack_features.rs.
+//! US-307: `omni feature`, tested as the built binary against a mock HTTP
+//! server. The API's rules for features are in crates/omni-api/tests/features.rs.
 //!
-//! The contract these tests pin down (the rest is the green step's choice):
+//! The contract these tests pin down:
 //!
-//! - `omni feature create <name> [--description <text>]` sends `POST
-//!   /api/v1/w/{workspace}/projects/{project_id}/features` with the JSON body
-//!   `{"name", "description"}` (`description` only when it was given) and
-//!   prints one line, `<id>  <name>` (two spaces). The API answers 201
-//!   `{"feature": Feature}`, where a Feature has `id`, `project_id`, `name`,
-//!   `description` and `created_at`, and no status (US-110).
-//! - `omni feature list` sends `GET .../features` (`{"features": [...]}`, in
-//!   creation order) and prints one line per feature, `<id>  <name>` (two
-//!   spaces between the fields), in the API's order.
-//! - `omni feature show <name or id>` prints the feature: its ID, name and
-//!   description, and no status. An ID (a UUID) is shown with `GET
-//!   .../features/{id}`; a name is looked up in the project's features. A
-//!   name that the project does not have is an error that names it.
-//! - All of them take the project from `--project`, as a UUID or a project name (US-016), print the
-//!   API's JSON with `--json`, and report errors as one line on standard
-//!   error (US-015, tests/common/mod.rs). `omni --help` lists them.
-//! - US-110: a feature has no status, so `omni feature done` and `omni feature
-//!   reopen` are gone: each is the one-line usage error of `omni feature`,
-//!   which names the feature commands (rename and delete among them), and
-//!   nothing is sent.
-//! - US-110: `omni feature rename <name or id> <new name>` sends `PATCH
-//!   .../features/{id}` with `{"name": <new name>}` and prints `<id>  <new
-//!   name>`; `omni feature delete <name or id>` sends `DELETE
-//!   .../features/{id}` (204) and prints a line with the feature's ID. A name
-//!   is looked up as for `show`, ignoring case. Without the feature (or the
-//!   new name) each is a one-line error that sends nothing; an API error is
-//!   one line with its code.
+//! - `omni feature create <name> --part <part> [--description <text>]` sends
+//!   `POST /api/v1/w/{workspace}/projects/{project_id}/parts/{part_id}/features`
+//!   with `{"name", "description"}` and prints the new feature's ID.
+//! - `omni feature list --part <part>` shows the features of that part only.
+//! - `omni feature show <name>` prints the feature's part, name and
+//!   description. A name is looked up across the project's features,
+//!   ignoring case; a name that several parts have is `ambiguous_feature`
+//!   naming those parts, and `--part <part>` narrows the search to one.
 
 mod common;
 
@@ -38,116 +18,92 @@ use common::*;
 use serde_json::{Value, json};
 
 const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
-const OTHER_PROJECT: &str = "01900000-0000-7000-8000-0000000000b2";
-const FEATURE: &str = "01900000-0000-7000-8000-0000000000f1";
-const WISH_LIST: &str = "01900000-0000-7000-8000-0000000000f2";
-const NEW_FEATURE: &str = "01900000-0000-7000-8000-0000000000f3";
+const WISION: &str = "01900000-0000-7000-8000-0000000000c1";
+const IOT_SERVICE: &str = "01900000-0000-7000-8000-0000000000c2";
+const ANALYZE: &str = "01900000-0000-7000-8000-0000000000d1";
+const WISION_ALARMS: &str = "01900000-0000-7000-8000-0000000000d2";
+const IOT_ALARMS: &str = "01900000-0000-7000-8000-0000000000d3";
+const NEW_FEATURE: &str = "01900000-0000-7000-8000-0000000000d4";
+const DESCRIPTION: &str = "Time-series chart per channel";
 
-fn projects_path() -> String {
-    format!("/api/v1/w/{WORKSPACE}/projects")
+fn parts_path() -> String {
+    format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/parts")
 }
 
-fn features_path(project: &str) -> String {
-    format!("{}/{project}/features", projects_path())
+fn features_path(part: &str) -> String {
+    format!("{}/{part}/features", parts_path())
 }
 
-fn project_json(id: &str, name: &str) -> Value {
-    json!({ "id": id, "name": name, "created_at": "2026-10-23T10:00:00.000000Z" })
-}
-
-fn feature_json(id: &str, project: &str, name: &str, description: &str) -> Value {
+fn part_json(id: &str, name: &str, kind: &str) -> Value {
     json!({
         "id": id,
-        "project_id": project,
+        "project_id": PROJECT,
         "name": name,
-        "description": description,
-        "created_at": "2026-10-23T10:00:00.000000Z"
+        "kind": kind,
+        "description": "",
+        "created_at": "2026-11-15T10:00:00.000000Z"
     })
 }
 
-fn checkout(project: &str) -> Value {
-    feature_json(
-        FEATURE,
-        project,
-        "Checkout",
-        "Pay for the basket in one step.",
-    )
+fn feature_json(id: &str, part: &str, name: &str, description: &str) -> Value {
+    json!({
+        "id": id,
+        "project_id": PROJECT,
+        "part_id": part,
+        "name": name,
+        "description": description,
+        "created_at": "2026-11-16T10:00:00.000000Z"
+    })
 }
 
-fn wish_list(project: &str) -> Value {
-    feature_json(WISH_LIST, project, "Wish list", "Keep products for later.")
-}
-
-/// An API that knows two projects, `brand-site` and `other`, each with the
-/// features "Checkout" and "Wish list", in that order. A new feature named
-/// "checkout" in any case is refused as taken, and so is a rename to it. A
-/// rename answers the feature with its new name, and a delete answers 204.
+/// An API whose project has the parts Wision (app) and iot-service
+/// (service). Wision has the features Analyze and Alarms, iot-service has
+/// Alarms. No track is linked to a feature. A new feature is answered with
+/// the name and description it was sent.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         let path = request.path.as_str();
-        let method = request.method.as_str();
-        if path == projects_path() && method == "GET" {
-            return Reply::json(
+        match request.method.as_str() {
+            "GET" if path == parts_path() => Reply::json(
                 200,
-                &json!({ "projects": [
-                    project_json(PROJECT, "brand-site"),
-                    project_json(OTHER_PROJECT, "other")
+                &json!({ "parts": [
+                    part_json(WISION, "Wision", "app"),
+                    part_json(IOT_SERVICE, "iot-service", "service")
                 ] }),
-            );
+            ),
+            "GET" if path == features_path(WISION) => Reply::json(
+                200,
+                &json!({ "features": [
+                    feature_json(ANALYZE, WISION, "Analyze", DESCRIPTION),
+                    feature_json(WISION_ALARMS, WISION, "Alarms", "")
+                ] }),
+            ),
+            "GET" if path == features_path(IOT_SERVICE) => Reply::json(
+                200,
+                &json!({ "features": [feature_json(IOT_ALARMS, IOT_SERVICE, "Alarms", "")] }),
+            ),
+            "GET" if path.starts_with(&parts_path()) && path.ends_with("/tracks") => {
+                Reply::json(200, &json!({ "tracks": [] }))
+            }
+            "POST" if path == features_path(WISION) || path == features_path(IOT_SERVICE) => {
+                let part = if path == features_path(WISION) {
+                    WISION
+                } else {
+                    IOT_SERVICE
+                };
+                Reply::json(
+                    201,
+                    &json!({ "feature": feature_json(
+                        NEW_FEATURE,
+                        part,
+                        body["name"].as_str().unwrap_or(""),
+                        body["description"].as_str().unwrap_or("")
+                    ) }),
+                )
+            }
+            _ => Reply::json(404, &json!({ "error": "not_found" })),
         }
-        for project in [PROJECT, OTHER_PROJECT] {
-            let Some(rest) = path.strip_prefix(&features_path(project)) else {
-                continue;
-            };
-            return match (method, rest) {
-                ("POST", "") => {
-                    let name = body["name"].as_str().unwrap_or("");
-                    if name.eq_ignore_ascii_case("checkout") {
-                        return Reply::json(409, &json!({ "error": "name_taken" }));
-                    }
-                    let description = body["description"].as_str().unwrap_or("");
-                    Reply::json(
-                        201,
-                        &json!({ "feature": feature_json(NEW_FEATURE, project, name, description) }),
-                    )
-                }
-                ("GET", "") => Reply::json(
-                    200,
-                    &json!({ "features": [checkout(project), wish_list(project)] }),
-                ),
-                ("GET", rest) if rest == format!("/{FEATURE}") => {
-                    Reply::json(200, &json!({ "feature": checkout(project) }))
-                }
-                ("GET", rest) if rest == format!("/{WISH_LIST}") => {
-                    Reply::json(200, &json!({ "feature": wish_list(project) }))
-                }
-                ("PATCH", rest)
-                    if rest == format!("/{FEATURE}") || rest == format!("/{WISH_LIST}") =>
-                {
-                    let name = body["name"].as_str().unwrap_or("");
-                    if name.eq_ignore_ascii_case("checkout") {
-                        return Reply::json(409, &json!({ "error": "name_taken" }));
-                    }
-                    let id = &rest[1..];
-                    Reply::json(
-                        200,
-                        &json!({ "feature": feature_json(id, project, name, "") }),
-                    )
-                }
-                ("DELETE", rest)
-                    if rest == format!("/{FEATURE}") || rest == format!("/{WISH_LIST}") =>
-                {
-                    Reply {
-                        status: 204,
-                        headers: Vec::new(),
-                        body: String::new(),
-                    }
-                }
-                _ => Reply::json(404, &json!({ "error": "not_found" })),
-            };
-        }
-        Reply::json(404, &json!({ "error": "not_found" }))
     })
 }
 
@@ -157,484 +113,101 @@ fn logged_in(server: &str) -> Scratch {
     home
 }
 
-/// An error as US-015 defines it: a documented non-zero exit code, nothing on
-/// standard output and exactly one line on standard error that has every
-/// needle in it.
-fn assert_one_line_error(out: &Out, needles: &[&str]) {
-    assert_ne!(out.code, 0, "expected a failure; stdout: {:?}", out.stdout);
-    assert!(
-        documented_exit_codes().contains(&out.code),
-        "exit code {} is not documented under \"Exit codes\" in omni --help",
-        out.code
-    );
-    assert_eq!(out.stdout, "", "an error prints nothing on standard output");
-    let lines = out.stderr_lines();
-    assert_eq!(
-        lines.len(),
-        1,
-        "one line on standard error: {:?}",
-        out.stderr
-    );
-    let line = lines[0].to_lowercase();
-    for needle in needles {
-        assert!(
-            line.contains(&needle.to_lowercase()),
-            "the error line should contain {needle:?}: {:?}",
-            lines[0]
-        );
-    }
-}
-
 fn run(home: &Scratch, args: &[&str]) -> Out {
     omni(&home.path)
         .args(args)
-        .args(&["--as", "run-7/planner"])
+        .args(&["--project", PROJECT, "--as", "run-7/planner"])
         .run()
 }
 
-fn body_of(request: &Recorded) -> Value {
-    serde_json::from_slice(&request.body)
-        .unwrap_or_else(|e| panic!("the request body is JSON ({e}): {:?}", request.body))
-}
-
-fn requests_to(server: &MockServer, method: &str, path: &str) -> Vec<Recorded> {
-    server
-        .requests()
-        .into_iter()
-        .filter(|r| r.method == method && r.path == path)
-        .collect()
-}
-
-fn assert_nothing_posted(server: &MockServer) {
+#[test]
+fn feature_create_sends_the_name_and_description_to_the_part_and_prints_the_new_id() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "feature",
+            "create",
+            "Analyze",
+            "--part",
+            "Wision",
+            "--description",
+            DESCRIPTION,
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
     let posts: Vec<_> = server
         .requests()
         .into_iter()
-        .filter(|r| r.method != "GET")
+        .filter(|r| r.method == "POST")
         .collect();
-    assert!(posts.is_empty(), "nothing should be sent: {posts:?}");
-}
-
-// ---------------------------------------------------------------------------
-// omni feature create
-// ---------------------------------------------------------------------------
-
-#[test]
-fn feature_create_sends_the_name_and_description_and_prints_the_id_and_name() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &[
-            "feature",
-            "create",
-            "Search",
-            "--description",
-            "Find products by name.",
-            "--project",
-            PROJECT,
-        ],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-
-    let posts = requests_to(&server, "POST", &features_path(PROJECT));
     assert_eq!(posts.len(), 1, "{:?}", server.requests());
-    let body = body_of(&posts[0]);
-    assert_eq!(body["name"], "Search", "{body}");
-    assert_eq!(body["description"], "Find products by name.", "{body}");
-    assert_eq!(
-        posts[0].header("authorization"),
-        Some(format!("Bearer {API_KEY}").as_str())
-    );
-    assert_eq!(posts[0].header("x-omni-run"), Some("run-7"));
-    assert_eq!(posts[0].header("x-omni-role"), Some("planner"));
-
-    assert_eq!(
-        non_empty_lines(&out.stdout),
-        [format!("{NEW_FEATURE}  Search")],
-        "create prints `<id>  <name>`"
-    );
-
-    let json = run(
-        &home,
-        &[
-            "feature",
-            "create",
-            "Search",
-            "--project",
-            PROJECT,
-            "--json",
-        ],
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(
-        json.json(),
-        json!({ "feature": feature_json(NEW_FEATURE, PROJECT, "Search", "") }),
-        "--json prints the whole response"
-    );
-}
-
-#[test]
-fn feature_create_without_a_name_is_one_line_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["feature", "create", "--project", PROJECT]);
-    assert_one_line_error(&out, &["name"]);
-    assert_nothing_posted(&server);
-}
-
-// ---------------------------------------------------------------------------
-// omni feature list
-// ---------------------------------------------------------------------------
-
-#[test]
-fn feature_list_prints_one_line_per_feature_without_a_status() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["feature", "list", "--project", PROJECT]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        requests_to(&server, "GET", &features_path(PROJECT)).len(),
-        1,
-        "{:?}",
-        server.requests()
-    );
-    assert_eq!(
-        non_empty_lines(&out.stdout),
-        [
-            format!("{FEATURE}  Checkout"),
-            format!("{WISH_LIST}  Wish list"),
-        ],
-        "one `<id>  <name>` line per feature, in the API's order"
-    );
-
-    let json = run(&home, &["feature", "list", "--project", PROJECT, "--json"]);
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(
-        json.json(),
-        json!({ "features": [checkout(PROJECT), wish_list(PROJECT)] }),
-        "--json prints the whole response"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// omni feature show
-// ---------------------------------------------------------------------------
-
-#[test]
-fn feature_show_prints_the_feature_named_by_its_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(&home, &["feature", "show", FEATURE, "--project", PROJECT]);
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(
-        requests_to(
-            &server,
-            "GET",
-            &format!("{}/{FEATURE}", features_path(PROJECT))
-        )
-        .len(),
-        1,
-        "an ID is shown with GET .../features/{{id}}: {:?}",
-        server.requests()
-    );
-    for needle in [FEATURE, "Checkout", "Pay for the basket in one step."] {
-        assert!(
-            out.stdout.contains(needle),
-            "the text shows {needle:?}: {:?}",
-            out.stdout
-        );
-    }
-    assert_no_status(&out.stdout);
-
-    let json = run(
-        &home,
-        &["feature", "show", FEATURE, "--project", PROJECT, "--json"],
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json(), json!({ "feature": checkout(PROJECT) }));
-}
-
-#[test]
-fn feature_show_finds_a_feature_by_its_name() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["feature", "show", "Wish list", "--project", PROJECT],
-    );
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    for needle in [WISH_LIST, "Wish list", "Keep products for later."] {
-        assert!(
-            out.stdout.contains(needle),
-            "the text shows {needle:?}: {:?}",
-            out.stdout
-        );
-    }
-    assert_no_status(&out.stdout);
+    assert_eq!(posts[0].path, features_path(WISION));
+    let body: Value = serde_json::from_slice(&posts[0].body).expect("a JSON body");
+    assert_eq!(body["name"], "Analyze", "{body}");
+    assert_eq!(body["description"], DESCRIPTION, "{body}");
     assert!(
-        !out.stdout.contains(FEATURE),
-        "only the named feature is shown: {:?}",
+        out.stdout.contains(NEW_FEATURE),
+        "create prints the new feature's ID: {:?}",
         out.stdout
     );
-
-    let json = run(
-        &home,
-        &[
-            "feature",
-            "show",
-            "Wish list",
-            "--project",
-            PROJECT,
-            "--json",
-        ],
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(json.json(), json!({ "feature": wish_list(PROJECT) }));
-    assert_nothing_posted(&server);
 }
 
 #[test]
-fn feature_show_of_a_name_the_project_does_not_have_is_one_line() {
+fn feature_list_with_a_part_shows_the_features_of_that_part_only() {
     let server = mock();
     let home = logged_in(&server.url);
-    let out = run(
-        &home,
-        &["feature", "show", "Loyalty points", "--project", PROJECT],
-    );
-    assert_one_line_error(&out, &["Loyalty points"]);
-    assert_nothing_posted(&server);
-}
-
-// ---------------------------------------------------------------------------
-// The project
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_project_flag_takes_a_name_or_an_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let in_project = |args: &[&str]| {
-        omni(&home.path)
-            .args(args)
-            .args(&["--as", "run-7/planner"])
-            .run()
-    };
-
-    for args in [
-        &["feature", "create", "Search"][..],
-        &["feature", "list"][..],
-        &["feature", "show", FEATURE][..],
-    ] {
-        let out = in_project(&[args, &["--project", "brand-site"]].concat());
-        assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
-    }
-    assert_eq!(
-        requests_to(&server, "POST", &features_path(PROJECT)).len(),
-        1,
-        "the name `brand-site` is looked up and its ID is used: {:?}",
-        server.requests()
-    );
-    assert_eq!(
-        requests_to(&server, "GET", &features_path(PROJECT)).len(),
-        1,
-        "{:?}",
-        server.requests()
-    );
-    assert_eq!(
-        requests_to(
-            &server,
-            "GET",
-            &format!("{}/{FEATURE}", features_path(PROJECT))
-        )
-        .len(),
-        1,
-        "{:?}",
-        server.requests()
-    );
-
-    // --project takes a name as well as an ID.
-    for project in ["other", OTHER_PROJECT] {
-        let out = in_project(&["feature", "create", "Search", "--project", project]);
-        assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);
-        let out = in_project(&["feature", "list", "--project", project]);
-        assert_eq!(out.code, 0, "--project {project}: {}", out.stderr);
-    }
-    assert_eq!(
-        requests_to(&server, "POST", &features_path(OTHER_PROJECT)).len(),
-        2,
-        "{:?}",
-        server.requests()
-    );
-    assert_eq!(
-        requests_to(&server, "GET", &features_path(OTHER_PROJECT)).len(),
-        2,
-        "{:?}",
-        server.requests()
-    );
-}
-
-#[test]
-fn an_unknown_or_missing_project_is_one_line_and_sends_nothing() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    let unknown = run(
-        &home,
-        &[
-            "feature",
-            "create",
-            "Search",
-            "--project",
-            "no-such-project",
-        ],
-    );
-    assert_one_line_error(&unknown, &["no-such-project"]);
-
-    let missing = run(&home, &["feature", "list"]);
-    assert_one_line_error(&missing, &["project"]);
-    assert_nothing_posted(&server);
+    let out = run(&home, &["feature", "list", "--part", "Wision"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let lines = non_empty_lines(&out.stdout);
+    assert_eq!(lines.len(), 2, "one line per feature of Wision: {lines:?}");
     assert!(
-        server
-            .requests()
-            .iter()
-            .all(|r| !r.path.contains("/features")),
-        "no feature route is called without a project: {:?}",
-        server.requests()
+        lines.iter().any(|line| line.contains("Analyze")),
+        "{lines:?}"
     );
-}
-
-/// What `omni feature show` prints has no status: no line names one, and no
-/// field is left as an unknown `?`.
-fn assert_no_status(stdout: &str) {
-    for line in non_empty_lines(stdout) {
-        let lower = line.to_lowercase();
-        assert!(
-            !lower.contains("status") && !lower.contains("active") && !lower.contains("  ?  "),
-            "a feature has no status: {line:?}"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// omni feature done / reopen are gone (US-110)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn feature_done_and_reopen_are_gone() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for command in ["done", "reopen"] {
-        for args in [
-            &["feature", command, "Checkout", "--project", PROJECT][..],
-            &["feature", command, FEATURE, "--project", PROJECT][..],
-            &["feature", command][..],
-        ] {
-            let out = run(&home, args);
-            assert_one_line_error(&out, &["usage", "rename", "delete"]);
-            assert!(
-                !out.stderr.contains("reviewer's call"),
-                "no feature can be marked done, by anyone: {:?}",
-                out.stderr
-            );
-        }
-    }
     assert!(
-        server.requests().is_empty(),
-        "nothing is sent: {:?}",
-        server.requests()
-    );
-}
-
-// ---------------------------------------------------------------------------
-// omni feature rename / delete (US-110)
-// ---------------------------------------------------------------------------
-
-fn feature_path(project: &str, feature: &str) -> String {
-    format!("{}/{feature}", features_path(project))
-}
-
-#[test]
-fn feature_rename_sends_the_new_name_and_prints_the_id_and_name() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for given in ["Checkout", "checkout", FEATURE] {
-        let out = run(
-            &home,
-            &[
-                "feature",
-                "rename",
-                given,
-                "Express checkout",
-                "--project",
-                PROJECT,
-            ],
-        );
-        assert_eq!(out.code, 0, "rename {given}: {}", out.stderr);
-        assert_eq!(
-            non_empty_lines(&out.stdout),
-            [format!("{FEATURE}  Express checkout")],
-            "rename prints `<id>  <new name>`"
-        );
-    }
-    let patches = requests_to(&server, "PATCH", &feature_path(PROJECT, FEATURE));
-    assert_eq!(patches.len(), 3, "{:?}", server.requests());
-    for patch in &patches {
-        assert_eq!(body_of(patch), json!({ "name": "Express checkout" }));
-        assert_eq!(
-            patch.header("authorization"),
-            Some(format!("Bearer {API_KEY}").as_str())
-        );
-        assert_eq!(patch.header("x-omni-run"), Some("run-7"));
-    }
-
-    let json = run(
-        &home,
-        &[
-            "feature",
-            "rename",
-            "Wish list",
-            "Saved items",
-            "--project",
-            PROJECT,
-            "--json",
-        ],
-    );
-    assert_eq!(json.code, 0, "{}", json.stderr);
-    assert_eq!(
-        json.json(),
-        json!({ "feature": feature_json(WISH_LIST, PROJECT, "Saved items", "") }),
-        "--json prints the whole response"
+        !out.stdout.contains(IOT_ALARMS),
+        "no feature of iot-service: {:?}",
+        out.stdout
     );
 }
 
 #[test]
-fn feature_rename_without_a_feature_or_a_new_name_is_one_line_and_sends_nothing() {
+fn feature_show_by_name_ignoring_case_prints_its_part_name_and_description() {
     let server = mock();
     let home = logged_in(&server.url);
-    for args in [
-        &["feature", "rename", "--project", PROJECT][..],
-        &["feature", "rename", "Checkout", "--project", PROJECT][..],
-        &["feature", "rename", "Checkout", "  ", "--project", PROJECT][..],
-    ] {
-        let out = run(&home, args);
-        assert_one_line_error(&out, &["name"]);
-    }
-    assert_nothing_posted(&server);
-}
-
-#[test]
-fn feature_delete_sends_a_delete_and_prints_the_id() {
-    let server = mock();
-    let home = logged_in(&server.url);
-    for (given, id) in [("Checkout", FEATURE), (WISH_LIST, WISH_LIST)] {
-        let out = run(&home, &["feature", "delete", given, "--project", PROJECT]);
-        assert_eq!(out.code, 0, "delete {given}: {}", out.stderr);
+    let out = run(&home, &["feature", "show", "analyze"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    for shown in ["Wision", "Analyze", DESCRIPTION] {
         assert!(
-            out.stdout.contains(id),
-            "delete prints the feature's ID: {:?}",
+            out.stdout.contains(shown),
+            "show prints {shown:?}: {:?}",
             out.stdout
         );
-        let deletes = requests_to(&server, "DELETE", &feature_path(PROJECT, id));
-        assert_eq!(deletes.len(), 1, "{:?}", server.requests());
-        assert_eq!(deletes[0].header("x-omni-role"), Some("planner"));
     }
+}
+
+#[test]
+fn a_feature_name_on_several_parts_is_ambiguous_feature_naming_them_and_part_narrows_it() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(&home, &["feature", "show", "Alarms"]);
+    assert_ne!(out.code, 0, "expected a failure; stdout: {:?}", out.stdout);
+    assert_eq!(out.stdout, "");
+    assert_eq!(out.stderr_lines().len(), 1, "{:?}", out.stderr);
+    for needle in ["ambiguous_feature", "Wision", "iot-service"] {
+        assert!(
+            out.stderr.contains(needle),
+            "the error names {needle:?}: {:?}",
+            out.stderr
+        );
+    }
+    let out = run(
+        &home,
+        &["feature", "show", "Alarms", "--part", "iot-service"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains(IOT_ALARMS), "{:?}", out.stdout);
+    assert!(!out.stdout.contains(WISION_ALARMS), "{:?}", out.stdout);
 }

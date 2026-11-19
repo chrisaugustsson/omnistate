@@ -1,4 +1,4 @@
-//! Projects. A project holds the app level and the features of one app; the
+//! Projects. A project holds the app level and the tracks of one app; the
 //! docs, threads and comments of a scope hang off it. Agents create projects.
 //! Nothing is deleted.
 //!
@@ -36,6 +36,8 @@ pub struct ProjectBody {
     pub id: String,
     /// Unique in the workspace; the omni CLI accepts it where it takes a project.
     pub name: String,
+    /// The project's intro text; null when it has none.
+    pub description: Option<String>,
     pub created_at: String,
 }
 
@@ -56,7 +58,11 @@ pub struct CreateProjectRequest {
 
 #[derive(Deserialize, ToSchema)]
 pub struct RenameProjectRequest {
+    /// The project's new name; not blank. Missing keeps the name.
     pub name: Option<String>,
+    /// The project's intro text, trimmed; blank clears it. Missing or null
+    /// keeps it.
+    pub description: Option<String>,
 }
 
 /// The JSON body of a request, or 400 `invalid_request` when it is not JSON of
@@ -74,6 +80,23 @@ pub(crate) fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, ApiErro
 pub(crate) fn non_blank(text: Option<String>) -> Option<String> {
     text.map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
+}
+
+/// The name and the description a PATCH of a part or a feature sets: at least
+/// one of them, else 400 `invalid_request`. A name is trimmed and not blank
+/// (400 otherwise); a description is trimmed, and blank clears it to the empty
+/// text. `None` keeps the stored value.
+pub(crate) fn name_and_description(
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(Option<String>, Option<String>), ApiError> {
+    if name.is_none() && description.is_none() {
+        return Err(ApiError::bad_request("invalid_request"));
+    }
+    let name = name
+        .map(|name| non_blank(Some(name)).ok_or_else(|| ApiError::bad_request("invalid_request")))
+        .transpose()?;
+    Ok((name, description.map(|text| text.trim().to_string())))
 }
 
 /// Creates a project.
@@ -101,7 +124,7 @@ pub async fn create_project(
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let inserted = sqlx::query_as(concat!(
         "INSERT INTO projects (workspace_id, name) VALUES ($1::uuid, $2) \
-         RETURNING id::text, name, ",
+         RETURNING id::text, name, description, ",
         timestamp!("created_at"),
         " AS created_at"
     ))
@@ -137,7 +160,7 @@ pub async fn list_projects(
 ) -> Result<Json<ProjectListResponse>, ApiError> {
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let projects = sqlx::query_as(concat!(
-        "SELECT id::text, name, ",
+        "SELECT id::text, name, description, ",
         timestamp!("created_at"),
         " AS created_at FROM projects ORDER BY created_at, id"
     ))
@@ -148,7 +171,8 @@ pub async fn list_projects(
     Ok(Json(ProjectListResponse { projects }))
 }
 
-/// Renames a project. Its ID, features, docs and threads stay.
+/// Renames a project, sets its description, or both. Its ID, tracks, docs and
+/// threads stay. Any member or agent may.
 #[utoipa::path(
     patch,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}",
@@ -158,8 +182,8 @@ pub async fn list_projects(
     ),
     request_body = RenameProjectRequest,
     responses(
-        (status = 200, description = "The renamed project", body = ProjectResponse),
-        (status = 400, description = "The name is missing or blank", body = ErrorBody),
+        (status = 200, description = "The changed project", body = ProjectResponse),
+        (status = 400, description = "Neither a name nor a description, or a blank name", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
         (status = 404, description = "No such project in this workspace", body = ErrorBody),
         (status = 409, description = "The workspace has another project of this name (`name_taken`)", body = ErrorBody),
@@ -175,14 +199,27 @@ pub async fn rename_project(
     let new = parse_body::<RenameProjectRequest>(&body);
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let old_name = lock_project(&mut tx, &project_id).await?;
-    let name = non_blank(new?.name).ok_or_else(|| ApiError::bad_request("invalid_request"))?;
+    let new = new?;
+    if new.name.is_none() && new.description.is_none() {
+        return Err(ApiError::bad_request("invalid_request"));
+    }
+    let name = new
+        .name
+        .map(|name| non_blank(Some(name)).ok_or_else(|| ApiError::bad_request("invalid_request")))
+        .transpose()?;
+    // The outer `Option` says whether to set it, the inner one is the value.
+    let description = new.description.map(|text| non_blank(Some(text)));
     let renamed = sqlx::query_as(concat!(
-        "UPDATE projects SET name = $2 WHERE id = $1::uuid RETURNING id::text, name, ",
+        "UPDATE projects SET name = COALESCE($2, name), \
+         description = CASE WHEN $3 THEN $4 ELSE description END \
+         WHERE id = $1::uuid RETURNING id::text, name, description, ",
         timestamp!("created_at"),
         " AS created_at"
     ))
     .bind(&project_id)
     .bind(&name)
+    .bind(description.is_some())
+    .bind(description.flatten())
     .fetch_one(&mut *tx)
     .await;
     let project: ProjectBody = match renamed {

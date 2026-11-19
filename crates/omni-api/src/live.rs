@@ -138,12 +138,34 @@ pub enum LiveEventName {
     DocDeleted,
     #[serde(rename = "doc.renamed")]
     DocRenamed,
+    #[serde(rename = "track.created")]
+    TrackCreated,
+    #[serde(rename = "track.deleted")]
+    TrackDeleted,
+    #[serde(rename = "track.renamed")]
+    TrackRenamed,
+    #[serde(rename = "track.moved")]
+    TrackMoved,
+    #[serde(rename = "track.owner_changed")]
+    TrackOwnerChanged,
+    #[serde(rename = "track.feature_linked")]
+    TrackFeatureLinked,
+    #[serde(rename = "track.feature_unlinked")]
+    TrackFeatureUnlinked,
+    #[serde(rename = "decision.recorded")]
+    DecisionRecorded,
     #[serde(rename = "feature.created")]
     FeatureCreated,
     #[serde(rename = "feature.deleted")]
     FeatureDeleted,
     #[serde(rename = "feature.renamed")]
     FeatureRenamed,
+    #[serde(rename = "part.created")]
+    PartCreated,
+    #[serde(rename = "part.deleted")]
+    PartDeleted,
+    #[serde(rename = "part.renamed")]
+    PartRenamed,
     #[serde(rename = "post.created")]
     PostCreated,
     #[serde(rename = "project.renamed")]

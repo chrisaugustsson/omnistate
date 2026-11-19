@@ -6,12 +6,12 @@ export type View = { x: number; y: number; k: number };
 export const MIN_ZOOM = 0.012;
 export const MAX_ZOOM = 2;
 
-/** The view that shows all of `bounds` inside `area`, centred, with room for the legend above and the controls below. */
+/** The view that shows all of `bounds` inside `area`, centred, with room for the legend button above and the controls below. */
 export function fit(
   bounds: Rect,
   area: { w: number; h: number },
   maxZoom = 1,
-  { side, top, bottom } = { side: 40, top: 84, bottom: 64 },
+  { side, top, bottom } = { side: 40, top: 56, bottom: 64 },
 ): View {
   const k = Math.max(MIN_ZOOM, Math.min((area.w - side * 2) / bounds.w, (area.h - top - bottom) / bounds.h, maxZoom));
   return {
@@ -59,6 +59,59 @@ export function bringIntoView(
   const sy = view.y + box.y * view.k;
   if (sx >= m && sy >= m + 30 && sx + box.w * view.k <= area.w - m && sy + box.h * view.k <= area.h - m) return null;
   return centreOn(view, box, area);
+}
+
+/**
+ * Where the view goes so that `group` (a chosen node with its children) lies
+ * inside `area` with `m` to spare, or null when it already does. A group that
+ * fits at the current zoom is centred at that zoom; one that does not is
+ * fitted, zooming out no further than it must. The graph keeps the chosen node
+ * and what is under it in sight when the area changes size (the details open,
+ * the window resizes).
+ */
+export function keepInView(
+  view: View,
+  group: Rect,
+  area: { w: number; h: number },
+  m = 32,
+  corners: Corner[] = [],
+): View | null {
+  const screen = (at: View) => {
+    const left = at.x + group.x * at.k;
+    const top = at.y + group.y * at.k;
+    return { left, top, right: left + group.w * at.k, bottom: top + group.h * at.k };
+  };
+  // The first bottom corner (the zoom controls, the minimap) the group lies under, with 8 to spare.
+  const under = (at: View) => {
+    const box = screen(at);
+    return corners.find((corner) =>
+      box.bottom > area.h - corner.h - 8 && (corner.side === "right" ? box.right > area.w - corner.w - 8 : box.left < corner.w + 8),
+    );
+  };
+  const now = screen(view);
+  if (now.left >= m && now.top >= m && now.right <= area.w - m && now.bottom <= area.h - m && !under(view)) return null;
+  const k = Math.max(MIN_ZOOM, Math.min(view.k, (area.w - 2 * m) / group.w, (area.h - 2 * m) / group.h));
+  let target = centreOn({ ...view, k }, group, area);
+  for (const corner of corners) {
+    if (under(target) !== corner) continue;
+    // Up out of the corner when the group's top stays clear, otherwise sideways away from it.
+    const box = screen(target);
+    const up = box.bottom - (area.h - corner.h - 8);
+    if (box.top - up >= 8) target = { ...target, y: target.y - up };
+    else if (corner.side === "right") target = { ...target, x: target.x - Math.min(box.right - (area.w - corner.w - 8), box.left - 8) };
+    else target = { ...target, x: target.x + Math.min(corner.w + 8 - box.left, area.w - 8 - box.right) };
+  }
+  return target;
+}
+
+/** A corner at the bottom of the graph area that controls take: its side, width and height. */
+export type Corner = { side: "left" | "right"; w: number; h: number };
+
+/** Whether all of `bounds` lies inside `area` under `view`. */
+export function allInView(view: View, bounds: Rect, area: { w: number; h: number }): boolean {
+  const left = view.x + bounds.x * view.k;
+  const top = view.y + bounds.y * view.k;
+  return left >= 0 && top >= 0 && left + bounds.w * view.k <= area.w && top + bounds.h * view.k <= area.h;
 }
 
 // cubic-bezier(0.23, 1, 0.32, 1), solved for y at x by Newton steps.

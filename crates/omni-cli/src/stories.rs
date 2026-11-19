@@ -1,12 +1,12 @@
-//! `omni story add`, `list` and `read`: stories, the work items of a feature.
+//! `omni story add`, `list` and `read`: stories, the work items of a track.
 //! `add` saves one story written in the prd format; the server numbers it.
-//! The project and the feature are found as for `omni thread create`.
+//! The project and the track are found as for `omni thread create`.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{creation_feature, is_uuid, project_id};
+use crate::projects::{creation_track, is_uuid, project_id, resolve_track};
 
 const ADD_USAGE: &str =
     "omni story add <file> [--priority <n>] [--link <doc>:<node>[:<label>]]... [--number-from <n>]";
@@ -17,14 +17,14 @@ fn unreadable() -> CliError {
     CliError::new("the server's answer about the stories is not readable; is it an OmniState API?")
 }
 
-/// The stories path of the feature the command works in.
+/// The stories path of the track the command works in.
 fn stories_path(args: &Args, agent: &Agent) -> Result<String> {
     let project = project_id(args, agent)?;
-    let Some(feature) = creation_feature(args, agent, &project)? else {
-        bail!("no feature: pass --feature <name or id>, or put feature = \"name\" in .omni.toml");
+    let Some(track) = creation_track(args, agent, &project)? else {
+        bail!("no track: pass --track <name or id> or set OMNI_TRACK");
     };
     Ok(format!(
-        "/api/v1/w/{}/projects/{project}/features/{feature}/stories",
+        "/api/v1/w/{}/projects/{project}/tracks/{track}/stories",
         agent.workspace_id
     ))
 }
@@ -37,6 +37,29 @@ fn list_stories(agent: &Agent, path: &str) -> Result<Vec<Value>> {
         .and_then(Value::as_array)
         .ok_or_else(unreadable)?
         .to_vec())
+}
+
+/// The id of the story with this key on any track of the project.
+fn project_story_id(agent: &Agent, args: &Args, key: &str) -> Result<Option<String>> {
+    let project = project_id(args, agent)?;
+    let base = format!("/api/v1/w/{}/projects/{project}/tracks", agent.workspace_id);
+    let response = agent.request("GET", &base, None)?;
+    let listed = Value::parse(&response.text()).map_err(|_| unreadable())?;
+    for track in listed
+        .get("tracks")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+    {
+        let Some(track_id) = track.str_at("id") else {
+            continue;
+        };
+        for story in list_stories(agent, &format!("{base}/{track_id}/stories"))? {
+            if story.str_at("key") == Some(key) {
+                return Ok(story.str_at("id").map(str::to_string));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The text after a bold label such as `**Topic:**` at the start of a line.
@@ -262,9 +285,7 @@ pub fn add(args: &Args, file: Option<&str>) -> Result<()> {
                 .iter()
                 .find(|s| s.str_at("key") == Some(key.as_str()))
                 .and_then(|s| s.str_at("id"))
-                .ok_or_else(|| {
-                    CliError::new(format!("not_found: no story {key} in this feature"))
-                })?;
+                .ok_or_else(|| CliError::new(format!("not_found: no story {key} in this track")))?;
             blocked_by.push(quote(id));
         }
     }
@@ -415,7 +436,7 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
         None => s.str_at("id") == Some(given.to_ascii_lowercase().as_str()),
     });
     let Some(found) = found else {
-        bail!("not_found: no story {given} in this feature");
+        bail!("not_found: no story {given} in this track");
     };
     if args.json {
         say(&found.to_string());
@@ -437,17 +458,40 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
             if pending { " (pending)" } else { "" }
         ));
     }
-    let blockers: Vec<&str> = found
+    let blockers: Vec<String> = found
         .get("blocked_by")
         .and_then(Value::as_array)
         .unwrap_or_default()
         .iter()
         .filter_map(Value::as_str)
         .map(|id| {
-            all.iter()
-                .find(|s| s.str_at("id") == Some(id))
-                .and_then(|s| s.str_at("key"))
-                .unwrap_or(id)
+            let blocker = found
+                .get("blockers")
+                .and_then(Value::as_array)
+                .unwrap_or_default()
+                .iter()
+                .find(|b| b.str_at("id") == Some(id));
+            match blocker {
+                Some(b) => format!(
+                    "{} ({}, {}){}",
+                    b.str_at("key").unwrap_or(id),
+                    b.str_at("track_name").unwrap_or("?"),
+                    b.str_at("status").unwrap_or("?"),
+                    if matches!(b.get("blocker_dropped"), Some(Value::Bool(true)))
+                        && !matches!(b.str_at("status"), Some("done" | "cancelled"))
+                    {
+                        " blocker dropped"
+                    } else {
+                        ""
+                    }
+                ),
+                None => all
+                    .iter()
+                    .find(|s| s.str_at("id") == Some(id))
+                    .and_then(|s| s.str_at("key"))
+                    .unwrap_or(id)
+                    .to_string(),
+            }
         })
         .collect();
     if !blockers.is_empty() {
@@ -480,7 +524,7 @@ pub fn read(args: &Args, story: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-const WRITE_USAGE: &str = "omni story edit|cancel|claim|release|move|block|unblock|tick|finding|resolve|decision|files <key> ...; see `omni --help`";
+const WRITE_USAGE: &str = "omni story edit|cancel|claim|release|move|move-track|block|unblock|tick|finding|resolve|decision|files <key> ...; see `omni --help`";
 
 /// The option's value, or an error naming the option and the verb.
 fn needs<'a>(value: &'a Option<String>, name: &str, verb: &str) -> Result<&'a str> {
@@ -567,6 +611,10 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
             ));
             ("/move", "POST")
         }
+        "move-track" => {
+            needs(&args.to, "--to <track>", verb)?;
+            ("/track", "POST")
+        }
         "tick" => {
             fields.push(format!("\"run\":{}", quote(run()?)));
             let criterion = index(
@@ -634,7 +682,7 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
         None => s.str_at("id") == Some(given.to_ascii_lowercase().as_str()),
     });
     let Some(found) = found else {
-        bail!("not_found: no story {given} in this feature");
+        bail!("not_found: no story {given} in this track");
     };
     let (Some(id), Some(Value::Number(version))) = (found.str_at("id"), found.get("version"))
     else {
@@ -649,16 +697,25 @@ pub fn write(args: &Args, verb: &str, rest: &[&str]) -> Result<()> {
                 bail!("{word:?} is not a story key for --blocked-by; use US-1,US-2");
             };
             let wanted = format!("US-{n}");
-            let id = all
+            let own = all
                 .iter()
                 .find(|s| s.str_at("key") == Some(wanted.as_str()))
                 .and_then(|s| s.str_at("id"))
-                .ok_or_else(|| {
-                    CliError::new(format!("not_found: no story {wanted} in this feature"))
-                })?;
-            ids.push(quote(id));
+                .map(str::to_string);
+            let id = match own {
+                Some(id) => id,
+                None => project_story_id(&agent, args, &wanted)?.ok_or_else(|| {
+                    CliError::new(format!("not_found: no story {wanted} in this project"))
+                })?,
+            };
+            ids.push(quote(&id));
         }
         fields.push(format!("\"blocked_by\":[{}]", ids.join(",")));
+    }
+    if verb == "move-track" {
+        let project = project_id(args, &agent)?;
+        let to = resolve_track(&agent, &project, needs(&args.to, "--to <track>", verb)?)?;
+        fields.push(format!("\"to_track_id\":{}", quote(&to)));
     }
     fields.insert(0, format!("\"expected_version\":{version}"));
     let action = match finding {

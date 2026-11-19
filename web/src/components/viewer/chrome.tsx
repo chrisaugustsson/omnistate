@@ -1,22 +1,24 @@
 import { Fragment, type ReactNode, type SelectHTMLAttributes } from "react";
-import { Link } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight, PanelRightClose, PanelRightOpen, TriangleAlert } from "lucide-react";
+import { Link, useParams } from "@tanstack/react-router";
+import { ChevronDown, ChevronRight, History, MessageSquare, PanelRightClose, PanelRightOpen, TriangleAlert } from "lucide-react";
 import { PILLARS } from "@/components/project/items";
+import { buttonClass } from "@/components/track/ui";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useHome } from "@/lib/use-home";
 import { cn } from "@/lib/utils";
 
 // The chrome the doc and design viewers share: a slim toolbar over the view
 // with the doc's breadcrumb, compact selects, side-pane sections with small
-// uppercase labels, and alerts that float over the work.
+// sentence-case labels, and alerts that float over the work.
 
 /** The part of a doc that its breadcrumb shows. */
-export type CrumbedDoc = { feature_id?: string | null; pillar: string; title: string };
+export type CrumbedDoc = { track_id?: string | null; pillar: string; title: string };
 
 /**
  * The slim bar over a viewer: the doc's breadcrumb, scope › pillar › title, and
- * the viewer's controls on the right. The scope links to its page and the
- * pillar to the pillar's section on it; the app level reads "App".
+ * the viewer's controls on the right. A track's doc names the track and links
+ * the pillar to its section on the track's page; any other doc reads "Docs",
+ * linking to the Docs tab it is open in.
  */
 export function ViewerToolbar({
   workspaceId,
@@ -42,16 +44,25 @@ export function ViewerToolbar({
   children?: ReactNode;
 }) {
   const { home } = useHome(workspaceId, projectId);
-  const featureId = doc?.feature_id ?? null;
-  const scopeName = featureId
-    ? (home?.features?.find((summary) => summary.feature.id === featureId)?.feature.name ?? "Feature")
-    : "App";
-  const scope = featureId
-    ? {
-        to: "/w/$workspaceId/projects/$projectId/features/$featureId",
-        params: { workspaceId, projectId, featureId },
-      }
-    : { to: "/w/$workspaceId/projects/$projectId/app", params: { workspaceId, projectId } };
+  const trackId = doc?.track_id ?? null;
+  // A doc that is not a track's opens in the Docs tab of the scope in the address: a feature's, a part's or the project's.
+  const where = useParams({ strict: false }) as { partId?: string; featureId?: string };
+  const scopeName = trackId ? (home?.tracks?.find((summary) => summary.track.id === trackId)?.track.name ?? "Track") : "Docs";
+  const docsTab =
+    where.partId && where.featureId
+      ? ({
+          to: "/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs",
+          params: { workspaceId, projectId, partId: where.partId, featureId: where.featureId },
+        } as const)
+      : where.partId
+        ? ({ to: "/w/$workspaceId/projects/$projectId/parts/$partId/docs", params: { workspaceId, projectId, partId: where.partId } } as const)
+        : ({ to: "/w/$workspaceId/projects/$projectId/docs", params: { workspaceId, projectId } } as const);
+  const scope = trackId
+    ? ({
+        to: "/w/$workspaceId/projects/$projectId/tracks/$trackId",
+        params: { workspaceId, projectId, trackId },
+      } as const)
+    : docsTab;
   const pillar = PILLARS.find((candidate) => candidate.pillar === doc?.pillar);
   const link =
     "block max-w-48 truncate rounded transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none";
@@ -68,7 +79,7 @@ export function ViewerToolbar({
               </Link>
             </li>
             <Crumb>
-              <Link {...scope} hash={doc.pillar} className={link}>
+              <Link {...scope} hash={trackId ? doc.pillar : undefined} className={link}>
                 {pillar?.title ?? doc.pillar}
               </Link>
             </Crumb>
@@ -124,6 +135,61 @@ export function ViewerToolbar({
   );
 }
 
+/**
+ * The one slim bar over a doc that reads as part of a page (a track's Spec, How
+ * and Design tabs, a Docs page): who wrote it and when (`meta`), then on the
+ * right the viewer's own controls (`children`), the doc's Activity, the
+ * comments toggle and the page's `actions` (Full view).
+ */
+export function PageBar({
+  workspaceId,
+  projectId,
+  docId,
+  meta,
+  review,
+  actions,
+  children,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  meta?: ReactNode;
+  review: { shown: boolean; onShown: (shown: boolean) => void };
+  actions?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 text-meta text-ink-3">
+      {meta}
+      <div className="ml-auto flex flex-wrap items-center gap-1">
+        {children}
+        <Link
+          to="/w/$workspaceId/projects/$projectId/docs/$docId/activity"
+          params={{ workspaceId, projectId, docId }}
+          className={buttonClass({ variant: "ghost", size: "sm" })}
+        >
+          <History aria-hidden strokeWidth={2.25} />
+          Activity
+        </Link>
+        <button
+          type="button"
+          aria-label={review.shown ? "Hide the review pane" : "Show the review pane"}
+          aria-expanded={review.shown}
+          aria-controls="review-pane"
+          aria-pressed={review.shown}
+          title={review.shown ? "Hide the comments" : "Show the comments"}
+          className={buttonClass({ variant: "ghost", size: "sm" })}
+          onClick={() => review.onShown(!review.shown)}
+        >
+          <MessageSquare aria-hidden strokeWidth={2.25} />
+          Comments
+        </button>
+        {actions}
+      </div>
+    </div>
+  );
+}
+
 /** A crumb after the first: a chevron and the crumb. */
 function Crumb({ children }: { children: ReactNode }) {
   return (
@@ -144,7 +210,7 @@ export function ToolbarSelect({
 }: SelectHTMLAttributes<HTMLSelectElement> & { id: string; label: string }) {
   return (
     <div className={cn("flex min-w-0 items-center gap-1.5", className)}>
-      <label htmlFor={id} className="shrink-0 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      <label htmlFor={id} className="shrink-0 text-meta font-medium text-ink-3">
         {label}
       </label>
       <div className="relative min-w-0 flex-1">
@@ -164,7 +230,7 @@ export function ToolbarSelect({
   );
 }
 
-/** A section of a side pane: a small uppercase label that sticks while its content scrolls. */
+/** A section of a side pane: a small sentence-case label that sticks while its content scrolls. */
 export function PaneSection({
   id,
   title,
@@ -193,7 +259,7 @@ export function PaneSection({
 export function PaneLabel({ id, title, aside }: { id?: string; title: string; aside?: ReactNode }) {
   return (
     <div className="sticky top-0 z-10 flex h-9 items-center justify-between gap-2 bg-background/95 px-3 backdrop-blur">
-      <h2 id={id} className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      <h2 id={id} className="text-meta font-medium text-ink-3">
         {title}
       </h2>
       {aside && <div className="flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">{aside}</div>}
@@ -204,7 +270,7 @@ export function PaneLabel({ id, title, aside }: { id?: string; title: string; as
 /** A quiet line for a pane with nothing to show yet. */
 export function PaneEmpty({ icon, children }: { icon?: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex items-start gap-2 rounded-lg border border-dashed px-3 py-3 text-[12.5px] leading-snug text-muted-foreground [&_svg]:mt-px [&_svg]:size-3.5 [&_svg]:shrink-0">
+    <div className="flex items-start gap-2 py-1 text-meta leading-snug text-ink-3 [&_svg]:mt-px [&_svg]:size-3.5 [&_svg]:shrink-0">
       {icon}
       <p>{children}</p>
     </div>

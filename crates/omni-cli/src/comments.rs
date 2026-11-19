@@ -7,10 +7,10 @@ use crate::args::Args;
 use crate::commands::{agent, read_body, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{current_feature, is_uuid, project_id, resolve_feature};
+use crate::projects::{current_track, is_uuid, project_id, resolve_track};
 use std::io::IsTerminal;
 
-const LIST_USAGE: &str = "omni comment list [--doc <id>] [--feature <name|id>]";
+const LIST_USAGE: &str = "omni comment list [--doc <id>] [--track <name|id>]";
 const REPLY_USAGE: &str = "omni comment reply <comment> <text>";
 
 fn unreadable(what: &str) -> CliError {
@@ -52,7 +52,7 @@ fn indented(text: &str, indent: &str) -> String {
         .join("\n")
 }
 
-/// `omni comment list [--doc <id>] [--feature <name or id>]`
+/// `omni comment list [--doc <id>] [--track <name or id>]`
 pub fn list(args: &Args) -> Result<()> {
     let doc = args
         .doc
@@ -62,15 +62,15 @@ pub fn list(args: &Args) -> Result<()> {
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let feature = current_feature(args)
-        .map(|given| resolve_feature(&agent, &project, &given))
+    let track = current_track(args)
+        .map(|given| resolve_track(&agent, &project, &given))
         .transpose()?;
     let mut query = Vec::new();
     if let Some(doc) = doc {
         query.push(format!("doc={doc}"));
     }
-    if let Some(feature) = feature {
-        query.push(format!("feature={feature}"));
+    if let Some(track) = track {
+        query.push(format!("track={track}"));
     }
     let mut path = format!(
         "/api/v1/w/{}/projects/{project}/comments",

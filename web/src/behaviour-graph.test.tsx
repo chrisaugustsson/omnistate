@@ -55,6 +55,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("the graph's minimap", () => {
+  test("is not there while the whole tree is in view, and shows once zooming in puts some of it outside", async () => {
+    render(<Graph nodes={testTree()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Zoom in" })).toBeTruthy());
+    expect(screen.queryByLabelText("Map of the tree")).toBeNull();
+
+    for (let press = 0; press < 4; press++) fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+
+    await waitFor(() => expect(screen.getByLabelText("Map of the tree")).toBeTruthy());
+  });
+});
+
 describe("the graph's zoom controls", () => {
   test("the percentage button sets 100% about the middle of the graph area when nothing is chosen", async () => {
     const { container } = render(<Graph nodes={testTree()} />);
@@ -251,10 +263,13 @@ describe("the story labels", () => {
 });
 
 describe("the small map", () => {
-  test("pressing and dragging in it centres the graph area on that point of the drawing at the same zoom, at once", () => {
+  test("pressing and dragging in it centres the graph area on that point of the drawing at the same zoom, at once", async () => {
     const { container } = render(<Graph nodes={testTree()} />);
+    // The map shows once some of the drawing lies outside the area.
+    for (let press = 0; press < 4; press++) fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    const map = await screen.findByLabelText("Map of the tree");
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const opening = currentView(container);
-    const map = screen.getByLabelText("Map of the tree");
 
     // The 4276 x 4896 drawing is drawn at 170/4896 so that it is at most 150 x 170.
     fireEvent.pointerDown(map, { pointerId: 2, button: 0, clientX: 75, clientY: 85 });

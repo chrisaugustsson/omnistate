@@ -1,28 +1,32 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { FileText, Layers, LayoutGrid, MessagesSquare, Search, type LucideIcon } from "lucide-react";
-import type { HomeResponse } from "@/api/generated";
-import { buildIndex, recentPlaces, search, type Place, type PlaceKind } from "@/components/palette/search";
+import { loadFeatures } from "@/api/features";
+import type { HomeResponse, ProjectBody } from "@/api/generated";
+import { loadParts } from "@/api/parts";
+import { buildIndex, mergeIndexes, recentPlaces, search, type Place, type PlaceKind, type ScopeNames } from "@/components/palette/search";
+import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
-import { useVisits } from "@/lib/visits";
+import { readVisits } from "@/lib/visits";
 
-// The ⌘K palette: finds a feature, doc or thread of the project by name or
-// title, and with nothing typed lists the places visited last. It is a
-// combobox over the project home; the search itself is in ./search, and
-// no fuzzy matching is done here.
+// The ⌘K palette: finds a track, doc or thread by name or title, and with
+// nothing typed lists the places visited last. It is a combobox over the open
+// project's home, or on Home over every project's; the search itself is in
+// ./search, and no fuzzy matching is done here.
 
 type Params = { workspaceId: string; projectId: string };
 
-const ICONS: Record<PlaceKind, LucideIcon> = { app: LayoutGrid, feature: Layers, doc: FileText, thread: MessagesSquare };
+const ICONS: Record<PlaceKind, LucideIcon> = { app: LayoutGrid, track: Layers, doc: FileText, thread: MessagesSquare };
 
-/** The `to` and `params` that open a place. */
-function linkOf(place: Place, params: Params) {
+/** The `to` and `params` that open a place, in its project. */
+function linkOf(place: Place, workspaceId: string) {
+  const params: Params = { workspaceId, projectId: place.projectId };
   switch (place.kind) {
     case "app":
-      return { to: "/w/$workspaceId/projects/$projectId/app", params } as const;
-    case "feature":
-      return { to: "/w/$workspaceId/projects/$projectId/features/$featureId", params: { ...params, featureId: place.id } } as const;
+      return { to: "/w/$workspaceId/projects/$projectId", params } as const;
+    case "track":
+      return { to: "/w/$workspaceId/projects/$projectId/tracks/$trackId", params: { ...params, trackId: place.id } } as const;
     case "doc":
       return { to: "/w/$workspaceId/projects/$projectId/docs/$docId", params: { ...params, docId: place.id } } as const;
     case "thread":
@@ -57,18 +61,18 @@ export function useSearchShortcut(toggle: () => void) {
 
 type Group = { label: string; places: Place[]; count?: string };
 
-function Row({ place, id, active, params, onOpen, onHover }: {
+function Row({ place, id, active, workspaceId, onOpen, onHover }: {
   place: Place;
   id: string;
   active: boolean;
-  params: Params;
+  workspaceId: string;
   onOpen: () => void;
   onHover: () => void;
 }) {
   const Icon = ICONS[place.kind];
   return (
     <Link
-      {...linkOf(place, params)}
+      {...linkOf(place, workspaceId)}
       id={id}
       role="option"
       aria-selected={active}
@@ -86,10 +90,59 @@ function Row({ place, id, active, params, onOpen, onHover }: {
   );
 }
 
-function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: Params; onClose: () => void }) {
+/**
+ * The names the searched projects' places are labelled with, by project ID:
+ * the project's, its parts', and for a project with feature docs the part of
+ * each feature. Loaded when the palette opens; until then a doc shows its pillar.
+ */
+function useScopeNames(workspaceId: string, homes: readonly HomeResponse[], projects: readonly ProjectBody[] | null) {
+  const load = useCallback(async () => {
+    const named = await Promise.all(
+      homes.map(async (home): Promise<[string, ScopeNames]> => {
+        const parts = await loadParts(workspaceId, home.project_id);
+        const featureParts = new Map<string, string>();
+        if (home.docs.some((doc) => doc.feature_id)) {
+          const features = await Promise.all(parts.map((part) => loadFeatures(workspaceId, home.project_id, part.id)));
+          parts.forEach((part, at) => features[at].forEach((feature) => featureParts.set(feature.id, part.name)));
+        }
+        return [home.project_id, { parts: new Map(parts.map((part) => [part.id, part.name])), featureParts }];
+      }),
+    );
+    return new Map(named);
+  }, [workspaceId, homes]);
+  const loaded = useReloading(load).value;
+  return useMemo(() => {
+    const names = new Map<string, ScopeNames>();
+    for (const home of homes) {
+      const project = projects?.find((one) => one.id === home.project_id)?.name;
+      names.set(home.project_id, { ...loaded?.get(home.project_id), project });
+    }
+    return names;
+  }, [homes, projects, loaded]);
+}
+
+function PaletteDialog({
+  homes,
+  projects,
+  workspaceId,
+  onClose,
+}: {
+  homes: readonly HomeResponse[];
+  projects: readonly ProjectBody[] | null;
+  workspaceId: string;
+  onClose: () => void;
+}) {
   const navigate = useNavigate();
-  const visits = useVisits(params.projectId);
-  const index = useMemo(() => buildIndex(home), [home]);
+  const names = useScopeNames(workspaceId, homes, projects);
+  const index = useMemo(() => mergeIndexes(homes.map((home) => buildIndex(home, names.get(home.project_id)))), [homes, names]);
+  // Every searched project's visits, newest first; read when the palette opens.
+  const visits = useMemo(
+    () =>
+      homes
+        .flatMap((home) => readVisits(home.project_id).map((visit) => ({ ...visit, project: home.project_id })))
+        .sort((a, b) => b.at - a.at),
+    [homes],
+  );
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listId = useId();
@@ -101,11 +154,11 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
       const recent = recentPlaces(index, visits);
       return recent.length > 0 ? [{ label: "Recent", places: recent }] : [];
     }
-    const { features, docs, threads } = search(index, query);
+    const { tracks, docs, threads } = search(index, query);
     const of = (group: { items: Place[]; total: number }) =>
       group.total > group.items.length ? `${group.items.length} of ${group.total}` : undefined;
     return [
-      { label: "Features", places: features.items, count: of(features) },
+      { label: "Tracks", places: tracks.items, count: of(tracks) },
       { label: "Docs", places: docs.items, count: of(docs) },
       { label: "Threads", places: threads.items, count: of(threads) },
     ].filter((group) => group.places.length > 0);
@@ -134,7 +187,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
       setActive((current + step + flat.length) % flat.length);
     } else if (event.key === "Enter" && flat[current]) {
       event.preventDefault();
-      void navigate(linkOf(flat[current], params));
+      void navigate(linkOf(flat[current], workspaceId));
       onClose();
     }
   }
@@ -164,7 +217,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
             aria-controls={listId}
             aria-activedescendant={current >= 0 ? `${listId}-${current}` : undefined}
             aria-label="Search"
-            placeholder="Search features, docs and threads"
+            placeholder="Search tracks, docs and threads"
             autoComplete="off"
             value={query}
             onChange={(event) => {
@@ -180,7 +233,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
             <p className="px-3 py-8 text-center text-sm text-muted-foreground">
               {typed
                 ? `Nothing is called “${query.trim()}”. The palette searches names and titles, not what docs say.`
-                : "No places visited yet. Type to search features, docs and threads."}
+                : "No places visited yet. Type to search tracks, docs and threads."}
             </p>
           )}
           {groups.map((group) => (
@@ -197,7 +250,7 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
                     place={place}
                     id={`${listId}-${at}`}
                     active={at === current}
-                    params={params}
+                    workspaceId={workspaceId}
                     onOpen={onClose}
                     onHover={() => setActive(at)}
                   />
@@ -217,8 +270,21 @@ function PaletteDialog({ home, params, onClose }: { home: HomeResponse; params: 
   );
 }
 
-/** The palette, shown while `open`; it searches `home`, the project's items. */
-export function Palette({ home, workspaceId, projectId, open, onClose }: Params & { home: HomeResponse | null; open: boolean; onClose: () => void }) {
-  if (!open || !home) return null;
-  return createPortal(<PaletteDialog home={home} params={{ workspaceId, projectId }} onClose={onClose} />, document.body);
+/** The palette, shown while `open`; it searches the items of `homes`: the open project's, or on Home every project's. */
+export function Palette({
+  homes,
+  projects = null,
+  workspaceId,
+  open,
+  onClose,
+}: {
+  homes: readonly HomeResponse[] | null;
+  /** The workspace's projects, for the names places are labelled with. */
+  projects?: readonly ProjectBody[] | null;
+  workspaceId: string;
+  open: boolean;
+  onClose: () => void;
+}) {
+  if (!open || !homes || homes.length === 0) return null;
+  return createPortal(<PaletteDialog homes={homes} projects={projects} workspaceId={workspaceId} onClose={onClose} />, document.body);
 }

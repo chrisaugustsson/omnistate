@@ -107,10 +107,10 @@ fn answer(request: &Recorded, app: &[Value], feature: &[Value], tokens: &Value) 
         let Some(rest) = request.path.strip_prefix(&base()) else {
             return not_found();
         };
-        if rest == "/docs?feature=global" {
+        if rest == "/docs?track=global" {
             return Reply::json(200, &json!({"docs": app}));
         }
-        if rest == format!("/docs?feature={FEATURE}") {
+        if rest == format!("/docs?track={FEATURE}") {
             return Reply::json(200, &json!({"docs": feature}));
         }
         if rest == "/tokens" {
@@ -236,7 +236,7 @@ fn a_feature_export_lists_the_feature_docs_and_the_app_tokens_each_at_its_seq() 
     let server = mock(app_docs(), feature_docs(), tokens_answer(two_mode_tree()));
     let out = Scratch::new("out");
 
-    let run = export(&server, &out.path, &["--feature", FEATURE]);
+    let run = export(&server, &out.path, &["--track", FEATURE]);
 
     assert_eq!(run.code, 0, "stderr: {}", run.stderr);
     let board = json!({
@@ -292,7 +292,7 @@ fn the_exported_files_hold_the_html_the_board_tags_and_the_token_tree() {
     let server = mock(app_docs(), feature_docs(), tokens_answer(two_mode_tree()));
     let out = Scratch::new("out");
 
-    let run = export(&server, &out.path, &["--feature", FEATURE]);
+    let run = export(&server, &out.path, &["--track", FEATURE]);
 
     assert_eq!(run.code, 0, "stderr: {}", run.stderr);
     let html = path_where(&out.path, "doc_id", FEATURE_SPEC);
@@ -517,7 +517,7 @@ fn a_project_without_a_design_system_gets_no_token_files() {
     let server = mock(app, feature_docs(), json!({"error": "unexpected"}));
     let out = Scratch::new("out");
 
-    let run = export(&server, &out.path, &["--feature", FEATURE]);
+    let run = export(&server, &out.path, &["--track", FEATURE]);
 
     assert_eq!(run.code, 0, "stderr: {}", run.stderr);
     assert!(!out.path.join("tokens.json").exists());
@@ -586,7 +586,7 @@ fn a_board_whose_picture_the_api_refuses_is_named_on_stderr_and_the_other_files_
     });
     let out = Scratch::new("out");
 
-    let run = export(&server, &out.path, &["--feature", FEATURE]);
+    let run = export(&server, &out.path, &["--track", FEATURE]);
 
     assert_eq!(run.code, 0, "stderr: {}", run.stderr);
     let cart = path_where(&out.path, "board_id", BOARD);

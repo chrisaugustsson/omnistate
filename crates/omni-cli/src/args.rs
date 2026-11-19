@@ -16,12 +16,33 @@ pub struct Args {
     /// `--project <name or id>`: the project a command works in, instead of
     /// `OMNI_PROJECT` or the one the folder is linked to.
     pub project: Option<String>,
-    /// `--feature <name or id>`: the feature a command works in, instead of
-    /// `OMNI_FEATURE`; `--global` works at the app level whatever
-    /// `OMNI_FEATURE` says.
+    /// `--track <name or id>`: the track a command works in, instead of
+    /// `OMNI_TRACK`; `--global` works at the app level whatever
+    /// `OMNI_TRACK` says.
+    pub track: Option<String>,
+    /// `--feature <name or id>`: the feature `omni doc create` creates a doc
+    /// on and `omni doc list` shows, instead of the track of `OMNI_TRACK`.
     pub feature: Option<String>,
     pub global: bool,
-    /// `--title` and `--description` describe a doc or a feature.
+    /// `omni decision add --project` and `omni decision list --project`: the
+    /// decision is about, or the list is of, the whole project. Only there,
+    /// and only bare (last, or before another option), is `--project` a
+    /// flag; everywhere else it takes a value.
+    pub project_level: bool,
+    /// `omni track list --mine`: only the tracks the key's member owns.
+    pub mine: bool,
+    /// `--part <name or id>`: the part `omni track create` and `omni track
+    /// move` put a track on, and the one `omni track list` keeps to; without
+    /// `--feature`, also the part `omni doc create` creates a doc on and `omni
+    /// doc list` shows.
+    pub part: Option<String>,
+    /// Every `--part` given, in order: `omni link` takes it repeatedly, as
+    /// `<name>[=<path>]`.
+    pub parts: Vec<String>,
+    /// `--from <name or id>`: the track `omni track split` splits a new one
+    /// off from.
+    pub from: Option<String>,
+    /// `--title` and `--description` describe a doc or a track.
     pub title: Option<String>,
     pub description: Option<String>,
     /// `--kind` and `--pillar` say what kind of doc `omni doc create` starts
@@ -84,6 +105,9 @@ pub struct Args {
     pub criterion: Option<String>,
     pub finding: Option<String>,
     pub question: Option<String>,
+    /// `omni decision add --decision <what> --why <why>`.
+    pub decision: Option<String>,
+    pub why: Option<String>,
     pub choice: Option<String>,
     pub by: Option<String>,
     pub text: Option<String>,
@@ -130,7 +154,7 @@ fn is_gone(words: &[String]) -> bool {
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
     let mut parsed = Args::default();
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         if arg == "--" {
             parsed.words.extend(args.by_ref());
@@ -221,6 +245,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 parsed.global = true;
                 continue;
             }
+            "--mine" => {
+                parsed.mine = true;
+                continue;
+            }
             "--remove-commented" => {
                 bail!(
                     "--remove-commented is gone: a write that removes a commented node always goes through, and the comment stays, orphaned, until the human deletes it"
@@ -269,6 +297,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--criterion" => &mut parsed.criterion,
             "--finding" => &mut parsed.finding,
             "--question" => &mut parsed.question,
+            "--decision" => &mut parsed.decision,
+            "--why" => &mut parsed.why,
             "--choice" => &mut parsed.choice,
             "--by" => &mut parsed.by,
             "--text" => &mut parsed.text,
@@ -291,8 +321,29 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--harness" => &mut parsed.harness,
             "--server" => &mut parsed.server,
             "--body-file" => &mut parsed.body_file,
+            // `omni decision add|list` take no words of their own, so a bare
+            // `--project` (last, or before another option) is the level
+            // flag, and `--project <name|id>` still selects the project.
+            "--project"
+                if inline.is_none()
+                    && parsed.words.first().is_some_and(|word| word == "decision")
+                    && args.peek().is_none_or(|next| next.starts_with('-')) =>
+            {
+                parsed.project_level = true;
+                continue;
+            }
             "--project" => &mut parsed.project,
+            "--track" => &mut parsed.track,
             "--feature" => &mut parsed.feature,
+            "--part" => {
+                let Some(value) = inline.or_else(|| args.next()) else {
+                    bail!("{arg} needs a value; see `omni --help`");
+                };
+                parsed.parts.push(value.clone());
+                parsed.part = Some(value);
+                continue;
+            }
+            "--from" => &mut parsed.from,
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--doc" => &mut parsed.doc,

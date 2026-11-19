@@ -687,6 +687,8 @@ beforeEach(() => {
   seedInspections();
   fakeApi();
   vi.stubGlobal("WebSocket", FakeWebSocket);
+  // A wide window: under 1440px a design on a Docs tab opens with its review pane hidden.
+  vi.stubGlobal("innerWidth", 1920);
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 });
 

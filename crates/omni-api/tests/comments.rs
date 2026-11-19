@@ -29,9 +29,9 @@
 //!   project, is 404 `not_found`. A refused call stores nothing and emits
 //!   nothing.
 //! - A Comment has at least `{"id" (UUIDv7), "project_id", "doc_id", "node",
-//!   "feature_id", "author", "text", "replies", "waiting_on_you",
-//!   "created_at"}`: `node` is the address as sent; `feature_id` the doc's
-//!   feature, `null` at the app level; `author` `{"kind": "human",
+//!   "track_id", "author", "text", "replies", "waiting_on_you",
+//!   "created_at"}`: `node` is the address as sent; `track_id` the doc's
+//!   track, `null` at the app level; `author` `{"kind": "human",
 //!   "user_id"}` for the human and `{"kind": "agent", "run", "role", "model",
 //!   "harness"}` for an agent; `replies` the replies, oldest first, each
 //!   `{"id", "author", "text", "created_at"}`; and `waiting_on_you` is `true`
@@ -39,8 +39,8 @@
 //!   or whose latest reply is the human's, is not waiting).
 //! - `GET /comments` (both) lists the project's comments, oldest first: 200
 //!   `{"project_id", "comments": [Comment, ...]}`. `doc=<id>` narrows it to
-//!   one doc's comments and `feature=<id>` to the comments on the docs of one
-//!   feature. `GET /comments/{comment_id}` (both) answers 200 `{"project_id",
+//!   one doc's comments and `track=<id>` to the comments on the docs of one
+//!   track. `GET /comments/{comment_id}` (both) answers 200 `{"project_id",
 //!   "comment": Comment}`.
 //! - `POST /comments/{comment_id}/replies` (both) takes `{"text"}` (not blank,
 //!   else 400 `invalid_request`) and answers 201 `{"comment": Comment}` with
@@ -385,7 +385,7 @@ fn assert_uuid_v7(id: &Value) {
 }
 
 // ---------------------------------------------------------------------------
-// Projects, features and live docs
+// Projects, tracks and live docs
 // ---------------------------------------------------------------------------
 
 fn new_project(f: &Fixture, client: &Client) -> String {
@@ -404,35 +404,54 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/features", project_base(f, project)),
+                &format!("{}/parts", project_base(f, project)),
                 &author(f),
-                Some(&json!({ "name": unique("Checkout") })),
+                Some(&json!({ "name": unique("part"), "kind": "app" })),
             ),
             201,
-            "create a feature",
-        )["feature"],
+            "create a part",
+        )["part"],
+    )
+}
+
+fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/tracks", project_base(f, project)),
+                &author(f),
+                Some(
+                    &json!({ "name": unique("Checkout"), "part_id": new_part(f, client, project) }),
+                ),
+            ),
+            201,
+            "create a track",
+        )["track"],
     )
 }
 
 /// Creates a doc (US-102), at the app level or in
-/// `feature`; returns its ID.
+/// `track`; returns its ID.
 fn new_doc(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: Option<&str>,
+    track: Option<&str>,
     kind: &str,
     pillar: &str,
 ) -> String {
-    let path = match feature {
+    let path = match track {
         None => format!("{}/docs", project_base(f, project)),
-        Some(feature) => format!("{}/features/{feature}/docs", project_base(f, project)),
+        Some(track) => format!("{}/tracks/{track}/docs", project_base(f, project)),
     };
     id_of(
         &must(
@@ -487,15 +506,10 @@ fn paragraph(f: &Fixture, client: &Client, project: &str, doc: &str, text: &str)
         .to_string()
 }
 
-/// An HTML doc at the app level of `project` (or in `feature`) with one
+/// An HTML doc at the app level of `project` (or in `track`) with one
 /// paragraph: (doc, the paragraph's node).
-fn paper_in(
-    f: &Fixture,
-    client: &Client,
-    project: &str,
-    feature: Option<&str>,
-) -> (String, String) {
-    let doc = new_doc(f, client, project, feature, "html", "spec");
+fn paper_in(f: &Fixture, client: &Client, project: &str, track: Option<&str>) -> (String, String) {
+    let doc = new_doc(f, client, project, track, "html", "spec");
     let node = paragraph(f, client, project, &doc, "Orders ship in two days.");
     (doc, node)
 }
@@ -871,7 +885,7 @@ fn a_comment_on_a_block_of_an_html_head_records_its_doc_node_author_and_text() {
     assert_eq!(made["project_id"], project.as_str(), "{made}");
     assert_eq!(made["doc_id"], doc.as_str(), "{made}");
     assert_eq!(made["node"], node.as_str(), "{made}");
-    assert_eq!(made["feature_id"], Value::Null, "an app-level doc: {made}");
+    assert_eq!(made["track_id"], Value::Null, "an app-level doc: {made}");
     assert_eq!(
         made["author"],
         json!({ "kind": "human", "user_id": f.alice }),
@@ -892,11 +906,11 @@ fn a_comment_on_a_block_of_an_html_head_records_its_doc_node_author_and_text() {
 }
 
 #[test]
-fn an_agent_may_comment_too_and_a_comment_on_a_feature_doc_names_the_feature() {
+fn an_agent_may_comment_too_and_a_comment_on_a_track_doc_names_the_track() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let (doc, node) = paper_in(f, client, &project, Some(&feature));
+    let track = new_track(f, client, &project);
+    let (doc, node) = paper_in(f, client, &project, Some(&track));
 
     let made = comment(
         f,
@@ -908,7 +922,7 @@ fn an_agent_may_comment_too_and_a_comment_on_a_feature_doc_names_the_feature() {
         "Two days is too slow.",
     );
     assert_eq!(made["doc_id"], doc.as_str(), "{made}");
-    assert_eq!(made["feature_id"], feature.as_str(), "{made}");
+    assert_eq!(made["track_id"], track.as_str(), "{made}");
     assert_eq!(
         made["author"],
         json!({
@@ -1210,13 +1224,13 @@ fn a_comment_waits_on_you_when_its_latest_reply_is_an_agents() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn comments_are_listed_oldest_first_by_project_doc_and_feature() {
+fn comments_are_listed_oldest_first_by_project_doc_and_track() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let other_project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let (app_doc, app_node) = paper_in(f, client, &project, None);
-    let (feature_doc, feature_node) = paper_in(f, client, &project, Some(&feature));
+    let (track_doc, track_node) = paper_in(f, client, &project, Some(&track));
     let (elsewhere, elsewhere_node) = paper_in(f, client, &other_project, None);
 
     let first = id_of(&comment(
@@ -1233,8 +1247,8 @@ fn comments_are_listed_oldest_first_by_project_doc_and_feature() {
         client,
         &human(f),
         &project,
-        &feature_doc,
-        &feature_node,
+        &track_doc,
+        &track_node,
         "Second",
     ));
     let third = id_of(&comment(
@@ -1292,10 +1306,10 @@ fn comments_are_listed_oldest_first_by_project_doc_and_feature() {
             client,
             &author(f),
             &project,
-            &format!("?feature={feature}")
+            &format!("?track={track}")
         )),
         [second.clone()],
-        "the comments on the docs of one feature"
+        "the comments on the docs of one track"
     );
 }
 
@@ -1307,8 +1321,8 @@ fn comments_are_listed_oldest_first_by_project_doc_and_feature() {
 fn the_human_deletes_a_comment_which_leaves_every_list_and_stays_in_the_database() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let (doc, node) = paper_in(f, client, &project, Some(&feature));
+    let track = new_track(f, client, &project);
+    let (doc, node) = paper_in(f, client, &project, Some(&track));
     let kept = id_of(&comment(
         f,
         client,
@@ -1335,7 +1349,7 @@ fn the_human_deletes_a_comment_which_leaves_every_list_and_stays_in_the_database
     for query in [
         String::new(),
         format!("?doc={doc}"),
-        format!("?feature={feature}"),
+        format!("?track={track}"),
     ] {
         for auth in [human(f), author(f)] {
             assert_eq!(

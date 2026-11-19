@@ -96,7 +96,7 @@ export function TokenChip({ name }: { name: string }) {
 export function PropertyTable({ label, rows }: { label: string; rows: { name: string; cells: ReactNode }[] }) {
   return (
     <table aria-label={label} className="w-full table-fixed border-separate border-spacing-0 text-left text-[12px]">
-      <caption className="pb-1.5 text-left text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      <caption className="pb-1.5 text-left text-meta font-medium text-ink-3">
         {label}
       </caption>
       <tbody>
@@ -301,7 +301,7 @@ function goneTarget(actions: InteractionAction[]): string | null {
 export function InteractionsSection({ interactions }: { interactions: Interaction[] }) {
   return (
     <section aria-label="Interactions" className="space-y-2">
-      <h3 className="text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+      <h3 className="text-meta font-medium text-ink-3">
         Interactions ({interactions.length})
       </h3>
       <ul className="space-y-2">

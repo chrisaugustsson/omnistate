@@ -1,44 +1,47 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
 import { loadOpenQuestions, loadTree } from "@/api/behaviour";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useProjectEvents } from "@/live/context";
-import { featureNames } from "@/components/project/items";
-import { useHome } from "@/lib/use-home";
 import { useReloading } from "@/lib/reloading";
 import { Details } from "./details";
 import { Folders } from "./folders";
 import { Graph } from "./graph";
 import { ancestorsOf, childrenOf, find, matches, shownUnder, type Filter } from "./tree";
 
-// A feature's Behaviour screen: folders on the left, the graph in the middle and
-// the details of the chosen node on the right. This owns the screen's state.
+// A track's Behaviour screen: what to show and the tree's facts along the top,
+// folders on the left, the graph taking the rest, and the details of the
+// chosen node in a column that opens on the right while a node is chosen (the
+// graph narrows and keeps the node in sight). It fills the track's Behaviour
+// tab, under the track's header. This owns the screen's state.
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
-/** The Behaviour screen of the feature `featureId`. */
+/** The Behaviour screen of the track `trackId`. */
 export function BehaviourScreen({
   workspaceId,
   projectId,
-  featureId,
+  trackId,
   me = null,
+  onWaiting,
 }: {
   workspaceId: string;
   projectId: string;
-  featureId: string;
+  trackId: string;
   me?: string | null;
+  /** Told how many questions agents asked that wait for an answer, whenever that changes (the track's tab counts them). */
+  onWaiting?: (count: number) => void;
 }) {
-  const load = useCallback(() => loadTree(workspaceId, projectId, featureId), [workspaceId, projectId, featureId]);
-  const { value: nodes, failed, reload: reloadTree } = useReloading(load);
+  const load = useCallback(() => loadTree(workspaceId, projectId, trackId), [workspaceId, projectId, trackId]);
+  const { value: nodes, failed, reload: reloadTree } = useReloading(load, `tree:${trackId}`);
   // How many questions wait on each node; a question a person asked is a remark and does not wait.
   const loadWaiting = useCallback(
-    () => loadOpenQuestions(workspaceId, projectId, featureId).catch(() => []),
-    [workspaceId, projectId, featureId],
+    () => loadOpenQuestions(workspaceId, projectId, trackId).catch(() => []),
+    [workspaceId, projectId, trackId],
   );
-  const { value: openQuestions, reload: reloadQuestions } = useReloading(loadWaiting);
+  const { value: openQuestions, reload: reloadQuestions } = useReloading(loadWaiting, `questions:${trackId}`);
   const waiting = useMemo(() => {
     const counts = new Map<string, number>();
     for (const question of openQuestions ?? []) {
@@ -46,8 +49,6 @@ export function BehaviourScreen({
     }
     return counts;
   }, [openQuestions]);
-  const { home } = useHome(workspaceId, projectId);
-  const featureName = home ? (featureNames(home).get(featureId) ?? "") : "";
   // Every node starts closed.
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const toggle = (id: string) =>
@@ -136,7 +137,7 @@ export function BehaviourScreen({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [nodes, chosen]);
-  // Live: a behaviour event of this feature reads the tree and the open questions again, at most once in 300 ms
+  // Live: a behaviour event of this track reads the tree and the open questions again, at most once in 300 ms
   // (on the first event, and once more at the end of the window if more came); the chosen node too when it is concerned.
   const [nodeTick, setNodeTick] = useState(0);
   const chosenRef = useRef(chosen);
@@ -166,7 +167,7 @@ export function BehaviourScreen({
     [],
   );
   useProjectEvents(projectId, (event) => {
-    if (!event.event.startsWith("behaviour.") || event.data.feature_id !== featureId) return;
+    if (!event.event.startsWith("behaviour.") || event.data.track_id !== trackId) return;
     const concerned =
       event.event === "behaviour.imported" || event.event === "behaviour.marked" || (chosenRef.current !== null && event.data.node_id === chosenRef.current);
     const state = throttle.current;
@@ -201,6 +202,9 @@ export function BehaviourScreen({
     return { all: count("all"), open: count("open"), default: count("default"), needs_pass: count("needs_pass"), answers: all.reduce((sum, node) => sum + node.default_answers, 0) };
   }, [nodes]);
   const waitingTotal = [...waiting.values()].reduce((sum, count) => sum + count, 0);
+  useEffect(() => {
+    if (openQuestions) onWaiting?.(waitingTotal);
+  }, [openQuestions, waitingTotal, onWaiting]);
   const choices = ([["all", "All"], ["open", "Only open"], ["default", "Only by default"], ["needs_pass", "Only needing a grill pass"]] as const).filter(
     ([name]) => name !== "needs_pass" || counts.needs_pass > 0 || filter === "needs_pass",
   );
@@ -226,25 +230,17 @@ export function BehaviourScreen({
 
   return (
     <div className="h-full overflow-x-auto">
-      <div className="grid h-full min-w-[1092px] grid-cols-[288px_minmax(400px,1fr)_404px] grid-rows-[56px_minmax(0,1fr)]">
-        <header className="col-span-3 flex items-center gap-4 border-b px-4">
-          <span
-            aria-hidden
-            className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary font-display text-lg leading-none text-primary-foreground"
-          >
-            O
-          </span>
-          <Link
-            to="/w/$workspaceId/projects/$projectId/features/$featureId"
-            params={{ workspaceId, projectId, featureId }}
-            className="max-w-64 truncate text-[13px] font-medium text-muted-foreground hover:text-foreground"
-          >
-            ‹ {featureName}
-          </Link>
-          <h1 className="font-display text-2xl leading-none tracking-[-0.01em]">Behaviour</h1>
+      <div
+        className={cn(
+          "grid h-full min-w-[760px] grid-rows-[52px_minmax(0,1fr)]",
+          chosenNode ? "grid-cols-[260px_minmax(320px,1fr)_360px]" : "grid-cols-[260px_minmax(320px,1fr)]",
+        )}
+      >
+        {!(nodes && nodes.length === 0) && (
+        <header className="col-span-full flex items-center gap-4 border-b border-line px-3">
           {nodes && nodes.length > 0 && (
             <>
-              <div role="group" aria-label="Show" className="ml-2 flex shrink-0 rounded-lg bg-sidebar-accent p-0.5">
+              <div role="group" aria-label="Show" className="flex shrink-0 rounded-lg bg-sidebar-accent p-0.5">
                 {choices.map(([name, label]) => (
                   <button
                     key={name}
@@ -278,17 +274,25 @@ export function BehaviourScreen({
             </>
           )}
         </header>
+        )}
         {failed && (
-          <Alert variant="destructive" className="col-span-3 m-4 w-auto">
+          <Alert variant="destructive" className="col-span-full m-4 w-auto">
             <AlertDescription>The behaviour tree could not be loaded. Try again in a moment.</AlertDescription>
           </Alert>
         )}
         {nodes && nodes.length === 0 && (
-          <p className="col-span-3 p-4 text-sm text-muted-foreground">No behaviour has been written for this feature yet.</p>
+          <div className="col-span-full row-span-2 grid place-items-center p-6 text-center">
+            <div className="max-w-[440px]">
+              <p className="font-medium text-ink">No behaviour has been written for this track yet.</p>
+              <p className="mt-1 text-ink-2">
+                The behaviour agent grills the track&rsquo;s user stories and every situation under them into a tree here, and leaves its open questions for you to answer.
+              </p>
+            </div>
+          </div>
         )}
         {nodes && nodes.length > 0 && (
           <>
-            <aside aria-label="Tree as folders" className="flex min-h-0 flex-col border-r">
+            <aside aria-label="Tree as folders" className="flex min-h-0 flex-col border-r border-line">
               <div className="relative mx-3 mt-3">
                 <input
                   ref={searchField}
@@ -351,22 +355,23 @@ export function BehaviourScreen({
                 </p>
               )}
             </main>
-            <Details
-              node={chosenNode}
-              tree={nodes}
-              me={me}
-              onChoose={(id) => choose(id, "details")}
-              workspaceId={workspaceId}
-              projectId={projectId}
-              featureId={featureId}
-              onWritten={() => {
-                reloadTree();
-                reloadQuestions();
-              }}
-              waitingCount={waitingTotal}
-              refresh={nodeTick}
-              onShowOpen={() => setFilter("open")}
-            />
+            {chosenNode && (
+              <Details
+                node={chosenNode}
+                tree={nodes}
+                me={me}
+                onChoose={(id) => choose(id, "details")}
+                onClose={() => setChosen(null)}
+                workspaceId={workspaceId}
+                projectId={projectId}
+                trackId={trackId}
+                onWritten={() => {
+                  reloadTree();
+                  reloadQuestions();
+                }}
+                refresh={nodeTick}
+              />
+            )}
           </>
         )}
       </div>

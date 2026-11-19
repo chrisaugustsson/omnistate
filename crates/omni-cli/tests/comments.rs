@@ -9,10 +9,10 @@
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
 //! found from `--project`):
 //!
-//! - `omni comment list [--doc <id>] [--feature <name or id>]` sends `GET
-//!   /comments` and only reads. `--doc <id>` adds `doc=<id>`; `--feature`
-//!   adds `feature=<id>`, a name being looked up (ignoring case) in `GET
-//!   /features` as for `omni doc list`, and a name that no feature has is a
+//! - `omni comment list [--doc <id>] [--track <name or id>]` sends `GET
+//!   /comments` and only reads. `--doc <id>` adds `doc=<id>`; `--track`
+//!   adds `track=<id>`, a name being looked up (ignoring case) in `GET
+//!   /tracks` as for `omni doc list`, and a name that no feature has is a
 //!   one-line error that sends no `GET /comments`. It prints every comment in
 //!   the order of the answer (oldest first), each with its ID, its doc's ID,
 //!   its node address and its text, followed by the text of each of its
@@ -99,7 +99,7 @@ fn comment_json(shown: Shown, replies: Vec<Value>, waiting: bool, orphaned: bool
         "project_id": PROJECT,
         "doc_id": shown.doc,
         "node": shown.node,
-        "feature_id": null,
+        "track_id": null,
         "author": human_author(),
         "text": shown.text,
         "snapshot": shown.snapshot,
@@ -212,9 +212,9 @@ fn mock() -> MockServer {
         };
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         match (method, rest) {
-            ("GET", "/features") => Reply::json(
+            ("GET", "/tracks") => Reply::json(
                 200,
-                &json!({ "features": [{
+                &json!({ "tracks": [{
                     "id": CHECKOUT,
                     "project_id": PROJECT,
                     "name": "Checkout",
@@ -275,7 +275,7 @@ fn requests(server: &MockServer) -> Vec<Recorded> {
 fn comment_requests(server: &MockServer) -> Vec<Recorded> {
     requests(server)
         .into_iter()
-        .filter(|r| split_query(&r.path).0 != format!("{}/features", base()))
+        .filter(|r| split_query(&r.path).0 != format!("{}/tracks", base()))
         .collect()
 }
 
@@ -423,13 +423,13 @@ fn list_narrows_to_a_doc_or_a_feature_by_name_or_id() {
     for (args, name, value) in [
         (vec!["comment", "list", "--doc", DOC], "doc", DOC),
         (
-            vec!["comment", "list", "--feature", "checkout"],
-            "feature",
+            vec!["comment", "list", "--track", "checkout"],
+            "track",
             CHECKOUT,
         ),
         (
-            vec!["comment", "list", "--feature", CHECKOUT],
-            "feature",
+            vec!["comment", "list", "--track", CHECKOUT],
+            "track",
             CHECKOUT,
         ),
     ] {

@@ -18,11 +18,21 @@ type Props = {
   onGo: (x: number, y: number) => void;
 };
 
+/** The map's drawing size for the drawing `bounds`. */
+function mapSize(bounds: Rect) {
+  const scale = bounds.w && bounds.h ? Math.min(MAX_W / bounds.w, MAX_H / bounds.h) : 1;
+  return { scale, w: Math.max(24, Math.round(bounds.w * scale)), h: Math.max(24, Math.round(bounds.h * scale)) };
+}
+
+/** The corner of the graph area the map takes, its 12px inset and 4px padding and border included. */
+export function minimapCorner(bounds: Rect): { w: number; h: number } {
+  const { w, h } = mapSize(bounds);
+  return { w: w + 22, h: h + 22 };
+}
+
 export function Minimap({ boxes, bounds, waiting, view, area, onGo }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const scale = bounds.w && bounds.h ? Math.min(MAX_W / bounds.w, MAX_H / bounds.h) : 1;
-  const w = Math.max(24, Math.round(bounds.w * scale));
-  const h = Math.max(24, Math.round(bounds.h * scale));
+  const { scale, w, h } = mapSize(bounds);
   useEffect(() => {
     const canvas = ref.current;
     const ctx = canvas?.getContext("2d");

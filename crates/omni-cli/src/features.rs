@@ -1,13 +1,13 @@
 //! `omni feature`: create, list, show, rename and delete the features of a
-//! project (Q51). A feature is a part of a project with docs and threads of
-//! its own. It has no status (V7); a delete is soft and takes its
-//! docs and threads with it.
+//! project's parts, what each part can do. A delete is soft; the name can be
+//! used again. `resolve_feature` is the one lookup every `--feature` flag uses.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{is_uuid, project_id, projects_path, resolve_feature};
+use crate::parts::resolve_part;
+use crate::projects::{is_uuid, project_id, projects_path};
 
 /// The text of an API response, for `--json`.
 fn print_json(text: &str) {
@@ -22,21 +22,126 @@ fn parsed(text: &str, what: &str) -> Result<Value> {
     })
 }
 
-fn features_path(agent: &Agent, project_id: &str) -> String {
-    format!("{}/{project_id}/features", projects_path(agent))
+fn project_path(agent: &Agent, project_id: &str) -> String {
+    format!("{}/{project_id}/parts", projects_path(agent))
 }
 
-/// One line: ID and name.
-fn summary(feature: &Value) -> String {
-    let field = |name: &str| feature.str_at(name).unwrap_or("?");
-    format!("{}  {}", field("id"), field("name"))
+fn features_path(agent: &Agent, project_id: &str, part_id: &str) -> String {
+    format!("{}/{part_id}/features", project_path(agent, project_id))
 }
 
+/// A feature found in the project, with the name of its part.
+pub struct Found {
+    pub part_id: String,
+    pub part_name: String,
+    pub feature: Value,
+}
+
+impl Found {
+    pub fn id(&self) -> &str {
+        self.feature.str_at("id").unwrap_or_default()
+    }
+}
+
+/// The undeleted features of the project's undeleted parts, or of the one
+/// part `part` names.
+pub fn project_features(agent: &Agent, project_id: &str, part: Option<&str>) -> Result<Vec<Found>> {
+    let listed = parsed(
+        &agent
+            .request("GET", &project_path(agent, project_id), None)?
+            .text(),
+        "the parts",
+    )?;
+    let only = match part {
+        Some(given) => Some(resolve_part(agent, project_id, given)?),
+        None => None,
+    };
+    let mut found = Vec::new();
+    for part in listed
+        .get("parts")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+    {
+        let Some(part_id) = part.str_at("id") else {
+            continue;
+        };
+        if only.as_deref().is_some_and(|only| only != part_id) {
+            continue;
+        }
+        let response = agent.request("GET", &features_path(agent, project_id, part_id), None)?;
+        let features = parsed(&response.text(), "the features")?;
+        for feature in features
+            .get("features")
+            .and_then(Value::as_array)
+            .unwrap_or_default()
+        {
+            found.push(Found {
+                part_id: part_id.to_string(),
+                part_name: part.str_at("name").unwrap_or("?").to_string(),
+                feature: feature.clone(),
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// The feature `given` names, an ID or a name among the project's undeleted
+/// features, ignoring case; `part` narrows the search to one part. Several
+/// matches end with `ambiguous_feature` naming the parts.
+pub fn resolve_feature(
+    agent: &Agent,
+    project_id: &str,
+    given: &str,
+    part: Option<&str>,
+) -> Result<Found> {
+    let given = given.trim();
+    let by_id = is_uuid(given);
+    let mut matches: Vec<Found> = project_features(agent, project_id, part)?
+        .into_iter()
+        .filter(|found| {
+            if by_id {
+                found.id().eq_ignore_ascii_case(given)
+            } else {
+                found
+                    .feature
+                    .str_at("name")
+                    .is_some_and(|name| name.eq_ignore_ascii_case(given))
+            }
+        })
+        .collect();
+    match matches.len() {
+        0 => bail!("unknown_feature: no feature {given:?}; `omni feature list` shows the features"),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let parts: Vec<&str> = matches.iter().map(|m| m.part_name.as_str()).collect();
+            bail!(
+                "ambiguous_feature: {given:?} is a feature of {}; add --part <part> to say which",
+                parts.join(", ")
+            )
+        }
+    }
+}
+
+/// One line: ID, name and the part it is on.
+fn summary(found: &Found) -> String {
+    format!(
+        "{}  {}  {}",
+        found.id(),
+        found.feature.str_at("name").unwrap_or("?"),
+        found.part_name
+    )
+}
+
+/// `omni feature create <name> --part <part> [--description <text>]`
 pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
+    let usage = "omni feature create <name> --part <name|id> [--description <text>]";
     let name = name.map(str::trim).unwrap_or_default();
     if name.is_empty() {
-        bail!("a feature needs a name: omni feature create <name> [--description <text>]");
+        bail!("a feature needs a name: {usage}");
     }
+    let Some(part) = args.part.as_deref() else {
+        bail!("part_required: a feature sits on a part: {usage}");
+    };
     let mut body = format!("{{\"name\":{}", quote(name));
     if let Some(description) = &args.description {
         body.push_str(&format!(",\"description\":{}", quote(description)));
@@ -44,9 +149,10 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
     body.push('}');
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
+    let part_id = resolve_part(&agent, &project, part)?;
     let response = agent.request(
         "POST",
-        &features_path(&agent, &project),
+        &features_path(&agent, &project, &part_id),
         Some(body.as_bytes()),
     )?;
     let text = response.text();
@@ -64,84 +170,81 @@ pub fn create(args: &Args, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// `omni feature list [--part <name|id>]`
 pub fn list(args: &Args) -> Result<()> {
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let response = agent.request("GET", &features_path(&agent, &project), None)?;
-    let text = response.text();
+    let features = project_features(&agent, &project, args.part.as_deref())?;
     if args.json {
-        print_json(&text);
+        let items: Vec<String> = features.iter().map(|f| f.feature.to_string()).collect();
+        say(&format!("{{\"features\":[{}]}}", items.join(",")));
         return Ok(());
     }
-    let body = parsed(&text, "the features")?;
-    let features = body
-        .get("features")
-        .and_then(Value::as_array)
-        .unwrap_or_default();
     if features.is_empty() {
         say("no features");
     }
-    for feature in features {
-        say(&summary(feature));
+    for found in &features {
+        say(&summary(found));
     }
     Ok(())
 }
 
+/// `omni feature show <name|id> [--part <name|id>]`
 pub fn show(args: &Args, feature: Option<&str>) -> Result<()> {
     let Some(given) = feature else {
         bail!("`omni feature show` needs a feature name or ID; `omni feature list` shows them");
     };
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let path = features_path(&agent, &project);
-    let text = if is_uuid(given) {
-        let response = agent.request(
-            "GET",
-            &format!("{path}/{}", given.to_ascii_lowercase()),
-            None,
-        )?;
-        response.text()
-    } else {
-        let response = agent.request("GET", &path, None)?;
-        let listed = parsed(&response.text(), "the features")?;
-        let found = listed
-            .get("features")
-            .and_then(Value::as_array)
-            .unwrap_or_default()
-            .iter()
-            .find(|feature| {
-                feature
-                    .str_at("name")
-                    .is_some_and(|name| name.eq_ignore_ascii_case(given.trim()))
-            })
-            .ok_or_else(|| {
-                CliError::new(format!(
-                    "no feature named {given:?}; `omni feature list` shows the features"
-                ))
-            })?;
-        format!("{{\"feature\":{found}}}")
-    };
+    let found = resolve_feature(&agent, &project, given, args.part.as_deref())?;
     if args.json {
-        print_json(&text);
+        say(&format!("{{\"feature\":{}}}", found.feature));
         return Ok(());
     }
-    let body = parsed(&text, "the feature")?;
-    let feature = body.get("feature").unwrap_or(&body);
-    say(&summary(feature));
+    say(&summary(&found));
+    say(&format!("part: {}", found.part_name));
     say(&format!(
-        "project: {}",
-        feature.str_at("project_id").unwrap_or("?")
+        "name: {}",
+        found.feature.str_at("name").unwrap_or("?")
     ));
-    if let Some(description) = feature.str_at("description").filter(|d| !d.is_empty()) {
+    if let Some(description) = found
+        .feature
+        .str_at("description")
+        .filter(|d| !d.is_empty())
+    {
         say("description:");
         for line in description.lines() {
             say(&format!("  {line}"));
         }
     }
+    let response = agent.request(
+        "GET",
+        &format!(
+            "{}/{}/tracks",
+            features_path(&agent, &project, &found.part_id),
+            found.id()
+        ),
+        None,
+    )?;
+    let tracks = parsed(&response.text(), "the feature's tracks")?;
+    let tracks = tracks
+        .get("tracks")
+        .and_then(Value::as_array)
+        .unwrap_or_default();
+    if !tracks.is_empty() {
+        say("tracks:");
+        for track in tracks {
+            say(&format!(
+                "  {}  {}",
+                track.str_at("id").unwrap_or("?"),
+                track.str_at("name").unwrap_or("?")
+            ));
+        }
+    }
     Ok(())
 }
 
-/// `omni feature rename <name|id> <new name>`
+/// `omni feature rename <name|id> <new name> [--part <name|id>]`
 pub fn rename(args: &Args, feature: Option<&str>, name: Option<&str>) -> Result<()> {
     let usage = "omni feature rename <name|id> <new name>";
     let Some(given) = feature else {
@@ -153,10 +256,14 @@ pub fn rename(args: &Args, feature: Option<&str>, name: Option<&str>) -> Result<
     }
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let id = resolve_feature(&agent, &project, given)?;
+    let found = resolve_feature(&agent, &project, given, args.part.as_deref())?;
     let response = agent.request(
         "PATCH",
-        &format!("{}/{id}", features_path(&agent, &project)),
+        &format!(
+            "{}/{}",
+            features_path(&agent, &project, &found.part_id),
+            found.id()
+        ),
         Some(format!("{{\"name\":{}}}", quote(name)).as_bytes()),
     )?;
     let text = response.text();
@@ -165,32 +272,37 @@ pub fn rename(args: &Args, feature: Option<&str>, name: Option<&str>) -> Result<
         return Ok(());
     }
     let body = parsed(&text, "the renamed feature")?;
-    let feature = body.get("feature").unwrap_or(&body);
+    let renamed = body.get("feature").unwrap_or(&body);
     say(&format!(
-        "{}  {}",
-        feature.str_at("id").unwrap_or(&id),
-        feature.str_at("name").unwrap_or(name)
+        "{}  {}  {}",
+        renamed.str_at("id").unwrap_or(found.id()),
+        renamed.str_at("name").unwrap_or(name),
+        found.part_name
     ));
     Ok(())
 }
 
-/// `omni feature delete <name|id>`
+/// `omni feature delete <name|id> [--part <name|id>]`
 pub fn delete(args: &Args, feature: Option<&str>) -> Result<()> {
     let Some(given) = feature else {
         bail!("`omni feature delete` needs a feature name or ID: omni feature delete <name|id>");
     };
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
-    let id = resolve_feature(&agent, &project, given)?;
+    let found = resolve_feature(&agent, &project, given, args.part.as_deref())?;
     agent.request(
         "DELETE",
-        &format!("{}/{id}", features_path(&agent, &project)),
+        &format!(
+            "{}/{}",
+            features_path(&agent, &project, &found.part_id),
+            found.id()
+        ),
         None,
     )?;
     if args.json {
-        say(&format!("{{\"deleted\":{}}}", quote(&id)));
+        say(&format!("{{\"deleted\":{}}}", quote(found.id())));
     } else {
-        say(&format!("deleted feature {id}"));
+        say(&format!("deleted feature {}", found.id()));
     }
     Ok(())
 }

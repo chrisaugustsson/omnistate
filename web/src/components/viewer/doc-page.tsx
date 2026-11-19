@@ -1,0 +1,1484 @@
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  loadDoc,
+  loadDocComments,
+  loadHeadBoard,
+  loadHeadHtml,
+  loadHeadNodeBoxes,
+  loadHeadOutline,
+  loadHeadPreviews,
+} from "@/api/docs";
+import type { DocBody, NodeBox } from "@/api/generated";
+import {
+  createDesignRenderer,
+  type DesignRenderer,
+  type FontStandIn,
+  type Inspection,
+  type Layer,
+  type Property,
+} from "@/design/renderer";
+import { createAssetLoader } from "@/design/assets";
+import { collectionsOf, ownCollectionsOf } from "@/design/system";
+import { BoardCache, BoardPreviews, findPageHolding, pageWithBoards, showBoardwise } from "@/design/boards";
+import { ChevronRight, FileText, Files, Layers as LayersIcon, PenTool, Play, SlidersHorizontal } from "lucide-react";
+import {
+  FloatingAlert,
+  FloatingAlerts,
+  PageBar,
+  PaneEmpty,
+  PaneLabel,
+  PaneSection,
+  ToolbarSelect,
+  ViewerToolbar,
+} from "@/components/viewer/chrome";
+import { Button } from "@/components/ui/button";
+import { CommentsPanel } from "@/components/viewer/comments";
+import { DesignSystemViewer } from "@/components/viewer/design-system";
+import { InteractionsSection, LayerIcon, MonoValue, PropertyTable, ScrollingRow, TokenChip } from "@/components/viewer/design";
+import { NARROW_FOR_REVIEW, useReviewPane } from "@/lib/pane";
+import { cn } from "@/lib/utils";
+import { PlayMode, type PlayBoard, type PlayFlow } from "@/components/viewer/play";
+import { useReloading, type Reloading } from "@/lib/reloading";
+import { useVisit } from "@/lib/visits";
+import { useProjectEvents } from "@/live/context";
+import { ViewerFrame } from "@/viewer/frame";
+import { blockIds } from "@/viewer/html";
+
+// The doc viewer is where the reviewer reads a doc as agents have it now and
+// comments on its nodes. It reads the doc's head and reads it again when
+// `doc.changed` says an agent wrote to the doc; there is no version to pick
+// and no draft. The view keeps its place: the selected node, an HTML doc's
+// scroll position (the frame draws the new HTML and puts its scroll back) and
+// a design's pan and zoom (only the boards whose chunk changed are read again).
+//
+// An HTML doc is shown in a sandboxed frame (src/viewer/document.ts) that the
+// page talks to by postMessage only: the frame tells which block was clicked,
+// and the page tells it what to show, which block is selected and where the
+// pins are.
+//
+// A design doc is shown by the design viewer instead (further down): the
+// renderer's canvas with a page list, a layers panel, an inspect panel for the
+// selected node, a switch between the design system's token modes and comment
+// pins on the canvas.
+//
+// The `board` and `node` search parameters say where in the doc to be: the
+// board that holds the selection (a design shows the page of that board) and
+// the selected node address. They are read when the doc opens, and kept up to
+// date with a history replace whenever the board or the selection changes. A
+// `board` alone opens the design on that board, and stays in the address until
+// a node is selected or another page is shown.
+//
+// The `play` search parameter (a board's ID) puts the design in play mode on
+// that board, and `flow` names the flow it plays: a play link starts a fresh
+// session at that board. The address follows the board the player is on, with a
+// history replace, and leaving play mode returns to `board` alone.
+//
+// The `comment` search parameter opens a comment, as the Inbox links to it:
+// the comment's node is selected (a design shows its board, an HTML doc scrolls
+// to its block) and the comment is marked in the comments panel. A comment
+// whose node an agent removed opens in the panel with nothing selected, and a
+// comment that is not there (deleted, or of another doc) is left out.
+/** The search parameters of a doc's page: where in the doc to be. */
+export type DocSearch = { board?: string; node?: string; comment?: string; play?: string; flow?: string };
+
+/** Reads a doc page's search parameters; the routes that show a doc use it as their `validateSearch`. */
+export function validateDocSearch(search: Record<string, unknown>): DocSearch {
+  return {
+    board: typeof search.board === "string" && search.board ? search.board : undefined,
+    node: typeof search.node === "string" && search.node ? search.node : undefined,
+    comment: typeof search.comment === "string" && search.comment ? search.comment : undefined,
+    play: typeof search.play === "string" && search.play ? search.play : undefined,
+    flow: typeof search.flow === "string" && search.flow ? search.flow : undefined,
+  };
+}
+
+/**
+ * A doc that reads as part of a page (a track's Spec, How and Design tabs, a
+ * Docs page): no breadcrumb, one slim bar with `meta` (who wrote it, when),
+ * Activity, the comments toggle and `actions` (Full view); an HTML doc is as
+ * tall as it is and the page scrolls, a design fills the room it is given.
+ */
+export type DocChrome = {
+  meta?: ReactNode;
+  actions?: ReactNode;
+  /** An HTML doc fills the room it is given, as a design does: its text scrolls in a box, the comments at the box's right edge. */
+  fill?: boolean;
+  /** Inside a track's tab: the comments start hidden, whatever the reader last chose on a Docs page. */
+  embedded?: boolean;
+};
+
+/** Whether the window is too narrow for a design's canvas beside its review pane. */
+function isNarrow(): boolean {
+  return typeof window !== "undefined" && window.innerWidth < NARROW_FOR_REVIEW;
+}
+
+/** Where the address bar says the reviewer is in the doc. */
+type Place = { board?: string; node?: string; play?: string; flow?: string };
+
+/**
+ * A doc's page, as the routes that show a doc render it (the Docs tabs of a
+ * project, part or feature, and a track's docs): the doc viewer for an HTML doc
+ * and the design viewer for a design.
+ */
+export function DocPage({
+  workspaceId,
+  projectId,
+  docId,
+  search,
+  chrome,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  search: DocSearch;
+  /** Given, the doc reads as part of the page around it (DocChrome); left out, it is the full view with its breadcrumb. */
+  chrome?: DocChrome;
+}) {
+  const go = useNavigate();
+  const navigate = useCallback(
+    (options: { search: Place; replace: boolean }) => go({ to: ".", search: options.search as never, replace: options.replace }),
+    [go],
+  );
+  const doc = useReloading(useCallback(() => loadDoc(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
+  const loaded = doc.value?.id === docId ? doc.value : null;
+  useVisit(projectId, loaded ? (loaded.track_id ?? "app") : undefined, loaded ? docId : undefined);
+  const current = useRef({ search, navigate });
+  useEffect(() => {
+    current.current = { search, navigate };
+  });
+  // Puts the place in the address bar, replacing the entry, so that it is always a link to where the reviewer is.
+  const place = useCallback((next: Place) => {
+    const { search: now, navigate: go } = current.current;
+    if (
+      next.board === now.board &&
+      next.node === now.node &&
+      next.play === now.play &&
+      next.flow === now.flow &&
+      now.comment === undefined
+    ) {
+      return;
+    }
+    void go({ search: next, replace: true });
+  }, []);
+  // The comment a link named, until the viewer has opened it: the address bar
+  // stops naming it as soon as the viewer puts the place there.
+  const [comment, setComment] = useState(search.comment);
+  useEffect(() => {
+    if (search.comment) setComment(search.comment);
+  }, [search.comment]);
+  const opened = useCallback(() => setComment(undefined), []);
+  // A doc an agent deletes while it is open shows as a doc that is not there.
+  const [deleted, setDeleted] = useState<string | null>(null);
+  useProjectEvents(projectId, (event) => {
+    if (event.event === "doc.deleted" && event.data.doc_id === docId) setDeleted(docId);
+  });
+  const gone = deleted === docId;
+  if (doc.value?.kind === "design" && !gone) {
+    return (
+      <DesignViewer
+        workspaceId={workspaceId}
+        projectId={projectId}
+        docId={docId}
+        doc={doc}
+        board={search.board}
+        node={search.node}
+        play={search.play}
+        flow={search.flow}
+        comment={comment}
+        onOpened={opened}
+        onPlace={place}
+        chrome={chrome}
+      />
+    );
+  }
+  if (!doc.value || gone) {
+    if (chrome && !gone && !doc.failed) return <div aria-hidden className="h-40 animate-pulse rounded-card bg-frame" />;
+    return (
+      <main className="flex min-h-full flex-col">
+        <ViewerToolbar workspaceId={workspaceId} projectId={projectId} doc={null} docId={docId} />
+        <div className="relative flex-1 bg-canvas">
+          <FloatingAlerts>
+            {(doc.failed || gone) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+          </FloatingAlerts>
+        </div>
+      </main>
+    );
+  }
+  if (doc.value.kind === "design-system") {
+    return <DesignSystemViewer key={docId} workspaceId={workspaceId} projectId={projectId} docId={docId} doc={doc} />;
+  }
+  return (
+    <HtmlDocViewer
+      workspaceId={workspaceId}
+      projectId={projectId}
+      docId={docId}
+      doc={doc}
+      node={search.node}
+      comment={comment}
+      onOpened={opened}
+      onPlace={place}
+      chrome={chrome}
+    />
+  );
+}
+
+function HtmlDocViewer({
+  workspaceId,
+  projectId,
+  docId,
+  doc,
+  node,
+  comment,
+  onOpened,
+  onPlace,
+  chrome,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  doc: Reloading<DocBody>;
+  node: string | undefined;
+  comment: string | undefined;
+  onOpened: () => void;
+  onPlace: (place: Place) => void;
+  chrome?: DocChrome;
+}) {
+  const head = useReloading(useCallback(() => loadHeadHtml(workspaceId, projectId, docId), [workspaceId, projectId, docId]));
+  const comments = useReloading(
+    useCallback(() => loadDocComments(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
+  );
+  const [selected, setSelected] = useState<string | null>(node ?? null);
+  // The block the frame scrolls into view: the one the address bar named.
+  const [reveal, setReveal] = useState<string | null>(node ?? null);
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  });
+  const [openComment, setOpenComment] = useState<string | null>(null);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded, !!chrome?.fill && isNarrow());
+
+  // A link to another block of the doc selects that block and scrolls to it.
+  useEffect(() => {
+    if (node && node !== selectedRef.current) {
+      setSelected(node);
+      setReveal(node);
+    }
+  }, [node]);
+
+  // A link to a comment scrolls to its block and selects it, once the comments are there to say which block it is on.
+  useEffect(() => {
+    if (!comment || !comments.value) return;
+    const found = comments.value.find((candidate) => candidate.id === comment);
+    onOpened();
+    if (!found) return;
+    setOpenComment(found.id);
+    setReview(true);
+    if (!found.orphaned && found.node !== selectedRef.current) {
+      setSelected(found.node);
+      setReveal(found.node);
+    }
+  }, [comment, comments.value, onOpened, setReview]);
+
+  const html = head.value;
+  const present = useMemo(() => (html === null ? null : blockIds(html)), [html]);
+
+  // A selection whose block an agent removed is cleared.
+  useEffect(() => {
+    if (selected && present && !present.has(selected)) setSelected(null);
+  }, [selected, present]);
+
+  // The address bar follows the selection once the doc is there to say whether the block is.
+  useEffect(() => {
+    if (present === null) return;
+    onPlace({ node: selected ?? undefined });
+  }, [selected, present, onPlace]);
+
+  const commentsOnSelected = useMemo(
+    () => (comments.value ?? []).filter((on) => on.node === selected && !on.orphaned),
+    [comments.value, selected],
+  );
+  const removed = useMemo(() => (comments.value ?? []).filter((on) => on.orphaned), [comments.value]);
+
+  useProjectEvents(projectId, (event) => {
+    const { doc_id: eventDoc } = event.data;
+    if (typeof eventDoc === "string" && eventDoc !== docId) return;
+    const name = event.event;
+    if (name === "doc.changed") head.reload();
+    else if (name.startsWith("comment.")) comments.reload();
+    else if (name.startsWith("doc.")) doc.reload();
+  });
+
+  const pins = useMemo(() => {
+    if (present === null) return [];
+    const counts = new Map<string, number>();
+    for (const on of comments.value ?? []) {
+      if (present.has(on.node)) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
+    }
+    return Array.from(counts, ([node, count]) => ({ node, count }));
+  }, [present, comments.value]);
+
+  const commentsPanel = (
+    <CommentsPanel
+      workspaceId={workspaceId}
+      projectId={projectId}
+      docId={docId}
+      kind="html"
+      selected={selected}
+      comments={commentsOnSelected}
+      removed={removed}
+      open={openComment}
+      noun="block"
+      onChanged={comments.reload}
+    />
+  );
+
+  if (chrome?.fill) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PageBar workspaceId={workspaceId} projectId={projectId} docId={docId} meta={chrome.meta} actions={chrome.actions} review={{ shown: review, onShown: setReview }} />
+        <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-line xl:flex-row">
+          {/* A click in the box around the text clears the selection, as a click between blocks in the frame does. */}
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto" onClick={() => setSelected(null)}>
+            <FloatingAlerts>
+              {(doc.failed || head.failed) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+            </FloatingAlerts>
+            <div className="mx-auto w-full max-w-(--main-max) px-6 py-6 lg:px-10">
+              {html === "" && <PaneEmpty icon={<FileText />}>This doc has no content yet.</PaneEmpty>}
+              <ViewerFrame
+                workspaceId={workspaceId}
+                html={html}
+                pins={pins}
+                selected={selected}
+                reveal={reveal}
+                onSelect={setSelected}
+                fit
+                className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
+              />
+            </div>
+          </div>
+          <aside
+            id="review-pane"
+            aria-label="Review"
+            hidden={!review}
+            className="max-h-[40%] shrink-0 overflow-y-auto border-t border-line xl:max-h-none xl:w-[19rem] xl:border-t-0 xl:border-l"
+          >
+            {commentsPanel}
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
+  if (chrome) {
+    return (
+      <div className="flex flex-col">
+        <PageBar workspaceId={workspaceId} projectId={projectId} docId={docId} meta={chrome.meta} actions={chrome.actions} review={{ shown: review, onShown: setReview }} />
+        <div className={cn("mt-4 grid items-start gap-8", review ? "lg:grid-cols-[minmax(0,1fr)_18rem]" : "grid-cols-1")}>
+          <div className="relative min-w-0">
+            <FloatingAlerts>
+              {(doc.failed || head.failed) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+            </FloatingAlerts>
+            {html === "" && <PaneEmpty icon={<FileText />}>This doc has no content yet.</PaneEmpty>}
+            <ViewerFrame
+              workspaceId={workspaceId}
+              html={html}
+              pins={pins}
+              selected={selected}
+              reveal={reveal}
+              onSelect={setSelected}
+              fit
+              className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
+            />
+          </div>
+          <aside
+            id="review-pane"
+            aria-label="Review"
+            hidden={!review}
+            className="border-t border-line lg:sticky lg:top-4 lg:max-h-[calc(100dvh-var(--bar-h)-2rem)] lg:overflow-y-auto lg:border-t-0 lg:border-l"
+          >
+            {commentsPanel}
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
+      <ViewerToolbar
+        workspaceId={workspaceId}
+        projectId={projectId}
+        doc={doc.value}
+        icon={<FileText />}
+        docId={docId}
+        review={{ shown: review, onShown: setReview }}
+      />
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col lg:grid",
+          review ? "lg:grid-cols-[minmax(0,1fr)_20rem]" : "lg:grid-cols-1",
+        )}
+      >
+        <div className="relative flex min-h-0 flex-col bg-canvas px-3 py-4 sm:px-6 sm:py-6 lg:px-8" onClick={() => setSelected(null)}>
+          <FloatingAlerts>
+            {(doc.failed || head.failed) && (
+              <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>
+            )}
+          </FloatingAlerts>
+          {html === "" && (
+            <div className="mb-4 w-full">
+              <PaneEmpty icon={<FileText />}>This doc has no content yet.</PaneEmpty>
+            </div>
+          )}
+          <div className="flex h-[78vh] min-h-0 w-full flex-col overflow-hidden rounded-xl bg-white shadow-panel ring-1 ring-black/[0.04] lg:h-auto lg:flex-1">
+            <ViewerFrame
+              workspaceId={workspaceId}
+              html={html}
+              pins={pins}
+              selected={selected}
+              reveal={reveal}
+              onSelect={setSelected}
+              className="block min-h-0 w-full flex-1 bg-white"
+            />
+          </div>
+        </div>
+        <aside
+          id="review-pane"
+          aria-label="Review"
+          hidden={!review}
+          className="border-t bg-background lg:min-h-0 lg:overflow-y-auto lg:border-t-0 lg:border-l"
+        >
+          {commentsPanel}
+        </aside>
+      </div>
+    </main>
+  );
+}
+
+// The design viewer ------------------------------------------------------------------------
+
+/** The sentence for texts that are drawn in another font than their own. */
+function standInSentence(entry: FontStandIn): string {
+  const face = (family: string, weight: number, style: string) => `${family} ${weight}${style === "italic" ? " italic" : ""}`;
+  const many = entry.texts !== 1;
+  return `${entry.texts} text${many ? "s" : ""} in ${face(entry.family, entry.weight, entry.style)} ${many ? "are" : "is"} drawn in ${face(entry.drawnAs.family, entry.drawnAs.weight, entry.drawnAs.style)}: the design system has no font file for it`;
+}
+
+/** A layer and its depth, in the order the tree lists them. */
+type Row = { layer: Layer; level: number };
+
+function rowsOf(layers: Layer[], level = 1): Row[] {
+  return layers.flatMap((layer) => [{ layer, level }, ...rowsOf(layer.children, level + 1)]);
+}
+
+/** The modes of the design system's token tree, in order. */
+function modesOf(tokens: Record<string, unknown> | null | undefined): string[] {
+  const extensions = tokens?.$extensions as { omnistate?: { modes?: unknown } } | undefined;
+  const modes = extensions?.omnistate?.modes;
+  return Array.isArray(modes) ? modes.filter((mode): mode is string => typeof mode === "string") : [];
+}
+
+/** A property value as the inspect panel writes it. */
+function showValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+const NUMBER_FORMAT = new Intl.NumberFormat("en", { maximumFractionDigits: 2 });
+
+function PropertyCells({ property, laidOut }: { property: Property; laidOut?: number }) {
+  return (
+    <span className="flex min-w-0 flex-col gap-1">
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+        <MonoValue text={showValue(property.value)} />
+        {laidOut !== undefined && (
+          <span className="font-mono text-[11px] text-muted-foreground"> ({NUMBER_FORMAT.format(laidOut)} px)</span>
+        )}
+      </span>
+      {property.tokens.map((used) => (
+        <span key={used.token} className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <TokenChip name={used.token} />{" "}
+          <MonoValue text={showValue(used.value)} className="text-[11px] text-muted-foreground" />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Every property of the selected node, with the tokens it uses and their values in the current mode. */
+function InspectPanel({ inspection }: { inspection: Inspection | null }) {
+  const group = (label: string, properties: Property[], laidOut?: (name: string) => number | undefined) =>
+    properties.length > 0 && (
+      <PropertyTable
+        label={label}
+        rows={properties.map((property) => ({
+          name: property.name,
+          cells: <PropertyCells property={property} laidOut={laidOut?.(property.name)} />,
+        }))}
+      />
+    );
+  const instance = inspection?.instance;
+  return (
+    <PaneSection id="inspect" title="Inspect" aside={inspection?.mode ? <span className="font-mono">{inspection.mode}</span> : undefined}>
+      {!inspection && <PaneEmpty icon={<SlidersHorizontal />}>Select a layer to inspect it.</PaneEmpty>}
+      {inspection && (
+        <div className="space-y-4">
+          <div className="flex min-w-0 items-center gap-2 rounded-lg bg-muted px-2.5 py-2">
+            <LayerIcon type={inspection.type} className="text-muted-foreground" />
+            <p className="min-w-0 flex-1 truncate text-[13px] font-medium">
+              {inspection.name}{" "}
+              <span className="font-mono text-[10.5px] font-normal text-muted-foreground">{inspection.type}</span>
+            </p>
+            <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground tabular-nums">
+              {NUMBER_FORMAT.format(inspection.box.width)} × {NUMBER_FORMAT.format(inspection.box.height)}
+            </span>
+          </div>
+          {group("Layout", inspection.layout)}
+          {group("Size", inspection.size, (name) =>
+            name === "width" ? inspection.box.width : name === "height" ? inspection.box.height : undefined,
+          )}
+          {group("Style", inspection.style)}
+          {group("Text", inspection.text)}
+          {inspection.overflow && <ScrollingRow overflow={inspection.overflow} position={inspection.scrollPosition} />}
+          {inspection.interactions && inspection.interactions.length > 0 && (
+            <InteractionsSection interactions={inspection.interactions} />
+          )}
+          {instance && (
+            <PropertyTable
+              label="Component"
+              rows={[
+                {
+                  name: "component",
+                  cells: (
+                    <span className="inline-flex items-center gap-1.5 font-mono text-violet-700 dark:text-violet-300">
+                      <LayerIcon type="component" className="size-3" />
+                      {instance.componentName}
+                    </span>
+                  ),
+                },
+                ...instance.props.map((prop) => ({
+                  name: prop.name,
+                  cells: (
+                    <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+                      <MonoValue text={showValue(prop.value)} />
+                      <span className="text-[11px] text-muted-foreground">
+                        {" "}
+                        {prop.kind}
+                        {prop.set ? "" : ", default"}
+                      </span>
+                    </span>
+                  ),
+                })),
+              ]}
+            />
+          )}
+          {instance && instance.overrides.length > 0 && (
+            <PropertyTable
+              label="Overrides"
+              rows={instance.overrides.map((override) => ({
+                name: override.name,
+                cells: <MonoValue text={showValue(override.fields)} />,
+              }))}
+            />
+          )}
+        </div>
+      )}
+    </PaneSection>
+  );
+}
+
+type JsonNode = Record<string, unknown>;
+
+/** The node with the ID `id` among `nodes` and what is below them. */
+function findNode(nodes: JsonNode[], id: string): JsonNode | null {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const below = Array.isArray(node.children) ? findNode(node.children as JsonNode[], id) : null;
+    if (below) return below;
+  }
+  return null;
+}
+
+
+/** The pages and boards a design's head is made of, and the design system it resolves against. */
+type DesignSource = { pages: JsonNode[]; components: JsonNode[]; tokens: Record<string, unknown> | null };
+
+/** Whether `page` holds a node with the ID `id`. */
+function holds(page: JsonNode, id: string): boolean {
+  return findNode([page], id) !== null;
+}
+
+
+/** A commented node, with where it sits on its board when the API has said so. */
+type Pin = { address: string; name: string; count: number; place?: NodeBox };
+
+/**
+ * The box of a pin's node on the canvas, as `boxOf` gives it. A board drawn from
+ * its preview has no nodes yet, so the node's box comes from where the node sits
+ * on the board and where the board is now.
+ */
+function boxOfPin(renderer: DesignRenderer, pin: Pin): ReturnType<DesignRenderer["boxOf"]> {
+  const box = renderer.boxOf(pin.address);
+  if (box || !pin.place) return box;
+  const board = renderer.boxOf(pin.place.board);
+  if (!board) return null;
+  const scale = board.width / pin.place.board_width;
+  return {
+    x: board.x + pin.place.x * scale,
+    y: board.y + pin.place.y * scale,
+    width: pin.place.width * scale,
+    height: pin.place.height * scale,
+    name: pin.place.name,
+  };
+}
+
+/**
+ * Buttons over the canvas, one on each commented node, that sit on the node's
+ * box and follow it as the view changes (zooming, panning, another page),
+ * whether its board has been read or is drawn from its preview.
+ */
+function CommentPins({
+  renderer,
+  pins,
+  selected,
+  onPick,
+}: {
+  renderer: DesignRenderer | null;
+  pins: Pin[];
+  selected: string | null;
+  onPick: (address: string) => void;
+}) {
+  const [, setView] = useState(0);
+  // The pins move in the frame that moved the view, not a frame later.
+  useEffect(() => renderer?.onView(() => flushSync(() => setView((count) => count + 1))), [renderer]);
+  if (!renderer) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {pins.map((pin) => {
+        let box: ReturnType<DesignRenderer["boxOf"]>;
+        try {
+          box = boxOfPin(renderer, pin);
+        } catch {
+          return null;
+        }
+        if (!box) return null;
+        return (
+          <button
+            key={pin.address}
+            type="button"
+            aria-label={`${pin.count} ${pin.count === 1 ? "comment" : "comments"} on ${box.name ?? pin.name}`}
+            aria-pressed={pin.address === selected}
+            // The pin's centre is the top-right corner of its node's box.
+            style={{ left: box.x + box.width, top: box.y }}
+            className="pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full rounded-bl-[4px] bg-signal px-1.5 text-[11px] font-semibold text-signal-foreground tabular-nums shadow-[0_2px_6px_-1px_oklch(0.2_0.01_60/30%)] ring-2 ring-background transition-transform hover:scale-110 focus-visible:outline-none aria-pressed:scale-110 aria-pressed:ring-signal/35 aria-pressed:ring-4"
+            onClick={() => onPick(pin.address)}
+          >
+            {pin.count}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The reviewer's view of a design doc: its head on the renderer's canvas, a
+ * list of its pages and a layers panel whose selection follows the canvas, and
+ * the other way around. The head is read as an outline (its pages with their
+ * boards as placeholders, the design system's tokens and components) and the
+ * boards in view come one by one; when an agent writes to the design, the
+ * outline is read again and only the boards whose chunk changed are read
+ * again, while the zoom, the pan and the selection stay.
+ *
+ * Comments pin on node addresses: a button over the canvas on each commented
+ * node, and a Comments panel for the selected node, in which a new comment
+ * attaches to the selected address.
+ */
+function DesignViewer({
+  workspaceId,
+  projectId,
+  docId,
+  doc,
+  board: boardParam,
+  node,
+  play,
+  flow,
+  comment,
+  onOpened,
+  onPlace,
+  chrome,
+}: {
+  workspaceId: string;
+  projectId: string;
+  docId: string;
+  doc: Reloading<DocBody>;
+  board: string | undefined;
+  node: string | undefined;
+  /** The board the address plays, when it is in play mode. */
+  play: string | undefined;
+  flow: string | undefined;
+  comment: string | undefined;
+  onOpened: () => void;
+  onPlace: (place: Place) => void;
+  chrome?: DocChrome;
+}) {
+  const outline = useReloading(
+    useCallback(() => loadHeadOutline(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
+  );
+  const comments = useReloading(
+    useCallback(() => loadDocComments(workspaceId, projectId, docId), [workspaceId, projectId, docId]),
+  );
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [renderer, setRenderer] = useState<DesignRenderer | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [layers, setLayers] = useState<Layer[]>([]);
+  const [selected, setSelectedState] = useState<string | null>(null);
+  // The selection as it is now, which a board read that shows the page again
+  // reads before React renders: it is set together with the state.
+  const selectedRef = useRef(selected);
+  const setSelected = useCallback((address: string | null) => {
+    selectedRef.current = address;
+    setSelectedState(address);
+  }, []);
+  // The node and the board the address bar named, until they are shown.
+  const [target, setTarget] = useState<string | null>(node ?? null);
+  // The boards the reviewer has unfolded, by board ID, for as long as the doc is open.
+  const [openBoards, setOpenBoards] = useState<ReadonlySet<string>>(new Set());
+  // What a board put in place has to be checked against, read by the show handler.
+  const openBoardsRef = useRef(openBoards);
+  useEffect(() => {
+    openBoardsRef.current = openBoards;
+  }, [openBoards]);
+  const targetRef = useRef(target);
+  useEffect(() => {
+    targetRef.current = target;
+  }, [target]);
+  const openBoard = useCallback(
+    (board: string) => setOpenBoards((open) => (open.has(board) ? open : new Set(open).add(board))),
+    [],
+  );
+  const layersList = useRef<HTMLDivElement>(null);
+  const [boardTarget, setBoardTarget] = useState<string | null>(boardParam ?? play ?? null);
+  // The board a link named, until a node is selected or another page is shown.
+  const boardHint = useRef<string | null>(boardParam ?? play ?? null);
+  // The board play mode was left on, which the address bar names once instead of the selection's board.
+  const leftOn = useRef<string | null>(null);
+  const [openComment, setOpenComment] = useState<string | null>(null);
+  // On a Docs tab in a narrow window the canvas needs the room: the review pane starts hidden there.
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded, !!chrome && !chrome.embedded && isNarrow());
+  // The modes the reader chose: the shared Mode select under '', each own-list collection under its name.
+  const [chosenModes, setChosenModes] = useState<Record<string, string>>({});
+  // Counts the times the renderer drew a page or another mode, so that the inspect panel asks again.
+  const [drawn, setDrawn] = useState(0);
+  const canvas = useRef<HTMLCanvasElement>(null);
+
+  const source: DesignSource | null = useMemo(
+    () =>
+      outline.value
+        ? {
+            pages: outline.value.pages as JsonNode[],
+            components: outline.value.components as JsonNode[],
+            tokens: outline.value.tokens,
+          }
+        : null,
+    [outline.value],
+  );
+
+  // The boards read of the head, each with the chunk it was read at.
+  const cache = useMemo(
+    () => new BoardCache((board) => loadHeadBoard(workspaceId, projectId, docId, board)),
+    [workspaceId, projectId, docId],
+  );
+  useEffect(() => {
+    if (outline.value) cache.update(new Map(outline.value.boards.map((entry) => [entry.id, entry.chunk])));
+  }, [cache, outline.value]);
+
+  const rootModes = useMemo(() => modesOf(source?.tokens), [source]);
+  const collections = useMemo(() => collectionsOf(source?.tokens ?? {}).filter((collection) => collection.modes.length > 0), [source]);
+  const ownCollections = useMemo(() => ownCollectionsOf(source?.tokens ?? {}), [source]);
+  const inherits = (name: string) => !ownCollections.some((own) => own.name === name);
+  // A choice that is no longer listed falls back to the first mode.
+  const modeOf = (key: string, listed: string[]) =>
+    chosenModes[key] && listed.includes(chosenModes[key]) ? chosenModes[key] : listed[0];
+  // The collections that inherit the root list share one select.
+  const mode = collections.some((collection) => inherits(collection.name)) ? modeOf("", rootModes) : null;
+  const choice: Record<string, string> = Object.fromEntries(
+    collections.map((collection) => [
+      collection.name,
+      inherits(collection.name) ? modeOf("", rootModes) : modeOf(collection.name, collection.modes),
+    ]),
+  );
+  const offFirst = collections.some((collection) => choice[collection.name] !== collection.modes[0]);
+  const choiceRef = useRef({ choice, offFirst });
+  useEffect(() => {
+    choiceRef.current = { choice, offFirst };
+  });
+
+  const pages = useMemo(() => source?.pages ?? [], [source]);
+  const page = useMemo(() => pages.find((candidate) => candidate.id === chosen) ?? pages[0] ?? null, [pages, chosen]);
+  const system = useMemo(
+    () => (source ? { ...source.tokens, $components: source.components } : null),
+    [source],
+  );
+
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element) return;
+    let cancelled = false;
+    let made: DesignRenderer | null = null;
+    createDesignRenderer(element).then(
+      (created) => {
+        if (cancelled) {
+          created.destroy();
+          return;
+        }
+        made = created;
+        setRenderer(created);
+      },
+      (error: unknown) => {
+        if (!cancelled) setFailure(error instanceof Error ? error.message : "The renderer could not start.");
+      },
+    );
+    return () => {
+      cancelled = true;
+      made?.destroy();
+      setRenderer(null);
+    };
+  }, []);
+
+  // A node selected on the canvas is the selected layer.
+  useEffect(
+    () =>
+      renderer?.onSelect((address) => {
+        setSelected(address);
+        const board = address ? renderer.boardOf(address) : null;
+        if (board) openBoard(board);
+      }),
+    [renderer, setSelected, openBoard],
+  );
+
+  const assets = useMemo(() => (renderer ? createAssetLoader(renderer, workspaceId) : null), [renderer, workspaceId]);
+  const previews = useMemo(
+    () =>
+      renderer ? new BoardPreviews(renderer, (boards) => loadHeadPreviews(workspaceId, projectId, docId, boards)) : null,
+    [renderer, workspaceId, projectId, docId],
+  );
+  const chunks = useMemo(
+    () => new Map((outline.value?.boards ?? []).map((entry) => [entry.id, entry.chunk])),
+    [outline.value],
+  );
+
+  useEffect(() => {
+    if (!renderer || !assets || !previews || !page || !system) return;
+    let cancelled = false;
+    let stopBoards: (() => void) | null = null;
+    // What went wrong so far: an image or a board that could not be loaded is
+    // named in the error line, and the rest still draws.
+    const problems: string[] = [];
+    // A font that stood in is told again on every report, so a board put in place later updates the count.
+    const report = () => {
+      const standIns = renderer.fontsStoodIn().map(standInSentence);
+      const all = [...problems, ...standIns];
+      setFailure(all.length > 0 ? all.join(" ") : null);
+    };
+    const refreshLayers = () => {
+      // The selection stays while its node is still there, as when an agent changes the design.
+      const kept = selectedRef.current;
+      const stays = kept !== null && renderer.boxOf(kept) !== null;
+      if (stays) renderer.select(kept);
+      setDrawn((count) => count + 1);
+      setLayers(renderer.layers());
+      setSelected(stays ? kept : null);
+      report();
+    };
+    // A board put in place changes no board row, so the boards are not asked
+    // for again: `layers()` of a page of 769 boards costs the renderer about a
+    // millisecond, once for each of the hundreds of boards that arrive on a
+    // pan. What a board put in place can change is read again only when
+    // something shows it: an open board's layers, a node a link named, the
+    // selected node, or the fonts that stood in.
+    const placed = () => {
+      const kept = selectedRef.current;
+      if (kept !== null && renderer.boxOf(kept) === null) setSelected(null);
+      report();
+      if (openBoardsRef.current.size > 0 || targetRef.current !== null || kept !== null) {
+        setDrawn((count) => count + 1);
+      }
+    };
+    const shown = (incremental: boolean) => {
+      if (incremental) {
+        placed();
+        return;
+      }
+      // A page is shown in the first mode of each collection, so the chosen modes are set again.
+      if (choiceRef.current.offFirst) renderer.setMode(choiceRef.current.choice);
+      refreshLayers();
+    };
+    const failed = (error: unknown) => {
+      problems.push(error instanceof Error ? error.message : "The design could not be drawn.");
+      report();
+    };
+    // The page is shown once its images, fonts and previews are with the renderer.
+    void Promise.all([
+      assets.load(page, system),
+      previews.load(page, cache, chunks).then(
+        () => [],
+        (error: unknown) => [`The previews of the boards could not be loaded${error instanceof Error && error.message ? ` (${error.message})` : ""}.`],
+      ),
+    ]).then(([loaded, previewsLoaded]) => {
+      if (cancelled) return;
+      problems.push(...loaded, ...previewsLoaded);
+      try {
+        // The page shows its boards as their previews, and reads those in view.
+        stopBoards = showBoardwise({
+          renderer,
+          page,
+          system,
+          cache,
+          opening: boardHint.current,
+          prepare: async (board) => {
+            problems.push(...(await assets.load(board, system)));
+          },
+          onShown: shown,
+          onFailure: (message) => {
+            problems.push(message);
+            report();
+          },
+        });
+      } catch (error) {
+        failed(error);
+      }
+    });
+    return () => {
+      cancelled = true;
+      stopBoards?.();
+    };
+  }, [renderer, assets, previews, page, system, collections, cache, chunks, setSelected]);
+
+  // A link to a node: its page is shown, then it is selected.
+  useEffect(() => {
+    if (node && node !== selectedRef.current) setTarget(node);
+  }, [node]);
+  // A link to a comment: once the comments are there to say which node it is on, that node is the link's.
+  useEffect(() => {
+    if (!comment || !comments.value) return;
+    const found = comments.value.find((candidate) => candidate.id === comment);
+    onOpened();
+    if (!found) return;
+    setOpenComment(found.id);
+    setReview(true);
+    if (!found.orphaned && found.node !== selectedRef.current) setTarget(found.node);
+  }, [comment, comments.value, onOpened, setReview]);
+  // A link to a board shows the page that holds it; a board that is not there leaves the first page.
+  useEffect(() => {
+    if (!boardTarget || pages.length === 0) return;
+    const holder = pages.find((candidate) =>
+      (Array.isArray(candidate.children) ? (candidate.children as JsonNode[]) : []).some(
+        (entry) => entry.id === boardTarget,
+      ),
+    );
+    if (holder) setChosen(String(holder.id));
+    setBoardTarget(null);
+  }, [boardTarget, pages]);
+  useEffect(() => {
+    if (!target) return;
+    const holder = pages.find((candidate) => holds(candidate, target.split("/")[0]));
+    if (holder && holder !== page) setChosen(String(holder.id));
+  }, [target, pages, page]);
+  // A node inside a board is on the page whose board holds it, which the boards say: they are read until one does.
+  useEffect(() => {
+    if (!target || !assets || !system || pages.length === 0) return;
+    const id = target.split("/")[0];
+    if (pages.some((candidate) => holds(candidate, id))) return;
+    let cancelled = false;
+    void findPageHolding(
+      cache,
+      pages,
+      id,
+      async (board) => {
+        await assets.load(board, system);
+      },
+      () => cancelled,
+      boardHint.current,
+    ).then((holder) => {
+      if (cancelled) return;
+      // No page holds the node: the board is shown with nothing selected.
+      if (holder && holder !== page) setChosen(String(holder.id));
+      else if (!holder) setTarget(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [target, assets, system, pages, page, cache]);
+  // Once the renderer has the target node, its board is opened and it is selected.
+  useEffect(() => {
+    if (!renderer || !target || !renderer.boxOf(target)) return;
+    const board = renderer.boardOf(target);
+    if (board) openBoard(board);
+    setSelected(target);
+    renderer.select(target, true);
+    setTarget(null);
+  }, [renderer, target, drawn, setSelected, openBoard]);
+
+  // The address bar follows the page and the selection, once the ones it named are shown.
+  useEffect(() => {
+    if (target !== null || boardTarget !== null || !page || drawn === 0) return;
+    const boards = Array.isArray(page.children) ? (page.children as JsonNode[]) : [];
+    const holder = selected ? renderer?.boardOf(selected) : null;
+    const left = play ? null : leftOn.current;
+    if (!play) leftOn.current = null;
+    if (left) {
+      boardHint.current = left;
+      onPlace({ board: left, node: holder === left ? (selected ?? undefined) : undefined });
+      return;
+    }
+    if (holder || !boards.some((entry) => entry.id === boardHint.current)) boardHint.current = null;
+    const board = holder ?? boardHint.current ?? (boards[0] ? String(boards[0].id) : undefined);
+    onPlace({ board, node: selected ?? undefined, play, flow });
+  }, [target, boardTarget, page, renderer, selected, drawn, onPlace, play, flow]);
+
+  // The boards of the shown page, in the page's order, and its flows.
+  const playBoards: PlayBoard[] = useMemo(
+    () =>
+      (Array.isArray(page?.children) ? (page.children as JsonNode[]) : [])
+        .filter((entry) => entry.type === "board")
+        .map((entry) => ({ id: String(entry.id), name: String(entry.name ?? entry.id) })),
+    [page],
+  );
+  const playFlows: PlayFlow[] = useMemo(
+    () =>
+      (Array.isArray(page?.flows) ? (page.flows as JsonNode[]) : []).flatMap((entry) =>
+        typeof entry.name === "string" && typeof entry.start === "string"
+          ? [{ name: entry.name, start: entry.start }]
+          : [],
+      ),
+    [page],
+  );
+  // Reads every board of the page and shows the page with them, which a prototype plays: the boards the viewer has not read are placeholders. The view, the selection and the mode stay.
+  const readBoards = useCallback(async () => {
+    if (!renderer || !assets || !system) return;
+    await Promise.all(
+      playBoards.map(({ id }) =>
+        cache
+          .fetch(id, async (board) => {
+            await assets.load(board, system);
+          })
+          .catch(() => undefined),
+      ),
+    );
+    if (!page) return;
+    renderer.show(pageWithBoards(page, cache), system);
+    if (choiceRef.current.offFirst) renderer.setMode(choiceRef.current.choice);
+    setDrawn((count) => count + 1);
+  }, [renderer, assets, system, playBoards, cache, page]);
+  const readBoardsRef = useRef(readBoards);
+  // A layout effect, so PlayMode's first effect reads this render's closure rather than the one from before assets and system arrived.
+  useLayoutEffect(() => {
+    readBoardsRef.current = readBoards;
+  });
+  const readForPlay = useCallback(() => readBoardsRef.current(), []);
+  const playOn = useCallback(
+    (board: string, named: string | undefined) => onPlace({ board: boardParam, node, play: board, flow: named }),
+    [onPlace, boardParam, node],
+  );
+  const leavePlay = useCallback(
+    (board: string) => {
+      boardHint.current = board;
+      leftOn.current = board;
+      onPlace({ board, node: selectedRef.current ?? undefined });
+    },
+    [onPlace],
+  );
+  // Plays the page from its first flow, or from the board that is open when it has none.
+  function startPlay() {
+    const first = playFlows[0];
+    const open =
+      (selected ? renderer?.boardOf(selected) : null) ?? boardParam ?? boardHint.current ?? playBoards[0]?.id;
+    const start = first?.start ?? open;
+    if (!start) return;
+    onPlace({ board: boardParam, node: node, play: start, flow: first?.name });
+  }
+
+  // Where the commented nodes sit on their boards, so that a board drawn from its
+  // preview has its pins. They are read again when the comments or the head change.
+  const commented = useMemo(
+    () => Array.from(new Set((comments.value ?? []).filter((on) => !on.orphaned).map((on) => on.node))).sort().join(","),
+    [comments.value],
+  );
+  const [nodeBoxes, setNodeBoxes] = useState<Record<string, NodeBox>>({});
+  useEffect(() => {
+    if (commented === "" || !outline.value) return;
+    let cancelled = false;
+    loadHeadNodeBoxes(workspaceId, projectId, docId, commented.split(",")).then(
+      (boxes) => {
+        if (!cancelled) setNodeBoxes(boxes);
+      },
+      // A pin then comes with its board, when the board is read.
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, projectId, docId, commented, outline.value]);
+
+  useProjectEvents(projectId, (event) => {
+    const { doc_id: eventDoc } = event.data;
+    if (typeof eventDoc === "string" && eventDoc !== docId) {
+      // The design system is another doc, and a design resolves against it.
+      return;
+    }
+    const name = event.event;
+    if (name === "doc.changed") outline.reload();
+    else if (name.startsWith("comment.")) comments.reload();
+    else if (name.startsWith("doc.")) doc.reload();
+  });
+
+  function toggle(board: string) {
+    setOpenBoards((open) => {
+      const next = new Set(open);
+      if (!next.delete(board)) next.add(board);
+      return next;
+    });
+  }
+
+  function choose(address: string | null) {
+    setSelected(address);
+    renderer?.select(address);
+  }
+
+  // A pin on a board drawn from its preview has no node to select until the board
+  // is read, so it asks for the node as a link does, with that board first.
+  function pick(address: string) {
+    const place = nodeBoxes[address];
+    if (place && !renderer?.boxOf(address)) {
+      boardHint.current = place.board;
+      setTarget(address);
+    } else {
+      choose(address);
+      const board = renderer?.boardOf(address);
+      if (board) openBoard(board);
+    }
+  }
+
+  function chooseMode(key: string, next: string) {
+    const names = key === "" ? collections.filter((c) => inherits(c.name)).map((c) => c.name) : [key];
+    try {
+      renderer?.setMode({ ...choice, ...Object.fromEntries(names.map((name) => [name, next])) });
+      setFailure(null);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "The design could not be drawn in that mode.");
+      return;
+    }
+    setChosenModes((chosen) => ({ ...chosen, [key]: next }));
+    setDrawn((count) => count + 1);
+  }
+
+  // The layers of each open board are read again after every show.
+  const rows = useMemo(
+    () =>
+      layers.flatMap((board) => {
+        const below = openBoards.has(board.address) && drawn >= 0 ? renderer?.layersOf(board.address) : null;
+        return [{ layer: board, level: 1 }, ...rowsOf(below?.children ?? [], 2)];
+      }),
+    [layers, openBoards, renderer, drawn],
+  );
+  // The selected layer's row comes into view once, when it is listed.
+  const scrolledTo = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selected) {
+      scrolledTo.current = null;
+      return;
+    }
+    if (scrolledTo.current === selected) return;
+    const row = Array.from(layersList.current?.querySelectorAll<HTMLElement>("[role=treeitem]") ?? []).find(
+      (item) => item.dataset.address === selected,
+    );
+    if (!row) return;
+    scrolledTo.current = selected;
+    row.scrollIntoView?.({ block: "nearest" });
+  }, [selected, rows]);
+  const inspection = useMemo(() => {
+    // `drawn` says the renderer drew again, which changes what it answers.
+    if (!renderer || !selected || drawn < 0) return null;
+    try {
+      return renderer.inspect(selected);
+    } catch {
+      return null;
+    }
+  }, [renderer, selected, drawn]);
+
+  const commentsOnSelected = useMemo(
+    () => (comments.value ?? []).filter((on) => on.node === selected && !on.orphaned),
+    [comments.value, selected],
+  );
+  const removed = useMemo(() => (comments.value ?? []).filter((on) => on.orphaned), [comments.value]);
+
+  // One pin on each node that has comments: CommentPins shows those the page has
+  // now, so a pin comes with its board, before the layers panel lists the board.
+  const pins = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const on of comments.value ?? []) {
+      if (!on.orphaned) counts.set(on.node, (counts.get(on.node) ?? 0) + 1);
+    }
+    return Array.from(counts, ([address, count]) => ({
+      address,
+      count,
+      name: renderer?.boxOf(address)?.name ?? address,
+      place: nodeBoxes[address],
+    }));
+  }, [renderer, drawn, comments.value, nodeBoxes]);
+
+  // The page's toolbar controls: play the page, and the design system's modes.
+  const controls = (
+    <>
+        {doc.value && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!renderer || playBoards.length === 0}
+            onClick={startPlay}
+          >
+            <Play aria-hidden className="size-3.5" />
+            Play
+          </Button>
+        )}
+        {doc.value && mode !== null && (
+          <ToolbarSelect
+            id="mode-switch"
+            label="Mode"
+            className="w-full sm:w-40"
+            value={mode}
+            onChange={(event) => chooseMode("", event.target.value)}
+          >
+            {rootModes.map((listed) => (
+              <option key={listed} value={listed}>
+                {listed}
+              </option>
+            ))}
+          </ToolbarSelect>
+        )}
+        {doc.value &&
+          ownCollections.map((collection) => (
+            <ToolbarSelect
+              key={collection.name}
+              id={`mode-switch-${collection.name}`}
+              label={collection.name}
+              className="w-full sm:w-40"
+              value={choice[collection.name]}
+              onChange={(event) => chooseMode(collection.name, event.target.value)}
+            >
+              {collection.modes.map((listed) => (
+                <option key={listed} value={listed}>
+                  {listed}
+                </option>
+              ))}
+            </ToolbarSelect>
+          ))}
+    </>
+  );
+  const body = (
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col md:grid",
+          review
+            ? "md:grid-cols-2 lg:grid-cols-[13.5rem_minmax(0,1fr)_17rem] xl:grid-cols-[15.5rem_minmax(0,1fr)_19rem]"
+            : "md:grid-cols-1 lg:grid-cols-[13.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)]",
+        )}
+      >
+        <div
+          className={cn(
+            "relative order-1 h-[62vh] min-h-80 overflow-hidden bg-muted lg:order-2 lg:col-span-1 lg:h-auto lg:min-h-0",
+            review && "md:col-span-2",
+          )}
+          style={{
+            backgroundImage: "radial-gradient(circle at 1px 1px, oklch(0.5 0.012 60 / 0.22) 1px, transparent 0)",
+            backgroundSize: "16px 16px",
+          }}
+        >
+          <canvas ref={canvas} aria-label="Design canvas" className="absolute inset-0 size-full touch-none" />
+          <CommentPins renderer={renderer} pins={pins} selected={selected} onPick={pick} />
+          {outline.value && pages.length === 0 && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+              <p className="rounded-xl bg-background/90 px-4 py-3 text-[13px] text-muted-foreground shadow-panel">
+                This design has no pages yet.
+              </p>
+            </div>
+          )}
+          <FloatingAlerts>
+            {doc.failed && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+            {outline.failed && (
+              <FloatingAlert>The design could not be loaded. Try again in a moment.</FloatingAlert>
+            )}
+            {failure && <FloatingAlert>{failure}</FloatingAlert>}
+          </FloatingAlerts>
+        </div>
+        <aside
+          aria-label="Pages and layers"
+          className="order-2 flex flex-col border-t bg-background lg:order-1 lg:min-h-0 lg:border-t-0 lg:border-r"
+        >
+          <nav aria-label="Pages" className="shrink-0 border-b lg:max-h-[40%] lg:overflow-y-auto">
+            <PaneLabel title="Pages" aside={pages.length > 0 ? pages.length : undefined} />
+            <ul className="space-y-px px-1.5 pb-2">
+              {pages.map((candidate) => (
+                <li key={String(candidate.id)}>
+                  <button
+                    type="button"
+                    className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40 aria-[current=page]:bg-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground"
+                    aria-current={candidate === page ? "page" : undefined}
+                    onClick={() => setChosen(String(candidate.id))}
+                  >
+                    <Files aria-hidden className="size-3.5 shrink-0 opacity-60" />
+                    <span className="truncate">{String(candidate.name ?? candidate.id)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          <section aria-labelledby="layers" className="flex min-h-0 flex-1 flex-col">
+            <PaneLabel id="layers" title="Layers" aside={rows.length > 0 ? rows.length : undefined} />
+            <div
+              role="tree"
+              aria-label="Layers of the page"
+              ref={layersList}
+              className="max-h-96 min-h-0 flex-1 overflow-auto px-1.5 pb-3 text-[12.5px] lg:max-h-none"
+            >
+              {rows.length === 0 && (
+                <div className="px-1.5">
+                  <PaneEmpty icon={<LayersIcon />}>The page's layers show here once it is drawn.</PaneEmpty>
+                </div>
+              )}
+              {rows.map(({ layer, level }) => {
+                const inside = layer.address.includes("/");
+                const component = layer.type === "instance" || layer.type === "component";
+                return (
+                  <div
+                    key={layer.address}
+                    role="treeitem"
+                    tabIndex={0}
+                    aria-level={level}
+                    aria-selected={layer.address === selected}
+                    data-address={layer.address}
+                    style={{ paddingLeft: `${0.5 + (level - 1) * 0.875}rem` }}
+                    className={cn(
+                      "group relative flex h-7 cursor-pointer items-center gap-1.5 rounded-md pr-2 outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 aria-selected:bg-signal-soft aria-selected:text-signal",
+                      level === 1 && "font-medium",
+                      inside && "text-violet-700 dark:text-violet-300",
+                    )}
+                    onClick={() => choose(layer.address)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        choose(layer.address);
+                      }
+                    }}
+                  >
+                    {Array.from({ length: level - 1 }, (_, guide) => (
+                      <span
+                        key={guide}
+                        aria-hidden
+                        className="absolute inset-y-0 w-px bg-border group-aria-selected:bg-signal/20"
+                        style={{ left: `${0.5 + guide * 0.875 + 0.4}rem` }}
+                      />
+                    ))}
+                    {level === 1 && (
+                      <button
+                        type="button"
+                        aria-expanded={openBoards.has(layer.address)}
+                        aria-label={`${openBoards.has(layer.address) ? "Collapse" : "Expand"} ${layer.name}`}
+                        className="-ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggle(layer.address);
+                        }}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <ChevronRight
+                          aria-hidden
+                          className={cn("size-3.5 transition-transform", openBoards.has(layer.address) && "rotate-90")}
+                        />
+                      </button>
+                    )}
+                    <LayerIcon
+                      type={layer.type}
+                      className={cn(
+                        "text-muted-foreground group-aria-selected:text-signal",
+                        (component || inside) && "text-violet-600 dark:text-violet-300",
+                      )}
+                    />
+                    <span className={cn("min-w-0 flex-1 truncate", inside && "italic")}>{layer.name}</span>{" "}
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-aria-selected:text-signal/70 group-aria-selected:opacity-100">
+                      {layer.type}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        </aside>
+        <aside
+          id="review-pane"
+          aria-label="Review"
+          hidden={!review}
+          className="order-3 border-t bg-background md:border-l lg:min-h-0 lg:overflow-y-auto lg:border-t-0"
+        >
+          <CommentsPanel
+            workspaceId={workspaceId}
+            projectId={projectId}
+            docId={docId}
+            kind="design"
+            selected={selected}
+            comments={commentsOnSelected}
+            removed={removed}
+            open={openComment}
+            noun="node"
+            onChanged={comments.reload}
+          />
+          <InspectPanel inspection={inspection} />
+        </aside>
+      </div>
+  );
+  const player =
+      play !== undefined && renderer && assets && system && page && boardTarget === null ? (
+        <PlayMode
+          renderer={renderer}
+          title={doc.value?.title ?? ""}
+          boards={playBoards}
+          flows={playFlows}
+          play={play}
+          flow={flow}
+          ready={readForPlay}
+          onPlay={playOn}
+          onExit={leavePlay}
+        />
+      ) : null;
+  if (chrome) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PageBar workspaceId={workspaceId} projectId={projectId} docId={docId} meta={chrome.meta} actions={chrome.actions} review={{ shown: review, onShown: setReview }}>
+          {controls}
+        </PageBar>
+        <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-line">{body}</div>
+        {player}
+      </div>
+    );
+  }
+  return (
+    <main className="flex min-h-full flex-col lg:h-full lg:min-h-[560px]">
+      <ViewerToolbar
+        workspaceId={workspaceId}
+        projectId={projectId}
+        doc={doc.value}
+        icon={<PenTool />}
+        docId={docId}
+        review={{ shown: review, onShown: setReview }}
+      >
+        {controls}
+      </ViewerToolbar>
+      {body}
+      {player}
+    </main>
+  );
+}
+

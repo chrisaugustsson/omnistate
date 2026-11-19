@@ -1,14 +1,18 @@
-//! Stories. A story is a work item of a feature: its criteria, the stories
+//! Stories. A story is a work item of a track: its criteria, the stories
 //! that block it, the files it changes, a priority and a status. The key a
 //! person reads is `US-<number>`, counted per project. Every write adds 1 to
 //! the story's `version`. Creating a story emits `story.created`, editing one
 //! `story.changed` and cancelling one `story.cancelled`.
 
 use crate::AppState;
+use crate::comments::author_of;
+use crate::decisions::record_decision;
+use crate::docs::AgentIdentity;
 use crate::live;
 use crate::projects::{parse_body, require_project};
 use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{AgentRequest, HumanRequest, WorkspaceRequest, parse_uuid};
+use crate::tracks::{require_project_track, require_track_writer};
+use crate::workspace::{Actor, AgentRequest, HumanRequest, Who, WorkspaceRequest, parse_uuid};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -31,6 +35,40 @@ const STATUSES: [&str; 8] = [
 ];
 
 #[derive(Serialize, ToSchema)]
+pub struct BlockerBody {
+    pub id: String,
+    pub key: String,
+    pub track_id: String,
+    pub track_name: String,
+    /// The blocker story's own status.
+    pub status: String,
+    /// Whether the blocker's track is dropped; a dropped track never unblocks the story by itself.
+    pub blocker_dropped: bool,
+}
+
+/// A story of another track of the project that blocks, or is blocked by, a story of this track.
+#[derive(Serialize, ToSchema)]
+pub struct LinkedBody {
+    pub id: String,
+    /// `US-<number>`.
+    pub key: String,
+    pub title: String,
+    pub track_id: String,
+    pub track_name: String,
+    pub part_id: String,
+    pub part_name: String,
+    /// The linked story's own status.
+    pub status: String,
+    /// `blocks` when it blocks `story_key`, `blocked_by` when `story_key` blocks it.
+    pub relation: String,
+    /// The story of this track the link runs to.
+    pub story_id: String,
+    pub story_key: String,
+    /// Whether the linked story's track is dropped.
+    pub blocker_dropped: bool,
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct CriterionBody {
     pub text: String,
     pub ticked: bool,
@@ -44,7 +82,7 @@ pub struct CriterionBody {
 pub struct StoryBody {
     pub id: String,
     pub project_id: String,
-    pub feature_id: String,
+    pub track_id: String,
     /// Counted per project.
     pub number: i32,
     /// `US-<number>`.
@@ -53,8 +91,11 @@ pub struct StoryBody {
     pub text: String,
     pub topic: String,
     pub criteria: Vec<CriterionBody>,
-    /// IDs of the stories of the feature that block this one.
+    /// IDs of the stories of the project that block this one.
     pub blocked_by: Vec<String>,
+    /// The blockers with their track and status; filled by the story list only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<BlockerBody>,
     pub files_planned: Vec<String>,
     pub files_changed: Vec<String>,
     /// 0 to 3; 1 is the highest and 0 is reserved for fix stories.
@@ -85,8 +126,11 @@ pub struct StoryResponse {
 
 #[derive(Serialize, ToSchema)]
 pub struct StoryListResponse {
-    /// The feature's stories, by priority and then number.
+    /// The track's stories, by priority and then number.
     pub stories: Vec<StoryBody>,
+    /// Stories of other tracks that block or are blocked by this track's stories, read-only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub linked: Vec<LinkedBody>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -103,7 +147,7 @@ pub struct CreateStoryRequest {
     pub text: String,
     pub topic: String,
     pub criteria: Vec<NewCriterion>,
-    /// IDs of stories of the same feature. Defaults to none.
+    /// IDs of stories of the same track. Defaults to none.
     pub blocked_by: Option<Vec<String>>,
     /// Defaults to none.
     pub files_planned: Option<Vec<String>>,
@@ -128,7 +172,7 @@ pub struct ListQuery {
 struct StoryRow {
     id: String,
     project_id: String,
-    feature_id: String,
+    track_id: String,
     number: i32,
     title: String,
     text: String,
@@ -150,7 +194,7 @@ struct StoryRow {
 }
 
 const STORY_COLUMNS: &str = concat!(
-    "id::text, project_id::text, feature_id::text, number, title, text, topic, ",
+    "id::text, project_id::text, track_id::text, number, title, text, topic, ",
     "criteria::text, blocked_by::text, files_planned::text, files_changed::text, priority, ",
     "status, blocked, holder::text, findings::text, decisions::text, links::text, version, ",
     "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at, ",
@@ -177,6 +221,7 @@ impl StoryRow {
                 })
                 .collect(),
             blocked_by: list_of(&self.blocked_by),
+            blockers: Vec::new(),
             files_planned: list_of(&self.files_planned),
             files_changed: list_of(&self.files_changed),
             holder: self
@@ -187,7 +232,7 @@ impl StoryRow {
             links: list_of(&self.links),
             id: self.id,
             project_id: self.project_id,
-            feature_id: self.feature_id,
+            track_id: self.track_id,
             number: self.number,
             title: self.title,
             text: self.text,
@@ -216,17 +261,17 @@ fn link_fits(link: &Value) -> bool {
         && ((has_text("doc_id") && has_text("node_id")) || has_text("thread_id"))
 }
 
-/// A feature of the project that is not deleted, 404 when there is none.
-async fn require_feature(
+/// A track of the project that is not deleted, 404 when there is none.
+async fn require_track(
     tx: &mut Transaction<'static, Postgres>,
     project_id: &str,
-    feature_id: &str,
+    track_id: &str,
 ) -> Result<(), ApiError> {
     let found: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM features \
+        "SELECT id::text FROM tracks \
          WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL FOR SHARE",
     )
-    .bind(feature_id)
+    .bind(track_id)
     .bind(project_id)
     .fetch_optional(&mut **tx)
     .await
@@ -234,32 +279,32 @@ async fn require_feature(
     found.map(|_| ()).ok_or(ApiError::NotFound)
 }
 
-/// Creates a story in a feature.
+/// Creates a story in a track.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
     ),
     request_body = CreateStoryRequest,
     responses(
         (status = 201, description = "The new story", body = StoryResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
-        (status = 422, description = "A blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), a link of neither shape (`invalid_links`), a `blocked_by` id that is not a story of the feature (`invalid_blocked_by`) or a negative `number_from` (`invalid_number_from`)", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace", body = ErrorBody),
+        (status = 422, description = "A blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), a link of neither shape (`invalid_links`), a `blocked_by` id that is not a story of the project (`invalid_blocked_by`) or a negative `number_from` (`invalid_number_from`)", body = ErrorBody),
     )
 )]
 pub async fn create_story(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<StoryResponse>), ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let new = parse_body::<CreateStoryRequest>(&body);
     let workspace_id = &request.workspace_id;
     let mut tx = state.workspace_tx(workspace_id).await?;
@@ -271,7 +316,8 @@ pub async fn create_story(
             .await
             .map_err(ApiError::database)?;
     locked.ok_or(ApiError::NotFound)?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &track_id).await?;
     let new = new?;
 
     let title = new.title.trim().to_string();
@@ -298,9 +344,9 @@ pub async fn create_story(
     }
     if !blocked_by.is_empty() {
         let (found,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM stories WHERE feature_id = $1::uuid AND id::text = ANY($2)",
+            "SELECT count(*) FROM stories WHERE project_id = $1::uuid AND id::text = ANY($2)",
         )
-        .bind(&feature_id)
+        .bind(&project_id)
         .bind(&blocked_by)
         .fetch_one(&mut *tx)
         .await
@@ -335,14 +381,14 @@ pub async fn create_story(
         })
         .collect();
     let row = sqlx::query_as::<_, StoryRow>(&format!(
-        "INSERT INTO stories (workspace_id, project_id, feature_id, number, title, text, topic, \
+        "INSERT INTO stories (workspace_id, project_id, track_id, number, title, text, topic, \
          criteria, blocked_by, files_planned, priority, links) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, \
          $11, $12::jsonb) RETURNING {STORY_COLUMNS}"
     ))
     .bind(workspace_id)
     .bind(&project_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(number)
     .bind(&title)
     .bind(&new.text)
@@ -361,7 +407,7 @@ pub async fn create_story(
         workspace_id,
         &project_id,
         "story.created",
-        &json!({ "story_id": story.id, "key": story.key, "feature_id": story.feature_id }),
+        &json!({ "story_id": story.id, "key": story.key, "track_id": story.track_id }),
     )
     .await?;
     tx.commit().await.map_err(ApiError::database)?;
@@ -369,35 +415,81 @@ pub async fn create_story(
     Ok((StatusCode::CREATED, Json(StoryResponse { story })))
 }
 
-/// The stories of a feature, by priority and then number.
+type LinkedRow = (
+    String,
+    i32,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    bool,
+);
+
+fn linked_body(row: LinkedRow) -> LinkedBody {
+    let (
+        id,
+        number,
+        title,
+        track_id,
+        track_name,
+        part_id,
+        part_name,
+        status,
+        relation,
+        story_id,
+        story_number,
+        dropped,
+    ) = row;
+    LinkedBody {
+        id,
+        key: format!("US-{number}"),
+        title,
+        track_id,
+        track_name,
+        part_id,
+        part_name,
+        status,
+        relation,
+        story_id,
+        story_key: format!("US-{story_number}"),
+        blocker_dropped: dropped,
+    }
+}
+
+/// The stories of a track, by priority and then number.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("status" = Option<String>, Query, description = "Only the stories with this status; every status, `cancelled` included, when left out"),
         ("pickable" = Option<String>, Query, description = "`true` lists only the backlog stories a run can pick now: not blocked, every blocker done or cancelled, and no file shared with a story in implementing, implemented, review, reviewed or testing (`files_changed` when not empty, else `files_planned`). Ordered by priority, then by open dependants (most first), then number. `false` or absent gives the normal list"),
     ),
     responses(
-        (status = 200, description = "The feature's stories", body = StoryListResponse),
+        (status = 200, description = "The track's stories", body = StoryListResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such feature in this project and workspace", body = ErrorBody),
+        (status = 404, description = "No such track in this project and workspace", body = ErrorBody),
         (status = 422, description = "An unknown status (`invalid_status`) or a `pickable` other than `true` or `false` (`invalid_pickable`)", body = ErrorBody),
     )
 )]
 pub async fn list_stories(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id)): Path<(String, String, String)>,
+    Path((_, project_id, track_id)): Path<(String, String, String)>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<StoryListResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     require_project(&mut tx, &project_id).await?;
-    require_feature(&mut tx, &project_id, &feature_id).await?;
+    require_track(&mut tx, &project_id, &track_id).await?;
     if let Some(status) = &query.status
         && !STATUSES.contains(&status.as_str())
     {
@@ -408,25 +500,82 @@ pub async fn list_stories(
         Some("true") => true,
         Some(_) => return Err(invalid_field("invalid_pickable")),
     };
-    // The pickable rule looks at the whole feature, so the status filter is
+    // The pickable rule looks at the whole track, so the status filter is
     // applied afterwards then.
     let status = if pickable { None } else { query.status.clone() };
     let rows = sqlx::query_as::<_, StoryRow>(&format!(
         "SELECT {STORY_COLUMNS} FROM stories \
-         WHERE feature_id = $1::uuid AND ($2::text IS NULL OR status = $2) \
+         WHERE track_id = $1::uuid AND ($2::text IS NULL OR status = $2) \
          ORDER BY priority, number"
     ))
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&status)
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::database)?;
-    tx.commit().await.map_err(ApiError::database)?;
     let mut stories: Vec<StoryBody> = rows.into_iter().map(StoryRow::into_body).collect();
+    let wanted: Vec<String> = stories
+        .iter()
+        .flat_map(|story| story.blocked_by.iter().cloned())
+        .collect();
+    let blockers: Vec<(String, i32, String, String, String, bool)> = if wanted.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "SELECT s.id::text, s.number, s.track_id::text, t.name, s.status, t.state = 'dropped' \
+             FROM stories s JOIN tracks t ON t.id = s.track_id \
+             WHERE s.project_id = $1::uuid AND s.id::text = ANY($2)",
+        )
+        .bind(&project_id)
+        .bind(&wanted)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(ApiError::database)?
+    };
+    let linked: Vec<LinkedBody> = sqlx::query_as::<_, LinkedRow>(
+        "SELECT o.id::text, o.number, o.title, o.track_id::text, t.name, p.id::text, p.name, \
+                o.status, 'blocks', s.id::text, s.number, t.state = 'dropped' \
+         FROM stories s JOIN stories o ON s.blocked_by ? o.id::text \
+         JOIN tracks t ON t.id = o.track_id JOIN parts p ON p.id = t.part_id \
+         WHERE s.track_id = $1::uuid AND o.track_id <> s.track_id AND s.project_id = $2::uuid \
+         UNION ALL \
+         SELECT o.id::text, o.number, o.title, o.track_id::text, t.name, p.id::text, p.name, \
+                o.status, 'blocked_by', s.id::text, s.number, t.state = 'dropped' \
+         FROM stories s JOIN stories o ON o.blocked_by ? s.id::text \
+         JOIN tracks t ON t.id = o.track_id JOIN parts p ON p.id = t.part_id \
+         WHERE s.track_id = $1::uuid AND o.track_id <> s.track_id AND s.project_id = $2::uuid \
+         ORDER BY 11, 2",
+    )
+    .bind(&track_id)
+    .bind(&project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ApiError::database)?
+    .into_iter()
+    .map(linked_body)
+    .collect();
+    tx.commit().await.map_err(ApiError::database)?;
+    for story in &mut stories {
+        story.blockers = story
+            .blocked_by
+            .iter()
+            .filter_map(|id| blockers.iter().find(|row| &row.0 == id))
+            .map(
+                |(id, number, track_id, track_name, status, dropped)| BlockerBody {
+                    id: id.clone(),
+                    key: format!("US-{number}"),
+                    track_id: track_id.clone(),
+                    track_name: track_name.clone(),
+                    status: status.clone(),
+                    blocker_dropped: *dropped,
+                },
+            )
+            .collect();
+    }
     if pickable {
         stories = pickable_stories(stories, query.status.as_deref());
     }
-    Ok(Json(StoryListResponse { stories }))
+    Ok(Json(StoryListResponse { stories, linked }))
 }
 
 /// The files a story occupies: what it changed, else what it plans to change.
@@ -440,7 +589,7 @@ fn story_files(story: &StoryBody) -> &[String] {
 
 /// The backlog stories that can be worked now, in picking order: priority,
 /// then open dependants (most first), then number. `stories` is every story of
-/// the feature, already ordered by priority and number.
+/// the track, already ordered by priority and number.
 fn pickable_stories(stories: Vec<StoryBody>, status: Option<&str>) -> Vec<StoryBody> {
     if status.is_some_and(|status| status != "backlog") {
         return Vec::new();
@@ -469,10 +618,9 @@ fn pickable_stories(stories: Vec<StoryBody>, status: Option<&str>) -> Vec<StoryB
             story.status == "backlog"
                 && !story.blocked
                 && story.blocked_by.iter().all(|id| {
-                    stories
-                        .iter()
-                        .find(|other| &other.id == id)
-                        .is_some_and(closed)
+                    story.blockers.iter().any(|blocker| {
+                        &blocker.id == id && matches!(blocker.status.as_str(), "done" | "cancelled")
+                    })
                 })
                 && !story_files(story).iter().any(|path| busy.contains(&path))
         })
@@ -490,37 +638,37 @@ fn pickable_stories(stories: Vec<StoryBody>, status: Option<&str>) -> Vec<StoryB
         .collect()
 }
 
-/// One story of a feature.
+/// One story of a track.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     responses(
         (status = 200, description = "The story", body = StoryResponse),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
     )
 )]
 pub async fn show_story(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
 ) -> Result<Json<StoryResponse>, ApiError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let row = sqlx::query_as::<_, StoryRow>(&format!(
         "SELECT {STORY_COLUMNS} FROM stories \
-         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid"
+         WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid"
     ))
     .bind(&story_id)
-    .bind(&feature_id)
+    .bind(&track_id)
     .bind(&project_id)
     .fetch_optional(&mut *tx)
     .await
@@ -544,7 +692,7 @@ pub struct PatchStoryRequest {
     pub topic: Option<String>,
     /// Backlog only. Replaces the list; every criterion starts unticked.
     pub criteria: Option<Vec<NewCriterion>>,
-    /// IDs of other stories of the same feature. Any open status.
+    /// IDs of other stories of the same track. Any open status.
     pub blocked_by: Option<Vec<String>>,
     /// Backlog only.
     pub files_planned: Option<Vec<String>>,
@@ -617,24 +765,28 @@ impl IntoResponse for StoryError {
     }
 }
 
-/// The story with a lock on its row, 404 when the feature has none.
+/// The story with a lock on its row, 404 when the track has none, 403 when
+/// the caller does not own the track.
 async fn lock_story(
     tx: &mut Transaction<'static, Postgres>,
+    who: &Who,
     project_id: &str,
-    feature_id: &str,
+    track_id: &str,
     story_id: &str,
 ) -> Result<StoryRow, ApiError> {
-    sqlx::query_as::<_, StoryRow>(&format!(
+    let story = sqlx::query_as::<_, StoryRow>(&format!(
         "SELECT {STORY_COLUMNS} FROM stories \
-         WHERE id = $1::uuid AND feature_id = $2::uuid AND project_id = $3::uuid FOR UPDATE"
+         WHERE id = $1::uuid AND track_id = $2::uuid AND project_id = $3::uuid FOR UPDATE"
     ))
     .bind(story_id)
-    .bind(feature_id)
+    .bind(track_id)
     .bind(project_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(ApiError::database)?
-    .ok_or(ApiError::NotFound)
+    .ok_or(ApiError::NotFound)?;
+    require_track_writer(tx, who, track_id).await?;
+    Ok(story)
 }
 
 fn is_closed(status: &str) -> bool {
@@ -644,11 +796,11 @@ fn is_closed(status: &str) -> bool {
 /// Changes a story's text, priority, blockers or links.
 #[utoipa::path(
     patch,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = PatchStoryRequest,
@@ -656,19 +808,19 @@ fn is_closed(status: &str) -> bool {
         (status = 200, description = "The story with its new `version`", body = StoryResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; checked before the rest. Else `not_in_backlog` (a text field of a story outside backlog) or `not_open` (any field of a done or cancelled story); the request is refused whole", body = StoryConflictBody),
-        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the feature (`invalid_blocked_by`)", body = ErrorBody),
+        (status = 422, description = "No field but `expected_version` (`no_changes`), a blank title (`invalid_title`), a priority outside 0 to 3 (`invalid_priority`), links of neither shape (`invalid_links`) or a `blocked_by` that is not a list of other stories of the project (`invalid_blocked_by`)", body = ErrorBody),
     )
 )]
 pub async fn patch_story(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let patch = parse_body::<PatchStoryRequest>(&body)?;
     let mut fields: Vec<&str> = Vec::new();
@@ -726,12 +878,12 @@ pub async fn patch_story(
     };
 
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if let Some(ids) = blocked_by.as_ref().filter(|ids| !ids.is_empty()) {
         let (found,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM stories WHERE feature_id = $1::uuid AND id::text = ANY($2)",
+            "SELECT count(*) FROM stories WHERE project_id = $1::uuid AND id::text = ANY($2)",
         )
-        .bind(&feature_id)
+        .bind(&project_id)
         .bind(ids)
         .fetch_one(&mut *tx)
         .await
@@ -803,11 +955,11 @@ pub async fn patch_story(
 /// Cancels a story: it leaves the board and no longer blocks other stories.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/cancel",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/cancel",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = CancelStoryRequest,
@@ -815,22 +967,22 @@ pub async fn patch_story(
         (status = 200, description = "The cancelled story, its holder cleared", body = StoryResponse),
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key or session", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale, or `not_open` when the story is done or cancelled", body = StoryConflictBody),
     )
 )]
 pub async fn cancel_story(
     State(state): State<AppState>,
     request: WorkspaceRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let cancel = parse_body::<CancelStoryRequest>(&body)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != cancel.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -937,11 +1089,11 @@ async fn finish_story_write(
 /// Takes a story for a run, or moves the run's claim to another stage.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/claim",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/claim",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = ClaimStoryRequest,
@@ -950,7 +1102,7 @@ async fn finish_story_write(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_open` (done or cancelled) or `held` with the `holder` when another run holds it; else `not_waiting` with the story's `status` and the `stage` when the story is not in the waiting state of that stage (backlog for implementing, implemented for review, reviewed for testing)", body = StoryHeldBody),
         (status = 422, description = "A stage other than implementing, review or testing (`invalid_stage`)", body = ErrorBody),
     )
@@ -958,18 +1110,18 @@ async fn finish_story_write(
 pub async fn claim_story(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let claim = parse_body::<ClaimStoryRequest>(&body)?;
     if !["implementing", "review", "testing"].contains(&claim.stage.as_str()) {
         return Err(invalid_field("invalid_stage").into());
     }
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != claim.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1019,11 +1171,11 @@ pub async fn claim_story(
 /// Clears a story's holder, whoever holds it; a working story returns to its waiting state.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/release",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/release",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = ReleaseStoryRequest,
@@ -1032,22 +1184,22 @@ pub async fn claim_story(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
     )
 )]
 pub async fn release_story(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let release = parse_body::<ReleaseStoryRequest>(&body)?;
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != release.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1083,11 +1235,11 @@ pub async fn release_story(
 /// Moves a story to a column; only the run that holds it may.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/move",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/move",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = MoveStoryRequest,
@@ -1096,7 +1248,7 @@ pub async fn release_story(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_open`, `not_holder` (the run does not hold the story) or `criteria_open` with the 0-based indexes in `open` when moving to done", body = StoryHeldBody),
         (status = 422, description = "A column other than backlog, implementing, implemented, review, reviewed, testing or done (`invalid_status`)", body = ErrorBody),
     )
@@ -1104,11 +1256,11 @@ pub async fn release_story(
 pub async fn move_story(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let step = parse_body::<MoveStoryRequest>(&body)?;
     if ![
@@ -1125,7 +1277,7 @@ pub async fn move_story(
         return Err(invalid_field("invalid_status").into());
     }
     let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    let current = lock_story(&mut tx, &project_id, &feature_id, &story_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
     if i64::from(current.version) != step.expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1170,6 +1322,83 @@ pub async fn move_story(
         &["status", "holder"],
     )
     .await
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct MoveToTrackRequest {
+    /// The `version` the caller last read.
+    pub expected_version: i64,
+    /// The track to move the story to: another track of the same project.
+    #[schema(value_type = String)]
+    pub to_track_id: Value,
+}
+
+/// Moves a story to another track of the project. It keeps its number,
+/// blockers, status, holder and history; only its track changes.
+#[utoipa::path(
+    post,
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/track",
+    params(
+        ("workspace_id" = String, Path, description = "The workspace's UUID"),
+        ("project_id" = String, Path, description = "The project's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
+        ("story_id" = String, Path, description = "The story's UUID"),
+    ),
+    request_body = MoveToTrackRequest,
+    responses(
+        (status = 200, description = "The story on its new track", body = StoryResponse),
+        (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
+        (status = 401, description = "No valid API key or session", body = ErrorBody),
+        (status = 403, description = "`not_track_owner`: the caller owns not both the source and the target track", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
+        (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
+        (status = 422, description = "`invalid_track`: the target is no undeleted track of the project", body = ErrorBody),
+    )
+)]
+pub async fn move_story_to_track(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
+    body: Bytes,
+) -> Result<Json<StoryResponse>, StoryError> {
+    let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
+    let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
+    let step = parse_body::<MoveToTrackRequest>(&body)?;
+    let mut tx = state.workspace_tx(&request.workspace_id).await?;
+    let current = lock_story(&mut tx, &request.who(), &project_id, &track_id, &story_id).await?;
+    if i64::from(current.version) != step.expected_version {
+        return Err(StoryError::Stale(current.version));
+    }
+    let target = require_project_track(&mut tx, &project_id, &step.to_track_id).await?;
+    require_track_writer(&mut tx, &request.who(), &target).await?;
+    let row = sqlx::query_as::<_, StoryRow>(&format!(
+        "UPDATE stories SET track_id = $2::uuid, version = version + 1, \
+         updated_at = clock_timestamp() WHERE id = $1::uuid RETURNING {STORY_COLUMNS}"
+    ))
+    .bind(&story_id)
+    .bind(&target)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(ApiError::database)?;
+    let story = row.into_body();
+    live::emit(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        "story.changed",
+        &json!({
+            "story_id": story.id,
+            "key": story.key,
+            "fields": ["track_id"],
+            "from_track_id": track_id,
+            "to_track_id": target,
+        }),
+    )
+    .await?;
+    tx.commit().await.map_err(ApiError::database)?;
+    state.live.announce(&request.workspace_id, &project_id);
+    Ok(Json(StoryResponse { story }))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1250,12 +1479,13 @@ pub struct CheckCriterionRequest {
 async fn open_run_write(
     state: &AppState,
     workspace_id: &str,
+    who: &Who,
     ids: [&str; 3],
     expected_version: i64,
     run: Option<&str>,
 ) -> Result<(Transaction<'static, Postgres>, StoryBody), StoryError> {
     let mut tx = state.workspace_tx(workspace_id).await?;
-    let current = lock_story(&mut tx, ids[0], ids[1], ids[2]).await?;
+    let current = lock_story(&mut tx, who, ids[0], ids[1], ids[2]).await?;
     if i64::from(current.version) != expected_version {
         return Err(StoryError::Stale(current.version));
     }
@@ -1279,11 +1509,11 @@ fn criterion_index(criterion: i64, story: &StoryBody) -> Result<usize, StoryErro
 /// Ticks or unticks a criterion, and sets whether its human check is pending.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/tick",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/tick",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = TickRequest,
@@ -1292,7 +1522,7 @@ fn criterion_index(criterion: i64, story: &StoryBody) -> Result<usize, StoryErro
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
         (status = 422, description = "A criterion index outside the story's criteria (`invalid_criterion`)", body = ErrorBody),
     )
@@ -1300,17 +1530,18 @@ fn criterion_index(criterion: i64, story: &StoryBody) -> Result<usize, StoryErro
 pub async fn tick_criterion(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<TickRequest>(&body)?;
     let (mut tx, current) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
     )
@@ -1335,11 +1566,11 @@ pub async fn tick_criterion(
 /// Appends a finding to a story.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = FindingRequest,
@@ -1348,7 +1579,7 @@ pub async fn tick_criterion(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
         (status = 422, description = "A stage other than implementing, review or testing (`invalid_stage`)", body = ErrorBody),
     )
@@ -1356,11 +1587,11 @@ pub async fn tick_criterion(
 pub async fn add_finding(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<FindingRequest>(&body)?;
     if !["implementing", "review", "testing"].contains(&write.stage.as_str()) {
@@ -1369,7 +1600,8 @@ pub async fn add_finding(
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
     )
@@ -1393,11 +1625,11 @@ pub async fn add_finding(
 /// Marks a finding of a story resolved.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/findings/{index}/resolve",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/findings/{index}/resolve",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
         ("index" = usize, Path, description = "The 0-based index of the finding"),
     ),
@@ -1407,30 +1639,25 @@ pub async fn add_finding(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace, or no such finding", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace, or no such finding", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
     )
 )]
 pub async fn resolve_finding(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id, index)): Path<(
-        String,
-        String,
-        String,
-        String,
-        usize,
-    )>,
+    Path((_, project_id, track_id, story_id, index)): Path<(String, String, String, String, usize)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<ResolveFindingRequest>(&body)?;
     let (mut tx, current) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
     )
@@ -1454,11 +1681,11 @@ pub async fn resolve_finding(
 /// Appends a decision to a story.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/decisions",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/decisions",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = DecisionRequest,
@@ -1467,7 +1694,7 @@ pub async fn resolve_finding(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
         (status = 422, description = "`by` other than agent or human (`invalid_by`)", body = ErrorBody),
     )
@@ -1475,11 +1702,12 @@ pub async fn resolve_finding(
 pub async fn add_decision(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    identity: AgentIdentity,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<DecisionRequest>(&body)?;
     if !["agent", "human"].contains(&write.by.as_str()) {
@@ -1488,7 +1716,8 @@ pub async fn add_decision(
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
     )
@@ -1506,17 +1735,43 @@ pub async fn add_decision(
     .fetch_one(&mut *tx)
     .await
     .map_err(ApiError::database)?;
+    let author = if write.by == "human" {
+        // The member who made the key; a key with no creator has no user.
+        let user_id: Option<String> = match &request.membership_id {
+            Some(membership_id) => {
+                sqlx::query_scalar("SELECT user_id::text FROM memberships WHERE id = $1::uuid")
+                    .bind(membership_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(ApiError::database)?
+            }
+            None => None,
+        };
+        json!({ "kind": "human", "user_id": user_id })
+    } else {
+        author_of(&Actor::Agent, &identity)
+    };
+    record_decision(
+        &mut tx,
+        &request.workspace_id,
+        &project_id,
+        &track_id,
+        None,
+        (&write.question, &write.choice, ""),
+        &author,
+    )
+    .await?;
     finish_story_write(&state, tx, &request, &project_id, row, &["decisions"]).await
 }
 
 /// Replaces the files a story changed.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/files",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/files",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = FilesRequest,
@@ -1525,24 +1780,25 @@ pub async fn add_decision(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
     )
 )]
 pub async fn set_files(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<FilesRequest>(&body)?;
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         Some(&write.run),
     )
@@ -1562,11 +1818,11 @@ pub async fn set_files(
 /// Blocks a story on a question to the human.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/block",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/block",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = BlockStoryRequest,
@@ -1575,24 +1831,25 @@ pub async fn set_files(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
     )
 )]
 pub async fn block_story(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<BlockStoryRequest>(&body)?;
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         None,
     )
@@ -1620,11 +1877,11 @@ pub async fn block_story(
 /// Lifts the block of a story.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/unblock",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/unblock",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = BlockStoryRequest,
@@ -1633,24 +1890,25 @@ pub async fn block_story(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid API key", body = ErrorBody),
         (status = 403, description = "A session, not an agent key", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale; else `not_holder` when the story has a holder and it is not `run`", body = StoryConflictBody),
     )
 )]
 pub async fn unblock_story(
     State(state): State<AppState>,
     request: AgentRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<BlockStoryRequest>(&body)?;
     let (mut tx, _) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         None,
     )
@@ -1669,11 +1927,11 @@ pub async fn unblock_story(
 /// Clears the pending human check of a criterion, in any status.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}/stories/{story_id}/check",
+    path = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}/stories/{story_id}/check",
     params(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
-        ("feature_id" = String, Path, description = "The feature's UUID"),
+        ("track_id" = String, Path, description = "The track's UUID"),
         ("story_id" = String, Path, description = "The story's UUID"),
     ),
     request_body = CheckCriterionRequest,
@@ -1682,7 +1940,7 @@ pub async fn unblock_story(
         (status = 400, description = "The body is not JSON of the expected shape (`invalid_request`)", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "An agent key, not a session", body = ErrorBody),
-        (status = 404, description = "No such story in this feature, project and workspace", body = ErrorBody),
+        (status = 404, description = "No such story in this track, project and workspace", body = ErrorBody),
         (status = 409, description = "`conflict` with `current_version` when `expected_version` is stale", body = StoryConflictBody),
         (status = 422, description = "A criterion index outside the story's criteria (`invalid_criterion`)", body = ErrorBody),
     )
@@ -1690,17 +1948,18 @@ pub async fn unblock_story(
 pub async fn check_criterion(
     State(state): State<AppState>,
     request: HumanRequest,
-    Path((_, project_id, feature_id, story_id)): Path<(String, String, String, String)>,
+    Path((_, project_id, track_id, story_id)): Path<(String, String, String, String)>,
     body: Bytes,
 ) -> Result<Json<StoryResponse>, StoryError> {
     let project_id = parse_uuid(&project_id).ok_or(ApiError::NotFound)?;
-    let feature_id = parse_uuid(&feature_id).ok_or(ApiError::NotFound)?;
+    let track_id = parse_uuid(&track_id).ok_or(ApiError::NotFound)?;
     let story_id = parse_uuid(&story_id).ok_or(ApiError::NotFound)?;
     let write = parse_body::<CheckCriterionRequest>(&body)?;
     let (mut tx, current) = open_run_write(
         &state,
         &request.workspace_id,
-        [&project_id, &feature_id, &story_id],
+        &request.who(),
+        [&project_id, &track_id, &story_id],
         write.expected_version,
         None,
     )
@@ -1718,6 +1977,8 @@ pub async fn check_criterion(
     .map_err(ApiError::database)?;
     let request = AgentRequest {
         workspace_id: request.workspace_id,
+        is_admin: request.is_admin,
+        membership_id: Some(request.membership_id),
     };
     finish_story_write(&state, tx, &request, &project_id, row, &["criteria"]).await
 }

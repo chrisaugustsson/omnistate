@@ -7,7 +7,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
+import { cn } from "@/lib/utils";
 
 const webDir = fileURLToPath(new URL("..", import.meta.url));
 const srcDir = join(webDir, "src");
@@ -50,4 +51,69 @@ test("the HTML doc stylesheet is doc content styling, not app styling", () => {
     loads.filter((load) => !/\?(raw|inline)$/.test(load)),
     "doc.css is read as text, never loaded into the app",
   ).toEqual([]);
+});
+
+// The UI redesign (tasks/ui-redesign/v2/direction.md, the "Tokens" table and the
+// part and state colours) sets the look in tokens on :root; shadcn's variables
+// point at them, so components/ui and the new shell draw in the same colours.
+describe("the v2 tokens", () => {
+  const css = readFileSync(join(srcDir, "styles.css"), "utf8");
+  const root = css.slice(css.indexOf(":root {"));
+  /** The value `name` has on :root, as written. */
+  const token = (name: string) => root.match(new RegExp(`\\n\\s*${name}:\\s*([^;]+);`))?.[1].trim();
+
+  test.each([
+    ["--sheet", "#ffffff"],
+    ["--hover", "#f0f0f2"],
+    ["--selected", "#e9e9ec"],
+    ["--line", "#ececef"],
+    ["--line-strong", "#dcdce0"],
+    ["--ink", "#18181b"],
+    ["--ink-2", "#52525b"],
+    ["--brand", "#2f5bea"],
+    ["--brand-hover", "#2549c7"],
+    ["--brand-tint", "#e8eefe"],
+    ["--danger", "#dc2626"],
+    ["--state-planning", "#64748b"],
+    ["--state-building", "#d97706"],
+    ["--state-done", "#16a34a"],
+    ["--state-dropped", "#a1a1aa"],
+    ["--part-1", "#2f5bea"],
+    ["--part-2", "#0e9f6e"],
+    ["--part-3", "#e8590c"],
+    ["--bar-h", "48px"],
+    ["--fs-body", "13px"],
+  ])("%s is %s", (name, value) => {
+    expect(token(name)).toBe(value);
+  });
+
+  test("the app is set in Inter, and the root route loads it", () => {
+    expect(token("--font")).toMatch(/^"Inter"/);
+    const rootRoute = readFileSync(join(srcDir, "routes", "__root.tsx"), "utf8");
+    expect(rootRoute).toContain("fonts.googleapis.com/css2?family=Inter");
+  });
+
+  test.each([
+    ["--primary", "var(--brand)"],
+    ["--background", "var(--sheet)"],
+    ["--foreground", "var(--ink)"],
+    ["--border", "var(--line)"],
+    ["--ring", "var(--brand)"],
+  ])("shadcn's %s is %s", (name, value) => {
+    expect(token(name)).toBe(value);
+  });
+});
+
+describe("merging class names", () => {
+  // A component's text size must survive the colour a caller adds, and a
+  // caller's radius or shadow must replace the component's, not sit beside it.
+  test.each([
+    [["text-meta text-ink-3"], "text-meta text-ink-3"],
+    [["text-em leading-[1.6] text-ink"], "text-em leading-[1.6] text-ink"],
+    [["text-meta", "text-body"], "text-body"],
+    [["rounded-control", "rounded-full"], "rounded-full"],
+    [["shadow-pop", "shadow-none"], "shadow-none"],
+  ])("cn(%j) is %s", (inputs, merged) => {
+    expect(cn(...inputs)).toBe(merged);
+  });
 });

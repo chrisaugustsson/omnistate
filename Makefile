@@ -15,13 +15,28 @@ SANDBOX_BUILD := render-sandbox/build
 # Where the web app's design viewer loads the renderer from (served as /render/).
 WEB_RENDER := web/public/render
 
-.PHONY: edge test-stack-up test-stack test-stack-down lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar install-agent-tools measure-agents
+.PHONY: edge next-up next-down test-stack-up test-stack test-stack-down lint test web-deps web-api render-wasm chrome-boxes stress-file nodes-boxes bench-render check-layout penpot-compare bench-ops bench-ordrar install-agent-tools measure-agents
 
 # The machine's edge: the Traefik on port 80 that makes the stack
 # http://omnistate.localhost (docker/edge/README.md). Run once per machine; it
 # stays up across restarts, and this is a no-op while it is current.
 edge:
 	docker compose -f docker/edge/docker-compose.yml up --detach
+
+# The next stack: this branch's build as compose project omnistate-next, with
+# volumes and image names of its own and an empty database (docs/delivery-stack.md),
+# at http://omnistate-next.localhost through the edge (fallback
+# http://localhost:8422). The project omnistate, which holds the board, is never
+# touched. `next-up` rebuilds from the current tree and starts the edge if it is
+# not running; `next-down` removes the containers and keeps the volumes.
+NEXT_STACK := OMNI_PORT=8422 docker compose -p omnistate-next
+
+next-up:
+	@docker ps --filter name=edge-traefik --filter status=running -q | grep -q . || $(MAKE) edge
+	$(NEXT_STACK) up --build --wait --detach proxy
+
+next-down:
+	$(NEXT_STACK) down
 
 # The test stack: a second copy of the compose stack, project omnistate-test
 # with volumes of its own, at http://omnistate-test.localhost through the edge
@@ -44,15 +59,18 @@ test-stack-down:
 # A workspace with one user, a live session and an API key on the test stack,
 # for a verifier that exercises a story there (docs/delivery-stack.md). NAME
 # names the workspace and the user; the lines printed are the workspace id,
-# the value of the omni_session cookie and the API key secret.
+# the value of the omni_session cookie and the API key secret. ROLE is the
+# member's role, member (the default) or admin. WORKSPACE=<id> joins that
+# workspace instead of making one, for a second member (use another NAME).
 PSQL_TEST := $(TEST_STACK) exec -T postgres psql -qAt -v ON_ERROR_STOP=1 -U omni -d omni
 test-stack-seed:
 	@test -n "$(NAME)" || { echo "pass NAME=<a short name>"; exit 2; }
-	@token=$$(openssl rand -hex 24); \
-	ws=$$($(PSQL_TEST) -c "insert into workspaces (name) values ('$(NAME)') returning id") && \
+	@case "$(or $(ROLE),member)" in member|admin) ;; *) echo "ROLE is member or admin"; exit 2;; esac; \
+	token=$$(openssl rand -hex 24); \
+	ws=$(if $(WORKSPACE),"$(WORKSPACE)",$$($(PSQL_TEST) -c "insert into workspaces (name) values ('$(NAME)') returning id")) && \
 	user=$$($(PSQL_TEST) -c "insert into users (email) values ('$(NAME)@example.com') returning id") && \
 	$(PSQL_TEST) -c "insert into sessions (user_id, token_hash, expires_at) values ('$$user', sha256(convert_to('$$token', 'UTF8')), now() + interval '1 day')" >/dev/null && \
-	$(PSQL_TEST) -c "insert into memberships (workspace_id, user_id) values ('$$ws', '$$user')" >/dev/null && \
+	$(PSQL_TEST) -c "insert into memberships (workspace_id, user_id, role) values ('$$ws', '$$user', '$(or $(ROLE),member)')" >/dev/null && \
 	key=$$(curl -sf -X POST -H 'Content-Type: application/json' -b "omni_session=$$token" -d '{}' http://localhost:$${OMNI_PORT:-8421}/api/v1/w/$$ws/api-keys | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p') && \
 	echo "workspace=$$ws" && echo "session=$$token" && echo "api_key=$$key"
 

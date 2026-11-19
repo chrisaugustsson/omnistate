@@ -1,13 +1,13 @@
-//! `omni behaviour add`, `read`, `list`, `edit`, `move`, `ask`, `answer`, `question` and `questions`: the behaviour tree of a feature. A node is
+//! `omni behaviour add`, `read`, `list`, `edit`, `move`, `ask`, `answer`, `question` and `questions`: the behaviour tree of a track. A node is
 //! named by its uuid, by its path (the slugs from the story down, joined by
-//! `/`) or by `.` for the root. The project and the feature are found as for
+//! `/`) or by `.` for the root. The project and the track are found as for
 //! `omni story add`.
 
 use crate::args::Args;
 use crate::commands::{Agent, agent, say};
 use crate::error::{CliError, Result, bail};
 use crate::json::{Value, quote};
-use crate::projects::{creation_feature, is_uuid, project_id};
+use crate::projects::{creation_track, is_uuid, project_id};
 
 const ADD_USAGE: &str = "omni behaviour add --title <t> [--slug <s>] [--summary <text>] [--parent <node>] \
      [--same-as <node>] [--handoff <node>]";
@@ -27,19 +27,19 @@ fn unreadable() -> CliError {
     )
 }
 
-/// The behaviour path of the feature the command works in.
+/// The behaviour path of the track the command works in.
 pub(crate) fn behaviour_path(args: &Args, agent: &Agent) -> Result<String> {
     let project = project_id(args, agent)?;
-    let Some(feature) = creation_feature(args, agent, &project)? else {
-        bail!("no feature: pass --feature <name or id>, or put feature = \"name\" in .omni.toml");
+    let Some(track) = creation_track(args, agent, &project)? else {
+        bail!("no track: pass --track <name or id> or set OMNI_TRACK");
     };
     Ok(format!(
-        "/api/v1/w/{}/projects/{project}/features/{feature}/behaviour",
+        "/api/v1/w/{}/projects/{project}/tracks/{track}/behaviour",
         agent.workspace_id
     ))
 }
 
-/// The nodes of the feature, in tree order.
+/// The nodes of the track, in tree order.
 fn list_nodes(agent: &Agent, base: &str) -> Result<Vec<Value>> {
     let response = agent.request("GET", base, None)?;
     let body = Value::parse(&response.text()).map_err(|_| unreadable())?;
@@ -74,7 +74,7 @@ pub(crate) fn node_ref(agent: &Agent, base: &str, given: &str) -> Result<(String
         }
     });
     let Some(found) = found else {
-        bail!("not_found: no node {given} in this feature");
+        bail!("not_found: no node {given} in this track");
     };
     let id = found.str_at("id").ok_or_else(unreadable)?;
     Ok((id.to_string(), version_of(found)?))
@@ -555,7 +555,7 @@ pub fn answer(args: &Args, question: Option<&str>, answer: Option<&str>) -> Resu
         .iter()
         .find(|question| question.str_at("id") == Some(given))
     else {
-        bail!("not_found: no question {given} in this feature");
+        bail!("not_found: no question {given} in this track");
     };
     let version = version_of(found)?;
     let mut body = format!(
@@ -669,6 +669,11 @@ pub fn question(args: &Args, question: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The API calls a rule's feature scope `track`; the command still says `feature`.
+fn api_scope(scope: &str) -> &str {
+    if scope == "feature" { "track" } else { scope }
+}
+
 const RULE_ADD_USAGE: &str = "omni behaviour rule add <node> <text> [--scope node|story|feature]";
 const RULE_EDIT_USAGE: &str =
     "omni behaviour rule edit <rule id> [--text <t>] [--scope <s>] [--withdraw]";
@@ -683,7 +688,7 @@ pub fn rule_add(args: &Args, node: Option<&str>, text: Option<&str>) -> Result<(
     let (id, _) = node_ref(&agent, &base, given)?;
     let mut body = format!("{{\"text\":{}", quote(text));
     if let Some(scope) = &args.scope {
-        body.push_str(&format!(",\"scope\":{}", quote(scope)));
+        body.push_str(&format!(",\"scope\":{}", quote(api_scope(scope))));
     }
     body.push('}');
     let response = agent.request(
@@ -704,7 +709,7 @@ pub fn rule_add(args: &Args, node: Option<&str>, text: Option<&str>) -> Result<(
     Ok(())
 }
 
-/// The rules of the feature as the API lists them, withdrawn ones included.
+/// The rules of the track as the API lists them, withdrawn ones included.
 fn listed_rules(agent: &Agent, url: &str) -> Result<Vec<Value>> {
     let response = agent.request("GET", url, None)?;
     let body = Value::parse(&response.text()).map_err(|_| unreadable())?;
@@ -727,14 +732,14 @@ pub fn rule_edit(args: &Args, rule: Option<&str>) -> Result<()> {
     let base = behaviour_path(args, &agent)?;
     let rules = listed_rules(&agent, &format!("{base}/rules"))?;
     let Some(found) = rules.iter().find(|rule| rule.str_at("id") == Some(given)) else {
-        bail!("not_found: no rule {given} in this feature");
+        bail!("not_found: no rule {given} in this track");
     };
     let mut body = format!("{{\"expected_version\":{}", version_of(found)?);
     if let Some(text) = &args.text {
         body.push_str(&format!(",\"text\":{}", quote(text)));
     }
     if let Some(scope) = &args.scope {
-        body.push_str(&format!(",\"scope\":{}", quote(scope)));
+        body.push_str(&format!(",\"scope\":{}", quote(api_scope(scope))));
     }
     if args.withdraw {
         body.push_str(",\"withdrawn\":true");
@@ -757,7 +762,7 @@ pub fn rules(args: &Args, node: Option<&str>) -> Result<()> {
     let base = behaviour_path(args, &agent)?;
     let mut query = Vec::new();
     if let Some(scope) = &args.scope {
-        query.push(format!("scope={scope}"));
+        query.push(format!("scope={}", api_scope(scope)));
     }
     if let Some(given) = node {
         query.push(format!("under={}", node_ref(&agent, &base, given)?.0));

@@ -13,6 +13,7 @@ use crate::behaviour_import;
 use crate::comments;
 use crate::components;
 use crate::config::{self, Stored};
+use crate::decisions;
 use crate::design;
 use crate::docs;
 use crate::error::{CliError, Result, bail};
@@ -23,12 +24,14 @@ use crate::identity::Identity;
 use crate::import;
 use crate::json::{Value, quote};
 use crate::links;
+use crate::parts;
 use crate::posts;
 use crate::projects;
 use crate::stories;
 use crate::thread_wait;
 use crate::threads;
 use crate::tokens;
+use crate::tracks;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 
@@ -64,6 +67,21 @@ pub fn run(args: &Args) -> Result<()> {
         ["link"] => links::show(args),
         ["link", project] => links::link(args, Some(project)),
         ["unlink"] => links::unlink(args),
+        ["part", "create"] => parts::create(args, None),
+        ["part", "create", name] => parts::create(args, Some(name)),
+        ["part", "list"] => parts::list(args),
+        ["part", "where"] => links::part_where(args, None),
+        ["part", "where", part] => links::part_where(args, Some(part)),
+        ["part", "show"] => parts::show(args, None),
+        ["part", "show", part] => parts::show(args, Some(part)),
+        ["part", "rename"] => parts::rename(args, None, None),
+        ["part", "rename", part] => parts::rename(args, Some(part), None),
+        ["part", "rename", part, name] => parts::rename(args, Some(part), Some(name)),
+        ["part", "delete"] => parts::delete(args, None),
+        ["part", "delete", part] => parts::delete(args, Some(part)),
+        ["part", ..] => {
+            bail!("usage: omni part create|list|show|rename|delete|where; see `omni --help`")
+        }
         ["feature", "create"] => features::create(args, None),
         ["feature", "create", name] => features::create(args, Some(name)),
         ["feature", "list"] => features::list(args),
@@ -77,6 +95,44 @@ pub fn run(args: &Args) -> Result<()> {
         ["feature", ..] => {
             bail!("usage: omni feature create|list|show|rename|delete; see `omni --help`")
         }
+        ["track", "create"] => tracks::create(args, None),
+        ["track", "create", name] => tracks::create(args, Some(name)),
+        ["track", "list"] => tracks::list(args),
+        ["track", "show"] => tracks::show(args, None),
+        ["track", "show", track] => tracks::show(args, Some(track)),
+        ["track", "rename"] => tracks::rename(args, None, None),
+        ["track", "rename", track] => tracks::rename(args, Some(track), None),
+        ["track", "rename", track, name] => tracks::rename(args, Some(track), Some(name)),
+        ["track", "move"] => tracks::move_to(args, None),
+        ["track", "move", track] => tracks::move_to(args, Some(track)),
+        ["track", "handover"] => tracks::handover(args, None, None),
+        ["track", "handover", track] => tracks::handover(args, Some(track), None),
+        ["track", "handover", track, user] => tracks::handover(args, Some(track), Some(user)),
+        ["track", "link-feature"] => tracks::link_feature(args, None, None, false),
+        ["track", "link-feature", track] => tracks::link_feature(args, Some(track), None, false),
+        ["track", "link-feature", track, feature] => {
+            tracks::link_feature(args, Some(track), Some(feature), false)
+        }
+        ["track", "unlink-feature"] => tracks::link_feature(args, None, None, true),
+        ["track", "unlink-feature", track] => tracks::link_feature(args, Some(track), None, true),
+        ["track", "unlink-feature", track, feature] => {
+            tracks::link_feature(args, Some(track), Some(feature), true)
+        }
+        ["track", "split"] => tracks::split(args, None),
+        ["track", "split", name] => tracks::split(args, Some(name)),
+        ["track", "state"] => tracks::state(args, None, None),
+        ["track", "state", track] => tracks::state(args, Some(track), None),
+        ["track", "state", track, to] => tracks::state(args, Some(track), Some(to)),
+        ["track", "delete"] => tracks::delete(args, None),
+        ["track", "delete", track] => tracks::delete(args, Some(track)),
+        ["track", ..] => {
+            bail!(
+                "usage: omni track create|list|show|rename|move|split|link-feature|unlink-feature|state|delete; see `omni --help`"
+            )
+        }
+        ["decision", "add"] => decisions::add(args),
+        ["decision", "list"] => decisions::list(args),
+        ["decision", ..] => bail!("usage: omni decision add|list; see `omni --help`"),
         ["doc", "create"] => docs::create(args),
         ["doc", "list"] => docs::list(args),
         ["doc", "read"] => docs::read(args, None),
@@ -119,7 +175,7 @@ pub fn run(args: &Args) -> Result<()> {
         ["import", "penpot"] => import::penpot(args, None),
         ["import", "penpot", file] => import::penpot(args, Some(file)),
         ["import", ..] => {
-            bail!("usage: omni import penpot <file.penpot> --project <id> [--feature <name>]")
+            bail!("usage: omni import penpot <file.penpot> --project <id> [--track <name>]")
         }
         ["behaviour" | "behavior", "add"] => behaviour::add(args),
         ["behaviour" | "behavior", "read"] => behaviour::read(args, None),
@@ -173,12 +229,12 @@ pub fn run(args: &Args) -> Result<()> {
         ["story", "read", story] => stories::read(args, Some(story)),
         [
             "story",
-            verb @ ("edit" | "cancel" | "claim" | "release" | "move" | "block" | "unblock" | "tick"
-            | "finding" | "resolve" | "decision" | "files"),
+            verb @ ("edit" | "cancel" | "claim" | "release" | "move" | "move-track" | "block"
+            | "unblock" | "tick" | "finding" | "resolve" | "decision" | "files"),
             rest @ ..,
         ] => stories::write(args, verb, rest),
         ["story", ..] => bail!(
-            "usage: omni story add|list|read|edit|cancel|claim|release|move|block|unblock|tick|finding|resolve|decision|files; see `omni --help`"
+            "usage: omni story add|list|read|edit|cancel|claim|release|move|move-track|block|unblock|tick|finding|resolve|decision|files; see `omni --help`"
         ),
         ["thread", "create"] => threads::create(args, None),
         ["thread", "create", question] => threads::create(args, Some(question)),
@@ -498,6 +554,11 @@ fn refused_operation(body: &Value) -> Option<String> {
         code @ ("invalid_components" | "invalid_design") => Some(format!(
             "{code}: {}; nothing was imported",
             body.str_at("message").unwrap_or("the tags are refused")
+        )),
+        "invalid_transition" => Some(format!(
+            "invalid_transition: {} (it is {})",
+            body.str_at("message")?,
+            body.str_at("state")?
         )),
         "invalid_operation" => {
             let index = match body.get("index") {

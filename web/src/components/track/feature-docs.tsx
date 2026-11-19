@@ -1,0 +1,142 @@
+import { Link } from "@tanstack/react-router";
+import { ChevronLeft } from "lucide-react";
+import type { HomeDoc } from "@/api/generated";
+import { OpenDoc, useDocListToggle } from "@/components/project/docs-pane";
+import { useIsPhone } from "@/components/shell/shell-context";
+import type { DocSearch } from "@/components/viewer/doc-page";
+import { cn } from "@/lib/utils";
+import { DocGlyph } from "./feature-parts";
+import { useFeature } from "./feature-data";
+import { EmptyTab } from "./ui";
+
+// A feature's docs, as its Docs and Design tabs show them: the list grouped by
+// pillar on the left, the open doc filling the room under the title beside it
+// (page text in a box with the comments at its right edge, or a design's
+// canvas), so every doc sits in the same place at the same width. On the phone
+// the list is the page, and a doc opens full screen with a way back to the
+// list.
+
+const PILLARS = [
+  { pillar: "spec", title: "Spec" },
+  { pillar: "ui", title: "UI" },
+  { pillar: "architecture", title: "Architecture" },
+  { pillar: "db", title: "Database" },
+  { pillar: "research", title: "Research" },
+];
+
+const backClass =
+  "-ml-1.5 inline-flex h-(--control-h) items-center gap-1 rounded-control pr-2 pl-0.5 font-medium text-ink-2 transition-colors duration-(--t-fast) hover:bg-hover hover:text-ink focus-visible:shadow-focus focus-visible:outline-none";
+
+const item =
+  "flex h-[30px] w-full items-center gap-2 rounded-control px-2 text-left font-medium whitespace-nowrap text-ink transition-colors duration-(--t-fast) hover:bg-hover focus-visible:shadow-focus focus-visible:outline-none aria-[current=page]:bg-selected aria-pressed:bg-selected";
+
+/** The doc a Docs or Design tab opens: `current`, or the first of the list when none is named. */
+export function openFeatureDoc(docs: HomeDoc[], current: string | undefined): HomeDoc | undefined {
+  const ordered = PILLARS.flatMap(({ pillar }) =>
+    docs.filter((doc) => doc.pillar === pillar).sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase())),
+  );
+  return ordered.find((doc) => doc.id === current) ?? (current ? undefined : ordered[0]);
+}
+
+export function FeatureDocs({
+  docs,
+  current,
+  search,
+  onPick,
+  empty,
+}: {
+  docs: HomeDoc[];
+  /** The open doc; the first of the list when not given. */
+  current?: string;
+  search: DocSearch;
+  /** Given, the list picks the open doc in place (undefined: back to the list, on the phone); otherwise each doc is a link to its own address. */
+  onPick?: (docId: string | undefined) => void;
+  empty: { title: string; body: string };
+}) {
+  const { workspaceId, projectId, partId, featureId, home } = useFeature();
+  const list = useDocListToggle();
+  const phone = useIsPhone();
+  if (!home) return <div aria-hidden className="h-40 animate-pulse rounded-card bg-frame" />;
+  const groups = PILLARS.map(({ pillar, title }) => ({
+    title,
+    docs: docs.filter((doc) => doc.pillar === pillar).sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase())),
+  })).filter((group) => group.docs.length > 0);
+  const ordered = groups.flatMap((group) => group.docs);
+  const open = ordered.find((doc) => doc.id === current) ?? (current ? undefined : ordered[0]);
+  if (ordered.length === 0) return <EmptyTab title={empty.title}>{empty.body}</EmptyTab>;
+  // On the phone the list is the page until a doc is named; then the doc fills the screen.
+  const listOnly = phone && current === undefined;
+  const docOnly = phone && current !== undefined;
+  // On the phone a design alone fills the screen; an HTML doc is as tall as it is and the page scrolls.
+  const canvas = !listOnly && !!open && (!phone || open.kind === "design");
+  const back = docOnly && (
+    <div className="-mt-2 mb-2">
+      {onPick ? (
+        <button type="button" onClick={() => onPick(undefined)} className={backClass}>
+          <ChevronLeft aria-hidden className="size-(--icon)" strokeWidth={2.25} />
+          All docs
+        </button>
+      ) : (
+        <Link
+          to="/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs"
+          params={{ workspaceId, projectId, partId, featureId }}
+          activeOptions={{ exact: true }}
+          activeProps={{}}
+          className={backClass}
+        >
+          <ChevronLeft aria-hidden className="size-(--icon)" strokeWidth={2.25} />
+          All docs
+        </Link>
+      )}
+    </div>
+  );
+  return (
+    <div className={cn("flex flex-col gap-8", canvas ? "min-h-0 flex-1 md:flex-row md:gap-6" : "xl:flex-row xl:items-start xl:gap-12")}>
+      <nav
+        aria-label="Doc list"
+        hidden={docOnly || (canvas && !list.shown)}
+        className={cn("w-full shrink-0", canvas ? "md:w-(--doclist-w) md:overflow-y-auto" : "max-xl:max-w-(--main-max) xl:sticky xl:top-6 xl:w-(--doclist-w)")}
+      >
+        {groups.map((group) => (
+          <section key={group.title} aria-label={group.title} className="mt-2 first:mt-0">
+            <h3 className="flex h-7 items-center px-2 text-meta font-medium text-ink-3">
+              {group.title}
+              <span className="ml-auto tabular-nums">{group.docs.length}</span>
+            </h3>
+            <ul className="flex flex-col gap-px">
+              {group.docs.map((doc) => (
+                <li key={doc.id}>
+                  {onPick ? (
+                    <button type="button" aria-pressed={!listOnly && doc.id === open?.id} onClick={() => onPick(doc.id)} className={item}>
+                      <DocGlyph kind={doc.kind} />
+                      <span className="min-w-0 truncate">{doc.title}</span>
+                    </button>
+                  ) : (
+                    <Link
+                      to="/w/$workspaceId/projects/$projectId/parts/$partId/features/$featureId/docs/$docId"
+                      params={{ workspaceId, projectId, partId, featureId, docId: doc.id }}
+                      aria-current={!listOnly && doc.id === open?.id ? "page" : undefined}
+                      activeProps={{}}
+                      className={item}
+                    >
+                      <DocGlyph kind={doc.kind} />
+                      <span className="min-w-0 truncate">{doc.title}</span>
+                    </Link>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </nav>
+      <div hidden={listOnly} className={cn("min-w-0 flex-1", canvas && "flex min-h-0 flex-col overflow-y-auto")}>
+        {back}
+        {listOnly ? null : open ? (
+          <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={open.id} doc={open} search={search} heading="h2" list={phone ? undefined : list} />
+        ) : (
+          <p className="text-ink-2">This doc is not on the feature. Pick one from the list.</p>
+        )}
+      </div>
+    </div>
+  );
+}

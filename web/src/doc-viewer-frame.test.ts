@@ -17,6 +17,7 @@
 //   - `{ type: "viewer.select", node }` when the reviewer clicks a block: the
 //     node ID of the innermost block under the pointer. A click on inline
 //     markup (a `<strong>` in a paragraph) selects the text block it is in.
+//     A click outside every block, or Escape, sends `node: null`.
 // - from the page to the frame (`frame.contentWindow.postMessage(message,
 //   "*")`): `{ type: "viewer.show", html, pins, selected, claims }`, sent after
 //   each `viewer.ready` and whenever any of it changes:
@@ -226,6 +227,7 @@ type Shown = {
   pins?: { node: string; count: number }[];
   selected?: string | null;
   reveal?: string;
+  fit?: boolean;
 };
 
 /** Posts `viewer.show` to the frame. */
@@ -524,6 +526,23 @@ document.getElementById("measured").textContent = "Measured " + window.innerWidt
     await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("h0000001");
   });
 
+  test("a click outside every block, or Escape, says nothing is selected", async () => {
+    const target = await openViewer();
+    await show(target, { html: SHORT_DOC, selected: "p0000002" }, "p0000002");
+    const lastSelect = async () =>
+      (await got(target)).filter((m) => m?.type === "viewer.select").map((m) => m.node).pop();
+
+    await target.frame.click('[data-omni-id="p0000002"]', { force: true });
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("p0000002");
+    await target.frame.click("body", { position: { x: 2, y: 2 }, force: true });
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBeNull();
+
+    await target.frame.click('[data-omni-id="p0000002"]', { force: true });
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBe("p0000002");
+    await target.page.keyboard.press("Escape");
+    await expect.poll(lastSelect, { timeout: PATIENCE }).toBeNull();
+  });
+
   test("the selected block looks selected", async () => {
     const target = await openViewer();
     await show(target, { html: SHORT_DOC, selected: null }, "p0000002");
@@ -563,6 +582,26 @@ document.getElementById("measured").textContent = "Measured " + window.innerWidt
         { timeout: PATIENCE },
       )
       .toBe(true);
+  });
+
+  test("told to fit, the frame tells the page the doc's height, again when it grows, and a block to reveal by its top", async () => {
+    const target = await openViewer();
+    await show(target, { html: TALL_DOC, fit: true }, "p0000160");
+    const docHeight = () => target.frame.evaluate(() => Math.ceil(document.getElementById("doc")!.getBoundingClientRect().bottom));
+    const sizes = async () => (await got(target)).filter((message) => message.type === "viewer.size") as { height?: number }[];
+    await expect.poll(async () => (await sizes()).at(-1)?.height, { timeout: PATIENCE }).toBe(await docHeight());
+    expect(await docHeight()).toBeGreaterThan(FRAME_HEIGHT);
+
+    const longer = TALL_DOC.replace("</section>", '<p data-omni-id="p0000161">A paragraph an agent added at the end.</p>\n</section>');
+    await show(target, { html: longer, fit: true }, "p0000161");
+    await expect.poll(async () => (await sizes()).at(-1)?.height, { timeout: PATIENCE }).toBe(await docHeight());
+
+    await post(target, { html: longer, fit: true, reveal: "p0000150" });
+    const top = await target.frame.evaluate(() => Math.round(document.querySelector('[data-omni-id="p0000150"]')!.getBoundingClientRect().top));
+    await expect
+      .poll(async () => (await got(target)).filter((message) => message.type === "viewer.reveal").map((message) => (message as { top?: number }).top), { timeout: PATIENCE })
+      .toEqual([top]);
+    expect(await target.frame.evaluate(() => window.scrollY), "the frame itself does not scroll").toBe(0);
   });
 
   test("a new head of the doc is drawn where the reader had scrolled to", async () => {

@@ -1,5 +1,5 @@
-//! US-108: `omni thread create`, `list`, `read` and `conclude`, threads at the
-//! app level or in a feature, tested as the built binary against a mock HTTP
+//! US-108: `omni thread create`, `list`, `read` and `conclude`, threads on a
+//! track (US-325), tested as the built binary against a mock HTTP
 //! server. None of these tests needs Postgres; the API's contract is in
 //! crates/omni-api/tests/live_threads.rs, and the round trip against the API in
 //! tests/stack_threads.rs. `omni post` is in tests/posts.rs and `omni wait
@@ -9,15 +9,15 @@
 //! paths are under `/api/v1/w/{workspace}/projects/{project_id}`, the project
 //! found from `--project`):
 //!
-//! - `omni thread create <question> [--feature <name or id>] [--sealed]`
-//!   sends `POST /threads` with `{"question", "sealed"}` (`sealed` is `true`
-//!   with `--sealed`, else `false` or left out): a thread at the app level,
-//!   with no criteria. With `--feature` it sends `POST
-//!   /features/{feature_id}/threads` instead; a name is looked up in the
-//!   project's features (`GET /features`) ignoring case, and a name the
+//! - `omni thread create <question> [--track <name or id>] [--sealed]`
+//!   sends `POST /tracks/{track_id}/threads` with `{"question", "sealed"}`
+//!   (`sealed` is `true` with `--sealed`, else `false` or left out), with no
+//!   criteria. The track is `--track`, else `OMNI_TRACK`; a name is looked up
+//!   in the project's tracks (`GET /tracks`) ignoring case, and a name the
 //!   project does not have is a one-line error that names it and starts
-//!   nothing. A missing question is a one-line error that sends nothing. It
-//!   prints the new thread's ID.
+//!   nothing. With no track it exits non-zero with `track_required` and
+//!   starts nothing. A missing question is a one-line error that sends
+//!   nothing. It prints the new thread's ID.
 //! - `omni thread list` reads `GET /threads` and prints one line per thread
 //!   with its ID and its question.
 //! - `omni thread read <id>` reads `GET /threads/{id}` and prints the
@@ -73,8 +73,8 @@ fn thread_json(
     json!({
         "id": id,
         "project_id": PROJECT,
-        "scope": if feature.is_some() { "feature" } else { "app" },
-        "feature_id": feature,
+        "scope": if feature.is_some() { "track" } else { "app" },
+        "track_id": feature,
         "question": question,
         "sealed": sealed,
         "conclusion": conclusion,
@@ -121,9 +121,9 @@ fn read_json() -> Value {
     json!({ "thread": thread })
 }
 
-/// An API with the features "Checkout" and "Search", which starts threads at
-/// the app level and in either feature, lists `THREAD` and an app-level
-/// thread, reads `THREAD` and concludes it.
+/// An API with the tracks "Checkout" and "Search", which starts threads in
+/// either track, lists `THREAD` and another thread, reads `THREAD` and
+/// concludes it.
 fn mock() -> MockServer {
     MockServer::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -138,16 +138,15 @@ fn mock() -> MockServer {
             )
         };
         match (request.method.as_str(), rest) {
-            ("GET", "/features") => Reply::json(
+            ("GET", "/tracks") => Reply::json(
                 200,
-                &json!({ "features": [
+                &json!({ "tracks": [
                     feature_json(CHECKOUT, "Checkout"),
                     feature_json(SEARCH, "Search")
                 ] }),
             ),
-            ("POST", "/threads") => created(None),
-            ("POST", r) if r == format!("/features/{CHECKOUT}/threads") => created(Some(CHECKOUT)),
-            ("POST", r) if r == format!("/features/{SEARCH}/threads") => created(Some(SEARCH)),
+            ("POST", r) if r == format!("/tracks/{CHECKOUT}/threads") => created(Some(CHECKOUT)),
+            ("POST", r) if r == format!("/tracks/{SEARCH}/threads") => created(Some(SEARCH)),
             ("GET", "/threads") => Reply::json(
                 200,
                 &json!({ "threads": [
@@ -278,26 +277,64 @@ fn assert_only_question_and_sealed(body: &Value) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn thread_create_starts_a_thread_at_the_app_level_or_in_a_feature() {
-    // (extra arguments, path under base(), whether the body says sealed)
-    for (extra, path, sealed) in [
-        (vec![], "/threads".to_string(), false),
+fn thread_create_without_a_track_exits_with_track_required_and_starts_nothing() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    for args in [
+        vec!["thread", "create", QUESTION],
+        vec!["thread", "create", QUESTION, "--sealed"],
+    ] {
+        let out = run(&home, &args);
+        assert_one_line_error(&out, &["track_required"]);
+    }
+    assert!(
+        writes(&server).is_empty(),
+        "no thread is started: {:?}",
+        server.requests()
+    );
+}
+
+#[test]
+fn thread_create_starts_a_thread_on_the_track_of_track_or_omni_track() {
+    // (extra arguments, OMNI_TRACK, path under base(), whether the body says sealed)
+    for (extra, env_track, path, sealed) in [
         (
-            vec!["--feature", "checkout", "--sealed"],
-            format!("/features/{CHECKOUT}/threads"),
+            vec!["--track", "checkout", "--sealed"],
+            None,
+            format!("/tracks/{CHECKOUT}/threads"),
             true,
         ),
         (
-            vec!["--feature", CHECKOUT, "--sealed"],
-            format!("/features/{CHECKOUT}/threads"),
+            vec!["--track", CHECKOUT, "--sealed"],
+            None,
+            format!("/tracks/{CHECKOUT}/threads"),
             true,
+        ),
+        (
+            vec![],
+            Some("Search"),
+            format!("/tracks/{SEARCH}/threads"),
+            false,
+        ),
+        (
+            vec!["--track", "Checkout"],
+            Some("Search"),
+            format!("/tracks/{CHECKOUT}/threads"),
+            false,
         ),
     ] {
         let server = mock();
         let home = logged_in(&server.url);
         let mut args = vec!["thread", "create", QUESTION];
         args.extend_from_slice(&extra);
-        let out = run(&home, &args);
+        let mut cli =
+            omni(&home.path)
+                .args(&args)
+                .args(&["--project", PROJECT, "--as", "run-7/moderator"]);
+        if let Some(track) = env_track {
+            cli = cli.env("OMNI_TRACK", track);
+        }
+        let out = cli.run();
         assert_eq!(out.code, 0, "{extra:?}: {}", out.stderr);
         let body = started(&server, &format!("{}{path}", base()));
         assert_eq!(body["question"], QUESTION, "{extra:?}: {body}");

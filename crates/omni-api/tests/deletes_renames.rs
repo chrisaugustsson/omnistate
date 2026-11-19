@@ -1,4 +1,4 @@
-//! US-110: agents delete and rename docs and features. Run with `--features
+//! US-110: agents delete and rename docs and tracks. Run with `--features
 //! stack-tests` in the Compose test container, which reaches Postgres at
 //! `postgres:5432` and RustFS at `rustfs:9000`.
 //!
@@ -24,22 +24,22 @@
 //!   route about it answers 404 `not_found`: its reads, its writes, its
 //!   comments, a rename and a second delete. Its comments go with it: they are
 //!   in no comment list and their reads answer 404.
-//! - `PATCH /features/{feature_id}` (agent) takes `{"name"}` and answers 200
-//!   `{"feature": Feature}` with the same ID. A missing or blank name is 400
-//!   `invalid_request`, and the name of another feature of the project,
-//!   ignoring case, is 409 `name_taken`. The feature's docs and threads stay
+//! - `PATCH /tracks/{track_id}` (agent) takes `{"name"}` and answers 200
+//!   `{"track": Track}` with the same ID. A missing or blank name is 400
+//!   `invalid_request`, and the name of another track of the project,
+//!   ignoring case, is 409 `name_taken`. The track's docs and threads stay
 //!   in it.
-//! - `DELETE /features/{feature_id}` (agent) answers 204 and soft deletes the
-//!   feature (`features.deleted_at`). The feature, its docs, its threads and
-//!   its comments then disappear: they are in no list (features, docs,
+//! - `DELETE /tracks/{track_id}` (agent) answers 204 and soft deletes the
+//!   track (`tracks.deleted_at`). The track, its docs, its threads and
+//!   its comments then disappear: they are in no list (tracks, docs,
 //!   threads, comments, the project home and its waiting comments) and every
 //!   read or write of them answers 404, as does starting a doc or a thread in
-//!   the feature. The app level and other features keep everything. The name
-//!   of a deleted feature can be used again, for a new feature or a rename.
+//!   the track. The app level and other tracks keep everything. The name
+//!   of a deleted track can be used again, for a new track or a rename.
 //! - A session (the human) is 403 `forbidden` on all four routes, an unknown
 //!   record is 404 `not_found`, and a refused call changes nothing.
-//! - A feature has no status: no Feature carries `status`, and the routes
-//!   `POST /features/{feature_id}/done` and `/reopen` are gone (404 or 405).
+//! - A track has no status: no Track carries `status`, and the routes
+//!   `POST /tracks/{track_id}/done` and `/reopen` are gone (404 or 405).
 
 mod common;
 
@@ -61,7 +61,7 @@ const TEST_BUCKET: &str = "omni-us110-deletes-renames";
 /// An ID that no row has.
 const UNKNOWN_ID: &str = "01900000-0000-7000-8000-000000000000";
 const DOC_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/docs/{doc_id}";
-const FEATURE_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/features/{feature_id}";
+const TRACK_ROUTE: &str = "/api/v1/w/{workspace_id}/projects/{project_id}/tracks/{track_id}";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -324,8 +324,8 @@ fn doc_path(f: &Fixture, project: &str, doc: &str) -> String {
     format!("{}/docs/{doc}", project_base(f, project))
 }
 
-fn feature_path(f: &Fixture, project: &str, feature: &str) -> String {
-    format!("{}/features/{feature}", project_base(f, project))
+fn track_path(f: &Fixture, project: &str, track: &str) -> String {
+    format!("{}/tracks/{track}", project_base(f, project))
 }
 
 fn new_project(f: &Fixture, client: &Client) -> String {
@@ -344,37 +344,54 @@ fn new_project(f: &Fixture, client: &Client) -> String {
     )
 }
 
-fn new_feature_named(f: &Fixture, client: &Client, project: &str, name: &str) -> String {
+/// Creates a part of the project for a track to sit on (US-305); returns its ID.
+fn new_part(f: &Fixture, client: &Client, project: &str) -> String {
     id_of(
         &must(
             call(
                 client,
                 "POST",
-                &format!("{}/features", project_base(f, project)),
+                &format!("{}/parts", project_base(f, project)),
                 &agent(f),
-                Some(&json!({ "name": name })),
+                Some(&json!({ "name": unique("part"), "kind": "app" })),
             ),
             201,
-            "create a feature",
-        )["feature"],
+            "create a part",
+        )["part"],
     )
 }
 
-fn new_feature(f: &Fixture, client: &Client, project: &str) -> String {
-    new_feature_named(f, client, project, &unique("Checkout"))
+fn new_track_named(f: &Fixture, client: &Client, project: &str, name: &str) -> String {
+    id_of(
+        &must(
+            call(
+                client,
+                "POST",
+                &format!("{}/tracks", project_base(f, project)),
+                &agent(f),
+                Some(&json!({ "name": name, "part_id": new_part(f, client, project) })),
+            ),
+            201,
+            "create a track",
+        )["track"],
+    )
 }
 
-/// Creates a live HTML doc at the app level or in a feature; returns its ID.
+fn new_track(f: &Fixture, client: &Client, project: &str) -> String {
+    new_track_named(f, client, project, &unique("Checkout"))
+}
+
+/// Creates a live HTML doc at the app level or in a track; returns its ID.
 fn new_doc(
     f: &Fixture,
     client: &Client,
     project: &str,
-    feature: Option<&str>,
+    track: Option<&str>,
     title: &str,
 ) -> String {
-    let path = match feature {
+    let path = match track {
         None => format!("{}/docs", project_base(f, project)),
-        Some(feature) => format!("{}/docs", feature_path(f, project, feature)),
+        Some(track) => format!("{}/docs", track_path(f, project, track)),
     };
     id_of(
         &must(
@@ -450,12 +467,10 @@ fn waiting_comment(f: &Fixture, client: &Client, project: &str, doc: &str, node:
     comment
 }
 
-/// Starts a thread at the app level or in a feature; returns its ID.
-fn new_thread(f: &Fixture, client: &Client, project: &str, feature: Option<&str>) -> String {
-    let path = match feature {
-        None => format!("{}/threads", project_base(f, project)),
-        Some(feature) => format!("{}/threads", feature_path(f, project, feature)),
-    };
+/// Starts a thread in a track (threads live only on tracks, US-325); returns
+/// its ID.
+fn new_thread(f: &Fixture, client: &Client, project: &str, track: &str) -> String {
+    let path = format!("{}/threads", track_path(f, project, track));
     id_of(
         &must(
             call(
@@ -492,37 +507,25 @@ fn delete_doc(f: &Fixture, client: &Client, auth: &Auth, project: &str, doc: &st
     call(client, "DELETE", &doc_path(f, project, doc), auth, None)
 }
 
-fn rename_feature(
+fn rename_track(
     f: &Fixture,
     client: &Client,
     auth: &Auth,
     project: &str,
-    feature: &str,
+    track: &str,
     body: &Value,
 ) -> Response {
     call(
         client,
         "PATCH",
-        &feature_path(f, project, feature),
+        &track_path(f, project, track),
         auth,
         Some(body),
     )
 }
 
-fn delete_feature(
-    f: &Fixture,
-    client: &Client,
-    auth: &Auth,
-    project: &str,
-    feature: &str,
-) -> Response {
-    call(
-        client,
-        "DELETE",
-        &feature_path(f, project, feature),
-        auth,
-        None,
-    )
+fn delete_track(f: &Fixture, client: &Client, auth: &Auth, project: &str, track: &str) -> Response {
+    call(client, "DELETE", &track_path(f, project, track), auth, None)
 }
 
 fn assert_deleted(response: &Response, what: &str) {
@@ -570,13 +573,13 @@ fn home(f: &Fixture, client: &Client, project: &str) -> Value {
     )
 }
 
-/// The IDs of the home's features.
-fn home_features(home: &Value) -> Vec<String> {
-    home["features"]
+/// The IDs of the home's tracks.
+fn home_tracks(home: &Value) -> Vec<String> {
+    home["tracks"]
         .as_array()
-        .unwrap_or_else(|| panic!("the home lists features: {home}"))
+        .unwrap_or_else(|| panic!("the home lists tracks: {home}"))
         .iter()
-        .map(|summary| id_of(&summary["feature"]))
+        .map(|summary| id_of(&summary["track"]))
         .collect()
 }
 
@@ -687,7 +690,7 @@ fn assert_writer(change: &Change) {
 #[test]
 fn the_rename_and_delete_routes_are_agent_routes_of_the_registry() {
     let routes = registry();
-    for path in [DOC_ROUTE, FEATURE_ROUTE] {
+    for path in [DOC_ROUTE, TRACK_ROUTE] {
         for method in ["PATCH", "DELETE"] {
             let entry = routes
                 .iter()
@@ -706,23 +709,23 @@ fn the_rename_and_delete_routes_are_agent_routes_of_the_registry() {
 fn a_deleted_doc_disappears_from_every_list_and_read() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
     let kept = new_doc(f, client, &project, None, "Kept plan");
     let doomed = new_doc(f, client, &project, None, "Old plan");
-    let in_feature = new_doc(f, client, &project, Some(&feature), "Old feature plan");
+    let in_track = new_doc(f, client, &project, Some(&track), "Old track plan");
     let node = write_paragraph(f, client, &project, &doomed, "Pay in one step.");
     let comment = waiting_comment(f, client, &project, &doomed, &node);
-    let feature_node = write_paragraph(f, client, &project, &in_feature, "Save for later.");
-    let feature_comment = waiting_comment(f, client, &project, &in_feature, &feature_node);
+    let track_node = write_paragraph(f, client, &project, &in_track, "Save for later.");
+    let track_comment = waiting_comment(f, client, &project, &in_track, &track_node);
 
     // Before the delete, every list and read has them.
     for auth in [agent(f), human(f)] {
         let docs = listed(f, client, &auth, &project, "/docs", "docs");
         assert!(
-            docs.contains(&doomed) && docs.contains(&in_feature),
+            docs.contains(&doomed) && docs.contains(&in_track),
             "{docs:?}"
         );
-        for doc in [&doomed, &in_feature] {
+        for doc in [&doomed, &in_track] {
             must(
                 get(f, client, &auth, &project, &format!("/docs/{doc}")),
                 200,
@@ -733,7 +736,7 @@ fn a_deleted_doc_disappears_from_every_list_and_read() {
         assert!(comments.contains(&comment), "{comments:?}");
     }
 
-    for doc in [&doomed, &in_feature] {
+    for doc in [&doomed, &in_track] {
         assert_deleted(
             &delete_doc(f, client, &agent(f), &project, doc),
             "delete the doc",
@@ -741,10 +744,10 @@ fn a_deleted_doc_disappears_from_every_list_and_read() {
     }
 
     for auth in [agent(f), human(f)] {
-        for rest in ["/docs", "/docs?pillar=spec", "/docs?feature=global"] {
+        for rest in ["/docs", "/docs?pillar=spec", "/docs?track=global"] {
             let docs = listed(f, client, &auth, &project, rest, "docs");
             assert!(
-                !docs.contains(&doomed) && !docs.contains(&in_feature),
+                !docs.contains(&doomed) && !docs.contains(&in_track),
                 "GET {rest} lists no deleted doc: {docs:?}"
             );
             assert!(
@@ -752,19 +755,19 @@ fn a_deleted_doc_disappears_from_every_list_and_read() {
                 "GET {rest} still lists the kept doc: {docs:?}"
             );
         }
-        let feature_docs = listed(
+        let track_docs = listed(
             f,
             client,
             &auth,
             &project,
-            &format!("/docs?feature={feature}"),
+            &format!("/docs?track={track}"),
             "docs",
         );
         assert!(
-            feature_docs.is_empty(),
-            "the feature has no doc left: {feature_docs:?}"
+            track_docs.is_empty(),
+            "the track has no doc left: {track_docs:?}"
         );
-        for doc in [&doomed, &in_feature] {
+        for doc in [&doomed, &in_track] {
             for rest in [format!("/docs/{doc}"), format!("/docs/{doc}/html")] {
                 assert_error(&get(f, client, &auth, &project, &rest), 404, "not_found");
             }
@@ -780,10 +783,10 @@ fn a_deleted_doc_disappears_from_every_list_and_read() {
         }
         let comments = listed(f, client, &auth, &project, "/comments", "comments");
         assert!(
-            !comments.contains(&comment) && !comments.contains(&feature_comment),
+            !comments.contains(&comment) && !comments.contains(&track_comment),
             "the deleted docs' comments are in no list: {comments:?}"
         );
-        for c in [&comment, &feature_comment] {
+        for c in [&comment, &track_comment] {
             assert_error(
                 &get(f, client, &auth, &project, &format!("/comments/{c}")),
                 404,
@@ -794,21 +797,21 @@ fn a_deleted_doc_disappears_from_every_list_and_read() {
     let home = home(f, client, &project);
     let docs = ids_at(&home, "/docs");
     assert!(
-        docs.contains(&kept) && !docs.contains(&doomed) && !docs.contains(&in_feature),
+        docs.contains(&kept) && !docs.contains(&doomed) && !docs.contains(&in_track),
         "the home lists the kept doc and no deleted one: {home}"
     );
     let waiting = ids_at(&home, "/waiting/comments");
     assert!(
-        !waiting.contains(&comment) && !waiting.contains(&feature_comment),
+        !waiting.contains(&comment) && !waiting.contains(&track_comment),
         "no comment of a deleted doc waits: {home}"
     );
-    let summary = home["features"]
+    let summary = home["tracks"]
         .as_array()
-        .and_then(|all| all.iter().find(|s| s["feature"]["id"] == feature.as_str()))
-        .unwrap_or_else(|| panic!("the home lists the feature: {home}"));
+        .and_then(|all| all.iter().find(|s| s["track"]["id"] == track.as_str()))
+        .unwrap_or_else(|| panic!("the home lists the track: {home}"));
     assert_eq!(
         summary["docs"], 0,
-        "the feature counts no deleted doc: {summary}"
+        "the track counts no deleted doc: {summary}"
     );
 }
 
@@ -991,49 +994,48 @@ fn a_refused_doc_delete_changes_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// Deleting a feature
+// Deleting a track
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_deleted_feature_disappears_with_its_docs_threads_and_comments() {
+fn a_deleted_track_disappears_with_its_docs_threads_and_comments() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let other = new_feature(f, client, &project);
+    let track = new_track(f, client, &project);
+    let other = new_track(f, client, &project);
 
-    // The feature's records ...
-    let doc = new_doc(f, client, &project, Some(&feature), "Feature plan");
+    // The track's records ...
+    let doc = new_doc(f, client, &project, Some(&track), "Track plan");
     let node = write_paragraph(f, client, &project, &doc, "Pay in one step.");
     let comment = waiting_comment(f, client, &project, &doc, &node);
-    let thread = new_thread(f, client, &project, Some(&feature));
-    // ... and those of the app level and another feature, which stay.
+    let thread = new_thread(f, client, &project, &track);
+    // ... and those of the app level and another track, which stay.
     let app_doc = new_doc(f, client, &project, None, "App plan");
     let app_node = write_paragraph(f, client, &project, &app_doc, "The shop.");
     let app_comment = waiting_comment(f, client, &project, &app_doc, &app_node);
-    let app_thread = new_thread(f, client, &project, None);
     let other_doc = new_doc(f, client, &project, Some(&other), "Other plan");
-    let other_thread = new_thread(f, client, &project, Some(&other));
+    let other_thread = new_thread(f, client, &project, &other);
 
     assert_deleted(
-        &delete_feature(f, client, &agent(f), &project, &feature),
-        "delete the feature",
+        &delete_track(f, client, &agent(f), &project, &track),
+        "delete the track",
     );
     assert!(
-        deleted_at("features", &feature).is_some(),
-        "the feature's row stays, with deleted_at set"
+        deleted_at("tracks", &track).is_some(),
+        "the track's row stays, with deleted_at set"
     );
 
     for auth in [agent(f), human(f)] {
-        let features = listed(f, client, &auth, &project, "/features", "features");
+        let tracks = listed(f, client, &auth, &project, "/tracks", "tracks");
         assert_eq!(
-            features,
+            tracks,
             vec![other.clone()],
-            "only the other feature is listed"
+            "only the other track is listed"
         );
         let docs = listed(f, client, &auth, &project, "/docs", "docs");
         assert!(
             !docs.contains(&doc),
-            "the feature's doc is in no list: {docs:?}"
+            "the track's doc is in no list: {docs:?}"
         );
         assert!(
             docs.contains(&app_doc) && docs.contains(&other_doc),
@@ -1042,21 +1044,18 @@ fn a_deleted_feature_disappears_with_its_docs_threads_and_comments() {
         let threads = listed(f, client, &auth, &project, "/threads", "threads");
         assert!(
             !threads.contains(&thread),
-            "the feature's thread is in no list: {threads:?}"
+            "the track's thread is in no list: {threads:?}"
         );
-        assert!(
-            threads.contains(&app_thread) && threads.contains(&other_thread),
-            "{threads:?}"
-        );
+        assert!(threads.contains(&other_thread), "{threads:?}");
         let comments = listed(f, client, &auth, &project, "/comments", "comments");
         assert!(
             !comments.contains(&comment),
-            "the feature's comment is in no list: {comments:?}"
+            "the track's comment is in no list: {comments:?}"
         );
         assert!(comments.contains(&app_comment), "{comments:?}");
 
         for rest in [
-            format!("/features/{feature}"),
+            format!("/tracks/{track}"),
             format!("/docs/{doc}"),
             format!("/docs/{doc}/html"),
             format!("/threads/{thread}"),
@@ -1066,16 +1065,16 @@ fn a_deleted_feature_disappears_with_its_docs_threads_and_comments() {
             assert_error(&response, 404, "not_found");
         }
         for (rest, key) in [
-            (format!("/docs?feature={feature}"), "docs"),
-            (format!("/comments?feature={feature}"), "comments"),
+            (format!("/docs?track={track}"), "docs"),
+            (format!("/comments?track={track}"), "comments"),
         ] {
             let left = listed(f, client, &auth, &project, &rest, key);
             assert!(left.is_empty(), "GET {rest} lists nothing: {left:?}");
         }
         for rest in [
-            format!("/features/{other}"),
+            format!("/tracks/{other}"),
             format!("/docs/{app_doc}"),
-            format!("/threads/{app_thread}"),
+            format!("/threads/{other_thread}"),
             format!("/comments/{app_comment}"),
         ] {
             must(
@@ -1087,13 +1086,13 @@ fn a_deleted_feature_disappears_with_its_docs_threads_and_comments() {
     }
 
     let home = home(f, client, &project);
-    assert_eq!(home_features(&home), vec![other.clone()], "{home}");
+    assert_eq!(home_tracks(&home), vec![other.clone()], "{home}");
     assert!(!ids_at(&home, "/docs").contains(&doc), "{home}");
     assert!(!ids_at(&home, "/threads").contains(&thread), "{home}");
     let waiting = ids_at(&home, "/waiting/comments");
     assert!(
         !waiting.contains(&comment),
-        "the feature's comment no longer waits: {home}"
+        "the track's comment no longer waits: {home}"
     );
     assert!(
         waiting.contains(&app_comment),
@@ -1102,29 +1101,29 @@ fn a_deleted_feature_disappears_with_its_docs_threads_and_comments() {
 }
 
 #[test]
-fn a_deleted_feature_takes_nothing_new() {
+fn a_deleted_track_takes_nothing_new() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let doc = new_doc(f, client, &project, Some(&feature), "Feature plan");
+    let track = new_track(f, client, &project);
+    let doc = new_doc(f, client, &project, Some(&track), "Track plan");
     let node = write_paragraph(f, client, &project, &doc, "Pay in one step.");
     let comment = waiting_comment(f, client, &project, &doc, &node);
-    let thread = new_thread(f, client, &project, Some(&feature));
+    let thread = new_thread(f, client, &project, &track);
     assert_deleted(
-        &delete_feature(f, client, &agent(f), &project, &feature),
-        "delete the feature",
+        &delete_track(f, client, &agent(f), &project, &track),
+        "delete the track",
     );
     let base = project_base(f, &project);
-    let feature_base = feature_path(f, &project, &feature);
+    let track_base = track_path(f, &project, &track);
     for (auth, path, body) in [
         (
             agent(f),
-            format!("{feature_base}/docs"),
+            format!("{track_base}/docs"),
             json!({ "kind": "html", "pillar": "spec", "title": "Late plan" }),
         ),
         (
             agent(f),
-            format!("{feature_base}/threads"),
+            format!("{track_base}/threads"),
             json!({ "question": "Too late?", "sealed": false }),
         ),
         (
@@ -1156,67 +1155,61 @@ fn a_deleted_feature_takes_nothing_new() {
         assert_eq!(
             docs,
             Vec::<String>::new(),
-            "no doc of the deleted feature is listed"
+            "no doc of the deleted track is listed"
         );
         let threads = listed(f, client, &auth, &project, "/threads", "threads");
         assert_eq!(
             threads,
             Vec::<String>::new(),
-            "no thread of the deleted feature is listed"
+            "no thread of the deleted track is listed"
         );
     }
     assert_error(
-        &rename_feature(
+        &rename_track(
             f,
             client,
             &agent(f),
             &project,
-            &feature,
+            &track,
             &json!({ "name": "Back" }),
         ),
         404,
         "not_found",
     );
     assert_error(
-        &delete_feature(f, client, &agent(f), &project, &feature),
+        &delete_track(f, client, &agent(f), &project, &track),
         404,
         "not_found",
     );
 }
 
 #[test]
-fn a_deleted_features_name_can_be_used_again() {
+fn a_deleted_tracks_name_can_be_used_again() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let name = unique("Wish list");
-    let first = new_feature_named(f, client, &project, &name);
+    let first = new_track_named(f, client, &project, &name);
     assert_deleted(
-        &delete_feature(f, client, &agent(f), &project, &first),
-        "delete the feature",
+        &delete_track(f, client, &agent(f), &project, &first),
+        "delete the track",
     );
 
-    let again = new_feature_named(f, client, &project, &name.to_uppercase());
-    assert_ne!(again, first, "the new feature is another one");
+    let again = new_track_named(f, client, &project, &name.to_uppercase());
+    assert_ne!(again, first, "the new track is another one");
     assert_error(
-        &get(
-            f,
-            client,
-            &agent(f),
-            &project,
-            &format!("/features/{first}"),
-        ),
+        &get(f, client, &agent(f), &project, &format!("/tracks/{first}")),
         404,
         "not_found",
     );
     assert_deleted(
-        &delete_feature(f, client, &agent(f), &project, &again),
-        "delete the second feature",
+        &delete_track(f, client, &agent(f), &project, &again),
+        "delete the second track",
     );
 
-    // A rename may take the name of a deleted feature too.
-    let other = new_feature(f, client, &project);
+    // A rename may take the name of a deleted track too.
+    let other = new_track(f, client, &project);
     let renamed = must(
-        rename_feature(
+        rename_track(
             f,
             client,
             &agent(f),
@@ -1225,40 +1218,40 @@ fn a_deleted_features_name_can_be_used_again() {
             &json!({ "name": name }),
         ),
         200,
-        "rename a feature to a deleted one's name",
+        "rename a track to a deleted one's name",
     );
-    assert_eq!(renamed["feature"]["name"], name.as_str(), "{renamed}");
+    assert_eq!(renamed["track"]["name"], name.as_str(), "{renamed}");
 }
 
 #[test]
-fn a_refused_feature_delete_changes_nothing() {
+fn a_refused_track_delete_changes_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let doc = new_doc(f, client, &project, Some(&feature), "Safe plan");
+    let track = new_track(f, client, &project);
+    let doc = new_doc(f, client, &project, Some(&track), "Safe plan");
 
     assert_error(
-        &delete_feature(f, client, &human(f), &project, &feature),
+        &delete_track(f, client, &human(f), &project, &track),
         403,
         "forbidden",
     );
     assert_error(
-        &delete_feature(f, client, &agent(f), &project, UNKNOWN_ID),
+        &delete_track(f, client, &agent(f), &project, UNKNOWN_ID),
         404,
         "not_found",
     );
     let other = new_project(f, client);
     assert_error(
-        &delete_feature(f, client, &agent(f), &other, &feature),
+        &delete_track(f, client, &agent(f), &other, &track),
         404,
         "not_found",
     );
 
     assert!(
-        deleted_at("features", &feature).is_none(),
-        "the feature is not deleted"
+        deleted_at("tracks", &track).is_none(),
+        "the track is not deleted"
     );
-    for rest in [format!("/features/{feature}"), format!("/docs/{doc}")] {
+    for rest in [format!("/tracks/{track}"), format!("/docs/{doc}")] {
         must(
             get(f, client, &agent(f), &project, &rest),
             200,
@@ -1412,59 +1405,59 @@ fn a_refused_doc_rename_changes_nothing() {
 }
 
 #[test]
-fn renaming_a_feature_keeps_its_id_docs_and_threads() {
+fn renaming_a_track_keeps_its_id_docs_and_threads() {
     let (f, client) = ready();
     let project = new_project(f, client);
-    let feature = new_feature(f, client, &project);
-    let doc = new_doc(f, client, &project, Some(&feature), "Feature plan");
-    let thread = new_thread(f, client, &project, Some(&feature));
+    let track = new_track(f, client, &project);
+    let doc = new_doc(f, client, &project, Some(&track), "Track plan");
+    let thread = new_thread(f, client, &project, &track);
     let new_name = unique("Express checkout");
 
     let renamed = must(
-        rename_feature(
+        rename_track(
             f,
             client,
             &agent(f),
             &project,
-            &feature,
+            &track,
             &json!({ "name": new_name }),
         ),
         200,
-        "rename the feature",
+        "rename the track",
     );
-    assert_eq!(renamed["feature"]["id"], feature.as_str(), "{renamed}");
-    assert_eq!(renamed["feature"]["name"], new_name.as_str(), "{renamed}");
+    assert_eq!(renamed["track"]["id"], track.as_str(), "{renamed}");
+    assert_eq!(renamed["track"]["name"], new_name.as_str(), "{renamed}");
 
     for auth in [agent(f), human(f)] {
         let shown = must(
-            get(f, client, &auth, &project, &format!("/features/{feature}")),
+            get(f, client, &auth, &project, &format!("/tracks/{track}")),
             200,
-            "read the feature",
+            "read the track",
         );
-        assert_eq!(shown["feature"]["name"], new_name.as_str(), "{shown}");
+        assert_eq!(shown["track"]["name"], new_name.as_str(), "{shown}");
         let doc = must(
             get(f, client, &auth, &project, &format!("/docs/{doc}")),
             200,
             "doc",
         );
-        assert_eq!(doc["doc"]["feature_id"], feature.as_str(), "{doc}");
+        assert_eq!(doc["doc"]["track_id"], track.as_str(), "{doc}");
         let thread = must(
             get(f, client, &auth, &project, &format!("/threads/{thread}")),
             200,
             "thread",
         );
-        assert_eq!(thread["thread"]["feature_id"], feature.as_str(), "{thread}");
+        assert_eq!(thread["thread"]["track_id"], track.as_str(), "{thread}");
     }
 }
 
 #[test]
-fn a_refused_feature_rename_changes_nothing() {
+fn a_refused_track_rename_changes_nothing() {
     let (f, client) = ready();
     let project = new_project(f, client);
     let taken = unique("Gift cards");
-    new_feature_named(f, client, &project, &taken);
+    new_track_named(f, client, &project, &taken);
     let name = unique("Loyalty");
-    let feature = new_feature_named(f, client, &project, &name);
+    let track = new_track_named(f, client, &project, &name);
 
     for body in [
         json!({}),
@@ -1472,35 +1465,35 @@ fn a_refused_feature_rename_changes_nothing() {
         json!({ "name": "   " }),
         json!({ "name": 7 }),
     ] {
-        let response = rename_feature(f, client, &agent(f), &project, &feature, &body);
+        let response = rename_track(f, client, &agent(f), &project, &track, &body);
         assert_error(&response, 400, "invalid_request");
     }
     assert_error(
-        &rename_feature(
+        &rename_track(
             f,
             client,
             &agent(f),
             &project,
-            &feature,
+            &track,
             &json!({ "name": taken.to_lowercase() }),
         ),
         409,
         "name_taken",
     );
     assert_error(
-        &rename_feature(
+        &rename_track(
             f,
             client,
             &human(f),
             &project,
-            &feature,
+            &track,
             &json!({ "name": "Mine" }),
         ),
         403,
         "forbidden",
     );
     assert_error(
-        &rename_feature(
+        &rename_track(
             f,
             client,
             &agent(f),
@@ -1512,15 +1505,9 @@ fn a_refused_feature_rename_changes_nothing() {
         "not_found",
     );
     let shown = must(
-        get(
-            f,
-            client,
-            &agent(f),
-            &project,
-            &format!("/features/{feature}"),
-        ),
+        get(f, client, &agent(f), &project, &format!("/tracks/{track}")),
         200,
-        "read the feature",
+        "read the track",
     );
-    assert_eq!(shown["feature"]["name"], name.as_str(), "{shown}");
+    assert_eq!(shown["track"]["name"], name.as_str(), "{shown}");
 }

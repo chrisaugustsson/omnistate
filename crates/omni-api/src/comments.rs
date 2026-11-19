@@ -6,7 +6,7 @@
 //! comment has no status.
 //!
 //! A comment belongs to a doc and a node address, with its author and its text;
-//! the project and the feature are those of its doc. A deletion is soft
+//! the project and the track are those of its doc. A deletion is soft
 //! (`deleted_at`): the API role cannot delete rows, and a deleted comment is
 //! left out of every list and read. A comment whose node later leaves the head
 //! stays listed (V18); nothing is checked after it was made.
@@ -64,8 +64,8 @@ pub struct CommentBody {
     /// The node address as it was sent: a node ID of the doc's head, or
     /// `<instanceId>/<componentNodeId>` inside a component instance.
     pub node: String,
-    /// The feature of the doc; `null` at the app level.
-    pub feature_id: Option<String>,
+    /// The track of the doc; `null` at the app level.
+    pub track_id: Option<String>,
     #[schema(value_type = Object)]
     pub author: Value,
     pub text: String,
@@ -135,7 +135,7 @@ fn not_in_head() -> ApiError {
 }
 
 /// Who writes a comment or a reply, as the JSON that is stored.
-fn author_of(actor: &Actor, identity: &AgentIdentity) -> Value {
+pub(crate) fn author_of(actor: &Actor, identity: &AgentIdentity) -> Value {
     match actor {
         Actor::Agent => {
             let mut author = identity.to_json();
@@ -154,7 +154,7 @@ struct CommentRow {
     project_id: String,
     doc_id: String,
     node: String,
-    feature_id: Option<String>,
+    track_id: Option<String>,
     author: String,
     text: String,
     snapshot: String,
@@ -199,12 +199,12 @@ impl Filter {
 
 /// The comments that satisfy the filter and that nobody deleted; `lock` is a
 /// locking clause such as `FOR UPDATE OF c`, or empty. A comment belongs to a
-/// project and a feature through its doc.
+/// project and a track through its doc.
 async fn fetch_rows(tx: &mut Tx, filter: Filter, lock: &str) -> Result<Vec<CommentRow>, ApiError> {
     let sql = format!(
         "SELECT c.id::text AS id, d.project_id::text AS project_id, c.doc_id::text AS doc_id, \
                 c.node AS node, \
-                d.feature_id::text AS feature_id, \
+                d.track_id::text AS track_id, \
                 c.author::text AS author, c.body AS text, \
                 COALESCE(c.snapshot, '') AS snapshot, d.kind AS doc_kind, d.head AS doc_head, \
                 to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS created_at \
@@ -293,7 +293,7 @@ async fn bodies(tx: &mut Tx, rows: Vec<CommentRow>) -> Result<Vec<Listed>, ApiEr
                     project_id: row.project_id,
                     doc_id: row.doc_id,
                     node: row.node,
-                    feature_id: row.feature_id,
+                    track_id: row.track_id,
                     author,
                     text: row.text,
                     snapshot: row.snapshot,
@@ -797,7 +797,7 @@ pub async fn show(
 }
 
 /// The comments of a project that nobody deleted, oldest first, narrowed by
-/// `doc` and `feature`, which combine.
+/// `doc` and `track`, which combine.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/projects/{project_id}/comments",
@@ -805,7 +805,7 @@ pub async fn show(
         ("workspace_id" = String, Path, description = "The workspace's UUID"),
         ("project_id" = String, Path, description = "The project's UUID"),
         ("doc" = Option<String>, Query, description = "Only the comments on this doc"),
-        ("feature" = Option<String>, Query, description = "Only the comments on the docs of this feature"),
+        ("track" = Option<String>, Query, description = "Only the comments on the docs of this track"),
     ),
     responses(
         (status = 200, description = "The comments", body = CommentListResponse),
@@ -828,9 +828,9 @@ pub async fn list(
         let doc = parse_uuid(doc).ok_or_else(invalid)?;
         filter = filter.and("c.doc_id = {}::uuid", &doc);
     }
-    if let Some(feature) = query.get("feature") {
-        let feature = parse_uuid(feature).ok_or_else(invalid)?;
-        filter = filter.and("d.feature_id = {}::uuid", &feature);
+    if let Some(track) = query.get("track") {
+        let track = parse_uuid(track).ok_or_else(invalid)?;
+        filter = filter.and("d.track_id = {}::uuid", &track);
     }
     let rows = fetch_rows(&mut tx, filter, "").await?;
     let listed = bodies(&mut tx, rows).await?;

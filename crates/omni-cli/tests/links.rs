@@ -22,11 +22,16 @@ fn mock() -> MockServer {
             );
         }
         if request.method == "GET"
-            && (request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/features")
-                || request.path
-                    == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features"))
+            && (request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks")
+                || request.path == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/tracks"))
         {
-            return Reply::json(200, &json!({ "features": [] }));
+            return Reply::json(200, &json!({ "tracks": [] }));
+        }
+        if request.method == "GET"
+            && (request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/parts")
+                || request.path == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/parts"))
+        {
+            return Reply::json(200, &json!({ "parts": [] }));
         }
         if request.method == "GET"
             && request
@@ -311,16 +316,20 @@ const OTHER_WORKSPACE: &str = "01900000-0000-7000-8000-0000000000cc";
 
 fn feature_list_in(home: &Scratch, folder: &std::path::Path, extra: &[&str]) -> Out {
     omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .args(extra)
         .cwd(folder)
         .run()
 }
 
+/// The requests the server got, leaving out the reads of a project's parts
+/// that `omni track list` makes to name each track's part (US-305): the
+/// project of the tracks is what these tests are about.
 fn feature_requests(server: &MockServer) -> Vec<String> {
     server
         .requests()
         .iter()
+        .filter(|r| !r.path.ends_with("/parts"))
         .map(|r| format!("{} {}", r.method, r.path))
         .collect()
 }
@@ -344,7 +353,7 @@ fn a_linked_folder_and_the_folders_under_it_find_their_project() {
         let out = feature_list_in(&home, &dir, &[]);
         assert_eq!(out.code, 0, "{}", out.stderr);
     }
-    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features");
+    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks");
     assert_eq!(feature_requests(&server), vec![want.clone(), want]);
 }
 
@@ -412,7 +421,7 @@ fn a_link_of_the_logged_in_workspace_beats_a_nearer_link_of_another() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }
@@ -437,7 +446,7 @@ fn project_flag_wins_over_the_folders_link() {
         feature_requests(&server),
         vec![
             format!("GET /api/v1/w/{WORKSPACE}/projects"),
-            format!("GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features")
+            format!("GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/tracks")
         ]
     );
 }
@@ -463,7 +472,7 @@ fn the_nearest_link_of_the_logged_in_workspace_wins() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }
@@ -487,7 +496,7 @@ fn a_path_linked_in_both_workspaces_finds_the_logged_in_project() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }
@@ -660,14 +669,14 @@ fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() 
     let folder = Scratch::new("folder");
 
     let by_env = omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .env("OMNI_PROJECT", "brand-site")
         .cwd(&folder.path)
         .run();
     assert_eq!(by_env.code, 0, "{}", by_env.stderr);
     let by_flag = omni(&home.path)
         .args(&[
-            "feature",
+            "track",
             "list",
             "--as",
             "run-7/author",
@@ -683,14 +692,14 @@ fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() 
         feature_requests(&server),
         vec![
             list.clone(),
-            format!("{list}/{PROJECT}/features"),
+            format!("{list}/{PROJECT}/tracks"),
             list.clone(),
-            format!("{list}/{OTHER_PROJECT}/features"),
+            format!("{list}/{OTHER_PROJECT}/tracks"),
         ]
     );
 
     let empty = omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .env("OMNI_PROJECT", "")
         .cwd(&folder.path)
         .run();
@@ -699,15 +708,15 @@ fn omni_project_names_the_project_in_an_unlinked_folder_and_the_flag_beats_it() 
 }
 
 #[test]
-fn omni_feature_is_the_feature_flag_and_the_omni_toml_feature_is_not_read() {
+fn omni_track_is_the_track_flag_and_the_omni_toml_feature_is_not_read() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
     std::fs::write(folder.join(".omni.toml"), "feature = \"y\"\n").unwrap();
 
-    let by_env = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &[]);
+    let by_env = doc_list_in(&home, &folder, &[("OMNI_TRACK", FEATURE)], &[]);
     assert_eq!(by_env.code, 0, "{}", by_env.stderr);
-    let by_flag = doc_list_in(&home, &folder, &[], &["--feature", FEATURE]);
+    let by_flag = doc_list_in(&home, &folder, &[], &["--track", FEATURE]);
     assert_eq!(by_flag.code, 0, "{}", by_flag.stderr);
     let neither = doc_list_in(&home, &folder, &[], &[]);
     assert_eq!(neither.code, 0, "{}", neither.stderr);
@@ -716,36 +725,36 @@ fn omni_feature_is_the_feature_flag_and_the_omni_toml_feature_is_not_read() {
     assert_eq!(
         feature_requests(&server),
         vec![
-            format!("{docs}?feature={FEATURE}"),
-            format!("{docs}?feature={FEATURE}"),
+            format!("{docs}?track={FEATURE}"),
+            format!("{docs}?track={FEATURE}"),
             docs,
         ]
     );
 }
 
 #[test]
-fn global_beats_omni_feature() {
+fn global_beats_omni_track() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
 
-    let out = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &["--global"]);
+    let out = doc_list_in(&home, &folder, &[("OMNI_TRACK", FEATURE)], &["--global"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs?feature=global"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/docs?track=global"
         )]
     );
 }
 
 #[test]
-fn a_whitespace_only_omni_feature_counts_as_unset() {
+fn a_whitespace_only_omni_track_counts_as_unset() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
 
-    let out = doc_list_in(&home, &folder, &[("OMNI_FEATURE", "  ")], &[]);
+    let out = doc_list_in(&home, &folder, &[("OMNI_TRACK", "  ")], &[]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         feature_requests(&server),
@@ -754,16 +763,16 @@ fn a_whitespace_only_omni_feature_counts_as_unset() {
 }
 
 #[test]
-fn an_explicit_feature_with_global_is_refused() {
+fn an_explicit_track_with_global_is_refused() {
     let server = mock();
     let folder = Scratch::new("folder");
     let home = linked_home(&server, &folder);
 
-    let out = doc_list_in(&home, &folder, &[], &["--feature", FEATURE, "--global"]);
+    let out = doc_list_in(&home, &folder, &[], &["--track", FEATURE, "--global"]);
     assert_eq!(out.code, 1);
     assert_eq!(
         out.stderr.trim_end(),
-        "omni: give --feature or --global, not both"
+        "omni: give --track or --global, not both"
     );
     assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
@@ -775,7 +784,7 @@ fn leftover_keys_in_omni_toml_are_warned_about_once_and_checks_stays_quiet() {
     let home = linked_home(&server, &folder);
     let warning = |keys: &str| {
         format!(
-            ".omni.toml sets {keys}, which omni no longer reads; link this folder with omni link <project> and pass --feature or OMNI_FEATURE"
+            ".omni.toml sets {keys}, which omni no longer reads; link this folder with omni link <project> and pass --track or OMNI_TRACK"
         )
     };
 
@@ -784,7 +793,7 @@ fn leftover_keys_in_omni_toml_are_warned_about_once_and_checks_stays_quiet() {
         "feature = \"y\"\nproject = \"x\"\n[checks]\nfast = \"a\"\nstack_up = \"b\"\nstack = \"c\"\n",
     )
     .unwrap();
-    let both = doc_list_in(&home, &folder, &[("OMNI_FEATURE", FEATURE)], &[]);
+    let both = doc_list_in(&home, &folder, &[("OMNI_TRACK", FEATURE)], &[]);
     assert_eq!(both.code, 0, "{}", both.stderr);
     assert_eq!(both.stderr.trim_end(), warning("project, feature"));
 
@@ -857,7 +866,7 @@ fn a_git_worktree_of_a_linked_repository_finds_the_repositorys_project() {
         let out = feature_list_in(&home, &dir, &[]);
         assert_eq!(out.code, 0, "{}", out.stderr);
     }
-    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features");
+    let want = format!("GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks");
     assert_eq!(feature_requests(&server), vec![want.clone(), want]);
 }
 
@@ -875,7 +884,7 @@ fn a_link_of_the_worktree_itself_beats_the_repositorys() {
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/tracks"
         )]
     );
 }
@@ -887,7 +896,7 @@ fn without_git_an_unlinked_folder_gets_the_not_linked_error_alone() {
     let folder = Scratch::new("folder");
 
     let out = omni(&home.path)
-        .args(&["feature", "list", "--as", "run-7/author"])
+        .args(&["track", "list", "--as", "run-7/author"])
         .env("PATH", "")
         .cwd(&folder.path)
         .run();
@@ -924,7 +933,7 @@ fn the_repositorys_link_in_the_logged_in_workspace_beats_the_worktrees_link_of_a
     assert_eq!(
         feature_requests(&server),
         vec![format!(
-            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/features"
+            "GET /api/v1/w/{WORKSPACE}/projects/{PROJECT}/tracks"
         )]
     );
 }
@@ -1077,4 +1086,250 @@ fn unlink_leaves_the_folders_line_in_another_workspace_and_drops_the_emptied_hea
         )
     );
     assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
+
+/// A server with the project "Monitoring" (parts Wision, iot-service and
+/// wision-api) and the project "Elsewhere" (no parts), for the parts a folder
+/// holds (US-326).
+fn parts_mock() -> MockServer {
+    MockServer::start(|request| {
+        if request.method == "GET" && request.path == format!("/api/v1/w/{WORKSPACE}/projects") {
+            return Reply::json(
+                200,
+                &json!({ "projects": [
+                    { "id": PROJECT, "name": "Monitoring" },
+                    { "id": OTHER_PROJECT, "name": "Elsewhere" }
+                ] }),
+            );
+        }
+        if request.method == "GET"
+            && request.path == format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}/parts")
+        {
+            return Reply::json(
+                200,
+                &json!({ "parts": [
+                    { "id": "01900000-0000-7000-8000-0000000000e1", "name": "Wision", "kind": "app" },
+                    { "id": "01900000-0000-7000-8000-0000000000e2", "name": "iot-service", "kind": "service" },
+                    { "id": "01900000-0000-7000-8000-0000000000e3", "name": "wision-api", "kind": "service" }
+                ] }),
+            );
+        }
+        if request.method == "GET"
+            && request.path == format!("/api/v1/w/{WORKSPACE}/projects/{OTHER_PROJECT}/parts")
+        {
+            return Reply::json(200, &json!({ "parts": [] }));
+        }
+        Reply::json(404, &json!({ "error": "not_found" }))
+    })
+}
+
+/// `<home>/projects/<name>`, created, as its canonical path.
+fn project_folder(home: &Scratch, name: &str) -> std::path::PathBuf {
+    let folder = home.join("projects").join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::canonicalize(&folder).unwrap()
+}
+
+fn omni_in(home: &Scratch, folder: &std::path::Path, args: &[&str]) -> Out {
+    omni(&home.path)
+        .args(args)
+        .args(&["--as", "run-7/author"])
+        .cwd(folder)
+        .run()
+}
+
+/// Whether some line of `text` names the part and its path.
+fn lists_part(text: &str, part: &str, path: &str) -> bool {
+    text.lines().any(|line| {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        words.contains(&part) && words.iter().any(|w| w.trim_end_matches('/') == path)
+    })
+}
+
+#[test]
+fn link_with_parts_stores_them_and_a_plain_link_shows_and_keeps_them() {
+    let server = parts_mock();
+    let home = logged_in(&server.url);
+    let helios = project_folder(&home, "helios");
+
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "iot-service=services/iot-service",
+            "--part",
+            "wision-api=services/wision-api",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("Monitoring"), "{}", out.stdout);
+    assert!(
+        lists_part(&out.stdout, "iot-service", "services/iot-service"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        lists_part(&out.stdout, "wision-api", "services/wision-api"),
+        "{}",
+        out.stdout
+    );
+
+    let shown = omni_in(&home, &helios, &["link"]);
+    assert_eq!(shown.code, 0, "{}", shown.stderr);
+    assert!(shown.stdout.contains("Monitoring"), "{}", shown.stdout);
+    assert!(
+        lists_part(&shown.stdout, "iot-service", "services/iot-service"),
+        "{}",
+        shown.stdout
+    );
+    assert!(
+        lists_part(&shown.stdout, "wision-api", "services/wision-api"),
+        "{}",
+        shown.stdout
+    );
+
+    // A --part updates that part's path and the other part stays.
+    let out = omni_in(
+        &home,
+        &helios,
+        &["link", "Monitoring", "--part", "wision-api=api"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    // A plain link to the same project keeps the parts.
+    let out = omni_in(&home, &helios, &["link", "Monitoring"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let shown = omni_in(&home, &helios, &["link"]);
+    assert!(
+        lists_part(&shown.stdout, "iot-service", "services/iot-service"),
+        "{}",
+        shown.stdout
+    );
+    assert!(
+        lists_part(&shown.stdout, "wision-api", "api"),
+        "{}",
+        shown.stdout
+    );
+    assert!(
+        !shown.stdout.contains("services/wision-api"),
+        "{}",
+        shown.stdout
+    );
+
+    // Linking the folder to another project clears its parts.
+    let out = omni_in(&home, &helios, &["link", "Elsewhere"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = omni_in(&home, &helios, &["link", "Monitoring"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let shown = omni_in(&home, &helios, &["link"]);
+    assert!(!shown.stdout.contains("iot-service"), "{}", shown.stdout);
+    assert!(!shown.stdout.contains("wision-api"), "{}", shown.stdout);
+}
+
+#[test]
+fn part_where_finds_a_part_in_another_folder_of_the_project_or_says_not_linked() {
+    let server = parts_mock();
+    let home = logged_in(&server.url);
+    let helios = project_folder(&home, "helios");
+    let wision = project_folder(&home, "wision");
+    let later = project_folder(&home, "later");
+    let elsewhere = project_folder(&home, "elsewhere");
+
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "iot-service=services/iot-service",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = omni_in(&home, &wision, &["link", "Monitoring", "--part", "Wision"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    // A later folder of the project that also lists iot-service loses to the
+    // first one in the links file.
+    let out = omni_in(
+        &home,
+        &later,
+        &["link", "Monitoring", "--part", "iot-service=iot"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let out = omni_in(&home, &elsewhere, &["link", "Elsewhere"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+
+    let out = omni_in(&home, &wision, &["part", "where", "iot-service"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout.trim_end(),
+        format!("{}/services/iot-service", helios.display())
+    );
+
+    // A part with no path is the folder itself.
+    let out = omni_in(&home, &helios, &["part", "where", "Wision"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout.trim_end().trim_end_matches('/'),
+        wision.display().to_string()
+    );
+
+    let out = omni_in(&home, &wision, &["part", "where", "wision-api"]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert_eq!(out.stdout, "");
+    assert!(out.stderr.contains("not_linked"), "{}", out.stderr);
+}
+
+#[test]
+fn an_unknown_part_is_refused_with_unknown_part_and_changes_nothing() {
+    let server = parts_mock();
+    let home = logged_in(&server.url);
+    let helios = project_folder(&home, "helios");
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "iot-service=services/iot-service",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let before = links_text(&home);
+    let sent = server.requests().len();
+
+    let out = omni_in(
+        &home,
+        &helios,
+        &[
+            "link",
+            "Monitoring",
+            "--part",
+            "wision-api=services/wision-api",
+            "--part",
+            "frontend=web",
+        ],
+    );
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(out.stderr.contains("unknown_part"), "{}", out.stderr);
+    assert_eq!(links_text(&home), before);
+
+    let out = omni_in(&home, &helios, &["part", "where", "frontend"]);
+    assert_ne!(out.code, 0, "{}", out.stdout);
+    assert!(out.stderr.contains("unknown_part"), "{}", out.stderr);
+
+    // Nothing about folders goes to the server: only reads, none naming one.
+    let folder = helios.display().to_string();
+    for request in &server.requests()[sent..] {
+        assert_eq!(request.method, "GET", "{} {}", request.method, request.path);
+        assert!(!request.path.contains("helios"), "{}", request.path);
+        assert!(
+            !String::from_utf8_lossy(&request.body).contains(&folder),
+            "{}",
+            request.path
+        );
+    }
 }

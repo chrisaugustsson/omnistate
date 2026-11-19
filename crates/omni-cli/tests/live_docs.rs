@@ -8,11 +8,11 @@
 //!
 //! - `omni doc create --kind <kind> --pillar <pillar> --title <text>` sends
 //!   `POST /docs` with `{"kind", "pillar", "title"}`: a doc at the app level.
-//!   With `--feature <name or id>` it sends `POST /features/{feature_id}/docs`
+//!   With `--track <name or id>` it sends `POST /tracks/{feature_id}/docs`
 //!   (a name is looked up in the project's features, ignoring case, as for
 //!   `omni doc list`); a name the project does not have is a one-line error
-//!   that names it and creates nothing. Without `--feature` the doc is at the app
-//!   level, and `--global` means the app level whatever `OMNI_FEATURE` says. It prints the new doc's ID and title; `--json`
+//!   that names it and creates nothing. Without `--track` the doc is at the app
+//!   level, and `--global` means the app level whatever `OMNI_TRACK` says. It prints the new doc's ID and title; `--json`
 //!   prints the API's answer.
 //! - `omni doc read <doc>` prints the doc's head from `GET /docs/{doc}/html`:
 //!   the HTML of an HTML doc (nothing for a new, empty one, which is no
@@ -29,6 +29,8 @@ const SEARCH: &str = "01900000-0000-7000-8000-0000000000f2";
 const NEW_DOC: &str = "01900000-0000-7000-8000-0000000000d1";
 const NEW_DESIGN: &str = "01900000-0000-7000-8000-0000000000d2";
 const PAGE: &str = "p4ge0001";
+const WISION: &str = "01900000-0000-7000-8000-0000000000a1";
+const ANALYZE: &str = "01900000-0000-7000-8000-0000000000a2";
 
 fn base() -> String {
     format!("/api/v1/w/{WORKSPACE}/projects/{PROJECT}")
@@ -52,7 +54,7 @@ fn doc_json(id: &str, feature: Option<&str>, body: &Value) -> Value {
         "pillar": body["pillar"],
         "title": body["title"],
         "created_at": "2026-10-23T10:00:00.000000Z",
-        "feature_id": feature
+        "track_id": feature
     })
 }
 
@@ -60,8 +62,9 @@ fn page_tags() -> String {
     format!("<Page id=\"{PAGE}\" name=\"Page 1\"/>")
 }
 
-/// An API with the features "Checkout" and "Search", which creates docs at
-/// the app level and in either feature, and reads `NEW_DOC` (an empty HTML
+/// An API with the tracks "Checkout" and "Search" and the part "Wision" with
+/// the feature "Analyze", which creates docs at the app level, on a feature
+/// (422 `one_scope_only` with a track too) and in either track, and reads `NEW_DOC` (an empty HTML
 /// doc) and `NEW_DESIGN` (an empty design with one page).
 fn mock() -> MockServer {
     MockServer::start(|request| {
@@ -77,17 +80,31 @@ fn mock() -> MockServer {
             Reply::json(201, &json!({ "doc": doc_json(id, feature, &body) }))
         };
         match (request.method.as_str(), rest) {
-            ("GET", "/features") => Reply::json(
+            ("GET", "/tracks") => Reply::json(
                 200,
-                &json!({ "features": [
+                &json!({ "tracks": [
                     feature_json(CHECKOUT, "Checkout"),
                     feature_json(SEARCH, "Search")
                 ] }),
             ),
+            ("GET", "/parts") => Reply::json(
+                200,
+                &json!({ "parts": [{ "id": WISION, "project_id": PROJECT, "name": "Wision", "kind": "app" }] }),
+            ),
+            ("GET", r) if r == format!("/parts/{WISION}/features") => Reply::json(
+                200,
+                &json!({ "features": [{ "id": ANALYZE, "part_id": WISION, "name": "Analyze", "description": "" }] }),
+            ),
+            ("GET", r) if r.starts_with("/docs?") => Reply::json(200, &json!({ "docs": [] })),
+            ("POST", "/docs")
+                if body.get("track_id").is_some() && body.get("feature_id").is_some() =>
+            {
+                Reply::json(422, &json!({ "error": "one_scope_only" }))
+            }
             ("POST", "/docs") => created(None),
-            ("POST", r) if r == format!("/features/{CHECKOUT}/docs") => created(Some(CHECKOUT)),
-            ("POST", r) if r == format!("/features/{SEARCH}/docs") => created(Some(SEARCH)),
-            ("POST", r) if r.starts_with("/features/") => {
+            ("POST", r) if r == format!("/tracks/{CHECKOUT}/docs") => created(Some(CHECKOUT)),
+            ("POST", r) if r == format!("/tracks/{SEARCH}/docs") => created(Some(SEARCH)),
+            ("POST", r) if r.starts_with("/tracks/") => {
                 Reply::json(404, &json!({ "error": "not_found" }))
             }
             ("GET", r) if r == format!("/docs/{NEW_DOC}/html") => {
@@ -220,7 +237,7 @@ fn doc_create_with_a_feature_creates_the_doc_in_that_feature() {
             &[
                 "doc",
                 "create",
-                "--feature",
+                "--track",
                 given,
                 "--kind",
                 "html",
@@ -231,15 +248,15 @@ fn doc_create_with_a_feature_creates_the_doc_in_that_feature() {
                 "--json",
             ],
         );
-        assert_eq!(out.code, 0, "--feature {given}: {}", out.stderr);
-        assert_eq!(out.json()["doc"]["feature_id"], CHECKOUT, "{}", out.stdout);
+        assert_eq!(out.code, 0, "--track {given}: {}", out.stderr);
+        assert_eq!(out.json()["doc"]["track_id"], CHECKOUT, "{}", out.stdout);
     }
     let sent = posts(&server);
     assert_eq!(sent.len(), 3, "{:?}", server.requests());
     for post in &sent {
         assert_eq!(
             post.path,
-            format!("{}/features/{CHECKOUT}/docs", base()),
+            format!("{}/tracks/{CHECKOUT}/docs", base()),
             "{post:?}"
         );
         assert_agent_request(post);
@@ -257,16 +274,8 @@ fn doc_create_with_an_unknown_feature_is_one_line_and_creates_nothing() {
     let out = run(
         &home,
         &[
-            "doc",
-            "create",
-            "--feature",
-            "Payments",
-            "--kind",
-            "html",
-            "--pillar",
-            "spec",
-            "--title",
-            "T",
+            "doc", "create", "--track", "Payments", "--kind", "html", "--pillar", "spec",
+            "--title", "T",
         ],
     );
     assert_one_line_error(&out, &["Payments"]);
@@ -292,9 +301,9 @@ fn the_feature_flag_picks_the_feature_and_global_means_the_app_level() {
             .run()
     };
 
-    let out = in_nested(&["--feature", "Checkout"]);
+    let out = in_nested(&["--track", "Checkout"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    let out = in_nested(&["--feature", "Search"]);
+    let out = in_nested(&["--track", "Search"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     let out = in_nested(&["--global"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -303,11 +312,11 @@ fn the_feature_flag_picks_the_feature_and_global_means_the_app_level() {
     assert_eq!(
         paths,
         [
-            format!("{}/features/{CHECKOUT}/docs", base()),
-            format!("{}/features/{SEARCH}/docs", base()),
+            format!("{}/tracks/{CHECKOUT}/docs", base()),
+            format!("{}/tracks/{SEARCH}/docs", base()),
             format!("{}/docs", base()),
         ],
-        "--feature Checkout, then --feature Search, then --global"
+        "--track Checkout, then --track Search, then --global"
     );
 }
 
@@ -341,6 +350,89 @@ fn doc_create_takes_every_pillar() {
         assert_eq!(body["kind"], kind, "{body}");
         assert_eq!(body["pillar"], pillar, "{body}");
     }
+}
+
+#[test]
+fn an_explicit_feature_beats_omni_track_for_doc_create_and_doc_list() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let with_env = |args: &[&str]| {
+        omni(&home.path)
+            .args(args)
+            .args(&["--project", PROJECT, "--as", "run-7/author"])
+            .env("OMNI_TRACK", "Checkout")
+            .run()
+    };
+    let out = with_env(&[
+        "doc",
+        "create",
+        "--feature",
+        "Analyze",
+        "--kind",
+        "html",
+        "--pillar",
+        "architecture",
+        "--title",
+        "How Analyze works",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let sent = posts(&server);
+    assert_eq!(sent.len(), 1, "{:?}", server.requests());
+    assert_eq!(sent[0].path, format!("{}/docs", base()), "{:?}", sent[0]);
+    assert_eq!(
+        body_of(&sent[0]),
+        json!({
+            "kind": "html",
+            "pillar": "architecture",
+            "title": "How Analyze works",
+            "feature_id": ANALYZE
+        }),
+        "the doc goes on the feature, not on OMNI_TRACK's track"
+    );
+
+    let out = with_env(&["doc", "list", "--feature", "Analyze"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let lists: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "GET" && r.path.starts_with(&format!("{}/docs?", base())))
+        .map(|r| r.path)
+        .collect();
+    assert_eq!(
+        lists,
+        [format!("{}/docs?feature={ANALYZE}", base())],
+        "the list asks for the feature's docs only"
+    );
+}
+
+#[test]
+fn doc_create_with_a_feature_and_an_explicit_track_sends_both_and_reports_one_scope_only() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let out = run(
+        &home,
+        &[
+            "doc",
+            "create",
+            "--feature",
+            "Analyze",
+            "--track",
+            "Checkout",
+            "--kind",
+            "html",
+            "--pillar",
+            "architecture",
+            "--title",
+            "How Analyze works",
+        ],
+    );
+    assert_ne!(out.code, 0, "stdout: {:?}", out.stdout);
+    assert!(out.stderr.contains("one_scope_only"), "{:?}", out.stderr);
+    let sent = posts(&server);
+    assert_eq!(sent.len(), 1, "{:?}", server.requests());
+    let body = body_of(&sent[0]);
+    assert_eq!(body["feature_id"], ANALYZE, "{body}");
+    assert_eq!(body["track_id"], CHECKOUT, "{body}");
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
+import { X } from "lucide-react";
 import { Text } from "./text";
 import { ancestorsOf, descendantsOf, shortTitle } from "./tree";
 
@@ -53,56 +54,56 @@ function Link({ children, onClick }: { children: string; onClick: () => void }) 
   );
 }
 
-/** The details of `node`; with none chosen, how to choose one and how many questions wait. */
+/** The details of the chosen `node`, in the column that opens beside the graph; `onClose` closes it. */
 export function Details({
   node,
   tree,
   me,
   onChoose,
+  onClose,
   workspaceId,
   projectId,
-  featureId,
-  waitingCount = 0,
-  onShowOpen,
+  trackId,
   onWritten,
   refresh = 0,
 }: {
-  node: TreeNode | null;
+  node: TreeNode;
   tree: TreeNode[];
   me: string | null;
   onChoose: (id: string) => void;
+  /** Closes the details: nothing is chosen any more. */
+  onClose?: () => void;
   workspaceId: string;
   projectId: string;
-  featureId: string;
-  waitingCount?: number;
-  onShowOpen?: () => void;
+  trackId: string;
   /** After a write, accepted or not: the tree and the open questions need reading again. */
   onWritten?: () => void;
   /** Reads the chosen node again each time this number changes. */
   refresh?: number;
 }) {
   return (
-    <section aria-label="Details" className="min-h-0 overflow-y-auto border-l">
-      {node ? (
-        <Chosen
-          key={node.id}
-          node={node}
-          tree={tree}
-          me={me}
-          onChoose={onChoose}
-          ids={{ workspaceId, projectId, featureId }}
-          onWritten={onWritten ?? (() => {})}
-          refresh={refresh}
-        />
-      ) : (
-        <p className="px-6 py-10 text-[13px] leading-relaxed text-muted-foreground">
-          Choose a node in the folders or in the graph to read it here: its text, its questions with their answers, and its rules.
-          <br />
-          <br />
-          {waitingCount === 0 ? "No question waits for an answer." : `${plural(waitingCount, "question waits", "questions wait")} for an answer.`}{" "}
-          <Link onClick={onShowOpen ?? (() => {})}>Show only the open nodes</Link>
-        </p>
+    <section aria-label="Details" className="relative min-h-0 overflow-y-auto border-l border-line">
+      {onClose && (
+        <button
+          type="button"
+          aria-label="Close the details"
+          title="Close the details"
+          onClick={onClose}
+          className="absolute top-3 right-3 z-10 grid size-7 place-items-center rounded-control text-ink-3 transition-colors hover:bg-hover hover:text-ink focus-visible:shadow-focus focus-visible:outline-none"
+        >
+          <X aria-hidden strokeWidth={2.25} className="size-(--icon-sm)" />
+        </button>
       )}
+      <Chosen
+        key={node.id}
+        node={node}
+        tree={tree}
+        me={me}
+        onChoose={onChoose}
+        ids={{ workspaceId, projectId, trackId }}
+        onWritten={onWritten ?? (() => {})}
+        refresh={refresh}
+      />
     </section>
   );
 }
@@ -120,13 +121,13 @@ function Chosen({
   tree: TreeNode[];
   me: string | null;
   onChoose: (id: string) => void;
-  ids: { workspaceId: string; projectId: string; featureId: string };
+  ids: { workspaceId: string; projectId: string; trackId: string };
   onWritten: () => void;
   refresh: number;
 }) {
   const load = useCallback(
-    () => loadNode(ids.workspaceId, ids.projectId, ids.featureId, listed.id),
-    [ids.workspaceId, ids.projectId, ids.featureId, listed.id],
+    () => loadNode(ids.workspaceId, ids.projectId, ids.trackId, listed.id),
+    [ids.workspaceId, ids.projectId, ids.trackId, listed.id],
   );
   const { value: read, failed, reload } = useReloading(load);
   // What to say under a question after a write; it lasts until another node is chosen.
@@ -180,8 +181,8 @@ function Chosen({
 
   return (
     <div className="px-5 pb-24 pt-4">
-      <p className="text-[11.5px] leading-normal text-muted-foreground">
-        {crumbs.length === 0 && "Feature"}
+      <p className="pr-8 text-[11.5px] leading-normal text-muted-foreground">
+        {crumbs.length === 0 && "Track"}
         {crumbs.map((id, at) => (
           <span key={id}>
             {at > 0 && " › "}
@@ -201,13 +202,13 @@ function Chosen({
           </span>
         )}
         {level === 1 && <span className={pill}>User story</span>}
-        {level === 0 && <span className={pill}>Feature</span>}
+        {level === 0 && <span className={pill}>Track</span>}
         {defaults > 0 && <span className={pill}>{defaults} answered by default</span>}
       </div>
       {listed.needs_pass && (
-        <p className="mt-3 rounded-lg border border-dashed border-foreground px-3 py-2.5 text-[12.5px] leading-normal">
+        <p className="mt-3 rounded-control bg-frame px-3 py-2.5 text-[12.5px] leading-normal">
           Waits for the next grill pass{listed.needs_pass_since ? ` since ${fmtDate(listed.needs_pass_since)}` : ""}. Something here or above was
-          answered, changed or remarked. Nothing is rewritten until the grill is started again on the feature.
+          answered, changed or remarked. Nothing is rewritten until the grill is started again on the track.
         </p>
       )}
       {listed.summary && <p className="mt-3 text-[13.5px] leading-relaxed">{listed.summary}</p>}
@@ -234,13 +235,13 @@ function Chosen({
         <>
           {read.node.situation && (
             <>
-              <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">Situation</h3>
+              <h3 className="mt-5 text-meta font-medium text-ink-3">Situation</h3>
               <Text source={read.node.situation} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
           {read.node.behaviour && (
             <>
-              <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">Behaviour</h3>
+              <h3 className="mt-5 text-meta font-medium text-ink-3">Behaviour</h3>
               <Text source={read.node.behaviour} className="mt-1.5 space-y-2 text-[13px] leading-relaxed" />
             </>
           )}
@@ -252,7 +253,7 @@ function Chosen({
   );
 }
 
-type Ids = { workspaceId: string; projectId: string; featureId: string };
+type Ids = { workspaceId: string; projectId: string; trackId: string };
 
 /** Under a waiting question: the asker's proposed answer when it has one, then the field and button. */
 function AnswerField({
@@ -276,7 +277,7 @@ function AnswerField({
     setBusy(true);
     setError("");
     try {
-      await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer });
+      await answerQuestion(ids.workspaceId, ids.projectId, ids.trackId, question.id, { expected_version: question.version, answer });
       setText(undefined);
       onWritten(question.id, "Recorded. This node now waits for the next grill pass.");
     } catch (failure) {
@@ -307,7 +308,7 @@ function AnswerField({
         className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
       />
       <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={() => send(text)}>
+        <Button type="button" variant="outline" size="sm" disabled={busy || text.trim() === ""} onClick={() => send(text)}>
           Answer
         </Button>
         <span className="text-xs text-muted-foreground">Nobody has answered this yet.</span>
@@ -361,7 +362,7 @@ function ChangeField({
     setBusy(true);
     setError("");
     try {
-      await answerQuestion(ids.workspaceId, ids.projectId, ids.featureId, question.id, { expected_version: question.version, answer, change: true });
+      await answerQuestion(ids.workspaceId, ids.projectId, ids.trackId, question.id, { expected_version: question.version, answer, change: true });
       setBusy(false);
       setOpen(false);
       onWritten(
@@ -392,7 +393,7 @@ function ChangeField({
         className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
       />
       <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={busy} onClick={save}>
+        <Button type="button" variant="outline" size="sm" disabled={busy} onClick={save}>
           Save new answer
         </Button>
         <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
@@ -437,7 +438,7 @@ function Questions({
   const waiting = questions.filter((question) => question.state === "open" && question.asked_by.kind !== "human").length;
   return (
     <>
-      <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <h3 className="mt-5 text-meta font-medium text-ink-3">
         Questions <span className="tabular-nums">{questions.length}</span>
         {waiting > 0 && <span> · {waiting} open</span>}
       </h3>
@@ -504,7 +505,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
     setBusy(true);
     setError("");
     try {
-      await askQuestion(ids.workspaceId, ids.projectId, ids.featureId, nodeId, { question });
+      await askQuestion(ids.workspaceId, ids.projectId, ids.trackId, nodeId, { question });
       setText("");
       setBusy(false);
       onAsked();
@@ -515,7 +516,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
   };
   return (
     <>
-      <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">Add a question or remark</h3>
+      <h3 className="mt-5 text-meta font-medium text-ink-3">Add a question or remark</h3>
       <textarea
         aria-label="Add a question or remark"
         placeholder="Something that is missing or wrong here. The next grill pass takes it up."
@@ -524,7 +525,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
         className="mt-2 block min-h-16 w-full resize-y rounded-lg border border-input bg-background px-2.5 py-2 text-[13.5px] leading-normal"
       />
       <div className="mt-2 flex items-center gap-2">
-        <Button type="button" size="sm" disabled={busy || text.trim() === ""} onClick={send}>
+        <Button type="button" variant="outline" size="sm" disabled={busy || text.trim() === ""} onClick={send}>
           Add to this node
         </Button>
         <span className="text-xs text-muted-foreground">Opens the node again.</span>
@@ -534,7 +535,7 @@ function RemarkField({ ids, nodeId, onAsked }: { ids: Ids; nodeId: string; onAsk
   );
 }
 
-const reach: Record<string, string> = { node: "This node", story: "This story", feature: "Whole feature" };
+const reach: Record<string, string> = { node: "This node", story: "This story", track: "Whole track" };
 
 function Rules({ rules, nodeId, byId }: { rules: { id: string; node_id: string; scope: string; text: string }[]; nodeId: string; byId: Map<string, TreeNode> }) {
   const own = rules.filter((rule) => rule.node_id === nodeId);
@@ -542,11 +543,11 @@ function Rules({ rules, nodeId, byId }: { rules: { id: string; node_id: string; 
   const written = (id: string) => {
     const holder = byId.get(id);
     if (!holder) return "";
-    return holder.level === 0 ? "Feature" : holder.level === 1 ? "Story" : shortTitle(holder);
+    return holder.level === 0 ? "Track" : holder.level === 1 ? "Story" : shortTitle(holder);
   };
   return (
     <>
-      <h3 className="mt-5 text-[11.5px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <h3 className="mt-5 text-meta font-medium text-ink-3">
         Rules <span className="tabular-nums">{own.length}</span>
       </h3>
       {own.length === 0 && <p className="mt-1 text-xs text-muted-foreground">This node sets no rule of its own.</p>}

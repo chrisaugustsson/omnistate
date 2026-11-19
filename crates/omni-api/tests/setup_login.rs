@@ -317,6 +317,44 @@ fn setup_creates_the_first_user_password_and_workspace() {
 }
 
 #[test]
+fn the_setup_member_is_an_admin_and_a_member_added_later_is_a_member() {
+    let (_guard, _fixture, _client) = ready();
+    block(async {
+        let mut conn = admin_connection().await;
+        let (workspace_id, role): (String, String) = sqlx::query_as(
+            "select m.workspace_id::text, m.role from users u \
+             join memberships m on m.user_id = u.id \
+             where lower(u.email) = lower($1)",
+        )
+        .bind(OWNER_EMAIL)
+        .fetch_one(&mut conn)
+        .await
+        .expect("the owner's membership");
+        assert_eq!(role, "admin", "the member setup creates is an admin");
+
+        // A member added later names no role; roll back so the counts stay.
+        let mut tx = conn.begin().await.expect("begin");
+        let user_id: String = sqlx::query_scalar(
+            "insert into users (email) values ('later@example.test') returning id::text",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .expect("a second user");
+        let later: String = sqlx::query_scalar(
+            "insert into memberships (workspace_id, user_id) \
+             values ($1::uuid, $2::uuid) returning role",
+        )
+        .bind(&workspace_id)
+        .bind(&user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("a second membership");
+        tx.rollback().await.expect("rollback");
+        assert_eq!(later, "member", "a member added later is a plain member");
+    });
+}
+
+#[test]
 fn setup_runs_only_once() {
     let (_guard, fixture, _client) = ready();
     let second = fixture.second.as_ref().expect("a second setup run");

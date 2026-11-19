@@ -7,12 +7,12 @@
 //!   line per doc, `<id>  <scope>  <kind>  <pillar>  <title>` (two spaces
 //!   between the fields), where the scope is `project` for a global doc or the
 //!   name of the doc's feature. `--json` prints the API's answer.
-//! - `--feature <name or id>` sends `GET .../docs?feature=<id>` (a name is
-//!   looked up in the project's features) and `--global` sends `GET .../docs?feature=global`. A feature name the project
+//! - `--track <name or id>` sends `GET .../docs?track=<id>` (a name is
+//!   looked up in the project's features) and `--global` sends `GET .../docs?track=global`. A feature name the project
 //!   does not have is a one-line error that names it, and no list is asked
 //!   for.
 //! - `--pillar <pillar>` lists only the docs of that pillar, one of `spec`,
-//!   `ui`, `architecture`, `db` and `research` (with or without `--feature`);
+//!   `ui`, `architecture`, `db` and `research` (with or without `--track`);
 //!   the API's `GET .../docs?pillar=<pillar>` filters the same way. Any other
 //!   pillar is a one-line error that lists the five and asks for no list.
 //! - `omni --help` names `omni doc list`.
@@ -40,7 +40,7 @@ fn docs_path() -> String {
 }
 
 fn features_path() -> String {
-    format!("{}/{PROJECT}/features", projects_path())
+    format!("{}/{PROJECT}/tracks", projects_path())
 }
 
 fn feature_json(id: &str, name: &str) -> Value {
@@ -57,7 +57,7 @@ fn doc_json(id: &str, feature: Value, kind: &str, pillar: &str, title: &str) -> 
     json!({
         "id": id,
         "project_id": PROJECT,
-        "feature_id": feature,
+        "track_id": feature,
         "kind": kind,
         "pillar": pillar,
         "title": title,
@@ -96,7 +96,7 @@ fn all_docs() -> Vec<Value> {
 /// An API that knows the project `brand-site` with the features "Checkout"
 /// and "Search", and five docs: a global spec, Checkout's architecture,
 /// Search's design, Checkout's spec and Search's research. The list answers
-/// `?feature=<id>`, `?feature=global` and `?pillar=<pillar>` (alone or
+/// `?track=<id>`, `?track=global` and `?pillar=<pillar>` (alone or
 /// together) with the matching docs only.
 fn mock() -> MockServer {
     MockServer::start(|request| {
@@ -117,7 +117,7 @@ fn mock() -> MockServer {
         if path == features_path() {
             return Reply::json(
                 200,
-                &json!({ "features": [
+                &json!({ "tracks": [
                     feature_json(CHECKOUT, "Checkout"),
                     feature_json(SEARCH, "Search")
                 ] }),
@@ -125,7 +125,7 @@ fn mock() -> MockServer {
         }
         for (feature, name) in [(CHECKOUT, "Checkout"), (SEARCH, "Search")] {
             if path == format!("{}/{feature}", features_path()) {
-                return Reply::json(200, &json!({ "feature": feature_json(feature, name) }));
+                return Reply::json(200, &json!({ "track": feature_json(feature, name) }));
             }
         }
         let Some(rest) = path.strip_prefix(&docs_path()) else {
@@ -144,7 +144,7 @@ fn mock() -> MockServer {
         let mut pillar = None;
         for pair in query.split('&').filter(|p| !p.is_empty()) {
             match pair.split_once('=') {
-                Some(("feature", value)) => feature = Some(value.to_string()),
+                Some(("track", value)) => feature = Some(value.to_string()),
                 Some(("pillar", value)) => pillar = Some(value.to_string()),
                 _ => return Reply::json(400, &json!({ "error": "invalid_request" })),
             }
@@ -157,8 +157,8 @@ fn mock() -> MockServer {
         only(&|d| {
             let in_scope = match feature.as_deref() {
                 None => true,
-                Some("global") => d["feature_id"].is_null(),
-                Some(id) => d["feature_id"] == id,
+                Some("global") => d["track_id"].is_null(),
+                Some(id) => d["track_id"] == id,
             };
             in_scope && pillar.as_deref().is_none_or(|p| d["pillar"] == p)
         })
@@ -248,25 +248,25 @@ fn search_research_line() -> String {
 fn doc_list_filters_by_feature_or_global() {
     let server = mock();
     let home = logged_in(&server.url);
-    let list_path = |query: &str| format!("{}?feature={query}", docs_path());
+    let list_path = |query: &str| format!("{}?track={query}", docs_path());
 
     for feature in ["Checkout", CHECKOUT] {
         let before = gets_to(&server, &list_path(CHECKOUT));
         let out = run(
             &home,
-            &["doc", "list", "--feature", feature, "--project", PROJECT],
+            &["doc", "list", "--track", feature, "--project", PROJECT],
         );
-        assert_eq!(out.code, 0, "--feature {feature}: {}", out.stderr);
+        assert_eq!(out.code, 0, "--track {feature}: {}", out.stderr);
         assert_eq!(
             gets_to(&server, &list_path(CHECKOUT)),
             before + 1,
-            "--feature {feature} asks for ?feature=<id>: {:?}",
+            "--track {feature} asks for ?track=<id>: {:?}",
             server.requests()
         );
         assert_eq!(
             non_empty_lines(&out.stdout),
             [checkout_line(), checkout_spec_line()],
-            "--feature {feature} lists that feature's docs"
+            "--track {feature} lists that feature's docs"
         );
     }
 
@@ -275,7 +275,7 @@ fn doc_list_filters_by_feature_or_global() {
     assert_eq!(
         gets_to(&server, &list_path("global")),
         1,
-        "--global asks for ?feature=global: {:?}",
+        "--global asks for ?track=global: {:?}",
         server.requests()
     );
     assert_eq!(
@@ -291,7 +291,7 @@ fn doc_list_of_an_unknown_feature_is_one_line_and_lists_nothing() {
     let home = logged_in(&server.url);
     let control = run(
         &home,
-        &["doc", "list", "--feature", "Search", "--project", PROJECT],
+        &["doc", "list", "--track", "Search", "--project", PROJECT],
     );
     assert_eq!(control.code, 0, "a known feature works: {}", control.stderr);
     let before = doc_lists(&server);
@@ -301,7 +301,7 @@ fn doc_list_of_an_unknown_feature_is_one_line_and_lists_nothing() {
         &[
             "doc",
             "list",
-            "--feature",
+            "--track",
             "Loyalty points",
             "--project",
             PROJECT,
@@ -349,16 +349,16 @@ fn doc_list_with_a_pillar_lists_only_that_pillars_docs() {
             "list",
             "--pillar",
             "spec",
-            "--feature",
+            "--track",
             "Checkout",
             "--project",
             PROJECT,
         ],
     );
-    assert_eq!(out.code, 0, "--pillar with --feature: {}", out.stderr);
+    assert_eq!(out.code, 0, "--pillar with --track: {}", out.stderr);
     assert_eq!(
         non_empty_lines(&out.stdout),
         [checkout_spec_line()],
-        "--pillar spec --feature Checkout lists Checkout's spec docs"
+        "--pillar spec --track Checkout lists Checkout's spec docs"
     );
 }

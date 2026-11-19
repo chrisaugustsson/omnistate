@@ -11,8 +11,8 @@ import { Text } from "@/components/behaviour/text";
 
 const WORKSPACE_ID = "w1";
 const PROJECT_ID = "p1";
-const FEATURE_ID = "f1";
-const NODE_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/nodes/`;
+const TRACK_ID = "f1";
+const NODE_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${TRACK_ID}/behaviour/nodes/`;
 const ME = "user-me";
 const OTHER = "user-other";
 const TODAY = "2026-11-12T09:00:00Z";
@@ -45,8 +45,8 @@ function listed(id: string, parentId: string | null, level: number, title: strin
 }
 
 const TREE = [
-  listed("feature", null, 0, "Disc golf putting trainer"),
-  listed("story", "feature", 1, "As a player, I want to add a friend, so that we can practise together"),
+  listed("track", null, 0, "Disc golf putting trainer"),
+  listed("story", "track", 1, "As a player, I want to add a friend, so that we can practise together"),
   listed("search", "story", 2, "Player searches for a player"),
   listed("none", "search", 3, "No player is found"),
 ];
@@ -113,7 +113,7 @@ function fakeNode(read: { questions?: unknown[]; rules?: unknown[]; status?: num
 }
 
 function renderChosen(node: TreeNode = TREE[3], tree: TreeNode[] = TREE, onChoose: (id: string) => void = () => {}) {
-  render(<Details node={node} tree={tree} me={ME} onChoose={onChoose} workspaceId={WORKSPACE_ID} projectId={PROJECT_ID} featureId={FEATURE_ID} />);
+  render(<Details node={node} tree={tree} me={ME} onChoose={onChoose} workspaceId={WORKSPACE_ID} projectId={PROJECT_ID} trackId={TRACK_ID} />);
   return screen.getByRole("region", { name: "Details" });
 }
 
@@ -136,7 +136,7 @@ describe("who gave an answer", () => {
 
 describe("the details of a chosen node", () => {
   test("says 1 rule from above also holds here when only one does", async () => {
-    fakeNode({ rules: [rule("r-feature", "feature", "feature", "Works offline")] });
+    fakeNode({ rules: [rule("r-track", "track", "track", "Works offline")] });
     const details = renderChosen();
     await waitFor(() => expect(details.querySelector("details summary")).not.toBeNull());
 
@@ -148,10 +148,10 @@ describe("the details of a chosen node", () => {
       rules: [
         rule("r-node", "none", "node", "Say that nobody was found"),
         rule("r-story-wide", "none", "story", "Keep the search box filled"),
-        rule("r-feature-wide", "none", "feature", "Never show an email address"),
+        rule("r-track-wide", "none", "track", "Never show an email address"),
         rule("r-parent", "search", "node", "Search by player name (default)"),
         rule("r-story", "story", "story", "Friends are two-way"),
-        rule("r-feature", "feature", "feature", "Works offline"),
+        rule("r-track", "track", "track", "Works offline"),
       ],
     });
     const details = renderChosen();
@@ -159,12 +159,12 @@ describe("the details of a chosen node", () => {
 
     expect(within(details).getByText("Say that nobody was found").previousElementSibling?.textContent).toBe("This node");
     expect(within(details).getByText("Keep the search box filled").previousElementSibling?.textContent).toBe("This story");
-    expect(within(details).getByText("Never show an email address").previousElementSibling?.textContent).toBe("Whole feature");
+    expect(within(details).getByText("Never show an email address").previousElementSibling?.textContent).toBe("Whole track");
     const above = details.querySelector("details")!;
     expect(above.querySelector("summary")!.textContent).toBe("3 rules from above also hold here");
     expect(within(above).getByText("Search by player name (default)").previousElementSibling?.textContent).toBe("Player searches for a player");
     expect(within(above).getByText("Friends are two-way").previousElementSibling?.textContent).toBe("Story");
-    expect(within(above).getByText("Works offline").previousElementSibling?.textContent).toBe("Feature");
+    expect(within(above).getByText("Works offline").previousElementSibling?.textContent).toBe("Track");
     expect(within(above).queryByText("Say that nobody was found")).toBeNull();
     expect(within(details).getAllByText("Works offline")).toHaveLength(1);
   });
@@ -239,7 +239,7 @@ describe("the details of a chosen node", () => {
   test("shows a status pill, the story pill and the count answered by default only when it is above 0", async () => {
     fakeNode({});
     const pills = (details: HTMLElement) => [...details.querySelector("h2")!.nextElementSibling!.children].map((one) => one.textContent);
-    const story = listed("story", "feature", 1, TREE[1].title, { status: "open", default_answers: 2 });
+    const story = listed("story", "track", 1, TREE[1].title, { status: "open", default_answers: 2 });
     let details = renderChosen(story, [TREE[0], story, TREE[2], TREE[3]]);
     expect(pills(details)).toEqual(["Open", "User story", "2 answered by default"]);
     cleanup();
@@ -249,7 +249,7 @@ describe("the details of a chosen node", () => {
     cleanup();
 
     details = renderChosen(TREE[0]);
-    expect(pills(details)).toEqual(["Done", "Feature"]);
+    expect(pills(details)).toEqual(["Done", "Track"]);
   });
 
   test("says which other nodes point at the node, as links that choose them", async () => {
@@ -309,24 +309,10 @@ describe("a node's text", () => {
   });
 });
 
-describe("the details with nothing chosen", () => {
-  test("say that no question waits, 1 question waits, or N questions wait, with a link to show only the open nodes", () => {
-    const props = { node: null, tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, featureId: FEATURE_ID };
-    const { rerender } = render(<Details {...props} waitingCount={0} />);
-    const details = screen.getByRole("region", { name: "Details" });
-    expect(details.textContent).toContain("No question waits for an answer.");
-    expect(within(details).getByRole("button", { name: "Show only the open nodes" })).toBeTruthy();
-    rerender(<Details {...props} waitingCount={1} />);
-    expect(details.textContent).toContain("1 question waits for an answer.");
-    rerender(<Details {...props} waitingCount={3} />);
-    expect(details.textContent).toContain("3 questions wait for an answer.");
-  });
-});
-
 // US-228: a person answers a waiting question in the details with
 // POST .../behaviour/questions/<question>/answers, then the node is read again.
 describe("answering a waiting question", () => {
-  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${TRACK_ID}/behaviour/questions/q-wait/answers`;
   const WAITING = { ...question("q-wait", "What does a search result show?", { state: "open" }), version: 3 };
   const ANSWERED = question("q-wait", "What does a search result show?", { answers: [answer("Name and handicap", PERSON_ME, "human", TODAY)] });
 
@@ -435,7 +421,7 @@ describe("answering a waiting question", () => {
         return accepted(ANSWERED);
       },
     );
-    const props = { tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, featureId: FEATURE_ID };
+    const props = { tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, trackId: TRACK_ID };
     const { rerender } = render(<Details node={TREE[2]} {...props} />);
     const details = screen.getByRole("region", { name: "Details" });
     const { field, button } = await fieldOf(details);
@@ -564,7 +550,7 @@ describe("answering a waiting question", () => {
 // POST .../behaviour/questions/<question>/answers and `change: true`. A change
 // marks the node and every node below it for the next grill pass.
 describe("changing an answer", () => {
-  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-default/answers`;
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${TRACK_ID}/behaviour/questions/q-default/answers`;
   const BY_DEFAULT = { ...question("q-default", "What does a search result show?", { answers: [answer("Name only", AGENT, "agent")] }), version: 4 };
   const CHANGED_BY_OTHER = question("q-default", "What does a search result show?", {
     answers: [answer("Name only", AGENT, "agent"), answer("Name and club", PERSON_OTHER, "human", TODAY)],
@@ -821,14 +807,14 @@ describe("adding a question or remark", () => {
 // `refresh` changes. Text a person is typing stays; when an agent answers the
 // question being typed to, the typed text stands in an open Change field.
 describe("a live update of the chosen node", () => {
-  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/features/${FEATURE_ID}/behaviour/questions/q-wait/answers`;
+  const ANSWERS_PATH = `/api/v1/w/${WORKSPACE_ID}/projects/${PROJECT_ID}/tracks/${TRACK_ID}/behaviour/questions/q-wait/answers`;
   const WAITING = { ...question("q-wait", "What does a search result show?", { state: "open" }), version: 3 };
   const ANSWERED_BY_DEFAULT = { ...question("q-wait", "What does a search result show?", { answers: [answer("Guest cart.", AGENT, "agent", TODAY)] }), version: 4 };
   const CHANGED_BY_OTHER = {
     ...question("q-wait", "What does a search result show?", { answers: [answer("Guest cart.", AGENT, "agent", TODAY), answer("Name and club", PERSON_OTHER, "human", TODAY)] }),
     version: 5,
   };
-  const props = { tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, featureId: FEATURE_ID };
+  const props = { tree: TREE, me: ME, onChoose: () => {}, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, trackId: TRACK_ID };
 
   /**
    * GET .../behaviour/nodes/search answers with the questions in `server` as
