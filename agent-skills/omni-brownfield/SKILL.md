@@ -22,7 +22,7 @@ Read source code, READMEs, docs, build files, Dockerfiles, compose files, Helm c
    - Per feature `omni feature create "<feature>" --part "<part>" --description "<line>"`.
 
    Done when `omni part list`, `omni feature list` and `omni part where <part>` (from any of the repos) show every part and feature of the map.
-5. **Write.** Save the confirmed map as JSON in a scratch file and run the Workflow `omni-brownfield` with `args: {mode: "write", project: "<name>", mapFile: "<that file>", omni, run}` (`map: <the map>` inline works for a small one; `only: [<part>, ...]` limits a run to some parts, for a pilot). Add `apps: {"<part>": "<url>"}` when the human has an app running and wants the boards checked against it. It writes, in parallel:
+5. **Write.** Save the confirmed map as JSON in a scratch file and run the Workflow `omni-brownfield` with `args: {mode: "write", project: "<name>", mapFile: "<that file>", omni, run}` (`map: <the map>` inline works for a small one; `only: [<part>, ...]` limits a run to some parts, for a pilot; such a run skips the project docs and adds to the design system). Add `apps: {"<part>": "<url>"}` when the human has an app running and wants the boards checked against it. It writes, in parallel:
    - the project: its description (the Overview), a README, the Project spec, an architecture diagram of all parts, a setup guide and a run book;
    - each part: its description, a README with its repo link, a setup guide, a run book when the code shows how it runs, and an architecture diagram;
    - each feature: its description and a "How it works" doc with a diagram;
