@@ -1,12 +1,12 @@
 export const meta = {
   name: 'omni-deliver',
-  description: 'Delivers a feature\'s tasks from the OmniState board: in a setup run, the task "Set up the project" first and alone, straight in the folder; clarity checks with a council in front of every question for the human, which goes on a node of the behaviour tree; implement and review in task worktrees, at most `implementers` tasks implementing and `reviewers` in review at once; then a lane that tests one task at a time in a worktree of its own, compares the built screen with the design boards the task links, and lands it on deliver/<feature slug>, its regression tests and its write-back to Operations and Tables done once it has landed, outside the lane; a task that fails 3 tries is parked for the next run. The run ends with deliver/<feature slug> pushed and one pull request, opened or updated, whose text is the report, which the Run thread gets too. Every git, omni and gh command runs in the host helper, reached through courier agents',
-  whenToUse: 'Started by the human, never by another skill or workflow. Run it with the Workflow tool, as the workflow omni-deliver with args {feature: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper), from a session in the main worktree of a project whose folder is linked to its OmniState project (omni link, or OMNI_PROJECT). The run may start in a folder without a git repository when the feature has the task "Set up the project": while that task is not done, the run builds it first and alone, straight in the folder, and the other tasks the normal way once it has landed; a folder without a repository and no such task is refused, with the reason. That session needs the stories folder beside the folder, <folder>-stories, among its working directories, and the host helper at ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per folder: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, stack_reset, seed, lint}) sets checks on top of omni checks; every check command runs with OMNI_STORY and OMNI_RUN in its environment. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, docs, courier), and args.agentTypes the agent type of a role: by default each role runs as omni-<role> (omni-impl for implRetry too), an agent type that lists only the tools the role needs, as make install-agent-tools links them into ~/.claude/agents/; a role whose type is not installed runs without it, which the log and the report\'s notes say once per type. Tasks land on deliver/<feature slug>, never on the checkout\'s branch. A question the council does not settle goes on a node of the feature\'s behaviour tree, with a recommendation, and blocks only its own task; the run does not wait for the answer, and the next run takes the task up once every question of it is answered, with a new round of tries. A feature without a behaviour tree gets a thread for such a question instead. A task that links a design board is built to it, and its verifier compares the built screen with each board: any difference sends the task back and uses a try. A task is parked after 3 failed tries: back in the backlog, not blocked, its findings open, its worktree and branch removed, and no thread; the next run tries it again. A run takes a new task only while its agent calls leave room under 900 for the tasks in flight, at 90 each, the clarity checks in flight, at 20 each, the landed tasks\' tests in flight, at 30 each, and their write-backs in flight, at 5 each, and stops a task at 960, released with no try used; the next run carries on. An agent that returns nothing is asked again after 30 s and after 2 minutes, with no try used; agents that return nothing for 3 tasks in a row stop new claims. A task whose delivery stops on an error is released; when the same error stops a second task, the run takes no new task. A failed check that fails again on deliver/<slug> without the task, after stack_reset for a stack check, stops the lane for the rest of the run, and the task goes back to reviewed with no try used. None of this opens a thread: each is a line in the report. A task lands once its verifier has passed, and its regression tests are written after that, by one author at a time, in the task\'s worktree: tests whose author cannot get them to land are dropped, as are tests that find a defect, which uses no try since the task has landed, and the report notes each. In a feature with an Operations or a Tables doc, a docs agent writes what each landed task changed into them. The run ends, once every clarity check, every task\'s tests and every write-back have ended, with the journeys check of the tasks it landed and finish, after an error too: finish pushes deliver/<slug> and opens or updates one pull request with gh, into the branch the checkout had checked out, with the report as its text, and merges nothing. Where no pull request can be opened (no branch checked out, no remote, the base branch not on the remote, gh missing or unable to list pull requests there, nothing on deliver/<slug> that the base lacks), nothing is pushed and the report\'s second line says why and names the branch. finish then posts the report on the Run thread and gives the lock up.',
+  description: 'Delivers a track\'s tasks from the OmniState board: in a setup run, the task "Set up the project" first and alone, straight in the folder; clarity checks with a council in front of every question for the human, which goes on a node of the behaviour tree; implement and review in task worktrees, at most `implementers` tasks implementing and `reviewers` in review at once; then a lane that tests one task at a time in a worktree of its own, compares the built screen with the design boards the task links, and lands it on deliver/<track slug>, its regression tests and its write-back to Operations and Tables done once it has landed, outside the lane; a task that fails 3 tries is parked for the next run. The run ends with deliver/<track slug> pushed and one pull request, opened or updated, whose text is the report, which the Run thread gets too. Every git, omni and gh command runs in the host helper, reached through courier agents',
+  whenToUse: 'Started by the human, never by another skill or workflow. Run it with the Workflow tool, as the workflow omni-deliver with args {track: "<name>"} (optional: implementers (3), reviewers (3), storyLimit, force, checks, models, agentTypes, helper), from a session in the main worktree of a folder linked to the track\'s project (omni link, or OMNI_PROJECT). The run may start in a folder without a git repository when the track has the task "Set up the project": while that task is not done, the run builds it first and alone, straight in the folder, and the other tasks the normal way once it has landed; a folder without a repository and no such task is refused, with the reason. That session needs the stories folder beside the folder, <folder>-stories, among its working directories, and the host helper at ~/.claude/omni/deliver-step.mjs, as make install-agent-tools links it; args.helper names another path. One run per folder: the helper\'s .omni/run.lock refuses a second live run, and force takes over a lock whose run the human knows is dead. args.checks ({fast, stack_up, stack, stack_reset, seed, lint}) sets checks on top of omni checks; every check command runs with OMNI_STORY and OMNI_RUN in its environment. args.models overrides the model of a role (clarity, council, impl, implRetry, review, verify, tests, final, docs, courier), and args.agentTypes the agent type of a role: by default each role runs as omni-<role> (omni-impl for implRetry too), an agent type that lists only the tools the role needs, as make install-agent-tools links them into ~/.claude/agents/; a role whose type is not installed runs without it, which the log and the report\'s notes say once per type. Tasks land on deliver/<track slug>, never on the checkout\'s branch. A question the council does not settle goes on a node of the track\'s behaviour tree, with a recommendation, and blocks only its own task; the run does not wait for the answer, and the next run takes the task up once every question of it is answered, with a new round of tries. A track without a behaviour tree gets a thread for such a question instead. A task that links a design board is built to it, and its verifier compares the built screen with each board: any difference sends the task back and uses a try. A task is parked after 3 failed tries: back in the backlog, not blocked, its findings open, its worktree and branch removed, and no thread; the next run tries it again. A run takes a new task only while its agent calls leave room under 900 for the tasks in flight, at 90 each, the clarity checks in flight, at 20 each, the landed tasks\' tests in flight, at 30 each, and their write-backs in flight, at 5 each, and stops a task at 960, released with no try used; the next run carries on. An agent that returns nothing is asked again after 30 s and after 2 minutes, with no try used; agents that return nothing for 3 tasks in a row stop new claims. A task whose delivery stops on an error is released; when the same error stops a second task, the run takes no new task. A failed check that fails again on deliver/<slug> without the task, after stack_reset for a stack check, stops the lane for the rest of the run, and the task goes back to reviewed with no try used. None of this opens a thread: each is a line in the report. A task lands once its verifier has passed, and its regression tests are written after that, by one author at a time, in the task\'s worktree: tests whose author cannot get them to land are dropped, as are tests that find a defect, which uses no try since the task has landed, and the report notes each. In a track with an Operations or a Tables doc, a docs agent writes what each landed task changed into them. The run ends, once every clarity check, every task\'s tests and every write-back have ended, with the journeys check of the tasks it landed and finish, after an error too: finish pushes deliver/<slug> and opens or updates one pull request with gh, into the branch the checkout had checked out, with the report as its text, and merges nothing. Where no pull request can be opened (no branch checked out, no remote, the base branch not on the remote, gh missing or unable to list pull requests there, nothing on deliver/<slug> that the base lacks), nothing is pushed and the report\'s second line says why and names the branch. finish then posts the report on the Run thread and gives the lock up.',
   phases: [
     { title: 'Start', detail: 'the helper takes the lock, opens the Run thread, reconciles claims and the lane worktree, sets deliver/<slug>, at HEAD again when its pull request was merged at its tip, and reads the checks; in a setup run it does nothing with git, which repo-open does once the setup task has landed' },
     { title: 'Unblock', detail: 'a blocked task whose questions on the behaviour tree are all answered, and whose threads all have a conclusion, gets each answer as a decision, its open findings resolved, and is unblocked, with a new round of tries; then retry-pass takes up each task parked after 3 tries: its open findings are resolved, and its tries count from 0' },
     { title: 'Setup', detail: 'in a setup run, the task "Set up the project" runs first and alone, straight in the folder, with no worktree and no lane: one implementer, setup-check, the fast command as a job there and one verifier, then setup-land and repo-open, which creates deliver/<slug> and the lane; no other task is claimed and no clarity check starts before it has landed, and a setup that does not land ends the run' },
-    { title: 'Clarity', detail: 'beside the delivery, which takes the tasks in the board\'s order and waits for the check of the next one, not for the checks of those after it: one check per backlog task whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and one that asks for the write-back to Operations and Tables a write-back obligation, and once a task is checked its obligations come from these decisions alone; a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a question on a node of the behaviour tree, with a recommendation, that blocks the task (a thread, in a feature without a tree)' },
+    { title: 'Clarity', detail: 'beside the delivery, which takes the tasks in the board\'s order and waits for the check of the next one, not for the checks of those after it: one check per backlog task whose text, criteria, linked nodes or decisions changed: a criterion that names a test becomes a test obligation, and one that asks for the write-back to Operations and Tables a write-back obligation, and once a task is checked its obligations come from these decisions alone; a minor gap takes its recommendation, the 3 blocking gaps of most impact go to the council and the rest take their recommendation, deferred by the cap; the council settles a question when all three members pick the same option and one quotes its source, or all three call the gap minor, or two pick the same option and each quotes its source, a decision that then says 2 of 3 and names the pick of the third; what it cannot settle becomes a question on a node of the behaviour tree, with a recommendation, that blocks the task (a thread, in a track without a tree)' },
     { title: 'Deliver', detail: 'at most `implementers` tasks implementing at once, each slot free again once its task is implemented: claim, after which the board is listed for the next task, worktree, implementer (on implRetry from try 2, reading every finding by try from the board, as every agent reads its task itself, and building to the design boards the task links), files; then at most `reviewers` in review, with a verdict per criterion and every defect, from which the script decides, never judging a test obligation or the write-back; a failed review, or a failure in the lane, sends the task back for the next try, held where it failed until an implementer slot is free, ahead of new claims, then moved to the backlog and claimed in one step; after 3 failed tries the task is parked: in the backlog, not blocked, its findings open, its worktree and branch removed, no thread; a worktree an implementer left on another branch goes back on story/<key> when it is clean, and the next implementer is told which commits to bring over; a question goes to the council first, and one it does not settle goes on a node of the behaviour tree and blocks only its own task' },
     { title: 'Lane', detail: 'one task at a time in the lane worktree <stories dir>/_lane: lane-prepare rebases story/<key> onto deliver/<slug> and checks it out, detached (a conflict or a missing worktree sends the task back with no try used, but from the third conflict of a task in a run; uncommitted changes, a rebase left in progress, an index.lock or another branch use one; trouble that is not the task\'s stops the lane); fast, stack_up and stack run there as jobs, the run\'s first stack_up after stack_reset, for what a stopped run left on the stack, and a failed one runs again on the base, after stack_reset for a stack check, where failing too stops the lane and passing uses a try; a verifier runs every criterion but the test obligations and the write-back, and compares the built screen with each design board the task links, the images design-export wrote once per run beside the boards\' tags: a part missing or extra, another order or place, other text, a missing state, a colour or a type style that is not the board\'s, but not size or position; any criterion not met or difference from a board is a finding and uses a try; lane-clean throws away what it left uncommitted, and lane-land moves deliver/<slug> by a compare-and-swap, makes the task done and keeps its worktree for its test author, after which a docs agent writes the task\'s changes into Operations and Tables, one write-back at a time, outside the lane; after a failure the lane goes back to the tip, and the stack, when it holds the task\'s build, is reset with stack_reset and rebuilt there' },
     { title: 'Tests', detail: 'a landed task\'s regression tests, outside the lane\'s lock, one author at a time: tests-prepare brings the task\'s worktree to the tip of deliver/<slug>, the author writes and commits there, never using the stack, and its questions go to the council; then a short turn in the lane, where lane-prepare rebases story/<key> onto the tip, the author\'s check runs as a job, with no fast, stack_up or stack check, and lane-land lands the tests and removes the worktree; a turn that fails, on a rebase conflict, a red check or a refused landing, gets the author once more, and a second failure drops the tests, as does a defect, which uses no try since the task has landed, a question the council does not settle, an author that is blocked or returns nothing, a lane that has stopped and the hard cap: the report notes each task that landed without regression tests' },
@@ -28,11 +28,11 @@ export const meta = {
 
 // ---- args ------------------------------------------------------------------
 const A = args && typeof args === 'object' ? args : {}
-if (typeof A.feature !== 'string' || !A.feature.trim()) throw new Error('Pass the feature: args {feature: "<name>"}')
-const feature = A.feature
+if (typeof A.track !== 'string' || !A.track.trim()) throw new Error('Pass the track: args {track: "<name>"}')
+const track = A.track
 const implementers = Number.isInteger(A.implementers) && A.implementers > 0 ? A.implementers : 3
 const reviewers = Number.isInteger(A.reviewers) && A.reviewers > 0 ? A.reviewers : 3
-// The distinct stories a run takes at most, for a first run on a feature.
+// The distinct stories a run takes at most, for a first run on a track.
 const storyLimit = Number.isInteger(A.storyLimit) && A.storyLimit > 0 ? A.storyLimit : Infinity
 // Where make install-agent-tools links the helper. The script cannot read
 // HOME; the courier's shell expands the ~.
@@ -494,7 +494,7 @@ const steps = async (list, { key, past = false, opId, phase } = {}) => {
 
 // ---- the design ------------------------------------------------------------
 // A task points at a board with a link to a design doc: context gives them as
-// boards. The feature's boards are exported once per run, by design-export,
+// boards. The track's boards are exported once per run, by design-export,
 // before the first implementer or verifier of a task that has boards. An
 // export that fails stops no task: the run notes it once, the prompts name
 // only omni design read, and the verifier compares from the tags.
@@ -517,10 +517,10 @@ const designFor = (ctx) => {
 }
 
 // ---- prompts ---------------------------------------------------------------
-// An omni command as an agent runs it, as this run and in the feature. The
+// An omni command as an agent runs it, as this run and in the track. The
 // project needs no naming: omni finds the link of the main worktree from any
 // git worktree of it.
-const omniAs = (role) => `OMNI_RUN=${runId} OMNI_ROLE=${role} OMNI_FEATURE=${quote(feature)} omni`
+const omniAs = (role) => `OMNI_RUN=${runId} OMNI_ROLE=${role} OMNI_TRACK=${quote(track)} omni`
 const READ_ONLY = 'You are read-only: you change no file but your result file, make no commit, and write nothing to the board.'
 const BOARD = `## The board
 The workflow makes every write to the board itself, through its helper, from what you return. Never run an omni command that writes (a story claim, move, finding, decision, edit or block, a post, a thread create); reading with omni is fine.`
@@ -543,7 +543,7 @@ Read the story ${ctx.key} first, from OmniState, with ${storyRead(ctx, role)}. I
 - criteria: its acceptance criteria, numbered from 0 in the order they come; human_check true marks one that a human confirms later.
 - decisions: each a question, the choice taken, and by whom, agent or human. ${decisions}${docs ? `
 - links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`${omniAs(role)} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.` : ''}${ctx.nodes && ctx.nodes.length ? `
-- covered nodes: the story covers the nodes of the feature's behaviour tree that its text lists (${ctx.nodes.join(', ')}). Read each one with \`${omniAs(role)} behaviour read <node id>\`. An answered question on a node is settled: take its answer as the spec. A rule that reaches the node binds the story. An open question is not decided: do not build, judge or test as if it were.` : ''}${findings ? `
+- covered nodes: the story covers the nodes of the track's behaviour tree that its text lists (${ctx.nodes.join(', ')}). Read each one with \`${omniAs(role)} behaviour read <node id>\`. An answered question on a node is settled: take its answer as the spec. A rule that reaches the node binds the story. An open question is not decided: do not build, judge or test as if it were.` : ''}${findings ? `
 - findings: each with its stage, text, files and resolved. An open one has resolved false: one whose text starts with [attempt N] is what failed attempt N of this round, and one without that number used no attempt, such as a rebase conflict. A resolved one whose text starts with [attempt N] is from an earlier round, and says what failed then. ${findingCounts(ctx, findings)}` : ''}`
 const findingCounts = (ctx, task) => {
   const { open, uncounted, earlier } = ctx.findings
@@ -646,12 +646,12 @@ const CLARITY_SCHEMA = {
     },
   },
 }
-const clarityPrompt = (ctx, file) => `You check ONE story of the feature "${feature}" for gaps before any code is written. ${READ_ONLY}
+const clarityPrompt = (ctx, file) => `You check ONE story of the track "${track}" for gaps before any code is written. ${READ_ONLY}
 
 ${storySection(ctx, 'clarity', { decisions: 'They are settled: a gap one of them already settles is NOT raised again.' })}
 
 ## The shared parts
-The rule below refers to the feature's Spec, Architecture, DB and UI docs. List them with \`${omniAs('clarity')} doc list\`, which gives each doc's pillar, and read each spec, architecture and db doc once, whole, with \`${omniAs('clarity')} doc read <doc>\`. A ui doc can be hundreds of KB: read of it only the nodes the story links, as above, and another part of it only when a criterion names it. Treat these docs as the shared parts of every story: a criterion they already settle is not a gap. The story's links name the nodes of them it rests on.
+The rule below refers to the track's Spec, Architecture, DB and UI docs. List them with \`${omniAs('clarity')} doc list\`, which gives each doc's pillar, and read each spec, architecture and db doc once, whole, with \`${omniAs('clarity')} doc read <doc>\`. A ui doc can be hundreds of KB: read of it only the nodes the story links, as above, and another part of it only when a criterion names it. Treat these docs as the shared parts of every story: a criterion they already settle is not a gap. The story's links name the nodes of them it rests on.
 
 ${BOARD}
 ${TWO_IMPLEMENTATIONS}${BLOCKING_OR_MINOR}${TESTS_AND_IMPACT}
@@ -707,14 +707,14 @@ const RESUME = 'An earlier session of this attempt stopped to ask a question, wh
 // What an implementer builds a task with boards to.
 const buildSection = (ctx, design) => (ctx.boards && ctx.boards.length ? `
 ## The design
-The story links ${plural(ctx.boards.length, 'board', 'boards')} of the feature's design. Build the screen to them:
+The story links ${plural(ctx.boards.length, 'board', 'boards')} of the track's design. Build the screen to them:
 ${boardLines(ctx, 'impl')}
 ${design && !design.failed ? `${boardImages(design, 'built')}\n` : ''}Every part, its order and place, its text, each state the boards show, and each colour and type style come from the board. Where the project's code has the design tokens, use a token by its name (a value such as $color.brand in the tags), not its value: \`${omniAs('impl')} tokens export\` prints them.
 ` : '')
 // Where the commands to start and test the app are, when the project has a
 // Setup doc.
 const setupLine = (role) => (setupDoc ? `\n- The commands to start and test the app are in the project's Setup doc: read it with \`${omniAs(role)} doc read ${setupDoc}\`.` : '')
-const implPrompt = (ctx, wt, attempt, task, found, file, design) => `You implement ONE story of the feature "${feature}" in its own git worktree.
+const implPrompt = (ctx, wt, attempt, task, found, file, design) => `You implement ONE story of the track "${track}" in its own git worktree.
 
 ## Your worktree
 ${wt} (branch story/${ctx.key}, cut from ${branch}). Work only there: cd into it first, and run every command there.${found ? `\n${found}` : ''}
@@ -782,7 +782,7 @@ const reviewSchema = (n) => ({
     node: { type: 'string', description: 'Only with needs_decision: the ID of the node of the story\'s Covers lines the question belongs to; leave out when none fits' },
   },
 })
-const reviewPrompt = (ctx, wt, file) => `You review ONE story of the feature "${feature}" before it goes to the test lane. ${READ_ONLY} You run no test, build or app either.
+const reviewPrompt = (ctx, wt, file) => `You review ONE story of the track "${track}" before it goes to the test lane. ${READ_ONLY} You run no test, build or app either.
 
 ## The change
 Worktree ${wt}, branch story/${ctx.key}, cut from ${branch}. See the diff with \`git -C ${wt} diff refs/heads/${branch}...HEAD\` and read the changed files there.
@@ -867,10 +867,10 @@ const KINDS = { missing_part: 'a part missing', extra_part: 'a part extra', orde
 // prints its tags, and, unless the export failed, where its image is: the
 // script never builds a board's file path, the export's manifest gives it.
 const boardLines = (ctx, role) => ctx.boards.map((x) => `- the board ${x.board} of the design doc ${x.doc}: \`${omniAs(role)} design read --doc ${x.doc} --board ${x.board}\` prints its tags`).join('\n')
-const boardImages = (design, verb = 'compared') => `The run exported the feature's boards to ${design.dir}. In ${design.dir}/manifest.json, the entry of files with a board's doc ID as doc_id and its board ID as board_id has path, the board's tags file relative to ${design.dir}. The board's image is the file of the same name ending .png, beside it: open it with the Read tool. A board without such an image is ${verb} from its tags.`
+const boardImages = (design, verb = 'compared') => `The run exported the track's boards to ${design.dir}. In ${design.dir}/manifest.json, the entry of files with a board's doc ID as doc_id and its board ID as board_id has path, the board's tags file relative to ${design.dir}. The board's image is the file of the same name ending .png, beside it: open it with the Read tool. A board without such an image is ${verb} from its tags.`
 const designSection = (ctx, design) => (ctx.boards && ctx.boards.length ? `
 ## The design
-The story links ${plural(ctx.boards.length, 'board', 'boards')} of the feature's design. Compare the built screen with each one:
+The story links ${plural(ctx.boards.length, 'board', 'boards')} of the track's design. Compare the built screen with each one:
 ${boardLines(ctx, 'verify')}
 ${design && !design.failed ? boardImages(design) : 'The design could not be exported in this run, so there is no image of a board: compare each one from its tags.'} A value such as $color.brand in the tags is a token of the design system: \`${omniAs('verify')} tokens export\` prints the values of the tokens.
 
@@ -883,7 +883,7 @@ const commandsOf = () => ['fast', 'stack', 'lint'].filter((name) => checks[name]
 // the start command the Setup doc gives, else the Project spec or the
 // project's own files, and stops it again.
 const startApp = (ctx) => `This run has no stack command. To run what the story needs running, start the app in ${laneDir} yourself, with the start command ${setupDoc ? `the project's Setup doc gives (\`${omniAs('verify')} doc read ${setupDoc}\`); where it gives none, take it from` : 'from'} the project's Spec doc (\`${omniAs('verify')} doc list --global\` lists it) or the project's own files, such as its README or its build files.${ctx.boards && ctx.boards.length ? ' When you find no start command, return compared false for each board, with that reason.' : ' When you find no start command, say so in the evidence of each criterion that needs the app running.'} Stop the app before you return, and confirm that nothing you started is left running.`
-const verifyPrompt = (ctx, file, design) => `You check ONE story of the feature "${feature}" by running it. ${READ_ONLY}
+const verifyPrompt = (ctx, file, design) => `You check ONE story of the track "${track}" by running it. ${READ_ONLY}
 
 ## Where
 The lane worktree ${laneDir} holds story/${ctx.key} rebased onto ${branch}, on a detached HEAD, and the story's checks passed there${checks.stack_up ? `; the stack is up, as \`${checks.stack_up}\` started it from there. Exercise the story against that stack, not another copy on the machine` : ''}. Work only there: cd into it first, and run every command there. ${LANE_HEAD}${checks.stack_up ? '' : `\n\n${startApp(ctx)}`}
@@ -913,7 +913,7 @@ Return raw structured data only.`
 const SETUP_FRESH = 'Set the project up as the rules above say, commit it, and return the result.'
 const SETUP_CONTINUE = 'The folder holds the earlier try\'s work: continue from it, do not start over, and fix every open finding of the task.'
 const SETUP_ROUND = 'The folder holds the work of the earlier round of tries: continue from it, do not start over. The task\'s resolved findings say what failed then.'
-const setupPrompt = (ctx, attempt, task, file) => `You set up the project of the feature "${feature}": the task ${ctx.key}, "Set up the project", which is built before every other task of the feature.
+const setupPrompt = (ctx, attempt, task, file) => `You set up the project of the track "${track}": the task ${ctx.key}, "Set up the project", which is built before every other task of the track.
 
 ## Where
 ${root}, the project's folder. Work only there: cd into it first, and run every command there. There is no worktree and no branch of the task's own: you work straight in the folder.
@@ -938,7 +938,7 @@ ${BOARD} The one exception is the Setup doc below.
 - Last, write the project-level doc \`Setup\` in the pillar \`architecture\`: the folders, the libraries, and the commands to start the app and to run the tests. When a project-level doc titled Setup exists (\`${omniAs('impl')} doc list --global --json\`), update that doc with \`${omniAs('impl')} doc edit <its ID>\`; else create it with \`${omniAs('impl')} doc create --global --kind html --pillar architecture --title Setup\`.
 
 ## Rules
-- Build only the setup: nothing a later task of the feature builds.
+- Build only the setup: nothing a later task of the track builds.
 - If the setup needs a product decision the spec does not make and the task cannot avoid, STOP: status needs_decision with question, options and recommendation. Never guess a product rule. Ordinary technical choices are yours.
 - If you genuinely cannot continue, status blocked with the reason in summary.
 - Return decisions for every non-obvious technical choice.
@@ -949,7 +949,7 @@ ${resultFile(file)}
 ## Your task now
 This is attempt ${attempt} of ${MAX_ATTEMPTS} of this round. ${task}
 Return raw structured data only.`
-const setupVerifyPrompt = (ctx, file) => `You check the task ${ctx.key}, "Set up the project", of the feature "${feature}" by running it. ${READ_ONLY}
+const setupVerifyPrompt = (ctx, file) => `You check the task ${ctx.key}, "Set up the project", of the track "${track}" by running it. ${READ_ONLY}
 
 ## Where
 ${root}, the project's folder, where the task was built and committed, and where its fast check (\`${checks.fast}\`) passed. Work only there: cd into it first, and run every command there. Never check out or create a branch.
@@ -1091,7 +1091,7 @@ const fixTests = (key, why) => `An earlier session committed tests in your workt
 The story itself has landed. Fix the tests, never the production code, so that they land: for a check that failed, read the end of its output and make the check pass; for a rebase conflict, rebase story/${key} onto ${branch} and resolve it in your tests. Commit the fix, and return the result with the check.`
 // base and final: the tip the story was rebased onto, and the commit it
 // landed as, between which lies what the story changed.
-const authorPrompt = (ctx, wt, base, final, confirmed, task, file) => `You write the lasting regression tests for one story of the feature "${feature}", with a fresh context.
+const authorPrompt = (ctx, wt, base, final, confirmed, task, file) => `You write the lasting regression tests for one story of the track "${track}", with a fresh context.
 
 ## Your worktree
 ${wt} (branch story/${ctx.key}), at the tip of ${branch}, where the story has landed: the lane ran its checks on it, and a verifier confirmed that it matches its criteria. Work only there: cd into it first, and run every command there. Commit your tests on story/${ctx.key}: the workflow lands your commits on ${branch}. You own tests; you never change production code.
@@ -1121,7 +1121,7 @@ ${resultFile(file)}
 ${task}
 Return raw structured data only.`
 
-// The docs agent writes back what a landed task changed to the feature's how,
+// The docs agent writes back what a landed task changed to the track's how,
 // the docs Operations and Tables. The rules are those of the omni-how skill's
 // write-back.md, carried here in full: another machine may not have the skill.
 const DOCS_SCHEMA = {
@@ -1134,7 +1134,7 @@ const DOCS_SCHEMA = {
   },
 }
 const docsList = () => [['Operations', 'architecture', how.operations], ['Tables', 'db', how.tables]]
-const docsPrompt = (ctx, base, final, file) => `You write back to the how of the feature "${feature}" what one landed task changed. You are read-only in the checkout: you change no file there but your result file, and make no commit. You write only to the docs named below.
+const docsPrompt = (ctx, base, final, file) => `You write back to the how of the track "${track}" what one landed task changed. You are read-only in the checkout: you change no file there but your result file, and make no commit. You write only to the docs named below.
 
 ## What landed
 The task ${ctx.key} has landed on ${branch}. Work in ${root}: cd into it first. What it changed is \`git diff ${base}..${final}\`; read the changed files at ${final} with \`git show ${final}:<path>\`.
@@ -1142,14 +1142,14 @@ The task ${ctx.key} has landed on ${branch}. Work in ${root}: cd into it first. 
 ${storySection(ctx, 'docs', { decisions: 'The implementer named in them each operation and table it built or changed, and each place it went against the docs.', docs: false })}
 
 ## The docs
-${docsList().map(([title, pillar, id]) => (id ? `- \`${title}\` (pillar ${pillar}): doc ${id}.` : `- \`${title}\` does not exist in this feature: it gets no write.`)).join('\n')}
+${docsList().map(([title, pillar, id]) => (id ? `- \`${title}\` (pillar ${pillar}): doc ${id}.` : `- \`${title}\` does not exist in this track: it gets no write.`)).join('\n')}
 Read each with \`${omniAs('docs')} doc read <doc>\`: it prints every node with its \`data-omni-id\` and its \`data-rev\`.
 
 ## The rules
 The how is a starting point: the task built what it needed, also where the docs say otherwise, and the docs now have to say what the landed code does.
 - An operation the task built: \`set\` its \`Shape\` cell to the exact shape: how it is called, what goes in, what comes back, how it fails.
-- An operation it added, renamed or gave another job: \`insert\` or \`replace\` its row. One the feature no longer needs: \`delete\` its row.
-- A table it built or changed differently from the doc: \`replace\` the column rows and key lines that differ, so the doc states the table as the code has it. A table the doc lacks: \`insert\` its section in the doc's shape. One the feature no longer needs: \`delete\` its section.
+- An operation it added, renamed or gave another job: \`insert\` or \`replace\` its row. One the track no longer needs: \`delete\` its row.
+- A table it built or changed differently from the doc: \`replace\` the column rows and key lines that differ, so the doc states the table as the code has it. A table the doc lacks: \`insert\` its section in the doc's shape. One the track no longer needs: \`delete\` its section.
 - An existing part it started to use, or stopped using: \`insert\` or \`delete\` its row under \`Builds on\` or \`Used as they are\`.
 - A choice (a \`Choice C<n>\` block) it went against: \`set\` the block to what now holds and why, under the same ID.
 - Write the state as it now is ("status is booked, cancelled or done"). Edit only the nodes that change, each with the \`rev\` you read.
@@ -1180,7 +1180,7 @@ const FINAL_SCHEMA = {
     report: { type: 'string' },
   },
 }
-const finalPrompt = (landed, file) => `You run the final check after a delivery run on the feature "${feature}". ${READ_ONLY}
+const finalPrompt = (landed, file) => `You run the final check after a delivery run on the track "${track}". ${READ_ONLY}
 
 ## Where
 The lane worktree ${laneDir}, on a detached HEAD at the tip of ${branch}, where this run landed its stories. Work only there: cd into it first, and run every command there. ${LANE_HEAD}
@@ -1195,7 +1195,7 @@ ${BOARD}
 
 ${resultFile(file)}
 ## Your task now
-1. Each story was checked on its own. Find the user journeys in these stories (\`${omniAs('final')} story read <key>\`) and in the feature's docs (\`${omniAs('final')} doc list\`, which gives each doc's pillar, then \`${omniAs('final')} doc read <doc>\` for a spec doc; a ui doc can be hundreds of KB, so read of it the nodes the stories link, with \`${omniAs('final')} doc read <doc> --node <node_id>\`, one --node for each) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components. Report each with its outcome.
+1. Each story was checked on its own. Find the user journeys in these stories (\`${omniAs('final')} story read <key>\`) and in the track's docs (\`${omniAs('final')} doc list\`, which gives each doc's pillar, then \`${omniAs('final')} doc read <doc>\` for a spec doc; a ui doc can be hundreds of KB, so read of it the nodes the stories link, with \`${omniAs('final')} doc read <doc> --node <node_id>\`, one --node for each) that span several of them (one story's output is another's input, a flow through several screens or endpoints), and exercise up to 3 of them for real, with the real components. Report each with its outcome.
 2. Stop every process and remove every container you started for the journeys, and confirm none is left.
 Do NOT change any code. healthy is false if the lane's last check failed or a journey fails; a failure is reported, not repaired.
 Return raw structured data only.`
@@ -1222,12 +1222,12 @@ const VOTE_SCHEMA = {
 }
 const readingText = (reading, ctx, code) => {
   if (reading.id === 'spec') {
-    return `You read the spec, and nothing else: the story's linked docs and the feature's decisions. The story's links with a doc_id and a node_id are the doc nodes it links: read the linked nodes of each of those docs in one call, with \`${omniAs('council')} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc, and a doc whole, without --node, only when a node cannot be understood without the rest of it; a story with no such link links no doc node. The feature's decisions are those on its stories: \`${omniAs('council')} story list --json\` gives every story with its decisions. Pick what they say; when they say nothing about the question, pick none.`
+    return `You read the spec, and nothing else: the story's linked docs and the track's decisions. The story's links with a doc_id and a node_id are the doc nodes it links: read the linked nodes of each of those docs in one call, with \`${omniAs('council')} doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc, and a doc whole, without --node, only when a node cannot be understood without the rest of it; a story with no such link links no doc node. The track's decisions are those on its stories: \`${omniAs('council')} story list --json\` gives every story with its decisions. Pick what they say; when they say nothing about the question, pick none.`
   }
   if (reading.id === 'code') {
     return `You read the code, and nothing else: ${code ? `the story's worktree ${code}` : `the tip of ${branch}, with \`git -C ${root} grep -n <pattern> refs/heads/${branch}\` and \`git -C ${root} show refs/heads/${branch}:<path>\``}. Pick what the code already does or plainly expects: an existing behaviour, a convention, an interface. Quote it, with path:line as its source.`
   }
-  return 'You judge as the feature\'s user, and nothing else: which option would surprise them least? The story says who they are and what they are doing. Quote a doc node or a decision only when one says so; otherwise give no evidence.'
+  return 'You judge as the product\'s user, and nothing else: which option would surprise them least? The story says who they are and what they are doing. Quote a doc node or a decision only when one says so; otherwise give no evidence.'
 }
 const councilPrompt = (ctx, q, reading, code, file) => `You are one member of a council of three that settles a question a story raised, so that the human is asked only what the spec, the code and the user's expectations leave open. ${READ_ONLY} You answer on your own: the other members never see your answer, and there is one round.
 
@@ -1254,9 +1254,9 @@ const councilSlots = semaphore(COUNCILS)
 // For the run's report: questions the council settled, how many of those by
 // a majority of 2 to 1, and those sent to the human.
 const tally = { settled: 0, majority: 0, asked: 0 }
-// Whether the feature has a behaviour tree, as start found it.
+// Whether the track has a behaviour tree, as start found it.
 let tree = false
-// The IDs of the feature's docs Operations and Tables, as start found them.
+// The IDs of the track's docs Operations and Tables, as start found them.
 let how = { operations: null, tables: null }
 // A question an agent asked, at `at` in its result r: its text, for the
 // prompts and the logs, and where it is, for what the board gets, which
@@ -1269,16 +1269,16 @@ const said = (q, path, fallback = '') => part(q.r, [...q.at, ...path], fallback)
 const option = (q, n) => said(q, ['options', n - 1], String(q.options[n - 1]))
 // A member's quote and its source, as the council's evidence.
 const quoted = (v) => ['"', part(v, ['quote']), '" (', part(v, ['source']), ')']
-// A question for the human: on its node of the feature's behaviour tree,
+// A question for the human: on its node of the track's behaviour tree,
 // with the options and a recommendation, blocking the story until it is
-// answered; in a feature without a tree, a thread named after the story and
+// answered; in a track without a tree, a thread named after the story and
 // linked from it. recommendation and council: the parts of their text.
 // how, here and for the council below: phase, as for step(), and link, false
 // for a story that has landed, which no question blocks and the board lets no
 // thread be linked from: its thread names it in its title only.
 const askHuman = async (ctx, q, label, recommendation, council, { phase, link = true } = {}) => {
   const key = ctx.key
-  // A feature with a tree gets the question on the node it belongs to, which
+  // A track with a tree gets the question on the node it belongs to, which
   // blocks the story unless it has landed (link false). A step that fails is
   // an error of the story, with no thread to fall back on.
   if (tree) {
@@ -1366,8 +1366,8 @@ const question = (ctx, r, asker, code, label, asked, how = {}) => {
 enter('Start')
 const force = A.force === true
 const startOp = opIdOf('start')
-const startHash = fnv1a(JSON.stringify({ opId: startOp, feature, force }))
-const started = await carry('start', courierPrompt(`node ${shellPath(HELPER)} start --op ${startOp} --feature ${quote(feature)}${force ? ' --force' : ''} --hash ${startHash}`), startHash, 'courier:start')
+const startHash = fnv1a(JSON.stringify({ opId: startOp, track, force }))
+const started = await carry('start', courierPrompt(`node ${shellPath(HELPER)} start --op ${startOp} --track ${quote(track)}${force ? ' --force' : ''} --hash ${startHash}`), startHash, 'courier:start')
 runId = started.run
 root = started.root
 branch = started.branch
@@ -1381,7 +1381,7 @@ const setupKey = started.setupTask || null
 // The project's Setup doc, which says how to start and test the app, or null:
 // start gives it, and repo-open again once a setup run has written it.
 let setupDoc = typeof started.setup === 'string' && started.setup ? started.setup : null
-log(setupKey ? `Run ${runId} on ${feature}: ${setupKey} sets the project up first, in ${root}` : `Run ${runId} on ${feature}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
+log(setupKey ? `Run ${runId} on ${track}: ${setupKey} sets the project up first, in ${root}` : `Run ${runId} on ${track}: stories land on ${branch}, now at ${String(started.tip).slice(0, 7)}`)
 let checks = started.checks
 // The tip of deliver/<slug>: where start left it, then where each story landed.
 let tip = started.tip
@@ -2232,7 +2232,7 @@ const laneStory = async (key) => {
 // that is blocked or returns nothing; a lane that has stopped; the hard cap.
 // Dropped tests cost the story nothing: its worktree goes, and the report
 // notes that it landed without regression tests, and why. A question of this
-// chain blocks nothing; a thread, in a feature without a tree, names its story
+// chain blocks nothing; a thread, in a track without a tree, names its story
 // in its title and is not linked from it: the board lets nothing be linked
 // from a story that is done.
 const TESTS = 'Tests'
@@ -2370,10 +2370,10 @@ const queueTests = (key, story) => {
 }
 
 // ---- the write-back ------------------------------------------------------------
-// A landed task's changes go into the feature's Operations and Tables, by a
+// A landed task's changes go into the track's Operations and Tables, by a
 // docs agent of its own, once lane-land has answered landed: outside the
 // lane's lock, one write-back at a time, as a promise chain, as the tests'
-// queue is. A feature with neither doc gets none. The task stays done
+// queue is. A track with neither doc gets none. The task stays done
 // whatever the agent returns: blocked, or nothing at all, adds a note.
 let docsTurn = Promise.resolve()
 // The write-backs queued or at work, which the agent cap sets calls aside for
@@ -2591,7 +2591,7 @@ try {
 
 return {
   run: runId,
-  feature,
+  track,
   root,
   branch,
   thread: started.thread,
@@ -2617,7 +2617,7 @@ return {
   tip,
   report: finished.report,
   posted: finished.posted,
-  // The feature's pull request, or null with why there is none.
+  // The track's pull request, or null with why there is none.
   pr: finished.pr ? finished.pr.url : null,
   why: finished.why ?? null,
   // The tasks parked after their third try, and those waiting on a question.

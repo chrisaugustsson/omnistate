@@ -1,11 +1,11 @@
 ---
 name: ui-design
-description: The finished design of a feature on OmniState design boards, one board per screen or state, on the project's design system (created first when the project has none), with every value a token and every repeated element a component, wired into a prototype and checked on board images. Use after the human picked a layout option from ux-design, when asked to make wireframes look finished, or to rework finished boards from comments.
+description: The finished design of a track (a feature or a change to one) on OmniState design boards, one board per screen or state, on the project's design system (created first when the project has none), with every value a token and every repeated element a component, wired into a prototype and checked on board images. Use after the human picked a layout option from ux-design, when asked to make wireframes look finished, or to rework finished boards from comments.
 ---
 
 # UI design
 
-The layout is decided: the human picked one of `ux-design`'s options, or combined them. This skill draws the feature once, as the finished design, and wires the boards into the prototype the human tries.
+The layout is decided: the human picked one of `ux-design`'s options, or combined them. This skill draws the track's screens once, as the finished design, and wires the boards into the prototype the human tries.
 
 It leans on these; read each when its step comes:
 
@@ -19,10 +19,10 @@ A caller such as a workflow may run the parts of a step (the design system, one 
 ## Inputs
 
 - **The pick** (required for a first design): the human's words, and the "Layout options" design doc it refers to.
-- **The behaviour:** the feature's behaviour tree when it has one, otherwise its spec.
+- **The behaviour:** the track's behaviour tree when it has one, otherwise its spec.
 - **The design system,** when the project has one.
 - **Research and brand notes,** when there are any.
-- **Destination:** a design doc on the feature, pillar `ui`, titled "Design", with one page; and the html doc "Design notes".
+- **Destination:** a design doc on the track, pillar `ui`, titled "Design", with one page; and the html doc "Design notes".
 
 ## Tokens only
 

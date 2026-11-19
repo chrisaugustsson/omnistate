@@ -54,11 +54,11 @@ Read it first: `omni --as <run>/<role> design read --doc <doc> --board <board>` 
 Tags that parse can still look wrong. Look at the image of every board you write.
 
 ```sh
-omni --as <run>/<role> export --project <project id> --feature "<feature>" --out <scratch>/look-1
+omni --as <run>/<role> export --project <project id> --track "<track>" --out <scratch>/look-1
 ls <scratch>/look-1/ui/*/*-<board id>.png
 ```
 
-The command writes each board of the feature as `<board name>-<board id>.png` (at twice the board's size, in the design system's first mode) with its tags beside it. Open the images of your boards with the Read tool. `omni project list` and `omni link` print the project ID.
+The command writes each board of the track as `<board name>-<board id>.png` (at twice the board's size, in the design system's first mode) with its tags beside it. Open the images of your boards with the Read tool. `omni project list` and `omni link` print the project ID.
 
 In each image, look for:
 

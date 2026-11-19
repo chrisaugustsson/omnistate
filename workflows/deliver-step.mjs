@@ -5,7 +5,7 @@
 // The script reaches this helper through a courier agent, which writes the
 // step's payload to a file with the Write tool and runs one of:
 //
-//   node ~/.claude/omni/deliver-step.mjs start --op <opId> --feature <name> [--force] --hash <hash>
+//   node ~/.claude/omni/deliver-step.mjs start --op <opId> --track <name> [--force] --hash <hash>
 //   node ~/.claude/omni/deliver-step.mjs <step> --run <runId> --payload <root>/.omni/runs/<runId>/in/<opId>.json --hash <hash>
 //   node ~/.claude/omni/deliver-step.mjs batch --run <runId> --payload <root>/.omni/runs/<runId>/in/<opId>.json --hash <hash>
 //
@@ -13,7 +13,7 @@
 // - The payload file holds JSON.stringify(obj) of the script's object, which
 //   carries its opId. The helper reads it as UTF-8, removes one trailing
 //   newline if there is one, parses it and deletes the file. start has no run
-//   or root yet, so its object, {opId, feature, force} in that order, comes as
+//   or root yet, so its object, {opId, track, force} in that order, comes as
 //   flags.
 // - --hash is fnv1a of that payload text, as the script computed it. The
 //   helper compares it with the payload it got before anything else, even
@@ -77,8 +77,8 @@
 // The steps, each with its payload and the fields its body has besides ok and
 // received, in the order STEPS gives them after start:
 // - start, from flags: run, root, branch, tip, lane, thread (the Run thread),
-//   tree (whether the feature has a behaviour tree), how ({operations,
-//   tables}: the IDs of the feature's docs Operations and Tables, or null),
+//   tree (whether the track has a behaviour tree), how ({operations,
+//   tables}: the IDs of the track's docs Operations and Tables, or null),
 //   checks, base (the branch checked out in the root, or null), setupTask
 //   (the key of the task "Set up the project" while it is not done or
 //   cancelled, else null), stories ({keys, counts by status, blocked}),
@@ -135,7 +135,7 @@
 // - files {key}: key, files (how many)
 // - thread-open {title, body, key?, job?}: thread, and key when given. A
 //   body that names a job gets the end of its log. Only a question in a
-//   feature without a behaviour tree opens one
+//   track without a behaviour tree opens one
 // - question-ask {key, question, node?, recommendation?, options?, asker,
 //   block?}: key, question (the question's ID), node (its node_id); asks on
 //   the payload's node, else the task's first Covers node, else `.`,
@@ -407,19 +407,19 @@ const recordedOp = (root, runId, step, opId) => {
   const ops = (readJson(appliedPathOf(root, runId)) || {})[step] || {}
   return Object.hasOwn(ops, opId) ? ops[opId] : null
 }
-// run.json holds the run: its feature, root, thread, checks, the tip of
+// run.json holds the run: its track, root, thread, checks, the tip of
 // deliver/<slug> at its start, and the stories it landed.
 const runPathOf = (root, runId) => path.join(runDirOf(root, runId), 'run.json')
 // .omni/restarted-<slug> holds the old tip of a deliver/<slug> whose pull
 // request was merged and that a run started again at HEAD. finish's push takes
 // it as its lease, in whichever run pushes next, and removes it once a push of
 // the branch went through: until then the remote still has that tip.
-const restartedPathOf = (root, feature) => path.join(root, '.omni', `restarted-${slugOf(feature)}`)
+const restartedPathOf = (root, track) => path.join(root, '.omni', `restarted-${slugOf(track)}`)
 // .omni/replaced-<slug> lists every tip of deliver/<slug> that a restart
 // replaced, one per line, and is never emptied: a story branch cut before a
 // restart still holds commits that the merged pull request brought into the
 // new tip as other commits, in any later run.
-const replacedPathOf = (root, feature) => path.join(root, '.omni', `replaced-${slugOf(feature)}`)
+const replacedPathOf = (root, track) => path.join(root, '.omni', `replaced-${slugOf(track)}`)
 const updateRun = (root, runId, change) => withLock(runPathOf(root, runId), () => {
   const info = change(readJson(runPathOf(root, runId)) || {})
   writeJson(runPathOf(root, runId), info)
@@ -711,14 +711,14 @@ const supervise = async (jobFile) => {
 // ---- the board and the checkout of one run ---------------------------------
 const WORKING = ['implementing', 'review', 'testing']
 const CHECKS = ['fast', 'stack_up', 'stack', 'stack_reset', 'seed', 'lint']
-const slugOf = (feature) => feature.toLowerCase().replace(/[^a-z0-9]/g, '-')
-const boardOf = (root, runId, feature) => {
+const slugOf = (track) => track.toLowerCase().replace(/[^a-z0-9]/g, '-')
+const boardOf = (root, runId, track) => {
   const git = (argv, opts) => run('git', ['-C', root, ...argv], opts)
   const storiesDir = path.join(root, '..', `${path.basename(root)}-stories`)
-  const branch = `deliver/${slugOf(feature)}`
+  const branch = `deliver/${slugOf(track)}`
   const identity = { ...process.env, OMNI_RUN: runId, OMNI_ROLE: 'deliver' }
-  // Every omni call acts as this run's agent, in the feature.
-  const omni = (argv, opts = {}) => run('omni', [...argv, '--feature', feature], { cwd: root, ...opts, env: identity })
+  // Every omni call acts as this run's agent, in the track.
+  const omni = (argv, opts = {}) => run('omni', [...argv, '--track', track], { cwd: root, ...opts, env: identity })
   const omniJson = (argv) => {
     const parsed = JSON.parse(omni([...argv, '--json']))
     return parsed.story || parsed
@@ -739,7 +739,7 @@ const boardOf = (root, runId, feature) => {
       try { fs.unlinkSync(file) } catch {}
     }
   }
-  // A question for the human is a thread on the feature named after the story,
+  // A question for the human is a thread on the track named after the story,
   // linked from the story, and the story is blocked until it concludes. An
   // edit sets all of a story's links, so one story's link writes go one at a
   // time, under a lock of the story: two thread-opens at once each linked the
@@ -760,7 +760,7 @@ const boardOf = (root, runId, feature) => {
     if (!docs.has(id)) docs.set(id, tryRun('omni', ['doc', 'read', id], { cwd: root, env: identity }) ?? `(the doc ${id} could not be read)`)
     return docs.get(id)
   }
-  return { root, runId, feature, git, storiesDir, lane: path.join(storiesDir, '_lane'), branch, omni, listStories, readStory, write, post, linkAndBlock, docText, worktreeOf: (key) => path.join(storiesDir, key) }
+  return { root, runId, track, git, storiesDir, lane: path.join(storiesDir, '_lane'), branch, omni, listStories, readStory, write, post, linkAndBlock, docText, worktreeOf: (key) => path.join(storiesDir, key) }
 }
 
 const statusOf = (s) => ({ key: s.key, status: s.status, blocked: !!s.blocked, holder: s.holder ? s.holder.run : null })
@@ -1125,7 +1125,7 @@ const waitsOf = (b, story) => {
   }
   return lines.length ? lines : [`blocked${unreadable ? `: ${unreadable}` : ''}`]
 }
-// The report, the text of the feature's pull request: what the script knows
+// The report, the text of the track's pull request: what the script knows
 // (the outcomes, the council's counts, the journeys, the notes, the boards
 // not compared) and what the helper does (the commits landed, the tasks that
 // wait or failed, the human checks left, the timings), from the board. Each
@@ -1196,10 +1196,10 @@ const reportText = (b, info, report) => {
   const notStarted = stories.filter((s) => s.status === 'backlog' && take(s)).map((s) => named(s.key))
   const uncompared = list(report.uncompared).filter((u) => u.key).map((u) => `${named(u.key)}: ${list(u.boards).join(', ')}${u.reason ? `: ${String(u.reason).slice(0, 300)}` : ''}`)
   return `${[
-    `# ${b.feature}: build report of ${b.runId}`,
+    `# ${b.track}: build report of ${b.runId}`,
     ...list(report.notes).map(String),
     `## Built\n${lines(landed.map((l) => `${named(l.key)}${l.tests ? ', its tests' : ''}: ${commitsOf(l).join('; ') || 'no commits'}`))}`,
-    `## Waiting on a question\n${unread || `${lines(waiting)}${waiting.length ? '\n\nAnswer on the feature\'s Behaviour screen; the next build takes these tasks up.' : ''}`}`,
+    `## Waiting on a question\n${unread || `${lines(waiting)}${waiting.length ? '\n\nAnswer on the track\'s Behaviour screen; the next build takes these tasks up.' : ''}`}`,
     `## Failed\n${unread ? [unread, ...failedLines.map((l) => `- ${l}`)].join('\n') : lines(failedLines)}`,
     `## Waiting for another task\n${unread || lines(heldLines)}`,
     `## Not started\n${unread || lines(notStarted)}`,
@@ -1212,7 +1212,7 @@ const reportText = (b, info, report) => {
 }
 
 // ---- the pull request ------------------------------------------------------
-// finish is the only step that pushes: the feature's branch to the remote of
+// finish is the only step that pushes: the track's branch to the remote of
 // the base branch, the one checked out in the root, and one pull request from
 // it into the base, with the report as its text. It merges nothing.
 const PUSH_MS = 5 * 60000
@@ -1254,7 +1254,7 @@ const ghRepoOf = (root, remote) => ghRepo((tryRun('git', ['-C', root, 'remote', 
 // the remote and base, with the open pull request when there is one. Only gh
 // pr list reaches the network: the other reasons come from local refs.
 const prPlan = (b, info) => {
-  if (!info.tip) return { why: 'the feature has no branch yet' }
+  if (!info.tip) return { why: 'the track has no branch yet' }
   const base = baseOf(b.root)
   if (!base) return { why: 'the checkout has no branch checked out' }
   const remote = (tryRun('git', ['-C', b.root, 'config', `branch.${base}.remote`]) || '').trim() || 'origin'
@@ -1272,7 +1272,7 @@ const prPlan = (b, info) => {
   if (ahead === '0') return { why: `${b.branch} holds nothing that ${base} lacks` }
   return { base, remote, repo, open: Array.isArray(open) && open.length ? open[0] : null }
 }
-// Pushes the feature's branch and opens its pull request, or says why not:
+// Pushes the track's branch and opens its pull request, or says why not:
 // {pr: {url, created} | null, pushed, why}. A failure is the answer's why,
 // never a throw.
 const pullRequest = (b, info, body) => {
@@ -1288,7 +1288,7 @@ const pullRequest = (b, info, body) => {
   // remote branch only while it is still at the merged tip; when the remote
   // has no such branch any more, git rejects that lease as stale, and the
   // push expects no branch there instead.
-  const leaseFile = restartedPathOf(b.root, b.feature)
+  const leaseFile = restartedPathOf(b.root, b.track)
   const restarted = (readText(leaseFile) || '').trim()
   // Never tags, whatever the user's push.followTags says.
   const push = (lease) => run('git', ['-C', b.root, 'push', '--no-follow-tags', ...(lease === undefined ? [] : [`--force-with-lease=${ref}:${lease}`]), plan.remote, `${ref}:${ref}`], { timeout: PUSH_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
@@ -1312,7 +1312,7 @@ const pullRequest = (b, info, body) => {
       run('gh', ['pr', 'edit', String(plan.open.number), '--body-file', file, ...plan.repo], { cwd: b.root, env })
       return { pr: { url: plan.open.url, created: false }, pushed: true, why: null }
     }
-    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.feature, '--body-file', file, ...plan.repo], { cwd: b.root, env })
+    const out = run('gh', ['pr', 'create', '--base', plan.base, '--head', b.branch, '--title', b.track, '--body-file', file, ...plan.repo], { cwd: b.root, env })
     const url = out.trim().split('\n').pop().trim()
     return { pr: { url, created: true }, pushed: true, why: null }
   } catch (e) {
@@ -1320,9 +1320,9 @@ const pullRequest = (b, info, body) => {
   }
 }
 // The report's second line: the pull request, or why there is none.
-const prLine = (b, { pr, why }) => (pr ? `Pull request: ${pr.url}` : why === 'the feature has no branch yet' ? `No pull request: ${why}.` : `No pull request: ${why}. The work is on the branch ${b.branch}.`)
+const prLine = (b, { pr, why }) => (pr ? `Pull request: ${pr.url}` : why === 'the track has no branch yet' ? `No pull request: ${why}.` : `No pull request: ${why}. The work is on the branch ${b.branch}.`)
 
-// A thread on the feature with one post, linked from the story and blocking
+// A thread on the track with one post, linked from the story and blocking
 // it when a key is given. A repeat uses the thread the first try opened, and
 // posts, links and blocks only what that try did not.
 const openThread = (b, p, marker, mark) => {
@@ -1351,7 +1351,7 @@ const STEPS = {
   // order besides: priority, then how many open stories each one unblocks,
   // then number. Of the other stories, only those the script takes up where
   // they wait, implemented or reviewed and not blocked, as key and status: a
-  // feature's stories only grow. A waiting story has no holder.
+  // track's stories only grow. A waiting story has no holder.
   list: (b) => {
     const waiting = b.listStories().filter((s) => (s.status === 'implemented' || s.status === 'reviewed') && !s.blocked).map((s) => ({ key: s.key, status: s.status }))
     const keys = pickableKeys(b)
@@ -1372,7 +1372,7 @@ const STEPS = {
   // decision settles.
   context: (b, p) => missing(p, 'key') || (() => {
     const story = b.listStories().find((s) => s.key === p.key)
-    if (!story) return { ok: false, error: `no story ${p.key} in the feature` }
+    if (!story) return { ok: false, error: `no story ${p.key} in the track` }
     const clarified = typeof (readJson(clarityPathOf(b.root)) || {})[story.key] === 'string'
     const { findings, uncounted, earlier } = findingsOf(story)
     const count = (groups) => groups.reduce((n, g) => n + g.findings.length, 0)
@@ -1392,7 +1392,7 @@ const STEPS = {
     }
   })(),
 
-  // The feature's boards as images, once per run. The files stay where omni
+  // The track's boards as images, once per run. The files stay where omni
   // export puts them: each board as <dir>/ui/<doc title as a slug>-<last 8
   // characters of the doc ID>/<board name as a slug>-<board ID>.tags, with
   // its .png beside it when the server gave a picture, and every board listed
@@ -1421,7 +1421,7 @@ const STEPS = {
     if (!project) return refuse('omni link gives no project_id for this folder')
     fs.rmSync(dir, { recursive: true, force: true })
     try {
-      run('omni', ['export', '--project', String(project), '--feature', b.feature, '--out', dir], { cwd: b.root, timeout: 5 * 60000 })
+      run('omni', ['export', '--project', String(project), '--track', b.track, '--out', dir], { cwd: b.root, timeout: 5 * 60000 })
     } catch (e) {
       if (e && e.timedOut) return refuse('omni export ran past 5 minutes')
       return refuse(said(e).slice(0, 300))
@@ -1482,7 +1482,7 @@ const STEPS = {
   // The checks go into run.json under those checks-set gave the run.
   'repo-open': (b) => {
     if (!ownTree(b.root)) return { ok: false, error: `${b.root} is not a git repository`, retry: false }
-    if (!hasRepo(b.root)) return { ok: false, error: `${b.root} has no commit to start the feature's branch from`, retry: false }
+    if (!hasRepo(b.root)) return { ok: false, error: `${b.root} has no commit to start the track's branch from`, retry: false }
     const log = []
     const plan = repoPlan(b)
     if (plan.ok === false) return { ...plan, retry: plan.retry === true }
@@ -1958,7 +1958,7 @@ const STEPS = {
     // the merged pull request brought into the tip as other commits: only the
     // story's own commits, after that fork, are moved onto the tip. With
     // several restarts, the newest fork the tip lacks.
-    const forks = (readText(replacedPathOf(b.root, b.feature)) || '').split('\n').map((l) => l.trim()).filter(Boolean)
+    const forks = (readText(replacedPathOf(b.root, b.track)) || '').split('\n').map((l) => l.trim()).filter(Boolean)
       .map((old) => (tryRun('git', ['-C', b.root, 'merge-base', ref, old]) || '').trim())
       .filter((at) => at && !isAncestorIn(b.root, at, base))
     const fork = forks.find((at) => forks.every((other) => isAncestorIn(b.root, other, at)))
@@ -2155,11 +2155,11 @@ const WRITES = new Set(['claim', 'rework', 'release', 'move', 'block', 'unblock'
 // The same op from the same session later is a new run the human started.
 const REPLAY_MS = 5 * 60000
 const start = (flags) => {
-  const { op: opId, feature } = flags
+  const { op: opId, track } = flags
   const force = flags.force === true
-  const received = fnv1a(JSON.stringify({ opId, feature, force }))
+  const received = fnv1a(JSON.stringify({ opId, track, force }))
   // Flags that do not hash to --hash came wrong from the courier.
-  if (!opId || !feature || !flags.hash) return { ok: false, received, error: 'start needs --op <opId>, --feature <name> and --hash <fnv1a of {opId, feature, force}>', retry: true }
+  if (!opId || !track || !flags.hash) return { ok: false, received, error: 'start needs --op <opId>, --track <name> and --hash <fnv1a of {opId, track, force}>', retry: true }
   if (flags.hash !== received) return { ok: false, received, error: `the flags hash to ${received}, not ${flags.hash}: run the command again exactly`, retry: true }
   const now = new Date()
   const runId = `run-${stamp(now)}-${process.pid}`
@@ -2173,9 +2173,9 @@ const start = (flags) => {
   let root = top || here
   let setupTask
   try {
-    setupTask = setupTaskOf(boardOf(root, runId, feature).listStories())
+    setupTask = setupTaskOf(boardOf(root, runId, track).listStories())
   } catch (e) {
-    return { ok: false, received, error: `the feature's tasks could not be listed: ${failure(e)}`, retry: retryable(e) }
+    return { ok: false, received, error: `the track's tasks could not be listed: ${failure(e)}`, retry: retryable(e) }
   }
   // A setup run in a folder that lies inside another checkout works in the
   // folder linked to the project, which has no repository of its own yet.
@@ -2187,7 +2187,7 @@ const start = (flags) => {
       root = here
     }
   }
-  if (!setupTask && !hasRepo(root)) return { ok: false, received, error: `${root} has no git repository, and the feature has no task "Set up the project" to make one: split the feature with omni-stories first`, retry: false }
+  if (!setupTask && !hasRepo(root)) return { ok: false, received, error: `${root} has no git repository, and the track has no task "Set up the project" to make one: split the track with omni-stories first`, retry: false }
   const session = sessionPid()
   const lockPath = lockPathOf(root)
   const log = []
@@ -2204,21 +2204,21 @@ const start = (flags) => {
       // record answers while its run holds the lock, a forced start's too:
       // the retry of a start with force would take over the lock of the run
       // its first try started.
-      const retried = session !== null && held.pid === session && held.op === opId && held.feature === feature && held.heartbeat === held.started && Date.now() - Date.parse(held.started) < REPLAY_MS
+      const retried = session !== null && held.pid === session && held.op === opId && held.track === track && held.heartbeat === held.started && Date.now() - Date.parse(held.started) < REPLAY_MS
       const recorded = retried ? recordedOp(root, held.run, 'start', opId) : null
       if (recorded && recorded.received === received) return { replay: recorded }
       const stale = retried ? 'its start, from this session, ended before it finished' : staleness(held)
-      if (!stale && !force) return { refused: `the tree is held by run ${held.run} for feature ${held.feature}, last heard from at ${held.heartbeat || held.started}; start with force if that run is dead` }
-      log.push(`Took over the lock of run ${held.run} for feature ${held.feature}: ${stale || 'start with force'}`)
+      if (!stale && !force) return { refused: `the tree is held by run ${held.run} for track ${held.track}, last heard from at ${held.heartbeat || held.started}; start with force if that run is dead` }
+      log.push(`Took over the lock of run ${held.run} for track ${held.track}: ${stale || 'start with force'}`)
     }
-    writeJson(lockPath, { run: runId, feature, pid: session, op: opId, started: now.toISOString(), heartbeat: now.toISOString() })
+    writeJson(lockPath, { run: runId, track, pid: session, op: opId, started: now.toISOString(), heartbeat: now.toISOString() })
     return {}
   })
   if (taken.replay) return taken.replay
   if (taken.refused) return { ok: false, received, error: taken.refused, retry: false }
   let body
   try {
-    body = startRun(boardOf(root, runId, feature), log, setupTask)
+    body = startRun(boardOf(root, runId, track), log, setupTask)
   } catch (e) {
     body = { ok: false, error: failure(e), retry: retryable(e) }
   }
@@ -2229,7 +2229,7 @@ const start = (flags) => {
   }
   body = { ok: true, received, ...body }
   fs.mkdirSync(path.join(runDirOf(root, runId), 'in'), { recursive: true })
-  writeJson(runPathOf(root, runId), { run: runId, feature, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [] })
+  writeJson(runPathOf(root, runId), { run: runId, track, root, thread: body.thread, started: now.toISOString(), tip: body.tip, checks: body.checks, landed: [] })
   recordOp(root, runId, 'start', opId, body)
   return body
 }
@@ -2241,7 +2241,7 @@ const startRun = (b, log, setupTask = null) => {
   const { root } = b
   const repo = setupTask ? null : repoPlan(b)
   if (repo && repo.ok === false) return repo
-  // Whether the feature has a behaviour tree, which decides where a question
+  // Whether the track has a behaviour tree, which decides where a question
   // for the human goes. A list that fails counts as no tree, with the error
   // in the log.
   let tree = false
@@ -2251,7 +2251,7 @@ const startRun = (b, log, setupTask = null) => {
   } catch (e) {
     log.push(`The behaviour tree could not be listed, so questions go to threads: ${failure(e)}`)
   }
-  // The feature's how, which a landed task's docs agent writes back to: the
+  // The track's how, which a landed task's docs agent writes back to: the
   // IDs of its docs Operations (pillar architecture) and Tables (pillar db),
   // or null. A list that fails counts as neither, with the error in the log.
   const how = { operations: null, tables: null }
@@ -2302,7 +2302,7 @@ const startRun = (b, log, setupTask = null) => {
     if (story.holder ? story.holder.run === b.runId : !WORKING.includes(story.status)) continue
     released.push({ key: story.key, status: b.write('release', story.key).status })
   }
-  // The feature's stories as keys and counts: the script lists them itself
+  // The track's stories as keys and counts: the script lists them itself
   // when it needs more.
   const stories = b.listStories()
   if (repo) dropDoneWorktrees(b, stories, log)
@@ -2328,7 +2328,7 @@ const startRun = (b, log, setupTask = null) => {
 }
 
 // ---- the repository: the deliver branch, the checks, the lane --------------
-// The feature's task that sets the project up, by its title in any case,
+// The track's task that sets the project up, by its title in any case,
 // while it is not done or cancelled; else null.
 const setupTaskOf = (stories) => (stories.find((s) => String(s.title || '').trim().toLowerCase() === 'set up the project' && s.status !== 'done' && s.status !== 'cancelled') || {}).key || null
 // A folder has a repository when it is itself the top folder of one with a
@@ -2351,13 +2351,13 @@ const excludeOmni = (b) => {
   fs.mkdirSync(path.dirname(exclude), { recursive: true })
   fs.writeFileSync(exclude, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.omni/\n`)
 }
-// The project-level doc of pillar architecture titled Setup, in any letter
-// case: the first omni doc list gives, or null when none is, or the list
-// fails.
+// The app-level doc (on no track, feature or part) of pillar architecture
+// titled Setup, in any letter case: the first omni doc list gives, or null
+// when none is, or the list fails.
 const setupDocOf = (b) => {
   try {
     const docs = JSON.parse(run('omni', ['doc', 'list', '--global', '--json'], { cwd: b.root })).docs || []
-    const doc = docs.find((d) => d && !d.feature_id && d.pillar === 'architecture' && String(d.title).toLowerCase() === 'setup')
+    const doc = docs.find((d) => d && !d.track_id && !d.feature_id && !d.part_id && d.pillar === 'architecture' && String(d.title).toLowerCase() === 'setup')
     return doc ? doc.id : null
   } catch {
     return null
@@ -2405,10 +2405,10 @@ const branchAt = (b, { head, was, move }, log) => {
       throw Object.assign(new Error(diverged(b)), { refused: true })
     }
     // The oldest tip not pushed over yet is the one the remote still has.
-    const file = restartedPathOf(b.root, b.feature)
+    const file = restartedPathOf(b.root, b.track)
     fs.mkdirSync(path.dirname(file), { recursive: true })
     if (!(readText(file) || '').trim()) fs.writeFileSync(file, `${was}\n`)
-    fs.appendFileSync(replacedPathOf(b.root, b.feature), `${was}\n`)
+    fs.appendFileSync(replacedPathOf(b.root, b.track), `${was}\n`)
   }
   log.push({
     create: `${b.branch} created at ${short(head)}, the checkout's HEAD`,
@@ -2556,7 +2556,7 @@ const applyStep = async (root, runId, info, name, payload, received, fill = (p) 
   const began = new Date()
   let body
   try {
-    body = { ok: true, received, ...(await step(boardOf(root, runId, info.feature), payload, { info, marker, mark })) }
+    body = { ok: true, received, ...(await step(boardOf(root, runId, info.track), payload, { info, marker, mark })) }
   } catch (e) {
     body = { ok: false, received, error: failure(e), retry: retryable(e) }
   }
@@ -2643,7 +2643,7 @@ const flagsOf = (argv) => {
   const flags = { step: argv[0] }
   for (let i = 1; i < argv.length; i++) {
     if (argv[i] === '--force') flags.force = true
-    else if (['--run', '--payload', '--op', '--feature', '--hash'].includes(argv[i])) flags[argv[i].slice(2)] = argv[++i]
+    else if (['--run', '--payload', '--op', '--track', '--hash'].includes(argv[i])) flags[argv[i].slice(2)] = argv[++i]
     else flags.unknown = argv[i]
   }
   return flags

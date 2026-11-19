@@ -1,14 +1,14 @@
 # Behaviour tree
 
-A feature has one behaviour tree: what the product does in each situation, case by case, written from the user's side of the screen. It is a tree of records, not a doc. You read and write it with `omni behaviour ...` (`behavior` is the same word), and the human reads it on the feature's Behaviour screen, where they answer questions, change answers and add remarks. The `omni-behaviour` skill fills a tree; this file is for any agent that reads or writes one.
+A track has one behaviour tree: what the product does in each situation, case by case, written from the user's side of the screen. It is a tree of records, not a doc. You read and write it with `omni behaviour ...` (`behavior` is the same word), and the human reads it on the track's Behaviour screen, where they answer questions, change answers and add remarks. The `omni-behaviour` skill fills a tree; this file is for any agent that reads or writes one.
 
 ## The model
 
-- **Three levels.** The root is the feature (`.`). Its children are the user stories, each titled with a story sentence: "As a <role>, I want to <flow> so that <purpose>." Below a story come situations, as deep as they go. A branch ends in a leaf: an outcome the user sees.
+- **Three levels.** The root is the track (`.`). Its children are the user stories, each titled with a story sentence: "As a <role>, I want to <flow> so that <purpose>." Below a story come situations, as deep as they go. A branch ends in a leaf: an outcome the user sees.
 - **A node** holds a title (the condition that leads here), a one-sentence summary, the situation (where the user is and what they just did), the behaviour (what the product does and what the user sees) and a status: `open` (not settled), `done`, or `out-of-scope` (excluded, kept visible). You name a node by its ID or its path: the slugs from the story down, joined by `/`.
-- **Pointers.** `same-as` says the situation is described at another node; `handoff` says the user carries on in another story. A node has one pointer at most and then no children. Pointers stay inside the feature; something outside it is named in plain text.
+- **Pointers.** `same-as` says the situation is described at another node; `handoff` says the user carries on in another story. A node has one pointer at most and then no children. Pointers stay inside the track; something outside it is named in plain text.
 - **Questions.** Each question on a node is a record, open or answered. An answer is a person's, or an agent's own (a default), and a changed answer keeps the old ones. A node with an open question cannot be `done`. An open question a person asked is a remark that waits for an agent.
-- **Rules.** A rule is something a node imposes on other nodes, with a reach: the node and below, its story, or the whole feature. A rule that no longer holds is withdrawn, never deleted. Rules for the whole product live in the Project spec.
+- **Rules.** A rule is something a node imposes on other nodes, with a reach: the node and below, its story, or the whole track (`--scope feature` on the command line). A rule that no longer holds is withdrawn, never deleted. Rules for the whole product live in the Project spec.
 - **Needs another pass.** The server marks a node when a person writes on it, and everything below a changed answer. An agent clears the mark with `omni behaviour edit <node> --grilled` once it has brought the node in line.
 - Nothing is deleted.
 
@@ -23,7 +23,7 @@ When you design or cut stories from a tree: a rule that reaches a node binds it,
 
 ## Writing
 
-- Every command takes the feature from `--feature <name|id>` or `OMNI_FEATURE`.
+- Every command takes the track from `--track <name|id>` or `OMNI_TRACK`.
 - `omni behaviour add` sets the title, slug, summary and pointer; the node starts `open`. Its situation, behaviour and status come from `omni behaviour edit`.
 - Write behaviour from the user's side: "the person presses Save and nothing happens for ten seconds", not "the rename request times out".
 - Your answer is a default. Pass `--by human` only when a person told you the answer and you are writing it down.

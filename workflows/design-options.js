@@ -1,7 +1,7 @@
 export const meta = {
   name: 'design-options',
-  description: 'First half of designing a feature: research, then three grey layout options of its key screens side by side on one page of a design doc in OmniState, with a comparison note and a recommendation. Stops there; the human picks.',
-  whenToUse: 'When a feature has a spec in OmniState and needs its screens laid out, or the layout rethought. Run with the Workflow tool as the workflow design-options with args {feature: "<name>"} (optional: mode ("new" | "redesign"), current (URL, screenshot folder or code paths of the screens today, for a redesign), screen ("1440x900"; default: the spec\'s main screen size), steer (what the human wants different from an earlier round), research ("reuse" (default) | "redo" | "skip"), models ({prepare, research, plan, draw, compare}; default: draw and prepare on sonnet, the rest on the session\'s model), model (one for all), skills (the skills folder; default ~/.claude/skills)), from a folder linked to the feature\'s OmniState project (omni link). Only the feature\'s Spec doc is required; it reads the behaviour tree, the Project spec, the design system and earlier research when they exist and says at its start what it found. Uses the skills design-research and ux-design. Writes to OmniState only: the html doc "Design research" and the design doc "Layout options" on the feature, and, when the feature has a behaviour tree, its assumptions as questions answered by default on the nodes. Work files go in a temp folder. A second run adds a new page of three options to the same doc. Next step: the human picks, then design-feature with args {feature, pick}.',
+  description: 'First half of designing a track: research, then three grey layout options of its key screens side by side on one page of a design doc in OmniState, with a comparison note and a recommendation. Stops there; the human picks.',
+  whenToUse: 'When a track has a spec in OmniState and needs its screens laid out, or the layout rethought. Run with the Workflow tool as the workflow design-options with args {track: "<name>"} (optional: mode ("new" | "redesign"), current (URL, screenshot folder or code paths of the screens today, for a redesign), screen ("1440x900"; default: the spec\'s main screen size), steer (what the human wants different from an earlier round), research ("reuse" (default) | "redo" | "skip"), models ({prepare, research, plan, draw, compare}; default: draw and prepare on sonnet, the rest on the session\'s model), model (one for all), skills (the skills folder; default ~/.claude/skills)), from a folder linked to the track\'s project (omni link). Only the track\'s Spec doc is required; it reads the behaviour tree, the Project spec, the design system and earlier research when they exist and says at its start what it found. Uses the skills design-research and ux-design. Writes to OmniState only: the html doc "Design research" and the design doc "Layout options" on the track, and, when the track has a behaviour tree, its assumptions as questions answered by default on the nodes. Work files go in a temp folder. A second run adds a new page of three options to the same doc. Next step: the human picks, then design-feature with args {track, pick}.',
   phases: [
     { title: 'Prepare', detail: 'what exists: Spec, Project spec, behaviour tree, design system, earlier research, earlier options' },
     { title: 'Research', detail: 'design-research: comparable products, references, patterns, anti-patterns; reused when the doc exists' },
@@ -12,12 +12,12 @@ export const meta = {
 }
 
 const A = args || {}
-if (!A.feature) throw new Error('args.feature is required: the name of the OmniState feature to design')
-const F = A.feature
+if (!A.track) throw new Error('args.track is required: the name of the OmniState track to design')
+const F = A.track
 const MODE = A.mode === 'redesign' ? 'redesign' : 'new'
 const SK = A.skills || '~/.claude/skills'
 const UXD = `${SK}/ux-design`
-const SLUG = F.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'feature'
+const SLUG = F.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'track'
 const RUN = `design-${SLUG}`
 
 // Drawing runs on a cheaper model than planning and comparing. Override per
@@ -28,7 +28,7 @@ const opt = (role, o) => {
   return model ? { ...o, model } : o
 }
 const omni = (role) => `omni --as ${RUN}/${role}`
-const RULES = (role) => `Every omni command starts \`${omni(role)}\`; a command about this feature (doc create, doc list, behaviour, comment list) also takes \`--feature "${F}"\`. Work files go in the scratch folder only; change nothing in any repository.`
+const RULES = (role) => `Every omni command starts \`${omni(role)}\`; a command about this track (doc create, doc list, behaviour, comment list) also takes \`--track "${F}"\`. Work files go in the scratch folder only; change nothing in any repository.`
 
 const s = (props, required) => ({ type: 'object', properties: props, required: required || Object.keys(props) })
 const str = { type: 'string' }
@@ -39,15 +39,15 @@ const strs = { type: 'array', items: str }
 // ---- Prepare ---------------------------------------------------------------
 phase('Prepare')
 const prep = await agent(
-  `Find what exists for the OmniState feature "${F}", so a design run can start. Read only; create nothing but the scratch folder. ${RULES('prepare')}
+  `Find what exists for the OmniState track "${F}", so a design run can start. Read only; create nothing but the scratch folder. ${RULES('prepare')}
 
 1. \`${omni('prepare')} link\` prints the project this folder is linked to: return its ID and name. If it prints no project, return linked false and stop.
 2. Scratch folder: \`mktemp -d\`. Return its absolute path.
-3. Spec: \`${omni('prepare')} doc list --feature "${F}" --pillar spec\`. Return the IDs of the feature's spec docs, and hasSpec true when at least one holds written content (\`${omni('prepare')} doc read <id>\`).
+3. Spec: \`${omni('prepare')} doc list --track "${F}" --pillar spec\`. Return the IDs of the track's spec docs, and hasSpec true when at least one holds written content (\`${omni('prepare')} doc read <id>\`).
 4. Project spec: \`${omni('prepare')} doc list --global --pillar spec\`. Return the ID of the app-level spec doc (the one titled "Project spec" when there are several), or "".
-5. Behaviour tree: \`${omni('prepare')} --feature "${F}" behaviour list --json\`. Return nodeCount (0 when the feature has no tree or the command fails) and the user stories: the nodes at level 1, each with its path and title.
+5. Behaviour tree: \`${omni('prepare')} --track "${F}" behaviour list --json\`. Return nodeCount (0 when the track has no tree or the command fails) and the user stories: the nodes at level 1, each with its path and title.
 6. Design system: \`${omni('prepare')} doc list --global --pillar ui\`; a doc of kind design-system is the project's. Return its ID or "". When there is one, \`${omni('prepare')} tokens export\` and return as fontFamily the family its body text uses, or "".
-7. Earlier work on the feature: \`${omni('prepare')} doc list --feature "${F}"\`. Return researchDoc, the ID of the html doc titled "Design research" (or ""), and optionsDoc, the ID of the design doc titled "Layout options" (or ""). For optionsDoc, \`${omni('prepare')} doc read <id>\` and return each <Page> with its id, its name and how many boards it holds.`,
+7. Earlier work on the track: \`${omni('prepare')} doc list --track "${F}"\`. Return researchDoc, the ID of the html doc titled "Design research" (or ""), and optionsDoc, the ID of the design doc titled "Layout options" (or ""). For optionsDoc, \`${omni('prepare')} doc read <id>\` and return each <Page> with its id, its name and how many boards it holds.`,
   opt('prepare', {
     label: 'prepare',
     effort: 'low',
@@ -61,7 +61,7 @@ const prep = await agent(
   }),
 )
 if (!prep || !prep.linked || !prep.projectId) throw new Error('This folder is not linked to an OmniState project, or omni is not signed in. Run `omni link <project>` (and `omni login` if needed), then run again.')
-if (!prep.hasSpec) throw new Error(`The feature "${F}" has no Spec doc with content. Write its spec in OmniState first (omni-grill), then run again.`)
+if (!prep.hasSpec) throw new Error(`The track "${F}" has no Spec doc with content. Write its spec in OmniState first (omni-grill), then run again.`)
 
 const S = prep.scratch
 const TREE = prep.nodeCount > 0
@@ -72,14 +72,14 @@ const ROUND = usedPages.length + 1
 log(`Found: Spec (${prep.specDocs.length} doc${prep.specDocs.length === 1 ? '' : 's'}); Project spec: ${prep.projectSpecDoc ? 'yes' : 'none'}; behaviour tree: ${TREE ? `${stories.length} user stories, ${prep.nodeCount} nodes` : 'none, designing from the Spec alone'}; design system: ${prep.designSystemDoc ? 'yes' : 'none'}; research: ${prep.researchDoc ? 'exists' : 'none'}; earlier options: ${usedPages.length ? `${usedPages.length} round${usedPages.length === 1 ? '' : 's'}, this is round ${ROUND}` : 'none'}`)
 
 const behaviour = (role) => (TREE
-  ? `The behaviour: the feature's behaviour tree. \`${omni(role)} --feature "${F}" behaviour list\` prints every node; \`behaviour read <path>\` prints one with its rules and questions. Its ${stories.length} user stories: ${stories.map((x) => `${x.path} (${x.title})`).join('; ')}. The Spec doc${prep.specDocs.length === 1 ? '' : 's'} (${prep.specDocs.join(', ')}; \`doc read <id>\`) give${prep.specDocs.length === 1 ? 's' : ''} the background.`
-  : `The behaviour: the feature has no behaviour tree, so the Spec doc${prep.specDocs.length === 1 ? '' : 's'} decide${prep.specDocs.length === 1 ? 's' : ''} it (${prep.specDocs.join(', ')}; read with \`${omni(role)} doc read <id>\`). Create no tree.`)
+  ? `The behaviour: the track's behaviour tree. \`${omni(role)} --track "${F}" behaviour list\` prints every node; \`behaviour read <path>\` prints one with its rules and questions. Its ${stories.length} user stories: ${stories.map((x) => `${x.path} (${x.title})`).join('; ')}. The Spec doc${prep.specDocs.length === 1 ? '' : 's'} (${prep.specDocs.join(', ')}; \`doc read <id>\`) give${prep.specDocs.length === 1 ? 's' : ''} the background.`
+  : `The behaviour: the track has no behaviour tree, so the Spec doc${prep.specDocs.length === 1 ? '' : 's'} decide${prep.specDocs.length === 1 ? 's' : ''} it (${prep.specDocs.join(', ')}; read with \`${omni(role)} doc read <id>\`). Create no tree.`)
 const today = (role) => (MODE !== 'redesign' ? ''
   : A.current ? ` The screens today: ${A.current}.`
     : role === 'research' ? ' The screens today were not named: find them in the project this folder holds (its routes and screen components), and say in the report what you read.'
       : ' The screens today: described in the research doc, section Current design.')
 const inputs = (role) => [
-  `Feature: "${F}". Scratch folder: ${S}. Mode: ${MODE}.${today(role)}`,
+  `Track: "${F}". Scratch folder: ${S}. Mode: ${MODE}.${today(role)}`,
   behaviour(role),
   prep.projectSpecDoc ? `The Project spec (doc ${prep.projectSpecDoc}) says who the users are and what the product is.` : '',
   RULES(role),
@@ -95,13 +95,13 @@ if (RESEARCH_MODE === 'skip') {
   log(`Research reused from doc ${researchDoc}; pass research: "redo" to do it again`)
 } else {
   const research = await agent(
-    `Follow the skill at ${SK}/design-research/SKILL.md, all of it${TREE && stories.length <= 1 ? '; its Size line applies, this feature has one job' : ''}. ${inputs('research')}
+    `Follow the skill at ${SK}/design-research/SKILL.md, all of it${TREE && stories.length <= 1 ? '; its Size line applies, this track has one job' : ''}. ${inputs('research')}
 
 Mobbin's tools may be connected (look for tools that search screens and flows); without them use web search. Save images in ${S}/images.
 
-Destination: an OmniState html doc on the feature. ${researchDoc
+Destination: an OmniState html doc on the track. ${researchDoc
     ? `Doc ${researchDoc} holds the earlier report: read it (\`${omni('research')} doc read ${researchDoc}\`) and, in ONE \`doc edit\` batch, replace its first top-level node with the new <section> and delete every other top-level node, each with the rev you read.`
-    : `Create it: \`${omni('research')} doc create --feature "${F}" --kind html --pillar research --title "Design research"\`. Write the report as one <section> to ${S}/research.html and insert it: \`jq -Rs '[{op:"insert",parent:null,position:{after:null},content:.}]' ${S}/research.html | ${omni('research')} doc edit <doc id> --body-file -\`.`}
+    : `Create it: \`${omni('research')} doc create --track "${F}" --kind html --pillar research --title "Design research"\`. Write the report as one <section> to ${S}/research.html and insert it: \`jq -Rs '[{op:"insert",parent:null,position:{after:null},content:.}]' ${S}/research.html | ${omni('research')} doc edit <doc id> --body-file -\`.`}
 
 Return the doc's ID and the short summary the skill's hand-over describes.`,
     opt('research', { label: 'research', effort: 'medium', schema: s({ doc: str, summary: str }) }),
@@ -123,10 +123,10 @@ The lenses: A ${LENS[0]}, B ${LENS[1]}, C ${LENS[2]}. Screen size: ${A.screen ? 
 ${usedPages.length ? `This is round ${ROUND}: the design doc ${prep.optionsDoc} already holds ${usedPages.length} earlier round${usedPages.length === 1 ? '' : 's'} of options (\`${omni('plan')} doc read ${prep.optionsDoc}\`), and the human may have commented on them (\`${omni('plan')} comment list --doc ${prep.optionsDoc} --json\`; a comment is open while waiting_on_you is false). The three new plans answer the open comments and differ from every earlier option.` : ''}
 ${A.steer ? `The human asks of this round: ${A.steer}` : ''}
 ${TREE
-    ? `Assumptions go onto the tree as the skill says, each on the node it belongs to: \`${omni('plan')} --feature "${F}" behaviour ask <node path> "<question>" --answer "<the choice>"\`. Return each one you added.`
+    ? `Assumptions go onto the tree as the skill says, each on the node it belongs to: \`${omni('plan')} --track "${F}" behaviour ask <node path> "<question>" --answer "<the choice>"\`. Return each one you added.`
     : 'Return each assumption; the comparison note will list them.'}
 
-Return the three plans in the order A, B, C (per screen: its name, its layout in a few lines, and the stories or jobs that happen there), the screen's width and height in points, the stories or jobs in one line each, the assumptions, and "same": everything the three options share and draw alike, written out so three agents who never see each other's boards draw it the same (the parts of the screen the feature leaves as they are, such as navigation and the page around it, with their items in order, and the sample data: names, rows, counts). "" when the options share nothing.`,
+Return the three plans in the order A, B, C (per screen: its name, its layout in a few lines, and the stories or jobs that happen there), the screen's width and height in points, the stories or jobs in one line each, the assumptions, and "same": everything the three options share and draw alike, written out so three agents who never see each other's boards draw it the same (the parts of the screen the track leaves as they are, such as navigation and the page around it, with their items in order, and the sample data: names, rows, counts). "" when the options share nothing.`,
   opt('plan', {
     label: 'plan',
     effort: 'high',
@@ -145,12 +145,12 @@ log(`Plan: ${plan.plans.map((p, i) => `${LETTERS[i]} ${p.screens.length} screens
 const PAGE_NAME = ROUND === 1 ? 'Options' : `Options, round ${ROUND}`
 const emptyPage = pages.find((p) => p.boards === 0)
 const page = await agent(
-  `Make the page that three layout options of the feature "${F}" will be drawn on. ${RULES('page')}
+  `Make the page that three layout options of the track "${F}" will be drawn on. ${RULES('page')}
 ${prep.optionsDoc
     ? `The design doc is ${prep.optionsDoc}. ${emptyPage
       ? `Its page ${emptyPage.id} is empty: name it "${PAGE_NAME}", as ${UXD}/references/boards.md (Changing a board that exists) describes.`
       : `Add a page after its last one: read the doc for the last <Page> id, then send [{"op":"insert","parent":null,"position":{"after":"<last page id>"},"content":"<Page name=\\"${PAGE_NAME}\\"/>"}] to \`${omni('page')} design edit ${prep.optionsDoc} --body-file -\`.`}`
-    : `Create the design doc: \`${omni('page')} doc create --feature "${F}" --kind design --pillar ui --title "Layout options"\`. It starts with one empty page: read it (\`${omni('page')} doc read <doc id>\`) and name that page "${PAGE_NAME}" with [{"op":"set","node":"<page id>","rev":1,"properties":{"name":"${PAGE_NAME}"}}] sent to \`${omni('page')} design edit <doc id> --body-file -\`.`}
+    : `Create the design doc: \`${omni('page')} doc create --track "${F}" --kind design --pillar ui --title "Layout options"\`. It starts with one empty page: read it (\`${omni('page')} doc read <doc id>\`) and name that page "${PAGE_NAME}" with [{"op":"set","node":"<page id>","rev":1,"properties":{"name":"${PAGE_NAME}"}}] sent to \`${omni('page')} design edit <doc id> --body-file -\`.`}
 Return the doc's ID and the page's ID.`,
   opt('prepare', { label: 'page', phase: 'Plan', effort: 'low', schema: s({ doc: str, page: str }) }),
 )
@@ -190,7 +190,7 @@ if (alive.length < 3) log(`Option ${LETTERS.filter((L) => !alive.some((o) => o.L
 // ---- Compare ---------------------------------------------------------------
 phase('Compare')
 const compare = await agent(
-  `Do "Step 4: Compare" of ${UXD}/SKILL.md for the layout options of the feature "${F}": the comparison note as ${UXD}/references/wireframes.md describes it, written and checked as ${UXD}/references/boards.md says, with the walkthrough of ${UXD}/references/judging.md and the rules in ${UXD}/references/rules.md. ${inputs('compare')} ${RESEARCH}
+  `Do "Step 4: Compare" of ${UXD}/SKILL.md for the layout options of the track "${F}": the comparison note as ${UXD}/references/wireframes.md describes it, written and checked as ${UXD}/references/boards.md says, with the walkthrough of ${UXD}/references/judging.md and the rules in ${UXD}/references/rules.md. ${inputs('compare')} ${RESEARCH}
 
 The options, on page ${page.page} of design doc ${DOC} (project ${prep.projectId}): ${JSON.stringify(alive.map((o) => ({ option: o.L, lens: o.lens, sentence: o.sentence, boards: o.r.boards, notDrawn: o.r.notDrawn, failing: o.r.failing })))}
 What they must serve: ${plan.jobs.join(' | ')}
@@ -214,7 +214,7 @@ if (!compare) throw new Error(`The comparison returned nothing; the options are 
 if (compare.failures.length) log(`Open after the comparison: ${compare.failures.join('; ')}`)
 
 return {
-  feature: F,
+  track: F,
   doc: DOC,
   page: page.page,
   round: ROUND,
@@ -228,5 +228,5 @@ return {
   researchDoc,
   corrections: compare.corrections,
   failures: compare.failures,
-  next: `The human picks one option or combines parts of them, then: design-feature with args {feature: "${F}", pick: "<the pick in their words>"}`,
+  next: `The human picks one option or combines parts of them, then: design-feature with args {track: "${F}", pick: "<the pick in their words>"}`,
 }

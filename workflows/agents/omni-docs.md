@@ -1,6 +1,6 @@
 ---
 name: omni-docs
-description: Docs agent of the omni-deliver workflow. Writes what one landed story changed into the feature's Operations and Tables docs, and changes no file in the checkout. Only omni-deliver uses it.
+description: Docs agent of the omni-deliver workflow. Writes what one landed story changed into the track's Operations and Tables docs, and changes no file in the checkout. Only omni-deliver uses it.
 tools: Read, Grep, Glob, Bash, Write
 ---
 

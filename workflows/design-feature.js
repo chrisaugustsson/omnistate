@@ -1,7 +1,7 @@
 export const meta = {
   name: 'design-feature',
-  description: 'Second half of designing a feature: draws the layout the human picked as the finished design in OmniState, one board per screen or state on the project\'s design system, wired into a prototype. Run again later, it changes only the boards with open comments and the boards of situations that changed in the behaviour tree.',
-  whenToUse: 'After design-options, when the human has picked a layout option (or combined them), and again whenever the human has commented on the finished boards or changed the behaviour tree. Run with the Workflow tool as the workflow design-feature with args {feature: "<name>", pick: "<the pick in the human\'s words>"} for the first design, and {feature: "<name>"} for a rerun (optional: use ("design-system" | "code": which one holds where the design system and the product\'s code differ; without it the run stops at such a difference and lists it in the app-level doc "Design system and code"), stories (paths of the user stories to limit the run to), steer (an instruction for this run), rounds (fix rounds after the review, default 1), models ({prepare, plan, system, draw, wire, review, fix, notes}; default: planning, the design system and reviewing on the session\'s model, the rest on sonnet), model (one for all), skills (the skills folder; default ~/.claude/skills)), from a folder linked to the feature\'s OmniState project (omni link). Only the feature\'s Spec doc is required; it reads the behaviour tree, the Project spec, the design system, the research and the layout options when they exist and says at its start what it found. Uses the skills ui-design and ux-design (with design-taste-frontend and emil-design-eng). Writes to OmniState only: the design doc "Design" and the html doc "Design notes" on the feature, tokens and components in the project\'s design system (which it creates when the project has none), assumptions as questions answered by default on the behaviour tree, and replies to comments. Work files go in a temp folder. To draw from a new pick, rename the doc "Design" and run with pick again.',
+  description: 'Second half of designing a track: draws the layout the human picked as the finished design in OmniState, one board per screen or state on the project\'s design system, wired into a prototype. Run again later, it changes only the boards with open comments and the boards of situations that changed in the behaviour tree.',
+  whenToUse: 'After design-options, when the human has picked a layout option (or combined them), and again whenever the human has commented on the finished boards or changed the behaviour tree. Run with the Workflow tool as the workflow design-feature with args {track: "<name>", pick: "<the pick in the human\'s words>"} for the first design, and {track: "<name>"} for a rerun (optional: use ("design-system" | "code": which one holds where the design system and the product\'s code differ; without it the run stops at such a difference and lists it in the app-level doc "Design system and code"), stories (paths of the user stories to limit the run to), steer (an instruction for this run), rounds (fix rounds after the review, default 1), models ({prepare, plan, system, draw, wire, review, fix, notes}; default: planning, the design system and reviewing on the session\'s model, the rest on sonnet), model (one for all), skills (the skills folder; default ~/.claude/skills)), from a folder linked to the track\'s project (omni link). Only the track\'s Spec doc is required; it reads the behaviour tree, the Project spec, the design system, the research and the layout options when they exist and says at its start what it found. Uses the skills ui-design and ux-design (with design-taste-frontend and emil-design-eng). Writes to OmniState only: the design doc "Design" and the html doc "Design notes" on the track, tokens and components in the project\'s design system (which it creates when the project has none), assumptions as questions answered by default on the behaviour tree, and replies to comments. Work files go in a temp folder. To draw from a new pick, rename the doc "Design" and run with pick again.',
   phases: [
     { title: 'Prepare', detail: 'what exists: Spec, Project spec, behaviour tree, design system, research, layout options, an earlier design' },
     { title: 'Match', detail: 'the design system against the product\'s real style values in the code; where they differ the run changes neither and stops for the human to decide' },
@@ -18,8 +18,8 @@ export const meta = {
 }
 
 const A = args || {}
-if (!A.feature) throw new Error('args.feature is required: the name of the OmniState feature to design')
-const F = A.feature
+if (!A.track) throw new Error('args.track is required: the name of the OmniState track to design')
+const F = A.track
 const SK = A.skills || '~/.claude/skills'
 const UI = `${SK}/ui-design`
 const UXD = `${SK}/ux-design`
@@ -39,7 +39,7 @@ const opt = (role, o) => {
   return model ? { ...o, model } : o
 }
 const omni = (role) => `omni --as ${RUN}/${role}`
-const RULES = (role) => `Every omni command starts \`${omni(role)}\`; a command about this feature (doc create, doc list, behaviour, comment list) also takes \`--feature "${F}"\`. Work files go in the scratch folder only; change nothing in any repository.`
+const RULES = (role) => `Every omni command starts \`${omni(role)}\`; a command about this track (doc create, doc list, behaviour, comment list) also takes \`--track "${F}"\`. Work files go in the scratch folder only; change nothing in any repository.`
 
 const s = (props, required) => ({ type: 'object', properties: props, required: required || Object.keys(props) })
 const str = { type: 'string' }
@@ -55,16 +55,16 @@ const SCREEN_ACT = s({ board: str, layer: str, leadsTo: str, leadsToName: str, m
 // ---- Prepare ---------------------------------------------------------------
 phase('Prepare')
 const prep = await agent(
-  `Find what exists for the OmniState feature "${F}", so a design run can start. Read only; create nothing but the scratch folder and files in it. ${RULES('prepare')}
+  `Find what exists for the OmniState track "${F}", so a design run can start. Read only; create nothing but the scratch folder and files in it. ${RULES('prepare')}
 
 1. \`${omni('prepare')} link\` prints the project this folder is linked to: return its ID and name. If it prints no project, return linked false and stop.
 2. Scratch folder: \`mktemp -d\`. Return its absolute path.
-3. Spec: \`${omni('prepare')} doc list --feature "${F}" --pillar spec\`. Return the IDs of the feature's spec docs, and hasSpec true when at least one holds written content (\`${omni('prepare')} doc read <id>\`).
+3. Spec: \`${omni('prepare')} doc list --track "${F}" --pillar spec\`. Return the IDs of the track's spec docs, and hasSpec true when at least one holds written content (\`${omni('prepare')} doc read <id>\`).
 4. Project spec: \`${omni('prepare')} doc list --global --pillar spec\`. Return the ID of the app-level spec doc (the one titled "Project spec" when there are several), or "".
-5. Behaviour tree: \`${omni('prepare')} --feature "${F}" behaviour list --json\`. Return nodeCount (0 when the feature has no tree or the command fails) and the user stories: the nodes at level 1, each with its path, its title and how many nodes sit below it.
-6. When the feature has a behaviour tree: run the commands under "Fingerprints" in ${UI}/references/notes.md with the scratch folder from step 2, and save the lines the last one prints as <scratch>/fingerprints-start.tsv.
+5. Behaviour tree: \`${omni('prepare')} --track "${F}" behaviour list --json\`. Return nodeCount (0 when the track has no tree or the command fails) and the user stories: the nodes at level 1, each with its path, its title and how many nodes sit below it.
+6. When the track has a behaviour tree: run the commands under "Fingerprints" in ${UI}/references/notes.md with the scratch folder from step 2, and save the lines the last one prints as <scratch>/fingerprints-start.tsv.
 7. Design system: \`${omni('prepare')} doc list --global --pillar ui\`; a doc of kind design-system is the project's. Return its ID or "". Return as matchDoc the ID of the html doc titled "Design system and code" in that list, or "".
-8. The feature's docs: \`${omni('prepare')} doc list --feature "${F}"\`. Return researchDoc (the html doc titled "Design research"), optionsDoc (the design doc titled "Layout options"), designDoc (the design doc titled "Design") and notesDoc (the html doc titled "Design notes"), each an ID or "". For designDoc, \`${omni('prepare')} doc read <id>\` and return designPage (the id of its first <Page>) and designBoards (how many <Board> tags it holds).
+8. The track's docs: \`${omni('prepare')} doc list --track "${F}"\`. Return researchDoc (the html doc titled "Design research"), optionsDoc (the design doc titled "Layout options"), designDoc (the design doc titled "Design") and notesDoc (the html doc titled "Design notes"), each an ID or "". For designDoc, \`${omni('prepare')} doc read <id>\` and return designPage (the id of its first <Page>) and designBoards (how many <Board> tags it holds).
 9. \`${omni('prepare')} config show | grep -E '^(server|workspace_id):'\` prints the server and the workspace ID: return both. Run it with that grep, so only those two lines are printed.`,
   opt('prepare', {
     label: 'prepare',
@@ -79,7 +79,7 @@ const prep = await agent(
   }),
 )
 if (!prep || !prep.linked || !prep.projectId) throw new Error('This folder is not linked to an OmniState project, or omni is not signed in. Run `omni link <project>` (and `omni login` if needed), then run again.')
-if (!prep.hasSpec) throw new Error(`The feature "${F}" has no Spec doc with content. Write its spec in OmniState first (omni-grill), then run again.`)
+if (!prep.hasSpec) throw new Error(`The track "${F}" has no Spec doc with content. Write its spec in OmniState first (omni-grill), then run again.`)
 
 const S = prep.scratch
 const P = prep.projectId
@@ -88,16 +88,16 @@ const PRINTS = `${S}/fingerprints-start.tsv`
 const allStories = prep.stories || []
 const HAS_DESIGN = !!prep.designDoc && (prep.designBoards || 0) > 0
 log(`Found: Spec (${prep.specDocs.length} doc${prep.specDocs.length === 1 ? '' : 's'}); Project spec: ${prep.projectSpecDoc ? 'yes' : 'none'}; behaviour tree: ${TREE ? `${allStories.length} user stories, ${prep.nodeCount} nodes` : 'none, designing from the Spec alone'}; design system: ${prep.designSystemDoc ? 'yes' : 'none, it will be created'}; research: ${prep.researchDoc ? 'yes' : 'none'}; layout options: ${prep.optionsDoc ? 'yes' : 'none'}; finished design: ${HAS_DESIGN ? `${prep.designBoards} boards, so this is a rerun` : 'none, so this is the first design'}`)
-if (HAS_DESIGN && !prep.notesDoc) throw new Error(`The design doc "Design" (${prep.designDoc}) holds ${prep.designBoards} board${prep.designBoards === 1 ? '' : 's'}, but the feature has no "Design notes" doc, so an earlier first design did not finish. Resume that run if its ID is at hand (Workflow with resumeFromRunId). When the boards are complete and only the notes are missing, write the notes as ${UI}/references/notes.md describes. Otherwise set the unfinished doc aside with \`omni doc rename ${prep.designDoc} "Design, unfinished"\` and run again with pick.`)
+if (HAS_DESIGN && !prep.notesDoc) throw new Error(`The design doc "Design" (${prep.designDoc}) holds ${prep.designBoards} board${prep.designBoards === 1 ? '' : 's'}, but the track has no "Design notes" doc, so an earlier first design did not finish. Resume that run if its ID is at hand (Workflow with resumeFromRunId). When the boards are complete and only the notes are missing, write the notes as ${UI}/references/notes.md describes. Otherwise set the unfinished doc aside with \`omni doc rename ${prep.designDoc} "Design, unfinished"\` and run again with pick.`)
 const RERUN = HAS_DESIGN
-if (!RERUN && !A.pick) throw new Error(`The feature "${F}" has no finished design yet, so the run needs the pick: args {feature: "${F}", pick: "<which layout option, in the human's words>"}. ${prep.optionsDoc ? 'The options are in the design doc "Layout options".' : 'There are no layout options yet: run design-options first, or describe the layout in pick.'}`)
+if (!RERUN && !A.pick) throw new Error(`The track "${F}" has no finished design yet, so the run needs the pick: args {track: "${F}", pick: "<which layout option, in the human's words>"}. ${prep.optionsDoc ? 'The options are in the design doc "Layout options".' : 'There are no layout options yet: run design-options first, or describe the layout in pick.'}`)
 if (RERUN && A.pick) log('A finished design exists, so pick is not used: this run reworks the existing boards. To draw from a new pick, rename the doc "Design" and run again.')
 
 const behaviour = (role) => (TREE
-  ? `The behaviour: the feature's behaviour tree. \`${omni(role)} --feature "${F}" behaviour list [<node>]\` prints the nodes; \`behaviour read <path>\` prints one with its rules and questions. The Spec doc${prep.specDocs.length === 1 ? '' : 's'} (${prep.specDocs.join(', ')}; \`doc read <id>\`) give${prep.specDocs.length === 1 ? 's' : ''} the background.`
-  : `The behaviour: the feature has no behaviour tree, so the Spec doc${prep.specDocs.length === 1 ? '' : 's'} decide${prep.specDocs.length === 1 ? 's' : ''} it (${prep.specDocs.join(', ')}; read with \`${omni(role)} doc read <id>\`). Create no tree.`)
+  ? `The behaviour: the track's behaviour tree. \`${omni(role)} --track "${F}" behaviour list [<node>]\` prints the nodes; \`behaviour read <path>\` prints one with its rules and questions. The Spec doc${prep.specDocs.length === 1 ? '' : 's'} (${prep.specDocs.join(', ')}; \`doc read <id>\`) give${prep.specDocs.length === 1 ? 's' : ''} the background.`
+  : `The behaviour: the track has no behaviour tree, so the Spec doc${prep.specDocs.length === 1 ? '' : 's'} decide${prep.specDocs.length === 1 ? 's' : ''} it (${prep.specDocs.join(', ')}; read with \`${omni(role)} doc read <id>\`). Create no tree.`)
 const inputs = (role) => [
-  `Feature: "${F}", project ${P}. Scratch folder: ${S}.`,
+  `Track: "${F}", project ${P}. Scratch folder: ${S}.`,
   behaviour(role),
   prep.projectSpecDoc ? `The Project spec (doc ${prep.projectSpecDoc}) says who the users are and what the product is.` : '',
   prep.researchDoc ? `Research: the html doc ${prep.researchDoc}.` : '',
@@ -105,7 +105,7 @@ const inputs = (role) => [
   RULES(role),
 ].filter(Boolean).join(' ')
 const assume = (role) => (TREE
-  ? `An assumption goes onto the tree, on the node it belongs to: \`${omni(role)} --feature "${F}" behaviour ask <node path> "<question>" --answer "<the choice>"\`. Return each one you added.`
+  ? `An assumption goes onto the tree, on the node it belongs to: \`${omni(role)} --track "${F}" behaviour ask <node path> "<question>" --answer "<the choice>"\`. Return each one you added.`
   : 'Return each assumption you made; the design notes will list them.')
 const ASSUMED = list(s({ node: str, question: str, answer: str }))
 // Token and component writes replace whole trees, so agents that run side by
@@ -146,7 +146,7 @@ const check = (DOC, units) => pipeline(
       const review = await agent(
         `Review the finished design of one user story as someone who did not draw it: points 1 to 6 of "Step 5: Check" in ${UI}/SKILL.md, with ${UXD}/references/judging.md and ${UXD}/references/rules.md. ${TASTE} Review only; change no board. ${inputs(`review-${u.key}`)}
 
-The story: ${u.title}${TREE && u.path ? ` (node ${u.path}; \`${omni(`review-${u.key}`)} --feature "${F}" behaviour list ${u.path}\` prints its situations)` : ''}.
+The story: ${u.title}${TREE && u.path ? ` (node ${u.path}; \`${omni(`review-${u.key}`)} --track "${F}" behaviour list ${u.path}\` prints its situations)` : ''}.
 Its boards in design doc ${DOC}: ${JSON.stringify(u.boards)}
 ${u.coverage && u.coverage.length ? `What its drawer says covers each node: ${JSON.stringify(u.coverage)}` : ''}
 ${round > 1 ? `This is the look after a fix round. The earlier findings: ${JSON.stringify(left)}. Report what is still wrong and anything the fixes broke.` : ''}
@@ -221,12 +221,12 @@ Return the tokens you added, the components you added, and the elements you left
 
 const notes = async (DOC, data) => {
   const once = (n) => agent(
-    `Do "Step 6: The design notes" of ${UI}/SKILL.md for the feature "${F}", following ${UI}/references/notes.md and, for its motion part, ${UI}/references/motion.md. ${inputs('notes')}
+    `Do "Step 6: The design notes" of ${UI}/SKILL.md for the track "${F}", following ${UI}/references/notes.md and, for its motion part, ${UI}/references/motion.md. ${inputs('notes')}
 
 The design doc is ${DOC}. ${prep.notesDoc ? `The notes doc is ${prep.notesDoc}: update it as notes.md says, changing only what changed.` : 'There is no notes doc yet: create it.'}
 ${TREE
     ? `Rows: write or update a row for each node in "coverage" below, and only for those; every other row stays exactly as it is. The fingerprints taken when this run started are in ${PRINTS} (node ID, path, fingerprint): a covered node's row gets that one. Only for a node this run itself put a question on (the nodes named in "assumptions" below), compute the fingerprint as it is now and write that.`
-    : 'The feature has no behaviour tree: one row per board, and the part "Assumed".'}
+    : 'The track has no behaviour tree: one row per board, and the part "Assumed".'}
 A coverage entry with a board name and no board ID is shown by a board another story drew: take that board's ID from the boards listed below, by its name.
 What this run did: ${JSON.stringify(data)}
 
@@ -249,7 +249,7 @@ const link = (doc) => (prep.server && prep.workspaceId ? `${prep.server}/w/${pre
 phase('Match')
 const USE = A.use === 'code' || A.use === 'design-system' ? A.use : ''
 const match = await agent(
-  `Do "The design system and the product's code" of ${UI}/SKILL.md for the feature "${F}". Change no token, no component and no code. ${inputs('match')}
+  `Do "The design system and the product's code" of ${UI}/SKILL.md for the track "${F}". Change no token, no component and no code. ${inputs('match')}
 
 The product's code, when there is any, is in the folder you run in, the one linked to the project.
 ${prep.designSystemDoc
@@ -274,7 +274,7 @@ else if (!differs) log(`Match: the design system agrees with the product's code 
 else if (!USE) {
   log(`Match: the design system and the product's code differ in ${differs} place${differs === 1 ? '' : 's'} (${match.differences.slice(0, 3).map((d) => `${d.role}: ${d.designSystem} against ${d.code}`).join('; ')}${differs > 3 ? '; ...' : ''}). Nothing was changed and nothing was drawn: which one holds is the human's decision.`)
   return {
-    feature: F,
+    track: F,
     stopped: 'The design system and the product\'s code differ',
     differences: match.differences.slice(0, 60),
     differencesInAll: differs,
@@ -306,14 +306,14 @@ if (RERUN) {
   const DS = prep.designSystemDoc || ''
   phase('Rework')
   const diff = await agent(
-    `Find what a rerun of the finished design of the feature "${F}" has to change. Read only. ${inputs('diff')}
+    `Find what a rerun of the finished design of the track "${F}" has to change. Read only. ${inputs('diff')}
 
 The design doc is ${DOC}; the notes doc is ${prep.notesDoc}.
 1. The boards: \`${omni('diff')} doc read ${DOC}\`. Return the width and height of the screens' boards (the size most boards share), and lowestY: the largest y + height of any board.
 2. Open comments: \`${omni('diff')} comment list --doc ${DOC} --json\`; a comment is open while waiting_on_you is false. For each, find its board as ${BOARDS} (Comments) says, and the user story the board belongs to: the first part of the node path on the first row of the notes table that names that board ("" when no row names it).
 ${TREE
     ? `3. Changes in the tree: "What a rerun reads from it" in ${UI}/references/notes.md. The fingerprints as they are now are already in ${PRINTS} (node ID, path, fingerprint, one node per line): compare them with the notes table. Return the changed nodes with the boards of their rows, the new nodes, and the gone ones. A node's story is the first part of its path; the root's path is ".".`
-    : '3. The feature has no behaviour tree: return no changed, new or gone nodes.'}
+    : '3. The track has no behaviour tree: return no changed, new or gone nodes.'}
 
 Return these, and a one-line note on anything that could not be read.`,
     opt('prepare', {
@@ -330,7 +330,7 @@ Return these, and a one-line note on anything that could not be read.`,
     }),
   )
   if (!diff) throw new Error('Could not read what changed since the last run')
-  // the root describes the whole feature: a change there names no board
+  // the root describes the whole track: a change there names no board
   const isRoot = (n) => n.node === '.' || n.node === '' || n.story === '.'
   const rootChanged = [...diff.changed, ...diff.added].some(isRoot)
   const inScope = (st) => !ONLY || ONLY.includes(st)
@@ -343,10 +343,10 @@ Return these, and a one-line note on anything that could not be read.`,
   const units = Object.values(groups).filter((g) => g.story)
   const skipped = ONLY ? [...diff.changed, ...diff.added].filter((c) => !isRoot(c) && !inScope(c.story)).length : 0
   log(`Since the last run: ${diff.comments.length} open comment${diff.comments.length === 1 ? '' : 's'}, ${diff.changed.length} changed, ${diff.added.length} new and ${diff.gone.length} gone situation${diff.gone.length === 1 ? '' : 's'}${diff.note ? ` (${diff.note})` : ''}${ONLY ? `; limited to ${ONLY.join(', ')}, so ${skipped} change${skipped === 1 ? '' : 's'} in other stories wait for a later run` : ''}`)
-  if (rootChanged) log('The root node of the tree changed. It describes the whole feature and names no board, so no board follows from it alone: say in steer what should change.')
+  if (rootChanged) log('The root node of the tree changed. It describes the whole track and names no board, so no board follows from it alone: say in steer what should change.')
   if (!units.length && !general) {
     log('Nothing to change: no open comments and no changed situations. Every board stays as it is.')
-    return { feature: F, mode: 'rerun', doc: DOC, link: link(DOC), changed: [], gone: diff.gone, note: 'Nothing to change' }
+    return { track: F, mode: 'rerun', doc: DOC, link: link(DOC), changed: [], gone: diff.gone, note: 'Nothing to change' }
   }
 
   const reworked = (await parallel(units.map((g, i) => () => {
@@ -385,7 +385,7 @@ Return the boards you changed and the boards you added; for every changed or new
 
   const forSystem = [...(general ? general.comments.map((c) => ({ comment: c.id, node: c.node, board: c.boardName || c.board, asks: c.text })) : []), ...reworked.flatMap((r) => r.forSystem)]
   const systemRework = forSystem.length ? await agent(
-    `Answer comments on the finished design of the feature "${F}" that ask for a change in the design system or on a board outside any user story, as "Reworking a finished design", "Tokens only" and the Components part of "Step 1: The design system" in ${UI}/SKILL.md say, with ${BOARDS}. No other agent is working now: you are the one writer of tokens and components. ${inputs('system')}
+    `Answer comments on the finished design of the track "${F}" that ask for a change in the design system or on a board outside any user story, as "Reworking a finished design", "Tokens only" and the Components part of "Step 1: The design system" in ${UI}/SKILL.md say, with ${BOARDS}. No other agent is working now: you are the one writer of tokens and components. ${inputs('system')}
 
 Design doc ${DOC}; design system doc ${DS || '(find it with `doc list --global --pillar ui`)'}; the workspace ID is ${prep.workspaceId || 'not known'}.
 The comments: ${JSON.stringify(forSystem)}
@@ -434,13 +434,13 @@ Return the boards you edited directly, each comment with your reply, and anythin
     failing: [...reworked.flatMap((r) => r.failing), ...(systemRework ? systemRework.failing : [])],
   }
   const notesDoc = await notes(DOC, summary)
-  return { feature: F, doc: DOC, link: link(DOC), notesDoc, ...summary }
+  return { track: F, doc: DOC, link: link(DOC), notesDoc, ...summary }
 }
 
 // ---- First design: Plan ----------------------------------------------------
 phase('Plan')
 const plan = await agent(
-  `Plan the finished design of the feature "${F}": the screens, and where each user story happens. This is the first part of "Step 2: Plan the boards" of ${UI}/SKILL.md; the states of each story are planned later, by the agent that draws that story. Plan only; draw nothing. ${inputs('plan')}
+  `Plan the finished design of the track "${F}": the screens, and where each user story happens. This is the first part of "Step 2: Plan the boards" of ${UI}/SKILL.md; the states of each story are planned later, by the agent that draws that story. Plan only; draw nothing. ${inputs('plan')}
 
 The human's pick: ${A.pick}
 ${prep.optionsDoc ? `The layout options are in the design doc ${prep.optionsDoc}: read it (\`${omni('plan')} doc read ${prep.optionsDoc}\`), read the board "Comparison", and look at the images of the boards the pick names (${BOARDS}, Seeing; work files in ${S}/plan). The human may have commented on them: \`${omni('plan')} comment list --doc ${prep.optionsDoc} --json\`; take each open comment (waiting_on_you false) into the plan and reply to it with how the finished design takes it up.` : 'There are no layout options: the pick itself describes the layout.'}
@@ -474,10 +474,10 @@ const screens = plan.screens.filter((sc) => !ONLY || usedKeys.has(sc.key))
 log(`Plan: ${screens.length} screen${screens.length === 1 ? '' : 's'} at ${W}×${H}, ${planStories.length} user stor${planStories.length === 1 ? 'y' : 'ies'}, ${plan.components.length} component${plan.components.length === 1 ? '' : 's'}, ${plan.assumptions.length} assumption${plan.assumptions.length === 1 ? '' : 's'}`)
 
 const page = await agent(
-  `Make the page that the finished design of the feature "${F}" will be drawn on. ${RULES('page')}
+  `Make the page that the finished design of the track "${F}" will be drawn on. ${RULES('page')}
 ${prep.designDoc
     ? `The design doc ${prep.designDoc} exists and is empty: name its page ${prep.designPage} "Design", as ${BOARDS} (Changing a board that exists) describes.`
-    : `Create the design doc: \`${omni('page')} doc create --feature "${F}" --kind design --pillar ui --title "Design"\`. It starts with one empty page: read it (\`${omni('page')} doc read <doc id>\`) and name that page "Design" with [{"op":"set","node":"<page id>","rev":1,"properties":{"name":"Design"}}] sent to \`${omni('page')} design edit <doc id> --body-file -\`.`}
+    : `Create the design doc: \`${omni('page')} doc create --track "${F}" --kind design --pillar ui --title "Design"\`. It starts with one empty page: read it (\`${omni('page')} doc read <doc id>\`) and name that page "Design" with [{"op":"set","node":"<page id>","rev":1,"properties":{"name":"Design"}}] sent to \`${omni('page')} design edit <doc id> --body-file -\`.`}
 Return the doc's ID and the page's ID.`,
   opt('prepare', { label: 'page', phase: 'Plan', effort: 'low', schema: s({ doc: str, page: str }) }),
 )
@@ -488,7 +488,7 @@ const PAGE = page.page
 // ---- System ----------------------------------------------------------------
 phase('System')
 const system = await agent(
-  `Do "Step 1: The design system" of ${UI}/SKILL.md, all of it, for the feature "${F}", with "Tokens only" of the same file, ${UI}/references/motion.md for the motion tokens and ${BOARDS} for the Components board. ${TASTE} No other agent is working now: you are the one writer of tokens and components. ${inputs('system')}
+  `Do "Step 1: The design system" of ${UI}/SKILL.md, all of it, for the track "${F}", with "Tokens only" of the same file, ${UI}/references/motion.md for the motion tokens and ${BOARDS} for the Components board. ${TASTE} No other agent is working now: you are the one writer of tokens and components. ${inputs('system')}
 
 ${prep.designSystemDoc ? `The project has a design system (doc ${prep.designSystemDoc}): keep its look, and add only the tokens and components the plan needs and it lacks.` : match.codeStyles ? `The project has no design system: create it from the product's own style values, which are in ${match.files.join(', ')} in the folder you run in, as the skill says for that case.` : 'The project has no design system and the folder holds no style values of the product: create it from a style, as the skill says.'}
 The plan's screens: ${JSON.stringify(screens.map((sc) => ({ name: sc.name, layout: sc.layout })))}
@@ -515,7 +515,7 @@ const systemFor = (role) => `The design system (doc ${DS}): \`${omni(role)} toke
 // ---- Screens ---------------------------------------------------------------
 phase('Screens')
 const screenBoards = await parallel(screens.map((sc, i) => () => agent(
-  `Draw one screen of the finished design of the feature "${F}" in its normal state: "Step 3: Draw" of ${UI}/SKILL.md for this one board, with "Tokens only" of the same file and ${BOARDS}. ${TASTE} ${inputs(`screen-${sc.key}`)}
+  `Draw one screen of the finished design of the track "${F}" in its normal state: "Step 3: Draw" of ${UI}/SKILL.md for this one board, with "Tokens only" of the same file and ${BOARDS}. ${TASTE} ${inputs(`screen-${sc.key}`)}
 
 The screen: ${JSON.stringify(sc)}
 ${prep.optionsDoc && sc.from ? `It comes from the layout options in design doc ${prep.optionsDoc}; read the boards named in "from" (\`${omni(`screen-${sc.key}`)} design read --doc ${prep.optionsDoc} --board <id>\`) for the structure and the copy.` : ''}
@@ -547,9 +547,9 @@ const screenList = JSON.stringify(drawnScreens.map((d) => ({ key: d.key, board: 
 const outlines = (await parallel(planStories.map((st) => () => {
   const key = slug(st.path)
   return agent(
-    `List the boards one user story of the finished design of the feature "${F}" needs: its part of "Step 2: Plan the boards" of ${UI}/SKILL.md, with the situation checklist it names. List only; draw nothing. ${inputs(`outline-${key}`)}
+    `List the boards one user story of the finished design of the track "${F}" needs: its part of "Step 2: Plan the boards" of ${UI}/SKILL.md, with the situation checklist it names. List only; draw nothing. ${inputs(`outline-${key}`)}
 
-The story: ${st.title} (${TREE ? `node ${st.path}; \`${omni(`outline-${key}`)} --feature "${F}" behaviour list ${st.path}\` prints every situation below it, and \`behaviour read <path>\` one of them in full` : `a job from the Spec, path ${st.path}; give each situation you derive a path under it`}).
+The story: ${st.title} (${TREE ? `node ${st.path}; \`${omni(`outline-${key}`)} --track "${F}" behaviour list ${st.path}\` prints every situation below it, and \`behaviour read <path>\` one of them in full` : `a job from the Spec, path ${st.path}; give each situation you derive a path under it`}).
 The screens, already drawn in their normal state: ${screenList}. This story uses ${st.screens.join(', ')} and begins on ${st.entry}.
 ${assume(`outline-${key}`)}
 
@@ -566,7 +566,7 @@ const missing = planStories.filter((st) => !outlines.some((o) => o.path === st.p
 if (missing.length) log(`Stories not outlined, so not drawn: ${missing.map((m) => m.path).join(', ')}`)
 
 const merged = outlines.length > 1 ? await agent(
-  `Agents each listed the boards one user story of the finished design of the feature "${F}" needs, without seeing each other's lists. Stories overlap: two of them often reach the same state of the same screen. Apply "One board per state" of "Step 2: Plan the boards" in ${UI}/SKILL.md to the lists. Change nothing else in them; draw nothing.
+  `Agents each listed the boards one user story of the finished design of the track "${F}" needs, without seeing each other's lists. Stories overlap: two of them often reach the same state of the same screen. Apply "One board per state" of "Step 2: Plan the boards" in ${UI}/SKILL.md to the lists. Change nothing else in them; draw nothing.
 
 The lists, in the order a person meets the stories: ${JSON.stringify(outlines.map((o) => ({ story: o.path, title: o.title, boards: o.boards })))}
 
@@ -596,9 +596,9 @@ const storyResults = (await parallel(outlines.map((o, j) => () => {
   const key = o.key
   const mine = listFor(o)
   return agent(
-    `Draw one user story of the finished design of the feature "${F}": "Step 3: Draw" and the story's part of "Step 4: Wire the prototype" of ${UI}/SKILL.md, with "Tokens only" of the same file, ${BOARDS} and ${UI}/references/motion.md. ${TASTE} ${inputs(`story-${key}`)}
+    `Draw one user story of the finished design of the track "${F}": "Step 3: Draw" and the story's part of "Step 4: Wire the prototype" of ${UI}/SKILL.md, with "Tokens only" of the same file, ${BOARDS} and ${UI}/references/motion.md. ${TASTE} ${inputs(`story-${key}`)}
 
-The story: ${o.title} (${TREE ? `node ${o.path}; \`${omni(`story-${key}`)} --feature "${F}" behaviour read <path>\` prints a situation in full` : `a job from the Spec, path ${o.path}`}).
+The story: ${o.title} (${TREE ? `node ${o.path}; \`${omni(`story-${key}`)} --track "${F}" behaviour read <path>\` prints a situation in full` : `a job from the Spec, path ${o.path}`}).
 The screens, already drawn in their normal state in design doc ${DOC}, page ${PAGE}: ${screenList}. This story uses ${o.screens.join(', ')} and begins on ${o.entry}. A screen of the story that is missing from that list was not drawn: when this story begins on it, draw its normal state as the first board of your row, from this plan: ${JSON.stringify(screens.filter((sc) => o.screens.includes(sc.key) || sc.key === o.entry).map((sc) => ({ key: sc.key, name: sc.name, layout: sc.layout })))}.
 Draw exactly these boards, with these names: ${JSON.stringify(mine.boards)}
 These states of your story are drawn by another story's agent at this moment, so they are not yours to draw: ${JSON.stringify(mine.borrowed)}
@@ -668,4 +668,4 @@ const summary = {
   failing: [...system.failing, ...drawnScreens.flatMap((d) => d.failing), ...storyResults.flatMap((r) => r.failing)],
 }
 const notesDoc = await notes(DOC, summary)
-return { feature: F, doc: DOC, link: link(DOC), notesDoc, ...summary }
+return { track: F, doc: DOC, link: link(DOC), notesDoc, ...summary }
