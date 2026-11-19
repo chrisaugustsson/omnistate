@@ -18,3 +18,6 @@ unicode-linebreak = "0.1.5"
 # Reads the designs that the browser hands to the module, and writes the boxes
 # of their layouts.
 serde_json = "1"
+# Decodes the WOFF2 and WOFF files that web code ships its fonts in to the
+# TrueType or OpenType that Skia reads, which FreeType cannot do by itself.
+wuff = "0.2.10"
