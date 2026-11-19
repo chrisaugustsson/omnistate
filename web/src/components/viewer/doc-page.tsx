@@ -103,6 +103,8 @@ export function validateDocSearch(search: Record<string, unknown>): DocSearch {
 export type DocChrome = {
   meta?: ReactNode;
   actions?: ReactNode;
+  /** An HTML doc fills the room it is given, as a design does: its text scrolls in a box, the comments at the box's right edge. */
+  fill?: boolean;
   /** Inside a track's tab: the comments start hidden, whatever the reader last chose on a Docs page. */
   embedded?: boolean;
 };
@@ -255,7 +257,7 @@ function HtmlDocViewer({
     selectedRef.current = selected;
   });
   const [openComment, setOpenComment] = useState<string | null>(null);
-  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded);
+  const [review, setReview] = useReviewPane(selected, comments.value ?? null, !!chrome?.embedded, !!chrome?.fill && isNarrow());
 
   // A link to another block of the doc selects that block and scrolls to it.
   useEffect(() => {
@@ -331,6 +333,42 @@ function HtmlDocViewer({
       onChanged={comments.reload}
     />
   );
+
+  if (chrome?.fill) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PageBar workspaceId={workspaceId} projectId={projectId} docId={docId} meta={chrome.meta} actions={chrome.actions} review={{ shown: review, onShown: setReview }} />
+        <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-line xl:flex-row">
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
+            <FloatingAlerts>
+              {(doc.failed || head.failed) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
+            </FloatingAlerts>
+            <div className="mx-auto w-full max-w-(--main-max) px-6 py-6 lg:px-10">
+              {html === "" && <PaneEmpty icon={<FileText />}>This doc has no content yet.</PaneEmpty>}
+              <ViewerFrame
+                workspaceId={workspaceId}
+                html={html}
+                pins={pins}
+                selected={selected}
+                reveal={reveal}
+                onSelect={setSelected}
+                fit
+                className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
+              />
+            </div>
+          </div>
+          <aside
+            id="review-pane"
+            aria-label="Review"
+            hidden={!review}
+            className="max-h-[40%] shrink-0 overflow-y-auto border-t border-line xl:max-h-none xl:w-[19rem] xl:border-t-0 xl:border-l"
+          >
+            {commentsPanel}
+          </aside>
+        </div>
+      </div>
+    );
+  }
 
   if (chrome) {
     return (

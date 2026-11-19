@@ -42,8 +42,8 @@ export function usePane(key: string, shownByDefault = true, startHidden = false)
  * has comments asked for its discussion, so a hidden pane is shown again; what
  * stays selected does not bring back a pane the reader then hides. Inside a
  * track's tab (`embedded`) the pane starts hidden, so the doc keeps its width
- * beside the track's panel; with `narrow` (a design on a Docs tab in a window
- * under NARROW_FOR_REVIEW) it starts hidden too, so the canvas keeps its room.
+ * beside the track's panel; with `narrow` (a doc on a Docs tab in a window
+ * under NARROW_FOR_REVIEW) it starts hidden too, so the doc keeps its room.
  */
 export function useReviewPane(
   selected: string | null,

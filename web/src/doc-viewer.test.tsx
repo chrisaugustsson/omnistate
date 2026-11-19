@@ -407,6 +407,8 @@ describe("the doc viewer", () => {
     vi.stubGlobal("scrollTo", () => {});
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // A wide window: under 1440px a doc on a Docs tab opens with its review pane hidden.
+    vi.stubGlobal("innerWidth", 1920);
     posted.clear();
     watchFrames();
   });
@@ -605,6 +607,17 @@ describe("the doc viewer", () => {
       fireEvent.click(screen.getByRole("button", { name: "Show the review pane" }));
       expect(pane()).toBeTruthy();
       expect((within(pane()!).getByRole("textbox", { name: /comment/i }) as HTMLTextAreaElement).value).toBe("Half written");
+    });
+
+    test("in a window under 1440px the doc opens with its review pane hidden, whatever was kept, and the toggle shows it", async () => {
+      vi.stubGlobal("innerWidth", 1280);
+      localStorage.setItem("omni:pane:review", "open");
+      fakeApi();
+      renderAt(DOC_PATH);
+      await findFrame();
+      expect(pane()).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Show the review pane" }));
+      await waitFor(() => expect(pane()).toBeTruthy());
     });
 
     test("a hidden pane is still hidden on the next visit", async () => {

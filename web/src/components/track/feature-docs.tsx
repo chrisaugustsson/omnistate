@@ -10,11 +10,11 @@ import { useFeature } from "./feature-data";
 import { EmptyTab } from "./ui";
 
 // A feature's docs, as its Docs and Design tabs show them: the list grouped by
-// pillar on the left (above page text in a window under 1280px), the open doc
-// on the right: page text with its title as
-// a heading, or a design's canvas filling the room under the title (the layout
-// then spans the window). On the phone the list is the page, and a doc opens
-// full screen with a way back to the list.
+// pillar on the left, the open doc filling the room under the title beside it
+// (page text in a box with the comments at its right edge, or a design's
+// canvas), so every doc sits in the same place at the same width. On the phone
+// the list is the page, and a doc opens full screen with a way back to the
+// list.
 
 const PILLARS = [
   { pillar: "spec", title: "Spec" },
@@ -67,7 +67,8 @@ export function FeatureDocs({
   // On the phone the list is the page until a doc is named; then the doc fills the screen.
   const listOnly = phone && current === undefined;
   const docOnly = phone && current !== undefined;
-  const canvas = !listOnly && open?.kind === "design";
+  // On the phone a design alone fills the screen; an HTML doc is as tall as it is and the page scrolls.
+  const canvas = !listOnly && !!open && (!phone || open.kind === "design");
   const back = docOnly && (
     <div className="-mt-2 mb-2">
       {onPick ? (
@@ -128,7 +129,7 @@ export function FeatureDocs({
           </section>
         ))}
       </nav>
-      <div hidden={listOnly} className={cn("min-w-0 flex-1", canvas && "flex min-h-0 flex-col")}>
+      <div hidden={listOnly} className={cn("min-w-0 flex-1", canvas && "flex min-h-0 flex-col overflow-y-auto")}>
         {back}
         {listOnly ? null : open ? (
           <OpenDoc workspaceId={workspaceId} projectId={projectId} docId={open.id} doc={open} search={search} heading="h2" list={phone ? undefined : list} />

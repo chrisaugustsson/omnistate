@@ -47,7 +47,8 @@ function FeatureLayout() {
 
   // On the phone a feature's Docs with no doc named is the list alone.
   const shownDoc = tab === "docs" && (docId || !phone) ? openFeatureDoc(docs, docId) : undefined;
-  const canvas = !bleed && !failed && (tab === "design" || shownDoc?.kind === "design");
+  // An open doc fills the room under the title, as on a Docs page; on the phone only a design does.
+  const canvas = !bleed && !failed && (tab === "design" || (shownDoc !== undefined && (!phone || shownDoc.kind === "design")));
 
   if (bleed) {
     return (

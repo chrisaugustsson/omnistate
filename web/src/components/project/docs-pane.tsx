@@ -15,9 +15,10 @@ import { useProjectMap } from "./project-data";
 // The docs of a scope (the project, or a part with its features): which docs
 // those are, the pillars they are grouped by (decision U8: Spec, UI,
 // Architecture, Database, Research), and the Docs section: the list with a
-// find field on the left, the open doc on the right (page text beside the
-// list, or a design's canvas filling the window). On the phone the list is the
-// page, and a doc opens full screen with a way back to the list.
+// find field on the left, the open doc filling the window beside it (page text
+// in a box with the comments at its right edge, or a design's canvas). On the
+// phone the list is the page, and a doc opens full screen with a way back to
+// the list.
 
 /** The pillars, in the order the Docs tab groups them. */
 export const DOC_PILLARS = [
@@ -143,11 +144,11 @@ function DocList({ docs, current, target, about }: { docs: readonly HomeDoc[]; c
 }
 
 /**
- * A Docs tab: the list on the left (248px; above the doc in a window under
- * 1280px, where the sidebar leaves the doc too little room), and on the right the open doc
- * (`children`) or, with no doc open, `empty`. An HTML doc reads as page text in
- * the centred page beside the list, and the page scrolls; a design is a canvas,
- * so with one open (`canvas`) the tab fills the window under the bar instead.
+ * A Docs tab: the list on the left and on the right the open doc (`children`)
+ * or, with no doc open, `empty`. With a doc open (`canvas`) the tab fills the
+ * window under the bar, the list scrolling on its own, so an HTML doc and a
+ * design sit in the same place at the same width. With none, the list sits in
+ * the centred page (above `empty` in a window under 1280px).
  */
 export function DocsTab({
   docs,
@@ -166,9 +167,9 @@ export function DocsTab({
   /** A quiet note after a doc's title (the feature a part's doc is about). */
   about?: (doc: HomeDoc) => string | undefined;
   failed?: boolean;
-  /** The open doc is a design: the tab fills the window, the list on the left and the canvas taking the rest. */
+  /** A doc is open: the tab fills the window, the list on the left and the doc taking the rest. */
   canvas?: boolean;
-  /** Beside a design, whether the list shows; the reader folds it away with the button in the doc's header. */
+  /** Beside an open doc, whether the list shows; the reader folds it away with the button in the doc's header. */
   listShown?: boolean;
   /** On the phone: the list alone, or the open doc alone (`children`, with its way back). */
   only?: "list" | "doc";
@@ -202,7 +203,7 @@ export function DocsTab({
             {list}
           </aside>
         )}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col p-4 md:pl-6">{children}</div>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-4 md:pl-6">{children}</div>
       </div>
     );
   }
@@ -234,20 +235,20 @@ export function OpenDoc({
   search: DocSearch;
   /** The heading's level: h1 on a Docs page, h2 under an object's own title (a feature's Docs tab). */
   heading?: "h1" | "h2";
-  /** Given, a design's header has the button that folds the doc list away and back. */
+  /** Given (beside the list, not on the phone), the doc fills the room it is given and its header has the button that folds the list away and back. */
   list?: DocListToggle;
 }) {
   const Heading = heading;
-  const design = doc?.kind === "design";
+  const fill = !!list && doc?.kind !== "design-system";
   return (
-    <div className={cn("flex min-w-0 flex-col", design && "min-h-0 flex-1")}>
+    <div className={cn("flex min-w-0 flex-col", fill && "min-h-0 flex-1")}>
       <div className="flex min-h-(--control-h-lg) items-center">
-        {design && list && <DocListButton list={list} />}
+        {list && <DocListButton list={list} />}
         <Heading className="min-w-0 text-title font-semibold">
           {doc ? doc.title : <span aria-hidden className="block h-5 w-48 animate-pulse rounded-control bg-hover" />}
         </Heading>
       </div>
-      <DocPage key={docId} workspaceId={workspaceId} projectId={projectId} docId={docId} search={search} chrome={{ meta: doc && <DocByline doc={doc} /> }} />
+      <DocPage key={docId} workspaceId={workspaceId} projectId={projectId} docId={docId} search={search} chrome={{ meta: doc && <DocByline doc={doc} />, fill }} />
     </div>
   );
 }
@@ -303,7 +304,8 @@ export function ScopeDocs({
   const open = docId ? docs?.find((doc) => doc.id === docId) : undefined;
   const list = useDocListToggle();
   const phone = useIsPhone();
-  const canvas = open?.kind === "design";
+  // On the phone a design alone fills the screen; an HTML doc is as tall as it is and the page scrolls.
+  const canvas = phone ? open?.kind === "design" : !!docId;
   const index = partId ? partLink(workspaceId, projectId, partId, "docs") : projectLink(workspaceId, projectId, "docs");
   return (
     <DocsTab
