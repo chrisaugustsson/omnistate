@@ -13,7 +13,10 @@
 //!   them as instances of those components, with the overrides keyed by their
 //!   nodes, and imports no component of its own for them.
 //! - Importing a file whose components the design system already has adds
-//!   none again; a component without a Penpot origin stays as it is.
+//!   none again; a component without a Penpot origin stays as it is. A file
+//!   duplicated from the library keeps the library's component ids: a
+//!   component of it with the same id and the same content is the design
+//!   system's, and one that changed is imported as the file's own.
 //! - An export that bundles the library ("Export file + libraries") and goes
 //!   onto a design system without it imports each library component its
 //!   copies place once, and no other; the manifest may list the library first.
@@ -348,6 +351,62 @@ fn a_component_the_design_system_has_is_not_added_even_when_read_without_it() {
         tags.contains(&label),
         "the override names the head's Label: {tags}"
     );
+}
+
+/// The library as a file duplicated from it: the same pages, shapes and
+/// component ids, under the file id `file`. With `glyph`, the bell's Glyph is
+/// that color instead.
+fn duplicate_export(test: &str, file: &str, glyph: Option<&str>) -> PathBuf {
+    let entries: Vec<(String, Vec<u8>)> = library_entries_all()
+        .into_iter()
+        .map(|(name, bytes)| {
+            let mut text = String::from_utf8(bytes).unwrap_or_default();
+            if name.ends_with(&format!("{}.json", uid(n::BELL + 1)))
+                && let Some(glyph) = glyph
+            {
+                text = text.replace("#F2B33D", glyph);
+            }
+            (
+                name.replace(FILE_ID, file),
+                text.replace(FILE_ID, file).into_bytes(),
+            )
+        })
+        .collect();
+    write_temp(&format!("duplicate-{test}.penpot"), &stored_zip(&entries))
+}
+
+#[test]
+fn a_file_duplicated_from_the_library_reuses_its_unchanged_components() {
+    const COPY: &str = "f0000000-0000-4000-8000-0000000000d1";
+    let stored = library_in_design_system("duplicate");
+    let copy = import_onto(&duplicate_export("same", COPY, None), &stored);
+    assert_eq!(
+        copy.component_count(),
+        4,
+        "read onto the head, the file's own are converted"
+    );
+    let mut ids = Ids::default();
+    let merged = onto(&copy, &stored, &mut ids);
+    assert_eq!(
+        merged.component_count(),
+        4,
+        "the same Penpot ids with the same content are the head's"
+    );
+    let tags = merged.design_tags(&ids).expect("the design renders");
+    let primary = from_penpot(&stored, C_PRIMARY);
+    let placed = format!("component=\"{}\"", primary["id"].as_str().unwrap());
+    assert!(tags.contains(&placed), "{tags}");
+
+    // A component that changed in the copy is the file's own.
+    let changed = import_onto(&duplicate_export("changed", COPY, Some("#000000")), &stored);
+    let mut ids = Ids::default();
+    let merged = onto(&changed, &stored, &mut ids);
+    let added: Vec<&Value> = components(&merged)[4..].to_vec();
+    let mut names: Vec<&str> = added.iter().map(|c| c["name"].as_str().unwrap()).collect();
+    names.sort();
+    // The bell, and the Buttons that hold a copy of it.
+    assert_eq!(names, ["Button", "Button", "Ikon / bell"], "{added:#?}");
+    assert!(added.iter().all(|c| c["origin"]["file"] == COPY));
 }
 
 // A bundled library -------------------------------------------------------------------------

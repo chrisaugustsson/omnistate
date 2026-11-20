@@ -410,7 +410,12 @@ so the import onto a design system resolves a copy in this order:
    component in its `origin`: the copy becomes an instance of it, its overrides
    keyed by the nodes that `origin.layers` names. The export does not import
    that component again. This holds for a library imported before and for the
-   file's own components on a second import of the same file.
+   file's own components on a second import of the same file. A file that was
+   duplicated from the library keeps the library's component ids under its own
+   file id: its component with the same Penpot component id as one of the
+   design system's and the same content (compared without node IDs) is that
+   one too, and one that changed is imported as the file's own. Components are
+   never matched by name.
 2. Otherwise, when the export bundles the library ("Export file + libraries"),
    the component is converted from the library's file, once however many copies
    place it, with the library components it holds in turn, and the copies

@@ -243,6 +243,95 @@ fn penpot_origin(component: &Value) -> Option<(&str, &str)> {
     Some((origin["file"].as_str()?, origin["component"].as_str()?))
 }
 
+/// Says that the nodes of `component` are those of `same`, the head's
+/// component it stands for: the component itself, and each layer by the Penpot
+/// layer it came from.
+fn reuse(component: &Value, same: &Value, ids: &mut Ids) {
+    if let (Some(old), Some(new)) = (component["id"].as_str(), same["id"].as_str()) {
+        ids.nodes.insert(old.to_string(), new.to_string());
+    }
+    let theirs = same["origin"]["layers"].as_object();
+    for (layer, old) in component["origin"]["layers"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(old), Some(new)) = (
+            old.as_str(),
+            theirs.and_then(|layers| layers.get(layer)?.as_str()),
+        ) {
+            ids.nodes.insert(old.to_string(), new.to_string());
+        }
+    }
+}
+
+/// A component as content alone (see [`normalized`]), written as OmniState
+/// writes nodes, so that the server's `12` and the import's `12.0` agree.
+fn content_of(component: &Value, ids: &Ids, incoming: bool) -> Value {
+    let written = serde_json::from_value::<Node>(component.clone())
+        .ok()
+        .and_then(|node| serde_json::to_value(node).ok())
+        .unwrap_or_else(|| component.clone());
+    normalized(&written, ids, incoming)
+}
+
+/// A component as content alone, to compare an import's with the head's:
+/// without node IDs or origin, with the components its instances place and
+/// the nodes their overrides change named as the head names them (`ids`, for
+/// the import's), and the import's images as the server named them.
+fn normalized(node: &Value, ids: &Ids, incoming: bool) -> Value {
+    let rename = |id: &str| -> String {
+        if incoming {
+            ids.nodes.get(id).cloned().unwrap_or_else(|| id.to_string())
+        } else {
+            id.to_string()
+        }
+    };
+    match node {
+        Value::Object(object) => {
+            let mut out = Map::new();
+            for (key, value) in object {
+                match key.as_str() {
+                    "id" | "origin" => {}
+                    "component" => {
+                        let value = value
+                            .as_str()
+                            .map_or_else(|| value.clone(), |id| json!(rename(id)));
+                        out.insert(key.clone(), value);
+                    }
+                    "overrides" => {
+                        let changes = value
+                            .as_object()
+                            .into_iter()
+                            .flatten()
+                            .map(|(node, change)| (rename(node), normalized(change, ids, incoming)))
+                            .collect();
+                        out.insert(key.clone(), Value::Object(changes));
+                    }
+                    _ => {
+                        out.insert(key.clone(), normalized(value, ids, incoming));
+                    }
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| normalized(item, ids, incoming))
+                .collect(),
+        ),
+        Value::String(text) if incoming => match text
+            .strip_prefix("attachment:")
+            .and_then(|old| ids.attachments.get(old))
+        {
+            Some(new) => json!(format!("attachment:{new}")),
+            None => node.clone(),
+        },
+        _ => node.clone(),
+    }
+}
+
 impl Import {
     /// The import onto the design system's head, which holds the tokens and
     /// the components in one text (`GET .../docs/{id}/html`, whose `html` is
@@ -296,37 +385,42 @@ impl Import {
             }
         }
         // A component the head already has from Penpot stays the head's: the
-        // import's instances and overrides name its nodes instead.
-        for component in self.design_system["$components"]
+        // import's instances and overrides name its nodes instead. That is a
+        // component of the same Penpot file and component, or one of another
+        // file with the same Penpot component id and the same content (a file
+        // duplicated from the library keeps its components' ids).
+        let mut pending: Vec<&Value> = self.design_system["$components"]
             .as_array()
             .into_iter()
             .flatten()
-        {
-            let same = penpot_origin(component).and_then(|origin| {
-                kept.iter()
-                    .find(|other| penpot_origin(other) == Some(origin))
+            .collect();
+        loop {
+            let before = pending.len();
+            pending.retain(|component| {
+                let Some((file, id)) = penpot_origin(component) else {
+                    return true;
+                };
+                let same = kept
+                    .iter()
+                    .find(|other| penpot_origin(other) == Some((file, id)))
+                    .or_else(|| {
+                        let theirs = content_of(component, ids, true);
+                        kept.iter().find(|other| {
+                            penpot_origin(other).is_some_and(|(_, other_id)| other_id == id)
+                                && content_of(other, ids, false) == theirs
+                        })
+                    });
+                let Some(same) = same else {
+                    return true;
+                };
+                reuse(component, same, ids);
+                false
             });
-            let Some(same) = same else {
-                components.push(component.clone());
-                continue;
-            };
-            if let (Some(old), Some(new)) = (component["id"].as_str(), same["id"].as_str()) {
-                ids.nodes.insert(old.to_string(), new.to_string());
-            }
-            let theirs = same["origin"]["layers"].as_object();
-            for (layer, old) in component["origin"]["layers"]
-                .as_object()
-                .into_iter()
-                .flatten()
-            {
-                if let (Some(old), Some(new)) = (
-                    old.as_str(),
-                    theirs.and_then(|layers| layers.get(layer)?.as_str()),
-                ) {
-                    ids.nodes.insert(old.to_string(), new.to_string());
-                }
+            if pending.len() == before {
+                break;
             }
         }
+        components.extend(pending.into_iter().cloned());
         if let Some(root) = tree.as_object_mut()
             && !components.is_empty()
         {
