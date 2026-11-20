@@ -7,6 +7,13 @@
 //! swapped-component overrides the designer made), and the shapes of the main
 //! instances stay on their pages as the plain shapes they are. The rules of
 //! the converter (docs/formats/penpot-export.md) apply to every shape.
+//!
+//! Every imported component keeps its Penpot file and component in its
+//! `origin`. An import onto a design system ([`import_file_onto`]) places the
+//! copies of the components that design system already has from Penpot, its
+//! own and those of a library imported before, and does not import them
+//! again; a library that an "Export file + libraries" export bundles gives the
+//! components its copies place that the design system lacks.
 
 mod merge;
 pub(crate) mod tokens;
@@ -71,11 +78,30 @@ pub(crate) struct Built {
 
 /// Reads the `.penpot` export at `path` and imports it.
 pub fn import_file(path: &Path) -> Result<Import, ReadError> {
-    build(path).map(|built| built.import)
+    import_file_onto(path, &[])
 }
 
-pub(crate) fn build(path: &Path) -> Result<Built, ReadError> {
-    let read = convert::import_run(path)?;
+/// Reads the `.penpot` export at `path` and imports it onto a design system
+/// whose components are `design_system`, as JSON nodes (see
+/// [`design_system_components`]). A copy of a component that an earlier import
+/// brought there from Penpot (the same Penpot file and component in its
+/// `origin`) becomes an instance of it, with its overrides keyed by the nodes
+/// that `origin.layers` names, and that component is not imported again.
+/// Components without a Penpot origin are left alone.
+pub fn import_file_onto(path: &Path, design_system: &[Value]) -> Result<Import, ReadError> {
+    build(path, design_system).map(|built| built.import)
+}
+
+/// The components of a design system's head, from the server's answer to
+/// `GET .../docs/{id}/html` as JSON text, whose `html` is the token tree with
+/// the components under `$components`.
+pub fn design_system_components(head: &str) -> Result<Vec<Value>, ReadError> {
+    let tree = merge::head_tree(head)?;
+    Ok(tree["$components"].as_array().cloned().unwrap_or_default())
+}
+
+pub(crate) fn build(path: &Path, design_system: &[Value]) -> Result<Built, ReadError> {
+    let read = convert::import_run(path, design_system)?;
 
     // One page per Penpot page, holding the boards the converter made.
     let mut next = read.ids;
@@ -125,7 +151,13 @@ pub(crate) fn build(path: &Path) -> Result<Built, ReadError> {
         })
         .collect::<Result<Vec<Node>, ReadError>>()?;
 
+    // The tokens of the libraries the export bundles, with the file's own on
+    // top of them.
+    let mut token_report = Vec::new();
     let mut design_system = read.tokens.tree.clone();
+    for library in &read.library_tokens {
+        design_system = merge::merge_tokens(library, &design_system, &mut token_report);
+    }
     for component in &read.components {
         if let Err(error) = serde_json::from_value::<Node>(component.clone()) {
             return Err(ReadError(format!(
@@ -187,6 +219,7 @@ pub(crate) fn build(path: &Path) -> Result<Built, ReadError> {
             reason: note.reason.clone(),
         });
     }
+    report.extend(token_report);
 
     Ok(Built {
         import: Import {
@@ -411,6 +444,7 @@ impl Flat<'_> {
         let object = frame.as_object_mut().expect("a component is an object");
         object.insert("type".into(), json!("frame"));
         object.remove("props");
+        object.remove("origin");
         for key in [
             "name",
             "visible",
@@ -869,6 +903,10 @@ fn render(
         }
     }
     attachments_of(object, ids);
+    if object.get("type").and_then(Value::as_str) == Some("component") {
+        origin_layers(&mut node, ids, complete);
+    }
+    let object = node.as_object_mut()?;
     if object.get("type").and_then(Value::as_str) == Some("instance") {
         let component = object.get("component").and_then(Value::as_str)?;
         match ids.nodes.get(component) {
@@ -919,6 +957,34 @@ fn render(
         object.insert("children".into(), Value::Array(kept));
     }
     Some(node)
+}
+
+/// Names the server's nodes in the `origin.layers` of a component. A layer
+/// whose node the server has not named yet waits for the next time the
+/// components are sent; one whose node is no longer in the component is left
+/// out.
+fn origin_layers(component: &mut Value, ids: &Ids, complete: &mut bool) {
+    let mut inside = Vec::new();
+    merge::node_ids(component, &mut inside);
+    let Some(layers) = component
+        .get_mut("origin")
+        .and_then(|origin| origin.get_mut("layers"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let mut kept = Map::new();
+    for (layer, node) in layers.iter() {
+        let Some(node) = node.as_str() else { continue };
+        match ids.nodes.get(node) {
+            Some(new) => {
+                kept.insert(layer.clone(), json!(new));
+            }
+            None if inside.iter().any(|id| id == node) => *complete = false,
+            None => {}
+        }
+    }
+    *layers = kept;
 }
 
 /// Renames the attachments of the fills and the `image` of a node.

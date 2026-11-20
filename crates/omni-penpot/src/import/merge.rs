@@ -1,7 +1,9 @@
 //! An import onto a design system that the project already has: its tokens and
 //! components are added to the ones of the design system's head, which all
 //! stay, because `PUT .../tokens` and `PUT .../components` replace the whole
-//! head.
+//! head. A component of the import that the head already has from Penpot (the
+//! same Penpot file and component in its `origin`) is not added again: the
+//! import's instances place the head's.
 
 use omni_core::design::tokens::TokenTree;
 
@@ -154,7 +156,7 @@ fn token_paths(value: &Value, path: &str, out: &mut HashSet<String>) {
 /// that it lacks. A
 /// tree that is refused once the two are put together leaves the design
 /// system's tokens as they are, and the report says why.
-fn merge_tokens(kept: &Value, incoming: &Value, report: &mut Vec<ImportEntry>) -> Value {
+pub(super) fn merge_tokens(kept: &Value, incoming: &Value, report: &mut Vec<ImportEntry>) -> Value {
     if !kept.is_object() {
         return incoming.clone();
     }
@@ -204,7 +206,7 @@ fn merge_tokens(kept: &Value, incoming: &Value, report: &mut Vec<ImportEntry>) -
 }
 
 /// Every node ID of `value` and below it.
-fn node_ids(value: &Value, out: &mut Vec<String>) {
+pub(super) fn node_ids(value: &Value, out: &mut Vec<String>) {
     if let Some(id) = value["id"].as_str() {
         out.push(id.to_string());
     }
@@ -221,6 +223,26 @@ fn answer_of(text: &str, what: &str) -> Result<Value, ReadError> {
     })
 }
 
+/// The token tree with the components under `$components` that a design
+/// system's head holds, from the server's answer to `GET .../docs/{id}/html`
+/// as JSON text.
+pub(super) fn head_tree(head: &str) -> Result<Value, ReadError> {
+    let head = answer_of(head, "the design system's head")?;
+    let text = head["html"].as_str().unwrap_or_default();
+    if text.trim().is_empty() {
+        Ok(json!({}))
+    } else {
+        answer_of(text, "the design system's head")
+    }
+}
+
+/// The Penpot file and component a component came from, if it did.
+fn penpot_origin(component: &Value) -> Option<(&str, &str)> {
+    let origin = &component["origin"];
+    (origin["tool"] == "penpot").then_some(())?;
+    Some((origin["file"].as_str()?, origin["component"].as_str()?))
+}
+
 impl Import {
     /// The import onto the design system's head, which holds the tokens and
     /// the components in one text (`GET .../docs/{id}/html`, whose `html` is
@@ -233,13 +255,7 @@ impl Import {
         head: &str,
         ids: &mut Ids,
     ) -> Result<Import, ReadError> {
-        let head = answer_of(head, "the design system's head")?;
-        let text = head["html"].as_str().unwrap_or_default();
-        let tree = if text.trim().is_empty() {
-            json!({})
-        } else {
-            answer_of(text, "the design system's head")?
-        };
+        let tree = head_tree(head)?;
         let components = tree["$components"].as_array().cloned().unwrap_or_default();
         let version = json!({ "version": { "components": components } });
         self.onto_design_system(tokens, &version.to_string(), ids)
@@ -279,13 +295,38 @@ impl Import {
                 ids.nodes.insert(id.clone(), id);
             }
         }
-        components.extend(
-            self.design_system["$components"]
-                .as_array()
+        // A component the head already has from Penpot stays the head's: the
+        // import's instances and overrides name its nodes instead.
+        for component in self.design_system["$components"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let same = penpot_origin(component).and_then(|origin| {
+                kept.iter()
+                    .find(|other| penpot_origin(other) == Some(origin))
+            });
+            let Some(same) = same else {
+                components.push(component.clone());
+                continue;
+            };
+            if let (Some(old), Some(new)) = (component["id"].as_str(), same["id"].as_str()) {
+                ids.nodes.insert(old.to_string(), new.to_string());
+            }
+            let theirs = same["origin"]["layers"].as_object();
+            for (layer, old) in component["origin"]["layers"]
+                .as_object()
                 .into_iter()
                 .flatten()
-                .cloned(),
-        );
+            {
+                if let (Some(old), Some(new)) = (
+                    old.as_str(),
+                    theirs.and_then(|layers| layers.get(layer)?.as_str()),
+                ) {
+                    ids.nodes.insert(old.to_string(), new.to_string());
+                }
+            }
+        }
         if let Some(root) = tree.as_object_mut()
             && !components.is_empty()
         {
