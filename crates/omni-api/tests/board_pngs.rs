@@ -181,7 +181,7 @@ fn fixture() -> &'static Fixture {
         let server = TestServer::start(&config());
         let response = server.client.request(
             "POST",
-            &format!("/api/v1/w/{workspace}/api-keys"),
+            "/api/v1/api-keys",
             &[("Cookie", &cookie(&session_token()))],
             Some("{}"),
         );

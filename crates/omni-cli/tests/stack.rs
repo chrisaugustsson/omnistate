@@ -7,9 +7,9 @@
 //! of both), and serve the API's router on a local port against that database.
 //! The built `omni` then runs against that address, with an empty home
 //! directory per test. Prompts and the password are read from standard input
-//! when it is not a terminal: `omni login` reads the email, the password and
-//! the workspace choice (its number in the list it prints) as three lines;
-//! `omni key list|revoke` reads the password as one line. The prompts are
+//! when it is not a terminal: `omni login` reads the email and the password as
+//! two lines (it asks for no workspace: the key reaches every workspace of the
+//! user); `omni key list|revoke` reads the password as one line. The prompts are
 //! written to standard error. The contract of the CLI is in tests/common/mod.rs.
 
 mod common;
@@ -202,10 +202,10 @@ fn ready() -> (MutexGuard<'static, ()>, &'static Fixture) {
 }
 
 /// Runs `omni login` against the fixture with the answers on standard input.
-fn login(home: &Scratch, server: &str, email: &str, password: &str, choice: &str) -> Out {
+fn login(home: &Scratch, server: &str, email: &str, password: &str) -> Out {
     omni(&home.path)
         .args(&["login", "--server", server])
-        .stdin(format!("{email}\n{password}\n{choice}\n").as_bytes())
+        .stdin(format!("{email}\n{password}\n").as_bytes())
         .run()
 }
 
@@ -246,7 +246,7 @@ fn last_line(out: &Out) -> String {
 fn login_asks_for_the_credentials_and_stores_a_working_key_with_mode_600() {
     let (_guard, f) = ready();
     let home = Scratch::new("login");
-    let out = login(&home, &f.url, "dana@example.test", PASSWORD, "1");
+    let out = login(&home, &f.url, "dana@example.test", PASSWORD);
     assert_eq!(out.code, 0, "omni login: {}", out.stderr);
 
     let prompts = out.stderr.to_lowercase();
@@ -296,30 +296,101 @@ fn login_asks_for_the_credentials_and_stores_a_working_key_with_mode_600() {
     let body = whoami.json();
     assert_eq!(body["workspace_id"], f.alpha.as_str(), "{body}");
     assert_eq!(body["actor"]["kind"], "agent", "{body}");
+    assert_eq!(
+        body["workspaces"],
+        serde_json::json!([{ "id": f.alpha, "name": "Alpha" }]),
+        "the key reaches dana's one workspace: {body}"
+    );
 }
 
 #[test]
-fn login_lets_you_pick_a_workspace() {
+fn login_stores_one_key_that_reaches_every_workspace_and_commands_pick_one() {
     let (_guard, f) = ready();
     let home = Scratch::new("pick");
-    let out = login(&home, &f.url, "erin@example.test", PASSWORD, "2");
+    let out = login(&home, &f.url, "erin@example.test", PASSWORD);
     assert_eq!(out.code, 0, "omni login: {}", out.stderr);
-    let listed = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        listed.contains("Alpha") && listed.contains("Beta"),
-        "login lists the workspaces to pick from: {listed:?}"
+        !out.stderr.to_lowercase().contains("pick"),
+        "login asks for no workspace: {:?}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("Alpha") && out.stdout.contains("Beta"),
+        "login lists the workspaces the key reaches: {:?}",
+        out.stdout
     );
     assert_eq!(
         config_value(&home.path, "workspace_id"),
-        Some(f.beta.clone()),
-        "choice 2 is Beta"
+        None,
+        "a user of two workspaces gets no default"
     );
 
-    let whoami = omni(&home.path)
-        .args(&["whoami", "--as", "run-1/explorer", "--json"])
+    let whoami = |extra: &[&str]| {
+        let out = omni(&home.path)
+            .args(&["whoami", "--as", "run-1/explorer", "--json"])
+            .args(extra)
+            .run();
+        assert_eq!(out.code, 0, "whoami {extra:?}: {}", out.stderr);
+        out.json()
+    };
+    let none = whoami(&[]);
+    assert!(
+        none["workspace_id"].is_null(),
+        "no workspace in use: {none}"
+    );
+    assert_eq!(
+        none["workspaces"],
+        serde_json::json!([
+            { "id": f.alpha, "name": "Alpha" },
+            { "id": f.beta, "name": "Beta" }
+        ]),
+        "whoami lists the workspaces the key reaches: {none}"
+    );
+    // The same key works in either workspace, by ID or by name.
+    assert_eq!(
+        whoami(&["--workspace", &f.alpha])["workspace_id"],
+        f.alpha.as_str()
+    );
+    assert_eq!(
+        whoami(&["--workspace", "beta"])["workspace_id"],
+        f.beta.as_str()
+    );
+    let unknown = omni(&home.path)
+        .args(&["whoami", "--as", "run-1/explorer", "--workspace", "Gamma"])
         .run();
-    assert_eq!(whoami.code, 0, "{}", whoami.stderr);
-    assert_eq!(whoami.json()["workspace_id"], f.beta.as_str());
+    assert_ne!(unknown.code, 0);
+    assert!(
+        last_line(&unknown).contains("omni workspace list"),
+        "{:?}",
+        unknown.stderr
+    );
+
+    // A default makes the choice for commands that name no workspace.
+    let used = omni(&home.path)
+        .args(&["workspace", "use", "Beta", "--as", "run-1/explorer"])
+        .run();
+    assert_eq!(used.code, 0, "omni workspace use: {}", used.stderr);
+    assert_eq!(
+        config_value(&home.path, "workspace_id"),
+        Some(f.beta.clone())
+    );
+    assert_eq!(whoami(&[])["workspace_id"], f.beta.as_str());
+    let listed = omni(&home.path)
+        .args(&["workspace", "list", "--as", "run-1/explorer", "--json"])
+        .run();
+    assert_eq!(listed.code, 0, "{}", listed.stderr);
+    let listed = listed.json();
+    assert_eq!(listed["workspaces"][1]["id"], f.beta.as_str(), "{listed}");
+    assert_eq!(listed["workspaces"][1]["default"], true, "{listed}");
+    assert_eq!(listed["workspaces"][0]["default"], false, "{listed}");
+
+    // Logging in again keeps the default while erin is still a member of it.
+    let again = login(&home, &f.url, "erin@example.test", PASSWORD);
+    assert_eq!(again.code, 0, "{}", again.stderr);
+    assert_eq!(
+        config_value(&home.path, "workspace_id"),
+        Some(f.beta.clone())
+    );
 }
 
 #[test]
@@ -329,11 +400,16 @@ fn login_takes_the_server_from_the_environment_and_json_output() {
     let out = omni(&home.path)
         .env("OMNI_SERVER", &f.url)
         .args(&["login", "--json"])
-        .stdin(format!("dana@example.test\n{PASSWORD}\n1\n").as_bytes())
+        .stdin(format!("dana@example.test\n{PASSWORD}\n").as_bytes())
         .run();
     assert_eq!(out.code, 0, "omni login --json: {}", out.stderr);
     let body = out.json();
     assert_eq!(body["workspace_id"], f.alpha.as_str(), "{body}");
+    assert_eq!(
+        body["workspaces"],
+        serde_json::json!([{ "id": f.alpha, "name": "Alpha" }]),
+        "{body}"
+    );
     assert!(
         !out.stdout.contains(&secret_of(&home)),
         "even --json never prints the secret"
@@ -344,7 +420,7 @@ fn login_takes_the_server_from_the_environment_and_json_output() {
 fn login_with_a_wrong_password_fails_and_stores_nothing() {
     let (_guard, f) = ready();
     let home = Scratch::new("badlogin");
-    let out = login(&home, &f.url, "dana@example.test", "not the password", "1");
+    let out = login(&home, &f.url, "dana@example.test", "not the password");
     assert_ne!(out.code, 0, "{:?}", out.stdout);
     assert!(
         documented_exit_codes().contains(&out.code),
@@ -371,7 +447,7 @@ fn login_replaces_a_config_file_with_a_looser_mode() {
     let path = config_path(&home.path);
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
 
-    let out = login(&home, &f.url, "dana@example.test", PASSWORD, "1");
+    let out = login(&home, &f.url, "dana@example.test", PASSWORD);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(file_mode(&path), 0o600, "the file is mode 600 afterwards");
     assert_ne!(
@@ -385,7 +461,7 @@ fn login_replaces_a_config_file_with_a_looser_mode() {
 fn key_list_asks_for_the_password_and_acts_as_the_human_for_that_command_only() {
     let (_guard, f) = ready();
     let home = Scratch::new("keylist");
-    let out = login(&home, &f.url, "dana@example.test", PASSWORD, "1");
+    let out = login(&home, &f.url, "dana@example.test", PASSWORD);
     assert_eq!(out.code, 0, "{}", out.stderr);
     let prefix = prefix_of(&secret_of(&home));
     let before = std::fs::read(config_path(&home.path)).unwrap();
@@ -452,7 +528,7 @@ fn key_list_asks_for_the_password_and_acts_as_the_human_for_that_command_only() 
 fn key_revoke_revokes_the_key_and_it_stops_working() {
     let (_guard, f) = ready();
     let home = Scratch::new("keyrevoke");
-    let out = login(&home, &f.url, "dana@example.test", PASSWORD, "1");
+    let out = login(&home, &f.url, "dana@example.test", PASSWORD);
     assert_eq!(out.code, 0, "{}", out.stderr);
     let prefix = prefix_of(&secret_of(&home));
 

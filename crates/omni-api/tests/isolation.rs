@@ -145,25 +145,25 @@ const CASES: &[Case] = &[
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/whoami",
+        "/api/v1/api-keys",
         None,
-        Kind::Workspace,
+        Kind::Global("the caller's own keys; no workspace"),
+    ),
+    case(
+        "POST",
+        "/api/v1/api-keys",
+        Some("{}"),
+        Kind::Global("a key of the caller's own user; no workspace"),
+    ),
+    case(
+        "POST",
+        "/api/v1/api-keys/{key_id}/revoke",
+        None,
+        Kind::Global("one of the caller's own keys; no workspace"),
     ),
     case(
         "GET",
-        "/api/v1/w/{workspace_id}/api-keys",
-        None,
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/api-keys",
-        Some("{}"),
-        Kind::Workspace,
-    ),
-    case(
-        "POST",
-        "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
+        "/api/v1/w/{workspace_id}/whoami",
         None,
         Kind::Workspace,
     ),
@@ -1252,15 +1252,15 @@ fn fixture() -> &'static Fixture {
             let (name, workspace, membership_id) = seeded;
             let token = session_token(name);
             let human = Auth::Session(&token);
-            let keys_path = format!("/api/v1/w/{workspace}/api-keys");
+            let keys_path = "/api/v1/api-keys";
             let minted = must(
-                call(client, "POST", &keys_path, &human, Some("{}")),
+                call(client, "POST", keys_path, &human, Some("{}")),
                 201,
                 "mint a key",
             );
             let key = minted["secret"].as_str().expect("a secret").to_string();
             let spare = must(
-                call(client, "POST", &keys_path, &human, Some("{}")),
+                call(client, "POST", keys_path, &human, Some("{}")),
                 201,
                 "mint a spare key",
             );
@@ -2027,10 +2027,7 @@ fn the_lists_of_a_workspace_hold_nothing_of_the_other() {
                         text.contains("\"seq\":1,"),
                         "{what}: the control call shows the doc's first write: {text}"
                     );
-                } else if names_a_record(&entry.path)
-                    || entry.path.ends_with("/projects")
-                    || entry.path.ends_with("/api-keys")
-                {
+                } else if names_a_record(&entry.path) || entry.path.ends_with("/projects") {
                     let text = response.text();
                     assert!(
                         text.contains(&own.project_id)

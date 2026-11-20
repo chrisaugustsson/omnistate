@@ -12,6 +12,9 @@ pub struct Args {
     pub model: Option<String>,
     pub harness: Option<String>,
     pub server: Option<String>,
+    /// `--workspace <name|id>`: the workspace a command works in, instead of
+    /// `OMNI_WORKSPACE`, the folder's link or the default in the config file.
+    pub workspace: Option<String>,
     pub body_file: Option<String>,
     /// `--project <name or id>`: the project a command works in, instead of
     /// `OMNI_PROJECT` or the one the folder is linked to.
@@ -320,6 +323,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--model" => &mut parsed.model,
             "--harness" => &mut parsed.harness,
             "--server" => &mut parsed.server,
+            "--workspace" => &mut parsed.workspace,
             "--body-file" => &mut parsed.body_file,
             // `omni decision add|list` take no words of their own, so a bare
             // `--project` (last, or before another option) is the level

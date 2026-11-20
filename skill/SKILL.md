@@ -20,10 +20,11 @@ OmniState holds everything about what an app and its features are meant to be, w
 
 ## Start
 
-1. `omni whoami --as <run>/<role>`. When it says `not logged in`, ask the human to run `omni login` in their terminal, then continue.
-2. Pass `--as <run>/<role>` on every command, with a short run name and role you keep for the whole session (`--as shaping-1/shaper`); shell variables do not survive between Bash calls. The server records it as the author of your writes, comments and posts.
-3. The project is, in this order: `--project <name|id>`, `OMNI_PROJECT`, or the folder's link made with `omni link <project>` (`omni link` alone shows the link in effect; `omni unlink` removes it). The feature is `--feature <name|id>` or `OMNI_FEATURE`. `omni project list` shows them, `omni project create <name>` makes one.
-4. `omni --help` lists every command and flag.
+1. `omni whoami --as <run>/<role>`. When it says `not logged in`, ask the human to run `omni login` in their terminal, then continue. The key reaches every workspace the human is a member of; `whoami` shows the workspace in use and lists the others.
+2. The workspace is, in this order: `--workspace <name|id>`, `OMNI_WORKSPACE`, the workspace of the folder's link, or the default set with `omni workspace use <name|id>` (`omni workspace list` shows them). In a linked folder you need none of these.
+3. Pass `--as <run>/<role>` on every command, with a short run name and role you keep for the whole session (`--as shaping-1/shaper`); shell variables do not survive between Bash calls. The server records it as the author of your writes, comments and posts.
+4. The project is, in this order: `--project <name|id>`, `OMNI_PROJECT`, or the folder's link made with `omni link <project>` (`omni link` alone shows the link in effect; `omni unlink` removes it). The feature is `--feature <name|id>` or `OMNI_FEATURE`. `omni project list` shows them, `omni project create <name>` makes one.
+5. `omni --help` lists every command and flag.
 
 ## The main loop
 
@@ -36,7 +37,7 @@ Run it whenever the human asks you to read the comments, and after finishing a r
 
 ## Recipes
 
-Give the human the link to what you wrote when you finish a step: `<server>/w/<workspace_id>/projects/<project_id>/docs/<doc_id>` (and `/features/<feature_id>` for a feature; `omni config show` has the server and workspace, and the IDs are in the output of `omni project list`, `feature list` and `doc list`). Then wait for comments.
+Give the human the link to what you wrote when you finish a step: `<server>/w/<workspace_id>/projects/<project_id>/docs/<doc_id>` (and `/features/<feature_id>` for a feature; `omni config show` has the server and the workspace in use, and the IDs are in the output of `omni project list`, `feature list` and `doc list`). Then wait for comments.
 
 ### Shape a new feature
 

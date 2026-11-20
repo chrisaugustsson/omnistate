@@ -10,10 +10,11 @@ import { timeAgo } from "@/lib/format";
 import { useReloading } from "@/lib/reloading";
 import { cn } from "@/lib/utils";
 
-// The workspace's API keys: what agents sign in with. Only the logged-in
-// reviewer manages them. A new key's secret is shown once, in a dialog, when
-// it is created; revoking one asks first, since the agents using it are
-// refused from then on.
+// Your API keys: what agents sign in with. A key is yours, not the
+// workspace's: it reaches every workspace you are a member of, so the page
+// shows the same keys from any workspace. Only the logged-in reviewer manages
+// them. A new key's secret is shown once, in a dialog, when it is created;
+// revoking one asks first, since the agents using it are refused from then on.
 export const Route = createFileRoute("/w/$workspaceId/_home/api-keys")({
   component: ApiKeys,
 });
@@ -59,8 +60,7 @@ function SecretDialog({ secret, onClose }: { secret: string; onClose: () => void
 }
 
 function ApiKeys() {
-  const { workspaceId } = Route.useParams();
-  const { value: keys, failed, reload } = useReloading(useCallback(() => loadKeys(workspaceId), [workspaceId]));
+  const { value: keys, failed, reload } = useReloading(useCallback(() => loadKeys(), []));
   const [secret, setSecret] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<ApiKeyBody | null>(null);
   const [error, setError] = useState(false);
@@ -93,7 +93,7 @@ function ApiKeys() {
             disabled={busy}
             onClick={() =>
               void act(async () => {
-                setSecret((await createKey(workspaceId)).secret);
+                setSecret((await createKey()).secret);
               })
             }
           >
@@ -102,7 +102,9 @@ function ApiKeys() {
           </button>
         }
       />
-      <p className="mt-1.5 max-w-(--main-max) text-em text-ink-2">Agents sign in with a key. Create one and give it to the agent's harness.</p>
+      <p className="mt-1.5 max-w-(--main-max) text-em text-ink-2">
+        Agents sign in with a key. A key is yours and reaches every workspace you are a member of. Create one and give it to the agent's harness.
+      </p>
       {(failed || error) && (
         <p role="alert" className="mt-4 text-danger-ink">
           That did not work. Try again in a moment.
@@ -142,7 +144,7 @@ function ApiKeys() {
           onSubmit={() => {
             const key = revoking;
             setRevoking(null);
-            void act(() => revokeKey(workspaceId, key.id));
+            void act(() => revokeKey(key.id));
           }}
           footer={
             <>

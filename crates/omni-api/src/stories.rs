@@ -1736,7 +1736,7 @@ pub async fn add_decision(
     .await
     .map_err(ApiError::database)?;
     let author = if write.by == "human" {
-        // The member who made the key; a key with no creator has no user.
+        // The key's user, through the membership the request acts as.
         let user_id: Option<String> = match &request.membership_id {
             Some(membership_id) => {
                 sqlx::query_scalar("SELECT user_id::text FROM memberships WHERE id = $1::uuid")

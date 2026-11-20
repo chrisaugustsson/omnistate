@@ -9,17 +9,24 @@
 //!
 //! The contract these tests pin down:
 //!
-//! - `POST /api/v1/w/{workspace_id}/api-keys` (human) answers 201
+//! - A key belongs to the user whose session created it and reaches every
+//!   workspace that user is a member of, as the memberships stand at each
+//!   request: a workspace the user is not (or no longer) a member of is 404,
+//!   the same answer as a workspace that does not exist.
+//! - `POST /api/v1/api-keys` (human) answers 201
 //!   `{"key": {...}, "secret": "<the whole key>"}`. The key object has `id`,
 //!   `prefix`, `scopes` (`["*"]`: v1 issues full-access keys only), `created_at`,
 //!   `last_used_at` and `revoked_at`. `secret` is the public `prefix`, then one
 //!   optional separator character, then the 32 random bytes as 64 lowercase hex
 //!   digits. It is in no other response. `api_keys.key_hash` holds the lowercase
 //!   hex SHA-256 of the whole `secret`.
-//! - `GET /api/v1/w/{workspace_id}/api-keys` (human) answers `{"keys": [...]}`
-//!   with the key objects of that workspace, revoked ones included.
-//! - `POST /api/v1/w/{workspace_id}/api-keys/{key_id}/revoke` (human) answers
-//!   200 `{"key": {...}}` with `revoked_at` set. The row is kept.
+//! - `GET /api/v1/api-keys` (human) answers `{"keys": [...]}` with the key
+//!   objects of the session's user, revoked ones included.
+//! - `POST /api/v1/api-keys/{key_id}/revoke` (human) answers 200
+//!   `{"key": {...}}` with `revoked_at` set. The row is kept. Another user's
+//!   key is 404.
+//! - `GET /api/v1/auth/workspaces` (both) lists the workspaces of the session's
+//!   user, or of the key's user.
 //! - `GET /api/v1/w/{workspace_id}/whoami` (both) answers 200
 //!   `{"workspace_id", "actor": {"kind": "agent"}}` for an API key and
 //!   `{"workspace_id", "actor": {"kind": "human", "user_id"}}` for a session.
@@ -30,9 +37,11 @@
 //! - One "who is calling" step decides agent versus human for every route, the
 //!   routes outside `/api/v1/w/{workspace_id}` included: a request that carries
 //!   an `Authorization` header is an agent's, even with a session cookie too,
-//!   so `/api/v1/auth/me`, `/api/v1/auth/logout`, `/api/v1/auth/workspaces` and
-//!   every other `human` route answer it 403. Only `POST /api/v1/auth/login`,
-//!   which checks a password, is exempt.
+//!   so `/api/v1/auth/me`, `/api/v1/auth/logout` and every other `human` route
+//!   answer it 403. Only `POST /api/v1/auth/login`, which checks a password, is
+//!   exempt.
+//! - A key made before keys belonged to users (it named the member who created
+//!   it in one workspace) keeps working in that workspace after the migration.
 //! - `AppState::with_pool(config, pool)` builds the state over a pool the
 //!   caller made, so a test can size it and keep a handle on its connections.
 
@@ -74,6 +83,10 @@ fn api_password() -> String {
 }
 
 fn config() -> Config {
+    config_for(TEST_DB)
+}
+
+fn config_for(database: &str) -> Config {
     let admin = admin_options();
     let url = std::env::var("OMNI_ADMIN_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://omni:omni-dev@postgres:5432/omni".to_string());
@@ -81,12 +94,12 @@ fn config() -> Config {
     Config {
         bind: "127.0.0.1:0".to_string(),
         database_url: format!(
-            "postgres://omni_api:{}@{}:{}/{TEST_DB}",
+            "postgres://omni_api:{}@{}:{}/{database}",
             api_password(),
             admin.get_host(),
             admin.get_port()
         ),
-        admin_database_url: format!("{server}/{TEST_DB}"),
+        admin_database_url: format!("{server}/{database}"),
         api_db_password: api_password(),
         // Nothing here reaches RustFS: the routes under test only use Postgres.
         s3_endpoint: "http://127.0.0.1:1".to_string(),
@@ -151,20 +164,21 @@ struct Fixture {
     a: String,
     b: String,
     alice_id: String,
+    carol_id: String,
     alice_token: String,
     bob_token: String,
     carol_token: String,
     server: TestServer,
 }
 
-/// Records, for every insert and update of an API key, the `app.workspace_id`
-/// setting of the transaction that did it.
+/// Records every insert and update of an API key, with the user it belongs to
+/// and the `app.workspace_id` setting of the transaction that did it.
 const PROBE_SQL: [&str; 3] = [
     "CREATE TABLE us013_probe (
         n bigserial PRIMARY KEY,
         op text NOT NULL,
         setting text,
-        key_workspace text NOT NULL,
+        key_user text NOT NULL,
         key_id text NOT NULL,
         last_used_changed boolean NOT NULL,
         revoked_changed boolean NOT NULL,
@@ -174,11 +188,11 @@ const PROBE_SQL: [&str; 3] = [
         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
         AS $$
         BEGIN
-            INSERT INTO us013_probe (op, setting, key_workspace, key_id, last_used_changed, revoked_changed)
+            INSERT INTO us013_probe (op, setting, key_user, key_id, last_used_changed, revoked_changed)
             VALUES (
                 TG_OP,
                 current_setting('app.workspace_id', true),
-                NEW.workspace_id::text,
+                NEW.user_id::text,
                 NEW.id::text,
                 TG_OP = 'UPDATE' AND NEW.last_used_at IS DISTINCT FROM OLD.last_used_at,
                 TG_OP = 'UPDATE' AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at
@@ -209,7 +223,7 @@ fn fixture() -> &'static Fixture {
                 .await
                 .expect("apply the migrations to the scratch database");
         });
-        let (a, b, alice_id) = block(async {
+        let (a, b, alice_id, carol_id) = block(async {
             let mut conn = admin_connection().await;
             for statement in PROBE_SQL {
                 sqlx::query(statement)
@@ -256,12 +270,13 @@ fn fixture() -> &'static Fixture {
             text(member, &[&b, &users[1]]).await;
             text(member, &[&a, &users[2]]).await;
             text(member, &[&b, &users[2]]).await;
-            (a, b, users[0].clone())
+            (a, b, users[0].clone(), users[2].clone())
         });
         Fixture {
             a,
             b,
             alice_id,
+            carol_id,
             alice_token: session_token("alice"),
             bob_token: session_token("bob"),
             carol_token: session_token("carol"),
@@ -316,12 +331,12 @@ fn whoami(client: &Client, workspace: &str, headers: &[(String, String)]) -> Res
     )
 }
 
-/// Creates a key in `workspace` as the session `token`; returns (secret, key).
-fn create_key(client: &Client, token: &str, workspace: &str) -> (String, Value) {
+/// Creates a key as the session `token`; returns (secret, key).
+fn create_key(client: &Client, token: &str) -> (String, Value) {
     let response = call(
         client,
         "POST",
-        &format!("/api/v1/w/{workspace}/api-keys"),
+        "/api/v1/api-keys",
         &with_cookie(token),
         Some(&json!({})),
     );
@@ -357,8 +372,8 @@ fn assert_error(response: &Response, status: u16, code: &str) {
 #[test]
 fn a_key_is_a_public_prefix_plus_32_random_bytes() {
     let (_guard, f, client) = ready();
-    let (secret_1, key_1) = create_key(client, &f.carol_token, &f.a);
-    let (secret_2, key_2) = create_key(client, &f.carol_token, &f.a);
+    let (secret_1, key_1) = create_key(client, &f.carol_token);
+    let (secret_2, key_2) = create_key(client, &f.carol_token);
     for (secret, key) in [(&secret_1, &key_1), (&secret_2, &key_2)] {
         let prefix = key["prefix"]
             .as_str()
@@ -392,7 +407,7 @@ fn a_key_is_a_public_prefix_plus_32_random_bytes() {
 #[test]
 fn a_key_is_shown_once_and_stored_as_a_sha256_hash() {
     let (_guard, f, client) = ready();
-    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let (secret, key) = create_key(client, &f.carol_token);
     let id = key_id(&key);
     let create_text = serde_json::to_string(&key).unwrap();
     assert!(
@@ -425,7 +440,7 @@ fn a_key_is_shown_once_and_stored_as_a_sha256_hash() {
     let list = call(
         client,
         "GET",
-        &format!("/api/v1/w/{}/api-keys", f.a),
+        "/api/v1/api-keys",
         &with_cookie(&f.carol_token),
         None,
     );
@@ -433,7 +448,7 @@ fn a_key_is_shown_once_and_stored_as_a_sha256_hash() {
     let revoke = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/api-keys/{id}/revoke", f.a),
+        &format!("/api/v1/api-keys/{id}/revoke"),
         &with_cookie(&f.carol_token),
         Some(&json!({})),
     );
@@ -449,7 +464,7 @@ fn a_key_is_shown_once_and_stored_as_a_sha256_hash() {
 #[test]
 fn a_key_is_found_by_prefix_and_its_secret_is_checked() {
     let (_guard, f, client) = ready();
-    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let (secret, key) = create_key(client, &f.carol_token);
     let prefix = key["prefix"].as_str().unwrap().to_string();
     let ok = whoami(client, &f.a, &with_bearer(&secret));
     assert_eq!(ok.status, 200, "the right secret works: {}", ok.text());
@@ -487,43 +502,57 @@ fn a_key_is_found_by_prefix_and_its_secret_is_checked() {
 }
 
 // ---------------------------------------------------------------------------
-// One workspace, scopes, revoking and last use
+// Revoking and last use
 // ---------------------------------------------------------------------------
 
 #[test]
 fn a_revoked_key_stops_working_and_its_row_stays() {
     let (_guard, f, client) = ready();
-    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let (secret, key) = create_key(client, &f.carol_token);
     let id = key_id(&key);
     assert_eq!(whoami(client, &f.a, &with_bearer(&secret)).status, 200);
 
-    // A key of workspace B cannot be revoked through workspace A's path.
-    let (other_secret, other_key) = create_key(client, &f.carol_token, &f.b);
-    let wrong_path = call(
+    // Another user's key can be neither revoked nor listed: it is a 404, the
+    // same answer as a key that does not exist.
+    let (other_secret, other_key) = create_key(client, &f.bob_token);
+    let not_hers = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/api-keys/{}/revoke", f.a, key_id(&other_key)),
+        &format!("/api/v1/api-keys/{}/revoke", key_id(&other_key)),
         &with_cookie(&f.carol_token),
         Some(&json!({})),
     );
-    assert_error(&wrong_path, 404, "not_found");
+    assert_error(&not_hers, 404, "not_found");
     assert_eq!(
         whoami(client, &f.b, &with_bearer(&other_secret)).status,
-        200
+        200,
+        "bob's key still works"
     );
     let unknown = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/api-keys/{UNKNOWN_ID}/revoke", f.a),
+        &format!("/api/v1/api-keys/{UNKNOWN_ID}/revoke"),
         &with_cookie(&f.carol_token),
         Some(&json!({})),
     );
     assert_error(&unknown, 404, "not_found");
+    let carols = call(
+        client,
+        "GET",
+        "/api/v1/api-keys",
+        &with_cookie(&f.carol_token),
+        None,
+    );
+    assert!(
+        !carols.text().contains(&key_id(&other_key)),
+        "carol's list does not show bob's key: {}",
+        carols.text()
+    );
 
     let revoke = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/api-keys/{id}/revoke", f.a),
+        &format!("/api/v1/api-keys/{id}/revoke"),
         &with_cookie(&f.carol_token),
         Some(&json!({})),
     );
@@ -551,7 +580,7 @@ fn a_revoked_key_stops_working_and_its_row_stays() {
     let list = call(
         client,
         "GET",
-        &format!("/api/v1/w/{}/api-keys", f.a),
+        "/api/v1/api-keys",
         &with_cookie(&f.carol_token),
         None,
     );
@@ -569,7 +598,7 @@ fn a_revoked_key_stops_working_and_its_row_stays() {
 #[test]
 fn last_used_at_is_written_at_most_once_a_minute() {
     let (_guard, f, client) = ready();
-    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let (secret, key) = create_key(client, &f.carol_token);
     let id = key_id(&key);
     let used_in = |window: &str| {
         format!(
@@ -594,15 +623,6 @@ fn last_used_at_is_written_at_most_once_a_minute() {
         Some("1"),
         "five calls within a minute write last_used_at once"
     );
-    assert_eq!(
-        db_text(
-            "select setting from us013_probe where key_id = $1 and last_used_changed",
-            &[&id]
-        )
-        .as_deref(),
-        Some(f.a.as_str()),
-        "last_used_at is written inside a transaction of the key's workspace"
-    );
 
     // Two minutes later, the next call writes it again.
     db_exec(
@@ -620,7 +640,7 @@ fn last_used_at_is_written_at_most_once_a_minute() {
     let list = call(
         client,
         "GET",
-        &format!("/api/v1/w/{}/api-keys", f.a),
+        "/api/v1/api-keys",
         &with_cookie(&f.carol_token),
         None,
     );
@@ -640,25 +660,125 @@ fn last_used_at_is_written_at_most_once_a_minute() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_key_reaches_its_own_workspace_and_any_other_path_is_404() {
+fn a_key_reaches_every_workspace_its_user_is_a_member_of() {
     let (_guard, f, client) = ready();
-    let (secret_a, _) = create_key(client, &f.carol_token, &f.a);
-    let (secret_b, _) = create_key(client, &f.carol_token, &f.b);
+    // carol is a member of A and B: one key of hers reaches both.
+    let (secret, key) = create_key(client, &f.carol_token);
+    for workspace in [&f.a, &f.b] {
+        let ok = whoami(client, workspace, &with_bearer(&secret));
+        assert_eq!(ok.status, 200, "carol's key on {workspace}: {}", ok.text());
+        assert_eq!(ok.json()["workspace_id"], json!(workspace));
+        assert_eq!(ok.json()["actor"]["kind"], "agent");
+    }
+    assert_eq!(
+        db_text(
+            "select user_id::text from api_keys where id = $1::uuid",
+            &[&key_id(&key)]
+        ),
+        Some(f.carol_id.clone()),
+        "the key belongs to carol"
+    );
+    // The key lists exactly its user's workspaces.
+    let listed = call(
+        client,
+        "GET",
+        "/api/v1/auth/workspaces",
+        &with_bearer(&secret),
+        None,
+    );
+    assert_eq!(
+        listed.status,
+        200,
+        "the key's workspaces: {}",
+        listed.text()
+    );
+    let mut ids: Vec<String> = listed.json()["workspaces"]
+        .as_array()
+        .expect("a list of workspaces")
+        .iter()
+        .map(|w| w["id"].as_str().expect("an id").to_string())
+        .collect();
+    ids.sort();
+    let mut expected = vec![f.a.clone(), f.b.clone()];
+    expected.sort();
+    assert_eq!(ids, expected);
 
-    for (secret, own, other) in [(&secret_a, &f.a, &f.b), (&secret_b, &f.b, &f.a)] {
+    let unknown = whoami(client, UNKNOWN_ID, &with_bearer(&secret));
+    assert_error(&unknown, 404, "not_found");
+    let malformed = whoami(client, "not-a-uuid", &with_bearer(&secret));
+    assert_error(&malformed, 404, "not_found");
+}
+
+#[test]
+fn a_key_is_refused_on_a_workspace_its_user_is_not_a_member_of() {
+    let (_guard, f, client) = ready();
+    // alice is a member of A only, bob of B only.
+    let (alice_key, _) = create_key(client, &f.alice_token);
+    let (bob_key, _) = create_key(client, &f.bob_token);
+    for (secret, own, other) in [(&alice_key, &f.a, &f.b), (&bob_key, &f.b, &f.a)] {
         let ok = whoami(client, own, &with_bearer(secret));
         assert_eq!(ok.status, 200, "own workspace: {}", ok.text());
-        assert_eq!(ok.json()["workspace_id"], json!(own));
-        assert_error(
-            &whoami(client, other, &with_bearer(secret)),
-            404,
-            "not_found",
+        // The same answer as a workspace that does not exist: nothing leaks.
+        let refused = whoami(client, other, &with_bearer(secret));
+        assert_error(&refused, 404, "not_found");
+        let projects = call(
+            client,
+            "GET",
+            &format!("/api/v1/w/{other}/projects"),
+            &with_bearer(secret),
+            None,
+        );
+        assert_error(&projects, 404, "not_found");
+    }
+}
+
+#[test]
+fn a_key_loses_a_workspace_when_its_users_membership_is_removed() {
+    let (_guard, f, client) = ready();
+    // A user of their own, so removing a membership touches no other test.
+    let erin = db_text(
+        "insert into users (email) values ('erin@example.test') returning id::text",
+        &[],
+    )
+    .expect("insert erin");
+    let token = fresh_session(&erin, "erin");
+    for workspace in [&f.a, &f.b] {
+        db_text(
+            "insert into memberships (workspace_id, user_id) values ($1::uuid, $2::uuid) \
+             returning id::text",
+            &[workspace, &erin],
         );
     }
-    let unknown = whoami(client, UNKNOWN_ID, &with_bearer(&secret_a));
-    assert_error(&unknown, 404, "not_found");
-    let malformed = whoami(client, "not-a-uuid", &with_bearer(&secret_a));
-    assert_error(&malformed, 404, "not_found");
+    let (secret, _) = create_key(client, &token);
+    assert_eq!(whoami(client, &f.a, &with_bearer(&secret)).status, 200);
+    assert_eq!(whoami(client, &f.b, &with_bearer(&secret)).status, 200);
+
+    db_exec(
+        "delete from memberships where workspace_id = $1::uuid and user_id = $2::uuid",
+        &[&f.b, &erin],
+    );
+    assert_error(
+        &whoami(client, &f.b, &with_bearer(&secret)),
+        404,
+        "not_found",
+    );
+    assert_eq!(
+        whoami(client, &f.a, &with_bearer(&secret)).status,
+        200,
+        "the key still reaches the workspace erin is still in"
+    );
+    let listed = call(
+        client,
+        "GET",
+        "/api/v1/auth/workspaces",
+        &with_bearer(&secret),
+        None,
+    );
+    assert!(
+        !listed.text().contains(f.b.as_str()) && listed.text().contains(f.a.as_str()),
+        "the key's workspaces drop B: {}",
+        listed.text()
+    );
 }
 
 #[test]
@@ -706,7 +826,7 @@ fn a_request_without_valid_credentials_is_401_whatever_the_workspace() {
 #[test]
 fn api_key_requests_act_as_an_agent_and_only_sessions_act_as_the_human() {
     let (_guard, f, client) = ready();
-    let (secret, _) = create_key(client, &f.carol_token, &f.a);
+    let (secret, _) = create_key(client, &f.carol_token);
 
     let agent = whoami(client, &f.a, &with_bearer(&secret));
     assert_eq!(agent.status, 200, "agent: {}", agent.text());
@@ -723,38 +843,28 @@ fn api_key_requests_act_as_an_agent_and_only_sessions_act_as_the_human() {
     let mixed = whoami(client, &f.a, &both);
     assert_eq!(mixed.status, 200, "both: {}", mixed.text());
     assert_eq!(mixed.json()["actor"]["kind"], "agent");
-    let list = call(
-        client,
-        "GET",
-        &format!("/api/v1/w/{}/api-keys", f.a),
-        &both,
-        None,
-    );
+    let list = call(client, "GET", "/api/v1/api-keys", &both, None);
     assert_error(&list, 403, "forbidden");
 }
 
 #[test]
 fn human_routes_return_403_to_api_keys() {
     let (_guard, f, client) = ready();
-    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let (secret, key) = create_key(client, &f.carol_token);
     let id = key_id(&key);
     let keys = with_bearer(&secret);
 
     let attempts = [
-        ("GET", format!("/api/v1/w/{}/api-keys", f.a), None),
+        ("GET", "/api/v1/api-keys".to_string(), None),
+        ("POST", "/api/v1/api-keys".to_string(), Some(json!({}))),
         (
             "POST",
-            format!("/api/v1/w/{}/api-keys", f.a),
+            format!("/api/v1/api-keys/{id}/revoke"),
             Some(json!({})),
         ),
         (
             "POST",
-            format!("/api/v1/w/{}/api-keys/{id}/revoke", f.a),
-            Some(json!({})),
-        ),
-        (
-            "POST",
-            format!("/api/v1/w/{}/api-keys/{UNKNOWN_ID}/revoke", f.a),
+            format!("/api/v1/api-keys/{UNKNOWN_ID}/revoke"),
             Some(json!({})),
         ),
     ];
@@ -781,7 +891,7 @@ fn human_routes_return_403_to_api_keys() {
     let session = call(
         client,
         "GET",
-        &format!("/api/v1/w/{}/api-keys", f.a),
+        "/api/v1/api-keys",
         &with_cookie(&f.alice_token),
         None,
     );
@@ -791,13 +901,7 @@ fn human_routes_return_403_to_api_keys() {
         "the session lists keys: {}",
         session.text()
     );
-    let anonymous = call(
-        client,
-        "GET",
-        &format!("/api/v1/w/{}/api-keys", f.a),
-        &[],
-        None,
-    );
+    let anonymous = call(client, "GET", "/api/v1/api-keys", &[], None);
     assert_error(&anonymous, 401, "unauthorized");
 }
 
@@ -821,13 +925,9 @@ fn fresh_session(user_id: &str, label: &str) -> String {
 #[test]
 fn the_auth_routes_never_answer_a_request_with_an_authorization_header_as_the_human() {
     let (_guard, f, client) = ready();
-    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let (secret, key) = create_key(client, &f.carol_token);
     let token = fresh_session(&f.alice_id, "auth-routes");
-    let routes = [
-        ("GET", "/api/v1/auth/me"),
-        ("POST", "/api/v1/auth/logout"),
-        ("GET", "/api/v1/auth/workspaces"),
-    ];
+    let routes = [("GET", "/api/v1/auth/me"), ("POST", "/api/v1/auth/logout")];
 
     // The session alone is the human's, on these routes as on the workspace ones.
     let me = call(client, "GET", "/api/v1/auth/me", &with_cookie(&token), None);
@@ -859,12 +959,25 @@ fn the_auth_routes_never_answer_a_request_with_an_authorization_header_as_the_hu
     );
     assert_eq!(still.json()["user"]["id"], json!(f.alice_id));
 
+    // The list of workspaces answers a key too, as the key's user: carol's,
+    // not alice's, even with alice's cookie next to it.
+    let mut headers = with_bearer(&secret);
+    headers.extend(with_cookie(&token));
+    let workspaces = call(client, "GET", "/api/v1/auth/workspaces", &headers, None);
+    assert_eq!(workspaces.status, 200, "workspaces: {}", workspaces.text());
+    assert_eq!(
+        workspaces.json()["workspaces"].as_array().map(Vec::len),
+        Some(2),
+        "carol's two workspaces: {}",
+        workspaces.text()
+    );
+
     // A header that is not a valid key never turns into the human either: the
     // cookie next to it is not used, so the request is not answered as alice.
     let revoke = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/api-keys/{}/revoke", f.a, key_id(&key)),
+        &format!("/api/v1/api-keys/{}/revoke", key_id(&key)),
         &with_cookie(&f.carol_token),
         Some(&json!({})),
     );
@@ -876,7 +989,10 @@ fn the_auth_routes_never_answer_a_request_with_an_authorization_header_as_the_hu
     ] {
         let mut headers = vec![("Authorization".to_string(), authorization.clone())];
         headers.extend(with_cookie(&token));
-        for (method, path) in routes {
+        for (method, path) in routes
+            .into_iter()
+            .chain([("GET", "/api/v1/auth/workspaces")])
+        {
             let body = (method != "GET").then(|| json!({}));
             let response = call(client, method, path, &headers, body.as_ref());
             assert_error(&response, 401, "unauthorized");
@@ -895,7 +1011,7 @@ fn the_auth_routes_never_answer_a_request_with_an_authorization_header_as_the_hu
 #[test]
 fn login_is_the_one_route_that_an_authorization_header_does_not_block() {
     let (_guard, f, client) = ready();
-    let (secret, _) = create_key(client, &f.carol_token, &f.a);
+    let (secret, _) = create_key(client, &f.carol_token);
     let user_id = db_text(
         "insert into users (email) values ('dave@example.test') returning id::text",
         &[],
@@ -955,14 +1071,6 @@ fn app_workspace_id_lasts_only_for_its_transaction() {
             .expect("read the setting on the API's connection")
         })
     };
-    let backend_pid = || -> String {
-        server.block_on(async {
-            sqlx::query_scalar::<_, String>("select pg_backend_pid()::text")
-                .fetch_one(&pool)
-                .await
-                .expect("read the backend pid of the API's connection")
-        })
-    };
     let assert_unset = |after: &str| {
         let value = setting();
         assert!(
@@ -971,57 +1079,51 @@ fn app_workspace_id_lasts_only_for_its_transaction() {
         );
     };
 
-    db_exec("delete from us013_probe", &[]);
+    // The list of a user's workspaces reads each name in a transaction of
+    // that workspace.
+    let listed = call(
+        client,
+        "GET",
+        "/api/v1/auth/workspaces",
+        &with_cookie(&f.carol_token),
+        None,
+    );
+    assert_eq!(listed.status, 200, "workspaces: {}", listed.text());
+    assert_eq!(server.block_on(async { pool.size() }), 1);
+    assert_unset("a committed request");
+
+    let projects = call(
+        client,
+        "GET",
+        &format!("/api/v1/w/{}/projects", f.b),
+        &with_cookie(&f.carol_token),
+        None,
+    );
+    assert_eq!(projects.status, 200, "projects: {}", projects.text());
+    assert_unset("a list");
+
+    // A request that fails after its transaction began leaves nothing behind.
+    let missing = call(
+        client,
+        "GET",
+        &format!("/api/v1/w/{}/projects/{UNKNOWN_ID}/parts", f.b),
+        &with_cookie(&f.carol_token),
+        None,
+    );
+    assert_error(&missing, 404, "not_found");
+    assert_unset("a request that ended in 404");
+
     let created = call(
         client,
         "POST",
-        &format!("/api/v1/w/{}/api-keys", f.b),
+        "/api/v1/api-keys",
         &with_cookie(&f.carol_token),
         Some(&json!({})),
     );
     assert_eq!(created.status, 201, "create: {}", created.text());
     let secret = created.json()["secret"].as_str().unwrap().to_string();
     let id = key_id(&created.json()["key"]);
-    assert_eq!(
-        db_text(
-            "select setting from us013_probe where key_id = $1 and op = 'INSERT'",
-            &[&id]
-        )
-        .as_deref(),
-        Some(f.b.as_str()),
-        "the request did set app.workspace_id to B inside its transaction"
-    );
-    assert_eq!(
-        db_text(
-            "select pid::text from us013_probe where key_id = $1 and op = 'INSERT'",
-            &[&id]
-        ),
-        Some(backend_pid()),
-        "the request ran on the one connection of the pool"
-    );
-    assert_eq!(server.block_on(async { pool.size() }), 1);
-    assert_unset("a committed request");
-
-    // A request that fails after its transaction began leaves nothing behind.
-    let missing = call(
-        client,
-        "POST",
-        &format!("/api/v1/w/{}/api-keys/{UNKNOWN_ID}/revoke", f.b),
-        &with_cookie(&f.carol_token),
-        Some(&json!({})),
-    );
-    assert_error(&missing, 404, "not_found");
-    assert_unset("a request that ended in 404");
-
-    let listed = call(
-        client,
-        "GET",
-        &format!("/api/v1/w/{}/api-keys", f.b),
-        &with_cookie(&f.carol_token),
-        None,
-    );
-    assert_eq!(listed.status, 200, "list: {}", listed.text());
-    assert_unset("a list");
+    assert_unset("creating a key");
 
     // An agent's request, which also writes last_used_at in its own transaction.
     assert_eq!(whoami(client, &f.b, &with_bearer(&secret)).status, 200);
@@ -1039,7 +1141,7 @@ fn app_workspace_id_lasts_only_for_its_transaction() {
 #[test]
 fn ten_concurrent_requests_with_a_stale_key_write_last_used_at_once() {
     let (_guard, f, client) = ready();
-    let (secret, key) = create_key(client, &f.carol_token, &f.a);
+    let (secret, key) = create_key(client, &f.carol_token);
     let id = key_id(&key);
     db_exec(
         "update api_keys set last_used_at = now() - interval '2 minutes' where id = $1::uuid",
@@ -1080,5 +1182,132 @@ fn ten_concurrent_requests_with_a_stale_key_write_last_used_at_once() {
         .as_deref(),
         Some("1"),
         "ten concurrent requests write last_used_at exactly once"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Keys made before keys belonged to users
+// ---------------------------------------------------------------------------
+
+/// The migration that moved API keys from workspaces to users.
+const USER_KEYS_MIGRATION: i64 = 20261120000000;
+
+#[test]
+fn a_key_made_before_keys_belonged_to_users_keeps_working_in_its_workspace() {
+    const DB: &str = "omni_us013_keys_upgrade";
+    let made_by_a_member = format!("omnioldkey1_{}", "ab".repeat(32));
+    let made_by_nobody = format!("omnioldkey2_{}", "cd".repeat(32));
+    let (w1, w2, dana) = block(async {
+        let mut admin = PgConnection::connect_with(&admin_options())
+            .await
+            .unwrap_or_else(|e| panic!("cannot connect to Postgres as the admin role: {e}"));
+        sqlx::query(&format!("DROP DATABASE IF EXISTS {DB} WITH (FORCE)"))
+            .execute(&mut admin)
+            .await
+            .expect("drop the scratch database");
+        sqlx::query(&format!("CREATE DATABASE {DB}"))
+            .execute(&mut admin)
+            .await
+            .expect("create the scratch database");
+
+        // The schema as it was before the migration.
+        let mut conn = PgConnection::connect_with(&admin_options().database(DB))
+            .await
+            .expect("connect to the scratch database");
+        let mut before = sqlx::migrate::Migrator::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations"),
+        )
+        .await
+        .expect("read migrations/");
+        let earlier: Vec<_> = before
+            .migrations
+            .iter()
+            .filter(|m| m.version < USER_KEYS_MIGRATION)
+            .cloned()
+            .collect();
+        assert!(
+            earlier.len() < before.migrations.len(),
+            "migrations/ has the migration {USER_KEYS_MIGRATION}"
+        );
+        before.migrations = earlier.into();
+        before
+            .run(&mut conn)
+            .await
+            .expect("apply the earlier migrations");
+
+        let mut text = async |sql: &str, binds: &[&str]| -> String {
+            let mut query = sqlx::query_scalar::<_, String>(sql);
+            for bind in binds {
+                query = query.bind(*bind);
+            }
+            query.fetch_one(&mut conn).await.expect("seed")
+        };
+        let w1 = text(
+            "insert into workspaces (name) values ('One') returning id::text",
+            &[],
+        )
+        .await;
+        let w2 = text(
+            "insert into workspaces (name) values ('Two') returning id::text",
+            &[],
+        )
+        .await;
+        let dana = text(
+            "insert into users (email) values ('dana@example.test') returning id::text",
+            &[],
+        )
+        .await;
+        let member = "insert into memberships (workspace_id, user_id) \
+                      values ($1::uuid, $2::uuid) returning id::text";
+        let creator = text(member, &[&w1, &dana]).await;
+        text(member, &[&w2, &dana]).await;
+        let key = "insert into api_keys (workspace_id, prefix, key_hash, scopes, created_by_membership_id) \
+                   values ($1::uuid, $2, encode(sha256(convert_to($3, 'UTF8')), 'hex'), ARRAY['*'], \
+                   NULLIF($4, '')::uuid) returning id::text";
+        text(key, &[&w1, "omnioldkey1", &made_by_a_member, &creator]).await;
+        text(key, &[&w1, "omnioldkey2", &made_by_nobody, ""]).await;
+        (w1, w2, dana)
+    });
+
+    // The API applies the rest when it starts, as it does on a real upgrade.
+    block(async {
+        omni_api::migrate(&config_for(DB), 30)
+            .await
+            .expect("apply the migration that moves keys to users");
+    });
+    let server = TestServer::start(&config_for(DB));
+    let client = &server.client;
+
+    let in_its_workspace = whoami(client, &w1, &with_bearer(&made_by_a_member));
+    assert_eq!(
+        in_its_workspace.status,
+        200,
+        "the old key still works where it was made: {}",
+        in_its_workspace.text()
+    );
+    assert_eq!(in_its_workspace.json()["actor"]["kind"], "agent");
+    assert_eq!(
+        whoami(client, &w2, &with_bearer(&made_by_a_member)).status,
+        200,
+        "it now reaches its creator's other workspace too"
+    );
+    let owner = block(async {
+        let mut conn = PgConnection::connect_with(&admin_options().database(DB))
+            .await
+            .expect("connect to the scratch database");
+        sqlx::query_scalar::<_, String>(
+            "select user_id::text from api_keys where prefix = 'omnioldkey1'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .expect("the old key is kept")
+    });
+    assert_eq!(owner, dana, "the key belongs to the user who created it");
+
+    // A key that no member created has no user to belong to, so it is gone.
+    assert_error(
+        &whoami(client, &w1, &with_bearer(&made_by_nobody)),
+        401,
+        "unauthorized",
     );
 }

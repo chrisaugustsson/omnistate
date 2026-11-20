@@ -36,6 +36,11 @@ pub struct Links {
 const PARTS_TABLE: &str = "parts-";
 
 impl Links {
+    /// Whether no folder is linked at all.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// The links in the file; none when the file does not exist.
     pub fn load() -> Result<Links> {
         let path = links_path()?;
@@ -436,7 +441,7 @@ pub fn show(args: &Args) -> Result<()> {
             matched,
             workspace_id,
         } => bail!(
-            "{} is linked to a project of another workspace ({workspace_id}); run omni link here, or omni login",
+            "{} is linked to a project of another workspace ({workspace_id}); run omni link here, pass --project, or leave out --workspace and OMNI_WORKSPACE",
             matched.display()
         ),
         Resolution::None => bail!(

@@ -714,7 +714,8 @@ make test-stack-seed NAME=us26
 ```
 
 which inserts a workspace, a user `<NAME>@example.com` with a live session and
-a membership, mints an API key through the API, and prints three lines:
+a membership, mints an API key for that user through the API (it reaches every
+workspace the user is a member of), and prints three lines:
 `workspace=<id>`, `session=<token>` and `api_key=<secret>`. A human route takes
 the cookie `omni_session=<token>`; an agent route, and the omni CLI with
 `OMNI_SERVER=http://localhost:8421`, take `Authorization: Bearer <secret>`. The

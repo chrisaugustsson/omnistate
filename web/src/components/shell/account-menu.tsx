@@ -8,9 +8,9 @@ import { cn } from "@/lib/utils";
 import { Avatar } from "./avatar";
 import { usePopover } from "./popover";
 
-// Your avatar at the far right of the bar, and its menu: who you are, the
-// workspace's API keys, your other workspaces (when you have more than one),
-// and Log out.
+// Your avatar at the far right of the bar, and its menu: who you are, your
+// API keys (they reach all your workspaces), your other workspaces (when you
+// have more than one), and Log out.
 
 type Workspace = { id: string; name: string };
 
