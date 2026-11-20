@@ -1,6 +1,6 @@
 //! Design nodes and their JSON form.
 
-use super::component::{Bind, Overrides, PropDefs, PropValues};
+use super::component::{Bind, Origin, Overrides, PropDefs, PropValues};
 use super::id::NodeId;
 use super::json::{Number, Object, entry, first_set, some, some_number, some_object, some_objects};
 use super::layout::{GridPlacement, Layout, LayoutMode, Margin, SelfAlignment, Sizing};
@@ -189,7 +189,7 @@ impl Node {
                 same_frame(a, b)
             }
             (NodeData::Component(a), NodeData::Component(b)) => {
-                a.props == b.props && same_frame(&a.frame, &b.frame)
+                a.props == b.props && a.origin == b.origin && same_frame(&a.frame, &b.frame)
             }
             (NodeData::Text(a), NodeData::Text(b)) => a == b,
             (NodeData::Image(a), NodeData::Image(b)) => a == b,
@@ -348,6 +348,8 @@ pub struct Component {
     pub frame: Frame,
     /// The properties that instances give values to.
     pub props: Option<PropDefs>,
+    /// Where the component was imported from, None for one made in OmniState.
+    pub origin: Option<Origin>,
 }
 
 /// A placed component. It takes its component's size on each axis it leaves
@@ -504,6 +506,7 @@ impl Serialize for Node {
                 entry(&mut map, "opacity", frame.opacity.as_ref())?;
                 entry(&mut map, "clip", frame.clip.as_ref())?;
                 entry(&mut map, "props", component.props.as_ref())?;
+                entry(&mut map, "origin", component.origin.as_ref())?;
                 map.serialize_entry("children", &frame.children)?;
             }
         }
@@ -655,6 +658,8 @@ struct RawNode {
     flows: Option<Value>,
     #[serde(default, deserialize_with = "some")]
     prototype: Option<Value>,
+    #[serde(default, deserialize_with = "some")]
+    origin: Option<Value>,
     #[serde(default, deserialize_with = "some")]
     children: Option<Vec<Subtree>>,
 }
@@ -854,12 +859,21 @@ impl RawNode {
             .take()
             .map(|props| PropDefs::from_value(&props))
             .transpose()?;
+        let origin = self
+            .origin
+            .take()
+            .map(|origin| Origin::from_value(&origin))
+            .transpose()?;
         let frame = self.frame()?;
         check_binds(
             props.as_ref().unwrap_or(&PropDefs::default()),
             &frame.children,
         )?;
-        Ok(Component { frame, props })
+        Ok(Component {
+            frame,
+            props,
+            origin,
+        })
     }
 
     fn size(&mut self) -> Result<Size, String> {
@@ -942,6 +956,7 @@ impl RawNode {
             ("interactions", self.interactions.is_some()),
             ("flows", self.flows.is_some()),
             ("prototype", self.prototype.is_some()),
+            ("origin", self.origin.is_some()),
             ("children", self.children.is_some()),
         ])
     }

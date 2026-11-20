@@ -38,8 +38,8 @@ value, such as `clip`, is `true`.
 Every tag takes `id`, `name` and `visible`. Every tag except `<Page>` and
 `<Component>` takes the placement and size attributes, and `<Board>`, `<Frame>`
 and `<Component>` take every attribute of the layout and style tables. A
-`<Component>` takes the size, layout and style attributes of a frame, and
-`props`; it is placed by its instances, so it has no placement attributes.
+`<Component>` takes the size, layout and style attributes of a frame, `props`
+and `origin`; it is placed by its instances, so it has no placement attributes.
 
 ### Identity
 
@@ -187,6 +187,30 @@ its layers as a flex layout.
   <Instance id="gfx00001" name="Icon" component="cart0001" bind={{visible: "showIcon", component: "icon"}}/>
   <Text id="txt00001" name="Label" content="Buy" fontFamily="Inter" fontSize={14} color="#ffffff" bind={{content: "label"}}/>
   <Frame id="bdg00001" name="Badge" width={8} height={8} fill="#dc2626"/>
+</Component>
+```
+
+### Where an imported component came from (`origin` of a `<Component>`)
+
+A component that an import brought from another tool keeps where it came from
+in `origin`, so that a later import from that tool places it again instead of
+importing it twice (`omni import penpot`, docs/formats/penpot-export.md). It is
+an object with these fields, the same in tags and in JSON:
+
+| Field | Value |
+| --- | --- |
+| `tool` | The tool, such as `"penpot"`. |
+| `file` | The tool's ID of the file that defines the component. |
+| `component` | The tool's ID of the component in that file. |
+| `layers` | An object that maps the tool's ID of each layer of its component to the node ID of the layer of this component it became. A later import keys the overrides of its copies by these node IDs. |
+
+`tool`, `file` and `component` are required and not empty; `layers` may be
+left out. Any other field, or `origin` on a tag other than `<Component>`, is
+an error. A component made in OmniState has no `origin`.
+
+```
+<Component id="btn00002" name="Chip" fill="#2563eb" origin={{tool: "penpot", file: "f0000000-0000-4000-8000-000000000001", component: "c0000000-0000-4000-8000-000000000001", layers: {"a0000000-0000-4000-8000-000000000001": "chp00001"}}}>
+  <Text id="chp00001" name="Label" content="New" fontFamily="Inter" fontSize={12} color="#ffffff"/>
 </Component>
 ```
 
