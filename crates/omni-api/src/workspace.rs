@@ -8,7 +8,7 @@
 use crate::AppState;
 use crate::session::{ApiError, session_token};
 use axum::Json;
-use axum::extract::{FromRequestParts, RawPathParams};
+use axum::extract::{FromRequestParts, RawPathParams, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use serde::Serialize;
@@ -31,11 +31,13 @@ pub enum Actor {
 pub struct WorkspaceRequest {
     /// The workspace of the path, as a lowercase UUID.
     pub workspace_id: String,
+    /// The user the request acts for: the session's, or the key's.
+    pub user_id: String,
     pub actor: Actor,
-    /// Whether the member, or the member who created the key, is an admin.
+    /// Whether the member the request acts as is an admin.
     pub is_admin: bool,
-    /// The member who acts: the session's, or for an API key the one who
-    /// created it, if any.
+    /// The member who acts: the session's user's, or for an API key its
+    /// user's membership of this workspace. Always set once resolved.
     pub membership_id: Option<String>,
 }
 
@@ -83,7 +85,7 @@ impl FromRequestParts<AppState> for HumanRequest {
 pub struct AgentRequest {
     pub workspace_id: String,
     pub is_admin: bool,
-    /// The member who created the key, if any.
+    /// The membership of the key's user in this workspace.
     pub membership_id: Option<String>,
 }
 
@@ -209,69 +211,37 @@ async fn resolve(
         .and_then(|(_, value)| parse_uuid(value))
         .ok_or(ApiError::NotFound)?;
 
-    let is_admin;
-    let acting_membership;
+    // A key acts for its user and a session is its user: either reaches the
+    // workspace while the user is a member of it, as the membership stands
+    // now, so leaving a workspace takes a key out of it at once.
+    let user_id = match &caller {
+        Caller::Key(key) => key.user_id.clone(),
+        Caller::Session { user, .. } => user.id.clone(),
+    };
+    let membership: Option<(String, bool)> = sqlx::query_as(
+        "SELECT id::text, role = 'admin' FROM user_memberships($1::uuid) \
+         WHERE workspace_id = $2::uuid",
+    )
+    .bind(&user_id)
+    .bind(&workspace_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    let (membership_id, is_admin) = membership.ok_or(ApiError::NotFound)?;
     let actor = match caller {
-        Caller::Key(key) => {
-            if key.workspace_id != workspace_id {
-                return Err(ApiError::NotFound);
-            }
-            is_admin = key_is_admin(
-                state,
-                &workspace_id,
-                key.created_by_membership_id.as_deref(),
-            )
-            .await?;
-            acting_membership = key.created_by_membership_id.clone();
-            Actor::Agent
-        }
-        Caller::Session { user, .. } => {
-            let membership: Option<(String, bool)> = sqlx::query_as(
-                "SELECT id::text, role = 'admin' FROM user_memberships($1::uuid) \
-                 WHERE workspace_id = $2::uuid",
-            )
-            .bind(&user.id)
-            .bind(&workspace_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(ApiError::database)?;
-            let (membership_id, admin) = membership.ok_or(ApiError::NotFound)?;
-            is_admin = admin;
-            acting_membership = Some(membership_id.clone());
-            Actor::Human {
-                user_id: user.id,
-                membership_id,
-            }
-        }
+        Caller::Key(_) => Actor::Agent,
+        Caller::Session { user, .. } => Actor::Human {
+            user_id: user.id,
+            membership_id: membership_id.clone(),
+        },
     };
     Ok(WorkspaceRequest {
         workspace_id,
+        user_id,
         actor,
         is_admin,
-        membership_id: acting_membership,
+        membership_id: Some(membership_id),
     })
-}
-
-/// Whether the member who created a key is an admin, read now so a change of
-/// role takes effect at once. A key without a creator, or whose creator's
-/// membership is gone, acts as a plain member.
-async fn key_is_admin(
-    state: &AppState,
-    workspace_id: &str,
-    membership_id: Option<&str>,
-) -> Result<bool, ApiError> {
-    let Some(membership_id) = membership_id else {
-        return Ok(false);
-    };
-    let mut tx = state.workspace_tx(workspace_id).await?;
-    let admin: Option<bool> =
-        sqlx::query_scalar("SELECT role = 'admin' FROM memberships WHERE id = $1::uuid")
-            .bind(membership_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(ApiError::database)?;
-    tx.commit().await.map_err(ApiError::database)?;
-    Ok(admin.unwrap_or(false))
 }
 
 /// The secret of an `Authorization: Bearer <secret>` header value.
@@ -312,20 +282,29 @@ pub struct ActorBody {
 pub struct WhoamiResponse {
     pub workspace_id: String,
     pub actor: ActorBody,
+    /// Every workspace the caller reaches, this one among them: for an API key
+    /// the workspaces of its user, for a session the user's.
+    pub workspaces: Vec<crate::session::WorkspaceBody>,
 }
 
-/// Who the caller is in this workspace: an agent (API key) or the human (session).
+/// Who the caller is in this workspace: an agent (API key) or the human
+/// (session), and the workspaces the caller reaches.
 #[utoipa::path(
     get,
     path = "/api/v1/w/{workspace_id}/whoami",
     params(("workspace_id" = String, Path, description = "The workspace's UUID")),
     responses(
-        (status = 200, description = "The caller and the workspace", body = WhoamiResponse),
+        (status = 200, description = "The caller, the workspace and every workspace the caller reaches", body = WhoamiResponse),
         (status = 401, description = "No valid API key or session", body = crate::session::ErrorBody),
         (status = 404, description = "The caller cannot reach this workspace", body = crate::session::ErrorBody),
+        (status = 503, description = "The database cannot answer", body = crate::session::ErrorBody),
     )
 )]
-pub async fn whoami(request: WorkspaceRequest) -> Json<WhoamiResponse> {
+pub async fn whoami(
+    State(state): State<AppState>,
+    request: WorkspaceRequest,
+) -> Result<Json<WhoamiResponse>, ApiError> {
+    let workspaces = crate::session::user_workspaces(&state, &request.user_id).await?;
     let actor = match request.actor {
         Actor::Agent => ActorBody {
             kind: "agent".to_string(),
@@ -336,8 +315,9 @@ pub async fn whoami(request: WorkspaceRequest) -> Json<WhoamiResponse> {
             user_id: Some(user_id),
         },
     };
-    Json(WhoamiResponse {
+    Ok(Json(WhoamiResponse {
         workspace_id: request.workspace_id,
         actor,
-    })
+        workspaces,
+    }))
 }

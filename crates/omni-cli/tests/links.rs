@@ -10,8 +10,21 @@ const PROJECT: &str = "01900000-0000-7000-8000-0000000000b1";
 const OTHER_PROJECT: &str = "01900000-0000-7000-8000-0000000000b2";
 const UNKNOWN_PROJECT: &str = "01900000-0000-7000-8000-0000000000b9";
 
+/// A third workspace, besides `WORKSPACE` and `OTHER_WORKSPACE`.
+const THIRD_WORKSPACE: &str = "01900000-0000-7000-8000-0000000000dd";
+
+/// A server that lists the two projects in any of the three workspaces: the
+/// key reaches all of them, and the tests check which one a request names.
 fn mock() -> MockServer {
     MockServer::start(|request| {
+        let path = request
+            .path
+            .replace(OTHER_WORKSPACE, WORKSPACE)
+            .replace(THIRD_WORKSPACE, WORKSPACE);
+        let request = &Recorded {
+            path,
+            ..request.clone()
+        };
         if request.method == "GET" && request.path == format!("/api/v1/w/{WORKSPACE}/projects") {
             return Reply::json(
                 200,
@@ -374,7 +387,7 @@ fn an_unlinked_folder_is_an_error_whatever_its_omni_toml_says() {
 }
 
 #[test]
-fn a_link_of_another_workspace_is_reported_as_such() {
+fn a_link_of_another_workspace_makes_the_command_work_in_that_workspace() {
     let server = mock();
     let home = logged_in(&server.url);
     let folder = Scratch::new("folder");
@@ -388,14 +401,114 @@ fn a_link_of_another_workspace_is_reported_as_such() {
     )
     .unwrap();
 
+    // The key reaches every workspace of its user, so the link decides.
     let out = feature_list_in(&home, &folder.join("sub"), &[]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{OTHER_WORKSPACE}/projects/{PROJECT}/tracks"
+        )]
+    );
+}
+
+#[test]
+fn a_link_of_another_workspace_than_the_one_given_with_workspace_is_an_error() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    let out = feature_list_in(&home, &folder.path, &["--workspace", WORKSPACE]);
     assert_eq!(out.code, 1);
     assert_eq!(
         out.stderr.trim_end(),
         format!(
-            "omni: {} is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
+            "omni: {} is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, pass --project, or leave out --workspace and OMNI_WORKSPACE",
             canonical(&folder)
         )
+    );
+    assert!(server.requests().is_empty(), "{:?}", server.requests());
+}
+
+#[test]
+fn workspace_and_omni_workspace_pick_the_workspace_before_the_link_and_the_default() {
+    let server = mock();
+    let home = logged_in(&server.url);
+    let folder = Scratch::new("folder");
+    std::fs::write(
+        links_path(&home.path),
+        format!(
+            "[{THIRD_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            canonical(&folder)
+        ),
+    )
+    .unwrap();
+
+    // A project given by ID needs no link, so the flag alone decides.
+    let by_flag = feature_list_in(
+        &home,
+        &folder.path,
+        &["--workspace", OTHER_WORKSPACE, "--project", PROJECT],
+    );
+    assert_eq!(by_flag.code, 0, "{}", by_flag.stderr);
+    let by_env = omni(&home.path)
+        .env("OMNI_WORKSPACE", OTHER_WORKSPACE)
+        .args(&[
+            "track",
+            "list",
+            "--as",
+            "run-7/author",
+            "--project",
+            PROJECT,
+        ])
+        .cwd(&folder.path)
+        .run();
+    assert_eq!(by_env.code, 0, "{}", by_env.stderr);
+    // Without either, the folder's link wins over the default.
+    let by_link = feature_list_in(&home, &folder.path, &[]);
+    assert_eq!(by_link.code, 0, "{}", by_link.stderr);
+    // In a folder that is not linked, the default of the config file.
+    let elsewhere = Scratch::new("elsewhere");
+    let by_default = feature_list_in(&home, &elsewhere.path, &["--project", PROJECT]);
+    assert_eq!(by_default.code, 0, "{}", by_default.stderr);
+
+    let tracks = |workspace: &str| format!("GET /api/v1/w/{workspace}/projects/{PROJECT}/tracks");
+    assert_eq!(
+        feature_requests(&server),
+        vec![
+            tracks(OTHER_WORKSPACE),
+            tracks(OTHER_WORKSPACE),
+            tracks(THIRD_WORKSPACE),
+            tracks(WORKSPACE),
+        ]
+    );
+}
+
+#[test]
+fn without_a_workspace_flag_link_or_default_a_command_says_how_to_pick_one() {
+    let server = mock();
+    let home = Scratch::new("home");
+    std::fs::create_dir_all(home.join(".config/omni")).unwrap();
+    let config = config_path(&home.path);
+    std::fs::write(
+        &config,
+        format!("server = \"{}\"\napi_key = \"{API_KEY}\"\n", server.url),
+    )
+    .unwrap();
+    let elsewhere = Scratch::new("elsewhere");
+    let out = feature_list_in(&home, &elsewhere.path, &["--project", PROJECT]);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.trim_end(),
+        "omni: no workspace for this command: pass --workspace <name|id>, link the folder with omni link <project>, or set a default with omni workspace use <name|id>"
     );
     assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
@@ -502,16 +615,15 @@ fn a_path_linked_in_both_workspaces_finds_the_logged_in_project() {
 }
 
 #[test]
-fn the_nearest_link_of_another_workspace_is_the_one_named() {
+fn the_nearest_link_of_another_workspace_is_the_one_used() {
     let server = mock();
     let home = logged_in(&server.url);
     let folder = Scratch::new("folder");
     std::fs::create_dir_all(folder.join("sub")).unwrap();
-    let third_workspace = "01900000-0000-7000-8000-0000000000dd";
     std::fs::write(
         links_path(&home.path),
         format!(
-            "[{third_workspace}]\n\"{}\" = \"{PROJECT}\"\n\n[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            "[{THIRD_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n\n[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
             canonical(&folder),
             format_args!("{}/sub", canonical(&folder))
         ),
@@ -519,13 +631,12 @@ fn the_nearest_link_of_another_workspace_is_the_one_named() {
     .unwrap();
 
     let out = feature_list_in(&home, &folder.join("sub"), &[]);
-    assert_eq!(out.code, 1);
+    assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        out.stderr.trim_end(),
-        format!(
-            "omni: {}/sub is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
-            canonical(&folder)
-        )
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{OTHER_WORKSPACE}/projects/{PROJECT}/tracks"
+        )]
     );
 }
 
@@ -596,7 +707,7 @@ fn config_show_names_the_project_the_folder_is_linked_to() {
 }
 
 #[test]
-fn config_show_in_a_folder_linked_only_in_another_workspace_reports_no_project() {
+fn config_show_in_a_folder_linked_only_in_another_workspace_reports_that_workspace_and_project() {
     let home = logged_in("http://127.0.0.1:9");
     let folder = Scratch::new("folder");
     std::fs::write(
@@ -613,7 +724,10 @@ fn config_show_in_a_folder_linked_only_in_another_workspace_reports_no_project()
         .cwd(&folder.path)
         .run();
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.json().get("project"), Some(&Value::Null));
+    // The key reaches every workspace of its user, so the link decides.
+    assert_eq!(out.json()["project"], json!(PROJECT));
+    assert_eq!(out.json()["workspace"], json!(OTHER_WORKSPACE));
+    assert_eq!(out.json()["workspace_id"], json!(WORKSPACE), "the default");
 }
 
 #[test]
@@ -939,16 +1053,15 @@ fn the_repositorys_link_in_the_logged_in_workspace_beats_the_worktrees_link_of_a
 }
 
 #[test]
-fn with_only_links_of_other_workspaces_the_worktrees_own_is_named_over_the_repositorys() {
+fn with_only_links_of_other_workspaces_the_worktrees_own_is_used_over_the_repositorys() {
     let server = mock();
     let home = logged_in(&server.url);
     let (repo, worktrees) = repo_with_worktree();
     let worktree = worktrees.join("w");
-    let third_workspace = "01900000-0000-7000-8000-0000000000dd";
     std::fs::write(
         links_path(&home.path),
         format!(
-            "[{third_workspace}]\n\"{}\" = \"{PROJECT}\"\n\n[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
+            "[{THIRD_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n\n[{OTHER_WORKSPACE}]\n\"{}\" = \"{PROJECT}\"\n",
             canonical_path(&repo.path),
             canonical_path(&worktree)
         ),
@@ -956,19 +1069,17 @@ fn with_only_links_of_other_workspaces_the_worktrees_own_is_named_over_the_repos
     .unwrap();
 
     let out = feature_list_in(&home, &worktree, &[]);
-    assert_eq!(out.code, 1);
+    assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        out.stderr.trim_end(),
-        format!(
-            "omni: {} is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
-            canonical_path(&worktree)
-        )
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{OTHER_WORKSPACE}/projects/{PROJECT}/tracks"
+        )]
     );
-    assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
 
 #[test]
-fn an_unlinked_worktree_of_a_repository_linked_in_another_workspace_names_the_repository() {
+fn an_unlinked_worktree_of_a_repository_linked_in_another_workspace_works_in_that_workspace() {
     let server = mock();
     let home = logged_in(&server.url);
     let (repo, worktrees) = repo_with_worktree();
@@ -983,15 +1094,13 @@ fn an_unlinked_worktree_of_a_repository_linked_in_another_workspace_names_the_re
     .unwrap();
 
     let out = feature_list_in(&home, &worktree, &[]);
-    assert_eq!(out.code, 1);
+    assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
-        out.stderr.trim_end(),
-        format!(
-            "omni: {} is linked to a project of another workspace ({OTHER_WORKSPACE}); run omni link here, or omni login",
-            canonical_path(&repo.path)
-        )
+        feature_requests(&server),
+        vec![format!(
+            "GET /api/v1/w/{OTHER_WORKSPACE}/projects/{PROJECT}/tracks"
+        )]
     );
-    assert!(server.requests().is_empty(), "{:?}", server.requests());
 }
 
 #[test]
@@ -1041,7 +1150,7 @@ fn unlink_in_a_sub_folder_refuses_and_names_the_linked_folder() {
 }
 
 #[test]
-fn unlink_without_a_link_in_this_workspace_says_not_linked() {
+fn unlink_without_a_link_says_not_linked_and_removes_a_link_of_another_workspace() {
     let server = mock();
     let home = logged_in(&server.url);
     let folder = Scratch::new("folder");
@@ -1055,9 +1164,16 @@ fn unlink_without_a_link_in_this_workspace_says_not_linked() {
     );
     std::fs::write(links_path(&home.path), &text).unwrap();
     let out = link_in(&home, &folder, &["unlink"]);
-    assert_eq!(out.code, 1);
-    assert_eq!(out.stderr.trim_end(), "omni: this folder is not linked");
-    assert_eq!(links_text(&home), text);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout.trim_end(),
+        format!("unlinked {}", canonical(&folder))
+    );
+    assert!(
+        !links_text(&home).contains(PROJECT),
+        "the folder's line is gone: {:?}",
+        links_text(&home)
+    );
 }
 
 #[test]

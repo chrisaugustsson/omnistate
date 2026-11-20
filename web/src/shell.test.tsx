@@ -96,7 +96,7 @@ function fakeApi() {
   const routes: Record<string, unknown> = {
     "/api/v1/auth/me": { user: { id: ME, email: "chris.doe@example.com" } },
     "/api/v1/auth/workspaces": { workspaces: [{ id: WS, name: "Wioniq" }] },
-    [`${API}/whoami`]: { actor: { kind: "human", user_id: ME }, workspace_id: WS },
+    [`${API}/whoami`]: { actor: { kind: "human", user_id: ME }, workspace_id: WS, workspaces: [{ id: WS, name: "Wioniq" }] },
     [`${API}/members`]: { members: [{ membership_id: "m1", user_id: ME, role: "admin", email: "chris.doe@example.com" }] },
     [`${API}/projects`]: {
       projects: [

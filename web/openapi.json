@@ -4757,11 +4757,19 @@
           },
           "workspace_id": {
             "type": "string"
+          },
+          "workspaces": {
+            "description": "Every workspace the caller reaches, this one among them: for an API key\nthe workspaces of its user, for a session the user's.",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceBody"
+            },
+            "type": "array"
           }
         },
         "required": [
           "workspace_id",
-          "actor"
+          "actor",
+          "workspaces"
         ],
         "type": "object"
       },
@@ -4839,6 +4847,151 @@
         "summary": "The OpenAPI document of the API.",
         "tags": [],
         "x-omni-access": "both"
+      }
+    },
+    "/api/v1/api-keys": {
+      "get": {
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyListResponse"
+                }
+              }
+            },
+            "description": "The user's keys, without secrets"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with an API key; human only"
+          }
+        },
+        "summary": "The logged-in user's keys, revoked ones included.",
+        "tags": [
+          "crate::api_keys"
+        ],
+        "x-omni-access": "human"
+      },
+      "post": {
+        "operationId": "create",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedKeyResponse"
+                }
+              }
+            },
+            "description": "The new key and its secret, shown only now"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with an API key; human only"
+          }
+        },
+        "summary": "Creates a full-access key for the logged-in user and shows its secret,\nonce. The key reaches every workspace the user is a member of.",
+        "tags": [
+          "crate::api_keys"
+        ],
+        "x-omni-access": "human"
+      }
+    },
+    "/api/v1/api-keys/{key_id}/revoke": {
+      "post": {
+        "operationId": "revoke",
+        "parameters": [
+          {
+            "description": "The key's UUID",
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyResponse"
+                }
+              }
+            },
+            "description": "The revoked key"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No valid session"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Called with an API key; human only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The user has no such key"
+          }
+        },
+        "summary": "Revokes a key. The row is kept, with `revoked_at` set, and the key stops\nworking at once.",
+        "tags": [
+          "crate::api_keys"
+        ],
+        "x-omni-access": "human"
       }
     },
     "/api/v1/auth/login": {
@@ -5012,17 +5165,7 @@
                 }
               }
             },
-            "description": "No live session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key (an Authorization header); human only"
+            "description": "No live session or valid API key"
           },
           "503": {
             "content": {
@@ -5035,207 +5178,11 @@
             "description": "The database or the login provider cannot answer"
           }
         },
-        "summary": "The workspaces the logged-in user is a member of, by name. It is how\n`omni login` offers a choice before any workspace is picked.",
+        "summary": "The workspaces the user is a member of, by name: the user of the session,\nor the user of the API key, whose key reaches exactly these. It is how\n`omni whoami` and `omni workspace list` show where a key works.",
         "tags": [
           "crate::session"
         ],
-        "x-omni-access": "human"
-      }
-    },
-    "/api/v1/w/{workspace_id}/api-keys": {
-      "get": {
-        "operationId": "list",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/KeyListResponse"
-                }
-              }
-            },
-            "description": "The workspace's keys, without secrets"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key; human only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The session is not a member of this workspace"
-          }
-        },
-        "summary": "The keys of the workspace, revoked ones included.",
-        "tags": [
-          "crate::api_keys"
-        ],
-        "x-omni-access": "human"
-      },
-      "post": {
-        "operationId": "create",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatedKeyResponse"
-                }
-              }
-            },
-            "description": "The new key and its secret, shown only now"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key; human only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "The session is not a member of this workspace"
-          }
-        },
-        "summary": "Creates a full-access key for the workspace and shows its secret, once.",
-        "tags": [
-          "crate::api_keys"
-        ],
-        "x-omni-access": "human"
-      }
-    },
-    "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke": {
-      "post": {
-        "operationId": "revoke",
-        "parameters": [
-          {
-            "description": "The workspace's UUID",
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "The key's UUID",
-            "in": "path",
-            "name": "key_id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/KeyResponse"
-                }
-              }
-            },
-            "description": "The revoked key"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No valid session"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Called with an API key; human only"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "No such key in this workspace"
-          }
-        },
-        "summary": "Revokes a key. The row is kept, with `revoked_at` set, and the key stops\nworking at once.",
-        "tags": [
-          "crate::api_keys"
-        ],
-        "x-omni-access": "human"
+        "x-omni-access": "both"
       }
     },
     "/api/v1/w/{workspace_id}/attachments": {
@@ -15087,7 +15034,7 @@
                 }
               }
             },
-            "description": "The caller and the workspace"
+            "description": "The caller, the workspace and every workspace the caller reaches"
           },
           "401": {
             "content": {
@@ -15108,9 +15055,19 @@
               }
             },
             "description": "The caller cannot reach this workspace"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The database cannot answer"
           }
         },
-        "summary": "Who the caller is in this workspace: an agent (API key) or the human (session).",
+        "summary": "Who the caller is in this workspace: an agent (API key) or the human\n(session), and the workspaces the caller reaches.",
         "tags": [
           "crate::workspace"
         ],

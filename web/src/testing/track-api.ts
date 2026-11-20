@@ -214,7 +214,7 @@ export function fakeTrackApi(fixture: Fixture) {
         case "/api/v1/auth/workspaces":
           return json(200, { workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
         case `/api/v1/w/${WORKSPACE_ID}/whoami`:
-          return json(200, { actor: { kind: "human", user_id: fixture.me ?? ALICE.id }, workspace_id: WORKSPACE_ID });
+          return json(200, { actor: { kind: "human", user_id: fixture.me ?? ALICE.id }, workspace_id: WORKSPACE_ID, workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
         case `/api/v1/w/${WORKSPACE_ID}/members`:
           return json(200, { members: fixture.members ?? MEMBERS });
         case `/api/v1/w/${WORKSPACE_ID}/projects`:

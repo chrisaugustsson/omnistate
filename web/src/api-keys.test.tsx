@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-// Home's API keys (/w/<ws>/api-keys): the keys agents sign in with, live ones
-// first; a new key's secret shows once, in a dialog; revoking asks first.
+// Home's API keys (/w/<ws>/api-keys): your keys, which agents sign in with and
+// which reach every workspace you are in; live ones first; a new key's secret
+// shows once, in a dialog; revoking asks first.
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as scope from "./scope-pages-fake";
@@ -20,7 +21,7 @@ class FakeWebSocket extends EventTarget {
   }
 }
 
-const KEYS = `/api/v1/w/${scope.WORKSPACE_ID}/api-keys`;
+const KEYS = "/api/v1/api-keys";
 const key = (id: string, prefix: string, fields: { revoked_at?: string; last_used_at?: string } = {}) => ({
   id,
   prefix,
@@ -30,7 +31,7 @@ const key = (id: string, prefix: string, fields: { revoked_at?: string; last_use
   revoked_at: fields.revoked_at ?? null,
 });
 
-/** The scope fake, with the workspace's keys on top. */
+/** The scope fake, with the user's keys on top. */
 function fakeKeys(initial: ReturnType<typeof key>[]) {
   scope.fakeScopeApi({});
   const base = globalThis.fetch;
@@ -51,7 +52,7 @@ function fakeKeys(initial: ReturnType<typeof key>[]) {
         keys.push(created);
         return json(201, { key: created, secret: "omninew1.s3cret-value" });
       }
-      const id = path.split("/")[6];
+      const id = path.split("/")[4];
       const at = keys.findIndex((one) => one.id === id);
       keys[at] = { ...keys[at], revoked_at: "2026-11-18T09:00:00Z" };
       return json(200, { key: keys[at] });

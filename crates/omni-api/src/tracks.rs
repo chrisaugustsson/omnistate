@@ -961,7 +961,8 @@ pub async fn list_members(
 
 /// Lets the track's owner through, and nobody else: 403 `not_track_owner`.
 /// This is the one check behind every write under a track. A track without an
-/// owner (made by a key with no creator) has nobody to guard it.
+/// owner (made, before keys belonged to users, by a key with no creator) has
+/// nobody to guard it.
 pub(crate) async fn require_track_writer(
     tx: &mut Tx,
     who: &Who,

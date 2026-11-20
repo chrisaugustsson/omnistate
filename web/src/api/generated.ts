@@ -1302,17 +1302,18 @@ export const UserResponseSchema = z.object({
 });
 export type UserResponse = z.infer<typeof UserResponseSchema>;
 
-export const WhoamiResponseSchema = z.object({
-  actor: ActorBodySchema,
-  workspace_id: z.string(),
-});
-export type WhoamiResponse = z.infer<typeof WhoamiResponseSchema>;
-
 export const WorkspaceBodySchema = z.object({
   id: z.string(),
   name: z.string(),
 });
 export type WorkspaceBody = z.infer<typeof WorkspaceBodySchema>;
+
+export const WhoamiResponseSchema = z.object({
+  actor: ActorBodySchema,
+  workspace_id: z.string(),
+  workspaces: z.array(WorkspaceBodySchema),
+});
+export type WhoamiResponse = z.infer<typeof WhoamiResponseSchema>;
 
 export const WorkspaceListResponseSchema = z.object({
   workspaces: z.array(WorkspaceBodySchema),
@@ -1496,6 +1497,28 @@ export const operations = {
   "GET /api/openapi.json": {
     responses: {},
   },
+  "GET /api/v1/api-keys": {
+    responses: {
+      "200": KeyListResponseSchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/api-keys": {
+    responses: {
+      "201": CreatedKeyResponseSchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+    },
+  },
+  "POST /api/v1/api-keys/{key_id}/revoke": {
+    responses: {
+      "200": KeyResponseSchema,
+      "401": ErrorBodySchema,
+      "403": ErrorBodySchema,
+      "404": ErrorBodySchema,
+    },
+  },
   "POST /api/v1/auth/login": {
     request: LoginRequestSchema,
     responses: {
@@ -1523,32 +1546,7 @@ export const operations = {
     responses: {
       "200": WorkspaceListResponseSchema,
       "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
       "503": ErrorBodySchema,
-    },
-  },
-  "GET /api/v1/w/{workspace_id}/api-keys": {
-    responses: {
-      "200": KeyListResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/api-keys": {
-    responses: {
-      "201": CreatedKeyResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
-    },
-  },
-  "POST /api/v1/w/{workspace_id}/api-keys/{key_id}/revoke": {
-    responses: {
-      "200": KeyResponseSchema,
-      "401": ErrorBodySchema,
-      "403": ErrorBodySchema,
-      "404": ErrorBodySchema,
     },
   },
   "POST /api/v1/w/{workspace_id}/attachments": {
@@ -2416,6 +2414,7 @@ export const operations = {
       "200": WhoamiResponseSchema,
       "401": ErrorBodySchema,
       "404": ErrorBodySchema,
+      "503": ErrorBodySchema,
     },
   },
 };

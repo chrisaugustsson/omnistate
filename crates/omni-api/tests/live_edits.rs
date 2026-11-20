@@ -244,7 +244,7 @@ fn fixture() -> &'static Fixture {
         let response = call(
             &server.client,
             "POST",
-            &format!("/api/v1/w/{workspace}/api-keys"),
+            "/api/v1/api-keys",
             &Auth::Session(&session_token("alice")),
             Some(&json!({})),
         );

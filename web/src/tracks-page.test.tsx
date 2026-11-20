@@ -125,7 +125,7 @@ function fakeApi(projectHome: Home, parts: ReturnType<typeof part>[] = [part(PAR
         case "/api/v1/auth/me":
           return json(200, { user: USER });
         case `/api/v1/w/${WORKSPACE_ID}/whoami`:
-          return json(200, { actor: { kind: "human", user_id: USER.id }, workspace_id: WORKSPACE_ID });
+          return json(200, { actor: { kind: "human", user_id: USER.id }, workspace_id: WORKSPACE_ID, workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
         case "/api/v1/auth/workspaces":
           return json(200, { workspaces: [{ id: WORKSPACE_ID, name: "Acme" }] });
         case `/api/v1/w/${WORKSPACE_ID}/projects`:

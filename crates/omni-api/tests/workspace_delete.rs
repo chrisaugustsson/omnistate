@@ -269,24 +269,15 @@ async fn new_membership(conn: &mut PgConnection, workspace: &str, user: &str) ->
     .expect("insert a membership")
 }
 
-/// A key, two probe projects with two documents each and two versions of each
+/// Two probe projects with two documents each and two versions of each
 /// document, plus one row in every other tenant table: rows in every tenant
-/// table, referencing each other and the workspace's memberships.
+/// table, referencing each other and the workspace's memberships. API keys
+/// belong to users, not to a workspace, so a key is not among them.
 ///
 /// Every story that adds a tenant table must seed it here too, or the
 /// deletion tests fail on purpose: they check that the seeded workspace has
 /// a row in every table that has a `workspace_id` column.
 async fn fill_workspace(conn: &mut PgConnection, workspace: &str, membership: &str) {
-    sqlx::query(
-        "INSERT INTO api_keys (workspace_id, prefix, key_hash, created_by_membership_id) \
-         VALUES ($1::uuid, $2, 'hash', $3::uuid)",
-    )
-    .bind(workspace)
-    .bind(format!("us014{}", unique_suffix()))
-    .bind(membership)
-    .execute(&mut *conn)
-    .await
-    .expect("insert an API key");
     for project in 0..2 {
         let project_id: String = sqlx::query_scalar(
             "INSERT INTO us014_projects (workspace_id, name) VALUES ($1::uuid, $2) RETURNING id::text",
@@ -766,7 +757,7 @@ fn the_admin_command_deletes_every_row_of_the_workspace_and_its_whole_rustfs_fol
     block(async {
         let mut conn = scratch_connection().await;
         let tables = tenant_tables(&mut conn).await;
-        for expected in ["workspaces", "memberships", "api_keys"]
+        for expected in ["workspaces", "memberships"]
             .into_iter()
             .chain(PROBE_TABLES)
         {

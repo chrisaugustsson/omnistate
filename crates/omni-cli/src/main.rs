@@ -40,9 +40,14 @@ pub const HELP: &str = "\
 omni - the OmniState command line for agents
 
 Usage:
-  omni login                          log in, pick a workspace and store an API key
-  omni key list                       list the workspace's API keys (asks for the password)
+  omni login                          log in and store an API key; the key reaches every
+                                      workspace you are a member of
+  omni key list                       list your API keys (asks for the password)
   omni key revoke <key-id>            revoke an API key (asks for the password)
+  omni workspace list                 list the workspaces the key reaches, the one in use and
+                                      the default marked
+  omni workspace use <name|id>        store the default workspace, for a folder that is not
+                                      linked and a command without --workspace
   omni project create <name>          create a project
   omni project list                   list the projects
   omni project rename <name|id> <new name>   rename a project; its ID, tracks, docs and threads stay
@@ -372,7 +377,8 @@ Usage:
   omni checks [--json]                print the checks of the [checks] table in .omni.toml, each
                                       optional (fast, stack_up, stack, seed, lint, any name)
                                       as name: command lines, or one JSON object with --json
-  omni whoami                         show the workspace and who the key acts as
+  omni whoami                         show the workspace in use, who the key acts as and every
+                                      workspace the key reaches
   omni api <METHOD> <path>            send one request to the API and print the response
   omni config show                    show the effective settings (never the key)
 
@@ -381,6 +387,8 @@ Options (before or after the command):
   --model <name>        the model behind the agent (fallback: OMNI_MODEL)
   --harness <name>      the harness that runs the agent (fallback: OMNI_HARNESS)
   --server <url>        the API address, http:// or https:// (fallback: OMNI_SERVER, then the config file)
+  --workspace <name|id> the workspace to work in (fallback: OMNI_WORKSPACE, then the workspace of
+                        the folder's link, then the default of `omni workspace use`)
   --project <name|id>   the project to work in (fallback: OMNI_PROJECT, then the folder's link);
                         for `omni decision add|list` a flag: about, or of, the whole project
   --track <name|id>   the track that `omni doc create` creates a doc in and `omni doc list` shows (fallback: OMNI_TRACK)
@@ -449,7 +457,8 @@ Output:
   An error is one line saying what went wrong and how to fix it.
 
 Files:
-  ~/.config/omni/config.toml   written by `omni login` (mode 600): server, workspace_id, api_key, email
+  ~/.config/omni/config.toml   written by `omni login` (mode 600): server, workspace_id (the
+                               default workspace), api_key, email
   ~/.config/omni/links.toml    written by `omni link`: the project each folder is linked to
   .omni.toml                   in a project directory: the [checks] table
 

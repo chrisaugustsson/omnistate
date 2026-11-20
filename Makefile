@@ -71,7 +71,7 @@ test-stack-seed:
 	user=$$($(PSQL_TEST) -c "insert into users (email) values ('$(NAME)@example.com') returning id") && \
 	$(PSQL_TEST) -c "insert into sessions (user_id, token_hash, expires_at) values ('$$user', sha256(convert_to('$$token', 'UTF8')), now() + interval '1 day')" >/dev/null && \
 	$(PSQL_TEST) -c "insert into memberships (workspace_id, user_id, role) values ('$$ws', '$$user', '$(or $(ROLE),member)')" >/dev/null && \
-	key=$$(curl -sf -X POST -H 'Content-Type: application/json' -b "omni_session=$$token" -d '{}' http://localhost:$${OMNI_PORT:-8421}/api/v1/w/$$ws/api-keys | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p') && \
+	key=$$(curl -sf -X POST -H 'Content-Type: application/json' -b "omni_session=$$token" -d '{}' http://localhost:$${OMNI_PORT:-8421}/api/v1/api-keys | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p') && \
 	echo "workspace=$$ws" && echo "session=$$token" && echo "api_key=$$key"
 
 # The last clippy run covers the WebAssembly-only code of omni-render.

@@ -3,12 +3,14 @@
 //! created; the database keeps only its SHA-256. A request finds its key by
 //! the prefix and compares the hashes in constant time.
 //!
-//! Listing, creating and revoking keys are `human` routes: an agent cannot
-//! mint or revoke keys.
+//! A key belongs to the user who created it and reaches every workspace that
+//! user is a member of; `workspace.rs` checks the membership on each request.
+//! Listing, creating and revoking keys are `human` routes of the account, not
+//! of a workspace: an agent cannot mint or revoke keys.
 
 use crate::AppState;
-use crate::session::{ApiError, ErrorBody};
-use crate::workspace::{HumanRequest, parse_uuid, sha256_hex};
+use crate::session::{ApiError, CurrentUser, ErrorBody};
+use crate::workspace::{parse_uuid, sha256_hex};
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use axum::Json;
 use axum::extract::{Path, State};
@@ -62,8 +64,8 @@ pub struct CreatedKeyResponse {
 /// A key that a request presented and that is valid: it exists, the secret
 /// matches and it is not revoked.
 pub struct ResolvedKey {
-    pub workspace_id: String,
-    pub created_by_membership_id: Option<String>,
+    /// The user the key belongs to.
+    pub user_id: String,
 }
 
 /// A new key: its prefix, the secret and the hash to store.
@@ -106,17 +108,16 @@ pub async fn authenticate(state: &AppState, secret: &str) -> Result<Option<Resol
     {
         return Ok(None);
     }
-    let row: Option<(String, String, String, bool, bool, Option<String>)> = sqlx::query_as(
-        "SELECT id::text, workspace_id::text, key_hash, revoked_at IS NOT NULL, \
-                last_used_at IS NULL OR last_used_at < now() - interval '1 minute', \
-                created_by_membership_id::text \
+    let row: Option<(String, String, String, bool, bool)> = sqlx::query_as(
+        "SELECT id::text, user_id::text, key_hash, revoked_at IS NOT NULL, \
+                last_used_at IS NULL OR last_used_at < now() - interval '1 minute' \
          FROM resolve_api_key($1)",
     )
     .bind(prefix)
     .fetch_optional(&state.pool)
     .await
     .map_err(ApiError::database)?;
-    let Some((id, workspace_id, key_hash, revoked, stale, created_by_membership_id)) = row else {
+    let Some((id, user_id, key_hash, revoked, stale)) = row else {
         return Ok(None);
     };
     let matches = constant_time_eq(key_hash.as_bytes(), sha256_hex(secret).as_bytes());
@@ -124,101 +125,88 @@ pub async fn authenticate(state: &AppState, secret: &str) -> Result<Option<Resol
         return Ok(None);
     }
     if stale {
-        record_use(state.clone(), id, workspace_id.clone());
+        record_use(state.clone(), id);
     }
-    Ok(Some(ResolvedKey {
-        workspace_id,
-        created_by_membership_id,
-    }))
+    Ok(Some(ResolvedKey { user_id }))
 }
 
-/// Writes `last_used_at` in the background, in a transaction of the key's
-/// workspace, so the request does not wait for it. The condition repeats the
-/// one-minute rule, so two requests racing for the first write cause one.
-fn record_use(state: AppState, key_id: String, workspace_id: String) {
+/// Writes `last_used_at` in the background, so the request does not wait for
+/// it. The condition repeats the one-minute rule, so two requests racing for
+/// the first write cause one.
+fn record_use(state: AppState, key_id: String) {
     tokio::spawn(async move {
-        let write = async {
-            let mut tx = state.workspace_tx(&workspace_id).await?;
-            sqlx::query(
-                "UPDATE api_keys SET last_used_at = now() WHERE id = $1::uuid \
-                 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')",
-            )
-            .bind(&key_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(ApiError::database)?;
-            tx.commit().await.map_err(ApiError::database)
-        };
-        // A failed write is already logged and costs nothing but a stale timestamp.
-        let _ = write.await;
+        let written = sqlx::query(
+            "UPDATE api_keys SET last_used_at = now() WHERE id = $1::uuid \
+             AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')",
+        )
+        .bind(&key_id)
+        .execute(&state.pool)
+        .await;
+        // A failed write costs nothing but a stale timestamp; it is logged.
+        if let Err(e) = written {
+            let _ = ApiError::database(e);
+        }
     });
 }
 
-/// The keys of the workspace, revoked ones included.
+/// The logged-in user's keys, revoked ones included.
 #[utoipa::path(
     get,
-    path = "/api/v1/w/{workspace_id}/api-keys",
-    params(("workspace_id" = String, Path, description = "The workspace's UUID")),
+    path = "/api/v1/api-keys",
     responses(
-        (status = 200, description = "The workspace's keys, without secrets", body = KeyListResponse),
+        (status = 200, description = "The user's keys, without secrets", body = KeyListResponse),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Called with an API key; human only", body = ErrorBody),
-        (status = 404, description = "The session is not a member of this workspace", body = ErrorBody),
     )
 )]
 pub async fn list(
     State(state): State<AppState>,
-    request: HumanRequest,
+    current: CurrentUser,
 ) -> Result<Json<KeyListResponse>, ApiError> {
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
     let keys = sqlx::query_as(&format!(
-        "SELECT {KEY_COLUMNS} FROM api_keys ORDER BY created_at, id"
+        "SELECT {KEY_COLUMNS} FROM api_keys WHERE user_id = $1::uuid ORDER BY created_at, id"
     ))
-    .fetch_all(&mut *tx)
+    .bind(&current.user.id)
+    .fetch_all(&state.pool)
     .await
     .map_err(ApiError::database)?;
-    tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(KeyListResponse { keys }))
 }
 
-/// Creates a full-access key for the workspace and shows its secret, once.
+/// Creates a full-access key for the logged-in user and shows its secret,
+/// once. The key reaches every workspace the user is a member of.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/api-keys",
-    params(("workspace_id" = String, Path, description = "The workspace's UUID")),
+    path = "/api/v1/api-keys",
     responses(
         (status = 201, description = "The new key and its secret, shown only now", body = CreatedKeyResponse),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Called with an API key; human only", body = ErrorBody),
-        (status = 404, description = "The session is not a member of this workspace", body = ErrorBody),
     )
 )]
 pub async fn create(
     State(state): State<AppState>,
-    request: HumanRequest,
+    current: CurrentUser,
 ) -> Result<(StatusCode, Json<CreatedKeyResponse>), ApiError> {
     for _ in 0..PREFIX_ATTEMPTS {
         let (prefix, secret, hash) = generate();
-        let mut tx = state.workspace_tx(&request.workspace_id).await?;
         let inserted = sqlx::query_as(&format!(
-            "INSERT INTO api_keys (workspace_id, prefix, key_hash, scopes, created_by_membership_id) \
-             VALUES ($1::uuid, $2, $3, ARRAY['*'], $4::uuid) RETURNING {KEY_COLUMNS}"
+            "INSERT INTO api_keys (user_id, prefix, key_hash, scopes) \
+             VALUES ($1::uuid, $2, $3, ARRAY['*']) RETURNING {KEY_COLUMNS}"
         ))
-        .bind(&request.workspace_id)
+        .bind(&current.user.id)
         .bind(&prefix)
         .bind(&hash)
-        .bind(&request.membership_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&state.pool)
         .await;
         match inserted {
             Ok(key) => {
-                tx.commit().await.map_err(ApiError::database)?;
                 return Ok((
                     StatusCode::CREATED,
                     Json(CreatedKeyResponse { key, secret }),
                 ));
             }
-            // The prefix is taken, in this or another workspace: try another.
+            // The prefix is taken, by this or another user's key: try another.
             Err(sqlx::Error::Database(e)) if e.is_unique_violation() => continue,
             Err(e) => return Err(ApiError::database(e)),
         }
@@ -231,36 +219,32 @@ pub async fn create(
 /// working at once.
 #[utoipa::path(
     post,
-    path = "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
-    params(
-        ("workspace_id" = String, Path, description = "The workspace's UUID"),
-        ("key_id" = String, Path, description = "The key's UUID"),
-    ),
+    path = "/api/v1/api-keys/{key_id}/revoke",
+    params(("key_id" = String, Path, description = "The key's UUID")),
     responses(
         (status = 200, description = "The revoked key", body = KeyResponse),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Called with an API key; human only", body = ErrorBody),
-        (status = 404, description = "No such key in this workspace", body = ErrorBody),
+        (status = 404, description = "The user has no such key", body = ErrorBody),
     )
 )]
 pub async fn revoke(
     State(state): State<AppState>,
-    request: HumanRequest,
-    Path((_, key_id)): Path<(String, String)>,
+    current: CurrentUser,
+    Path(key_id): Path<String>,
 ) -> Result<Json<KeyResponse>, ApiError> {
     let key_id = parse_uuid(&key_id).ok_or(ApiError::NotFound)?;
-    let mut tx = state.workspace_tx(&request.workspace_id).await?;
-    // Row-level security hides the keys of other workspaces, so they are 404 too.
+    // Another user's key is a 404 too, the same answer as one that does not exist.
     let key = sqlx::query_as(&format!(
         "UPDATE api_keys SET revoked_at = COALESCE(revoked_at, now()) \
-         WHERE id = $1::uuid RETURNING {KEY_COLUMNS}"
+         WHERE id = $1::uuid AND user_id = $2::uuid RETURNING {KEY_COLUMNS}"
     ))
     .bind(&key_id)
-    .fetch_optional(&mut *tx)
+    .bind(&current.user.id)
+    .fetch_optional(&state.pool)
     .await
     .map_err(ApiError::database)?
     .ok_or(ApiError::NotFound)?;
-    tx.commit().await.map_err(ApiError::database)?;
     Ok(Json(KeyResponse { key }))
 }
 

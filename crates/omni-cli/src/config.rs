@@ -12,6 +12,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stored {
     pub server: Option<String>,
+    /// The default workspace: the one a command works in when neither
+    /// `--workspace`, `OMNI_WORKSPACE` nor the folder's link names one. The key
+    /// itself reaches every workspace of its user.
     pub workspace_id: Option<String>,
     pub api_key: Option<String>,
     pub email: Option<String>,

@@ -7,15 +7,19 @@
 //! - `omni` reads `$HOME/.config/omni/config.toml`, a TOML file of
 //!   `key = "value"` lines: `server` (the base URL, such as
 //!   `http://omnistate.localhost`; `--server` and `OMNI_SERVER` override it),
-//!   `workspace_id`, `api_key` (the whole secret) and `email`. `omni login`
-//!   writes it with file mode 600.
+//!   `workspace_id` (the default workspace), `api_key` (the whole secret) and
+//!   `email`. `omni login` writes it with file mode 600. The key reaches every
+//!   workspace of its user; a command works in `--workspace`, else
+//!   `OMNI_WORKSPACE`, else the workspace of the folder's link, else the
+//!   default.
 //! - An API key goes in `Authorization: Bearer <secret>`. The agent identity
 //!   goes in the headers `X-Omni-Run`, `X-Omni-Role`, `X-Omni-Model` and
 //!   `X-Omni-Harness`. `--as <run>/<role>` sets the first two, `--model` and
 //!   `--harness` the others; `OMNI_RUN`, `OMNI_ROLE`, `OMNI_MODEL` and
 //!   `OMNI_HARNESS` are the fallbacks and the flags win. Run and role are
 //!   required; model and harness are optional.
-//! - `omni whoami` asks `GET /api/v1/w/{workspace_id}/whoami` as an agent.
+//! - `omni whoami` asks `GET /api/v1/w/{workspace_id}/whoami` as an agent, or
+//!   `GET /api/v1/auth/workspaces` when no workspace is in use.
 //!   `omni api <METHOD> <path> [--body-file <path>]` sends one raw request as
 //!   an agent and prints the response body; `--body-file -` reads the body from
 //!   standard input. `omni config show` prints the effective settings (never

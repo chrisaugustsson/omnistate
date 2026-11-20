@@ -224,7 +224,7 @@ export function fakeApi(me = ALICE) {
   const fixed: Record<string, unknown> = {
     "/api/v1/auth/me": { user: me },
     "/api/v1/auth/workspaces": { workspaces: [{ id: WS, name: "Acme" }] },
-    [`${API}/whoami`]: { actor: { kind: "human", user_id: me.id }, workspace_id: WS },
+    [`${API}/whoami`]: { actor: { kind: "human", user_id: me.id }, workspace_id: WS, workspaces: [{ id: WS, name: "Acme" }] },
     [`${API}/members`]: {
       members: [
         { membership_id: "m1", user_id: ALICE.id, email: ALICE.email, role: "admin" },

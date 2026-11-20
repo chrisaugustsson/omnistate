@@ -179,11 +179,11 @@ fn fixture() -> &'static Fixture {
             a
         });
         let server = TestServer::start(&config());
-        let mint = |token: &str, workspace: &str| -> String {
+        let mint = |token: &str| -> String {
             let response = call(
                 &server.client,
                 "POST",
-                &format!("/api/v1/w/{workspace}/api-keys"),
+                "/api/v1/api-keys",
                 &Auth::Session(token),
                 Some(&json!({})),
             );
@@ -193,7 +193,7 @@ fn fixture() -> &'static Fixture {
                 .expect("the new key has a secret")
                 .to_string()
         };
-        let key_a = mint(&session_token("alice"), &a);
+        let key_a = mint(&session_token("alice"));
         Fixture {
             a,
             alice_token: session_token("alice"),

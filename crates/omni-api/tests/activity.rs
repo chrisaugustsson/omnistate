@@ -180,7 +180,7 @@ fn seed_workspace(client: &Client, name: &str) -> Ws {
     let response = call(
         client,
         "POST",
-        &format!("/api/v1/w/{workspace}/api-keys"),
+        "/api/v1/api-keys",
         &Auth::Session(&token),
         Some(&json!({})),
     );
