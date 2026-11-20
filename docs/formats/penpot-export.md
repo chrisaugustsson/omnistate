@@ -39,12 +39,18 @@ the rest. The JSON is pretty-printed, and a `/` in a string is written `\/`.
 ### manifest.json
 
 An object with `type` (`penpot/export-files`), `version` (1), `generatedBy`,
-`referer`, `relations` (empty in both exports) and `files`, a list of the files
-in the export. Each item has an `id`, a `name` and a list of `features`. Both
-exports hold exactly one file. The crate takes the first item of `files` as the
-file and reads its `id` and `name` from there. An archive without a
-`manifest.json`, or a manifest that lists no file, is not an export and is
-rejected with a message that names the manifest.
+`referer`, `relations` and `files`, a list of the files in the export. Each
+item has an `id`, a `name` and a list of `features`. An export of one file
+holds exactly one file and no relations. An export made with "Export file +
+libraries" also holds the shared libraries the file uses, each a file of its
+own under `files/<library>/`, and `relations` lists which file uses which
+library as `[<file id>, <library id>]` pairs. The crate takes as the file the
+first item of `files` that is no library of another file of the export (the
+first item when every one is), and reads its `id` and `name` from there; the
+other files are the bundled libraries, which the import reads only for the
+components and tokens its copies need (see "Shared libraries"). An archive
+without a `manifest.json`, or a manifest that lists no file, is not an export
+and is rejected with a message that names the manifest.
 
 ### Pages
 
@@ -315,15 +321,16 @@ board come from components. The shapes inside a root get no entry of their own.
 
 ## Importing (`omni import penpot`)
 
-`omni import penpot <file.penpot> --project <id> [--feature <name>]` (US-051,
-US-105) imports an export made with "Export file + libraries" straight into the
-project. The design doc lands at the app level, or in the
-UI pillar of the feature with `--feature`; the design system doc is always the
+`omni import penpot <file.penpot> --project <id> [--track <name>]` (US-051,
+US-105) imports an export straight into the project. The design doc lands at the app level, or in the
+UI pillar of the track with `--track`; the design system doc is always the
 app level's. The reader and the
 converter above do the work, so every rule of "What the converter takes from a
 shape" applies (line pitch, filling children, hugging texts, the board Unplaced).
 `omni_penpot::import::import_file` gives the whole import as data: `pages` (the
-design doc), `design_system` (the design system doc), `attachments` and `report`.
+design doc), `design_system` (the design system doc), `attachments` and `report`;
+`import_file_onto` does the same onto the components a design system already
+has (see "Shared libraries").
 
 An import into a project whose design system doc already has tokens or
 components (a second import, or a design system an agent made) adds to its head,
@@ -337,7 +344,9 @@ value per mode takes its `$value` in a mode it has no value for, and the report
 names it. Should the joined tree be refused, the design system's tokens stay as
 they are and the report says why. The design system's components are sent first
 with their IDs, so they and the instances that place them stay as they are, and
-the export's components follow as new ones.
+the export's components follow as new ones, except those the design system
+already has from Penpot (see "Shared libraries"). A component without a Penpot
+`origin`, one made in OmniState, is never matched or changed.
 `omni_penpot::compare::compare_import` compares the imported boards with
 Penpot's PNGs, in the mode of Penpot's active theme.
 
@@ -347,9 +356,9 @@ What the export holds, and what it becomes:
 | --- | --- |
 | Pages, in their `index` order | One `page` node each, named as the page, holding its boards |
 | Boards and the shapes in them | As converted: boards, frames, texts, vectors and images |
-| `components/*.json` | One `component` node each in the design system doc, converted from the main instance. Named `name`, or `path / name` when it has a path |
+| `components/*.json` | One `component` node each in the design system doc, converted from the main instance. Named `name`, or `path / name` when it has a path. Its `origin` is `{tool: "penpot", file, component, layers}`: the Penpot ids of the file and the component, and the node each layer of the main instance became, by the layer's Penpot id |
 | Variants of one set (`variantId`, `variantProperties`) | Components that share the set's name and carry a `variant` property for each Penpot property, listing every value of the set, each with its own value as default |
-| A copy of a component (`componentId`, `shapeRef`) | An `instance` of that component. An untouched copy has no overrides |
+| A copy of a component (`componentId`, `componentFile`, `shapeRef`) | An `instance` of that component. An untouched copy has no overrides. A copy of a library component is placed as "Shared libraries" says |
 | A nested copy inside a component | An `instance` inside the component's tree |
 | `touched` on a copy: `text-content-text`, `fill-group`, `visibility-group`, `swap-slot-<id>` | Overrides: `content`, `fills`, `visible`, `component`, keyed by the node of the component whose Penpot shape the layer copies (`shapeRef`) |
 | `tokens.json` themes (`$themes`) | The modes of the token tree, named as the themes and in their order |
@@ -382,8 +391,49 @@ The command reads the export before it sends anything, so a file that is no
 export leaves no doc behind. It uploads the images, starts the design system
 doc unless the project has one, writes the tokens to its head, puts the
 components in as often as it takes for the instances inside them to name
-components the server has given IDs (the server assigns every node ID), starts
+components the server has given IDs (the server assigns every node ID, and
+`origin.layers` names the server's nodes from the second pass on), starts
 the design doc, and inserts the pages into its head: each page, then its boards
 in batches of about a megabyte, and last it removes the page the new design
 started with. `--json` prints `design_doc_id`, `design_system_doc_id` and the
 whole `report`.
+
+### Shared libraries
+
+A copy names its component with `componentId` and the file that defines it with
+`componentFile`. A component of the file itself is the file's; a component of
+another file belongs to a shared library the file uses. Every imported
+component keeps where it came from in its `origin` (docs/formats/design-tags.md),
+so the import onto a design system resolves a copy in this order:
+
+1. The design system already has a component from Penpot with the same file and
+   component in its `origin`: the copy becomes an instance of it, its overrides
+   keyed by the nodes that `origin.layers` names. The export does not import
+   that component again. This holds for a library imported before and for the
+   file's own components on a second import of the same file. A file that was
+   duplicated from the library keeps the library's component ids under its own
+   file id: its component with the same Penpot component id as one of the
+   design system's and the same content (compared without node IDs) is that
+   one too, and one that changed is imported as the file's own. Components are
+   never matched by name.
+2. Otherwise, when the export bundles the library ("Export file + libraries"),
+   the component is converted from the library's file, once however many copies
+   place it, with the library components it holds in turn, and the copies
+   become instances of it. Only the library components that something places
+   are imported. The bundled libraries' tokens, colors and typographies come
+   along too, the file's own tokens taking precedence, so that the components'
+   token references resolve.
+3. Otherwise the copy is drawn as the plain shapes it holds, and the report
+   names the component and the library file, with the fix: import the library
+   first, or export the file with its libraries.
+
+So a library published apart from the files that use it is imported first, as
+its own export, and the files after it, each into its own track; their boards
+then place the library's components instead of copies of their shapes. A
+re-import does not update a component the design system already has: what
+changed in Penpot since stays out until the component is removed from the
+design system and imported again.
+
+The command reads the export once before it sends anything. When the
+project's design system has components from Penpot, it reads the export again
+onto them, then sends.

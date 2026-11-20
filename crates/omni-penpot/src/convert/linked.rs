@@ -8,8 +8,16 @@
 //! names the main's shape each of its own shapes copies (`shapeRef`), so the
 //! changes the designer made to the copy (`touched`) can be keyed by the nodes
 //! of the component.
+//!
+//! A copy names the file of its component too (`componentFile`). A component
+//! of another file, a library, is placed from the project's design system when
+//! an earlier import brought it there (its `origin` names the same Penpot file
+//! and component), else converted from the library's file when the export
+//! bundles it ("Export file + libraries"), else the copy stays the plain
+//! shapes it holds. A component of the file itself that the design system
+//! already has is placed from there too, and not imported again.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::*;
@@ -17,7 +25,13 @@ use crate::import::tokens::{self, Note, Tokens};
 
 /// What the converter needs to know in an import.
 pub(crate) struct Linked {
+    /// The Penpot id of the file the export is of.
+    file: String,
+    /// The components of the file and of the libraries the export bundles.
     components: HashMap<String, RawComponent>,
+    /// The components of the project's design system that an earlier import
+    /// brought from Penpot, by the Penpot ids of their file and component.
+    known: HashMap<(String, String), Rc<Comp>>,
     done: HashMap<String, Option<Rc<Comp>>>,
     /// The components being converted, which a component cannot place.
     progress: HashSet<String>,
@@ -30,6 +44,8 @@ pub(crate) struct Linked {
 /// A component of the export, as its file says.
 #[derive(Clone)]
 pub(crate) struct RawComponent {
+    /// The Penpot id of the file that defines the component.
+    pub(crate) file: String,
     pub(crate) id: String,
     /// The name the component gets: Penpot's name, with its path in front.
     pub(crate) name: String,
@@ -42,11 +58,14 @@ pub(crate) struct RawComponent {
 /// A component as a node, with where its parts came from.
 pub(crate) struct Comp {
     node_id: String,
-    /// The box Penpot stores for the main instance.
+    /// The box Penpot stores for the main instance. An axis that a component
+    /// of the design system does not fix is NaN.
     bounds: Rect,
     /// The node and its type for each shape of the main instance that became
     /// one, by the Penpot id of the shape.
     nodes: HashMap<String, (String, String)>,
+    /// The component's JSON node; null for a component of the design system,
+    /// which the import does not send again.
     json: Value,
 }
 
@@ -62,6 +81,9 @@ pub(crate) struct ReadLinks {
     /// The components as JSON nodes, in order.
     pub(crate) components: Vec<Value>,
     pub(crate) tokens: Tokens,
+    /// The token trees of the libraries the export bundles, which the file's
+    /// own tokens go on top of.
+    pub(crate) library_tokens: Vec<Value>,
     /// How many node IDs the conversion has handed out.
     pub(crate) ids: u64,
 }
@@ -112,7 +134,7 @@ fn text_at(value: &Value, key: &str) -> String {
 /// The components of the files, in order, with the properties of their variant
 /// sets: the components with one `variantId` are the variants of one set, and
 /// each one's properties list every value of the set with its own as default.
-fn raw_components(files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
+fn raw_components(file_id: &str, files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
     struct Found<'a> {
         file: &'a Value,
         id: String,
@@ -205,6 +227,7 @@ fn raw_components(files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
                     Value::Object(props)
                 });
             RawComponent {
+                file: file_id.to_string(),
                 id: f.id.clone(),
                 name: if f.path.is_empty() {
                     f.name.clone()
@@ -219,21 +242,13 @@ fn raw_components(files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
         .collect()
 }
 
-/// Reads the `.penpot` export at `path` for an import: its boards, with the
-/// component copies as instances, its components, and its design tokens.
-pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
-    let mut archive = open_archive(path)?;
-    let objects = object_files(&archive);
-    let mut reader = Reader {
-        archive: &mut archive,
-        shown: path.display().to_string(),
-        buffer: Vec::new(),
-    };
-    let file = reader.first_file()?;
-    let heads = reader.page_heads(&file.id)?;
-
-    let mut notes = Vec::new();
-    let root = format!("files/{}/", file.id);
+/// The design tokens, library colors and typographies of the file whose
+/// entries are under `root` (`files/<file id>/`).
+fn file_tokens<R: Read + Seek>(
+    reader: &mut Reader<'_, R>,
+    root: &str,
+    notes: &mut Vec<Note>,
+) -> Result<Tokens, ReadError> {
     let tokens_file = format!("{root}tokens.json");
     let tokens_json = match reader.load(&tokens_file)? {
         None => None,
@@ -249,22 +264,127 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
             }
         },
     };
-    let colors = json_entries(&mut reader, &format!("{root}colors/"), &mut notes)?;
-    let typographies = json_entries(&mut reader, &format!("{root}typographies/"), &mut notes)?;
+    let colors = json_entries(reader, &format!("{root}colors/"), notes)?;
+    let typographies = json_entries(reader, &format!("{root}typographies/"), notes)?;
+    Ok(tokens::build(tokens_json.as_ref(), &colors, &typographies))
+}
+
+/// The components of the project's design system that an earlier import
+/// brought from Penpot, by the Penpot ids of their file and component, from
+/// the design system's `$components`. A component without a Penpot `origin`
+/// is not one of them.
+fn known_components(design_system: &[Value]) -> HashMap<(String, String), Rc<Comp>> {
+    fn kinds(node: &Value, out: &mut HashMap<String, String>) {
+        if let (Some(id), Some(kind)) = (node["id"].as_str(), node["type"].as_str()) {
+            out.insert(id.to_string(), kind.to_string());
+        }
+        for child in node["children"].as_array().into_iter().flatten() {
+            kinds(child, out);
+        }
+    }
+    let mut known = HashMap::new();
+    for component in design_system {
+        let origin = &component["origin"];
+        let (Some("penpot"), Some(file), Some(id), Some(node_id)) = (
+            origin["tool"].as_str(),
+            origin["file"].as_str(),
+            origin["component"].as_str(),
+            component["id"].as_str(),
+        ) else {
+            continue;
+        };
+        let mut found = HashMap::new();
+        kinds(component, &mut found);
+        let nodes = origin["layers"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(layer, node)| {
+                let node = node.as_str()?;
+                Some((layer.clone(), (node.to_string(), found.get(node)?.clone())))
+            })
+            .collect();
+        let fixed = |axis: &str| component[axis]["fixed"].as_f64().unwrap_or(f64::NAN);
+        known
+            .entry((file.to_string(), id.to_string()))
+            .or_insert_with(|| {
+                Rc::new(Comp {
+                    node_id: node_id.to_string(),
+                    bounds: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: fixed("width"),
+                        height: fixed("height"),
+                    },
+                    nodes,
+                    json: Value::Null,
+                })
+            });
+    }
+    known
+}
+
+/// Reads the `.penpot` export at `path` for an import: its boards, with the
+/// component copies as instances, its components, and its design tokens.
+/// `design_system` holds the components the project's design system has, as
+/// JSON nodes: the copies of those an earlier import brought from Penpot are
+/// placed from there, and they are not imported again.
+pub(crate) fn run(path: &Path, design_system: &[Value]) -> Result<ReadLinks, ReadError> {
+    let mut archive = open_archive(path)?;
+    let objects = object_files(&archive);
+    let mut reader = Reader {
+        archive: &mut archive,
+        shown: path.display().to_string(),
+        buffer: Vec::new(),
+    };
+    let (file, libraries) = reader.main_file()?;
+    let heads = reader.page_heads(&file.id)?;
+
+    let mut notes = Vec::new();
+    let root = format!("files/{}/", file.id);
+    let mut tokens = file_tokens(&mut reader, &root, &mut notes)?;
     let files = json_entries(&mut reader, &format!("{root}components/"), &mut notes)?;
-    let raw = raw_components(&files, &mut notes);
+    let mut raw = raw_components(&file.id, &files, &mut notes);
+    let mut pages: HashMap<String, (String, String)> = heads
+        .iter()
+        .map(|head| (head.id.clone(), (head.dir.clone(), head.name.clone())))
+        .collect();
+
+    // The libraries the export bundles: their components, which a copy may
+    // place, and their tokens, which the file's own go on top of.
+    let mut library_tokens = Vec::new();
+    for library in &libraries {
+        for head in reader.page_heads(&library.id)? {
+            pages
+                .entry(head.id.clone())
+                .or_insert((head.dir.clone(), head.name.clone()));
+        }
+        let root = format!("files/{}/", library.id);
+        let theirs = file_tokens(&mut reader, &root, &mut notes)?;
+        for (name, link) in theirs.links {
+            tokens.links.entry(name).or_insert(link);
+        }
+        if tokens.active.is_none() {
+            tokens.active = theirs.active;
+        }
+        library_tokens.push(theirs.tree);
+        let files = json_entries(&mut reader, &format!("{root}components/"), &mut notes)?;
+        for component in raw_components(&library.id, &files, &mut notes) {
+            if !raw.iter().any(|known| known.id == component.id) {
+                raw.push(component);
+            }
+        }
+    }
     let order: Vec<String> = raw.iter().map(|component| component.id.clone()).collect();
 
-    let mut tokens = tokens::build(tokens_json.as_ref(), &colors, &typographies);
     tokens.notes.splice(0..0, notes);
     let linked = Linked {
+        file: file.id.clone(),
         components: raw.into_iter().map(|c| (c.id.clone(), c)).collect(),
+        known: known_components(design_system),
         done: HashMap::new(),
         progress: HashSet::new(),
-        pages: heads
-            .iter()
-            .map(|head| (head.id.clone(), (head.dir.clone(), head.name.clone())))
-            .collect(),
+        pages,
         links: tokens.links.clone(),
     };
     let mut converter = Converter {
@@ -292,9 +412,24 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
         ranges.push((first, boards.len()));
     }
     converter.resolve_interactions(&mut boards);
+    // Every component of the file, and the ones of the libraries that
+    // something placed, but none that the design system already has.
     let mut components = Vec::new();
     for id in &order {
-        if let Some(comp) = converter.component(id)? {
+        let linked = converter.linked.as_ref().expect("this is an import");
+        let raw = &linked.components[id];
+        if linked
+            .known
+            .contains_key(&(raw.file.clone(), raw.id.clone()))
+        {
+            continue;
+        }
+        let comp = if raw.file == linked.file {
+            converter.component(id)?
+        } else {
+            linked.done.get(id).cloned().flatten()
+        };
+        if let Some(comp) = comp {
             components.push(comp.json.clone());
         }
     }
@@ -316,8 +451,19 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
             .collect(),
         components,
         tokens,
+        library_tokens,
         ids: converter.next_id,
     })
+}
+
+/// The node IDs of `value` and of every node below it.
+fn node_ids<'a>(value: &'a Value, out: &mut HashSet<&'a str>) {
+    if let Some(id) = value["id"].as_str() {
+        out.insert(id);
+    }
+    for child in value["children"].as_array().into_iter().flatten() {
+        node_ids(child, out);
+    }
 }
 
 /// Sets `field` of the override of `key`.
@@ -348,11 +494,48 @@ fn describe(group: &str) -> String {
 }
 
 impl<R: Read + Seek> Converter<'_, R> {
-    /// Whether the export defines the component that `pen` is a part of.
+    /// Whether the component that `pen` is a part of can be placed: the
+    /// design system has it, or the export defines it.
     pub(super) fn links_component(&self, pen: &Pen) -> bool {
         match (&self.linked, pen.component_id.0.as_deref()) {
-            (Some(linked), Some(id)) => linked.components.contains_key(id),
+            (Some(linked), Some(id)) => {
+                let file = pen.component_file.0.as_deref();
+                linked
+                    .known
+                    .contains_key(&(file.unwrap_or(&linked.file).to_string(), id.to_string()))
+                    || linked
+                        .components
+                        .get(id)
+                        .is_some_and(|raw| file.is_none_or(|file| file == raw.file))
+            }
             _ => false,
+        }
+    }
+
+    /// The Penpot id of the file of the export, None in a plain conversion.
+    pub(super) fn export_file(&self) -> Option<&str> {
+        self.linked.as_ref().map(|linked| linked.file.as_str())
+    }
+
+    /// The component `id` of the file `file` (the export's own when None) as
+    /// a copy places it: the design system's when it has it, else the one the
+    /// export defines. None if neither is there or it cannot be converted.
+    fn place(&mut self, file: Option<&str>, id: &str) -> Result<Option<Rc<Comp>>, ReadError> {
+        let Some(linked) = self.linked.as_ref() else {
+            return Ok(None);
+        };
+        let key = (file.unwrap_or(&linked.file).to_string(), id.to_string());
+        if let Some(known) = linked.known.get(&key) {
+            return Ok(Some(known.clone()));
+        }
+        let defined = linked
+            .components
+            .get(id)
+            .is_some_and(|raw| file.is_none_or(|file| file == raw.file));
+        if defined {
+            self.component(id)
+        } else {
+            Ok(None)
         }
     }
 
@@ -445,7 +628,10 @@ impl<R: Read + Seek> Converter<'_, R> {
         let left_out = std::mem::take(&mut self.left_out);
         let refs = self.refs.replace(HashMap::new());
         let outer = std::mem::replace(&mut self.page_name, page);
+        // A library's component finds its images in the library's file.
+        let file = std::mem::replace(&mut self.file_id, raw.file.clone());
         let body = self.component_body(raw, &dir);
+        self.file_id = file;
         self.page_name = outer;
         self.refs = refs;
         self.left_out = left_out;
@@ -525,6 +711,16 @@ impl<R: Read + Seek> Converter<'_, R> {
             justify_items: None,
         };
         let mut value = self.frame(dir, &common, &pen, "frame", &parent, &board, &mut seen)?;
+        let nodes = self.refs.take().unwrap_or_default();
+        // Where the component came from, and the node each layer of Penpot's
+        // became, for an import that places it later.
+        let mut kept = HashSet::new();
+        node_ids(&value, &mut kept);
+        let layers: BTreeMap<&String, &String> = nodes
+            .iter()
+            .filter(|(_, (node, _))| kept.contains(node.as_str()))
+            .map(|(layer, (node, _))| (layer, node))
+            .collect();
         let node = value.as_object_mut().expect("a frame is an object");
         for key in [
             "x",
@@ -543,6 +739,10 @@ impl<R: Read + Seek> Converter<'_, R> {
         if let Some(props) = &raw.props {
             node.insert("props".into(), props.clone());
         }
+        node.insert(
+            "origin".into(),
+            json!({ "tool": "penpot", "file": raw.file, "component": raw.id, "layers": layers }),
+        );
         let node_id = node
             .get("id")
             .and_then(Value::as_str)
@@ -551,7 +751,7 @@ impl<R: Read + Seek> Converter<'_, R> {
         Ok(Some(Comp {
             node_id,
             bounds: common.bounds,
-            nodes: self.refs.take().unwrap_or_default(),
+            nodes,
             json: value,
         }))
     }
@@ -568,14 +768,15 @@ impl<R: Read + Seek> Converter<'_, R> {
         board: &Board,
         seen: &mut HashSet<String>,
     ) -> Result<Option<Value>, ReadError> {
-        let Some(id) = pen.component_id.0.as_deref().filter(|id| {
-            self.linked
-                .as_ref()
-                .is_some_and(|linked| linked.components.contains_key(*id))
-        }) else {
+        let Some(id) = pen
+            .component_id
+            .0
+            .as_deref()
+            .filter(|_| self.links_component(pen))
+        else {
             return Ok(None);
         };
-        let Some(comp) = self.component(id)? else {
+        let Some(comp) = self.place(pen.component_file.0.as_deref(), id)? else {
             let who = Who {
                 board,
                 id: &common.id,
@@ -695,9 +896,9 @@ impl<R: Read + Seek> Converter<'_, R> {
         for group in pen.touched.0.as_deref().unwrap_or_default() {
             if let Some(slot) = group.strip_prefix("swap-slot-") {
                 let swapped = match (comp.nodes.get(slot), pen.component_id.0.as_deref()) {
-                    (Some((key, kind)), Some(component)) if kind.as_str() == "instance" => {
-                        self.component(component)?.map(|inner| (key, inner))
-                    }
+                    (Some((key, kind)), Some(component)) if kind.as_str() == "instance" => self
+                        .place(pen.component_file.0.as_deref(), component)?
+                        .map(|inner| (key, inner)),
                     _ => None,
                 };
                 match swapped {

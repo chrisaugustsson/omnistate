@@ -187,13 +187,21 @@ Usage:
                                       tokens.json and tokens.css (variables per mode). The
                                       app level without --track
   omni import penpot <file.penpot> --project <id> [--track <name>]
-                                      import a Penpot export (made with 'Export file + libraries')
-                                      straight into the project: the pages and boards as a design doc (in the track's UI
+                                      import a Penpot export straight into the project: the
+                                      pages and boards as a design doc (in the track's UI
                                       pillar with --track), the components, design tokens
                                       (themes become modes), colors and typographies as the
                                       app-level design system, added to the one the project
                                       has, the images as attachments; prints the docs and a
-                                      report of what could not be imported
+                                      report of what could not be imported. Components keep
+                                      their Penpot origin: a copy of a component the design
+                                      system already has from Penpot (of a library imported
+                                      before, or of this file) becomes an instance of it, and
+                                      it is not imported again. Import a shared library first,
+                                      then the files that use it; a library component the
+                                      design system lacks comes from the export when it was
+                                      made with 'Export file + libraries', else its copies
+                                      are drawn as plain shapes and reported
   omni thread create <question> [--track <name|id>] [--sealed]
                                       start a thread, a question that agents work out together,
                                       on a track (--track or OMNI_TRACK); with --sealed an

@@ -26,7 +26,7 @@ use super::proto::{Flow, Interaction, PrototypeSettings};
 use super::value::non_negative;
 use super::{
     AttachmentRef, Bind, Color, Fill, FontFamily, Gap, GridPlacement, LayoutMode, Length, Margin,
-    Node, NodeData, NodeId, NodeKind, Overrides, PROP_KINDS, Padding, PathData, PropDefs,
+    Node, NodeData, NodeId, NodeKind, Origin, Overrides, PROP_KINDS, Padding, PathData, PropDefs,
     PropValues, Radius, Shadow, Sizing, Stroke, TokenOr, Track,
 };
 use serde::Deserialize;
@@ -150,6 +150,7 @@ const COMPONENT: &[&str] = &[
     "opacity",
     "clip",
     "props",
+    "origin",
     "interactions",
 ];
 
@@ -487,6 +488,8 @@ enum Shape {
     Flows,
     Prototype,
     Modes,
+    /// Where an imported component came from.
+    Origin,
 }
 
 struct Spec {
@@ -577,6 +580,7 @@ static SPECS: &[Spec] = &[
     node("interactions", "interactions", Shape::Interactions),
     node("flows", "flows", Shape::Flows),
     node("prototype", "prototype", Shape::Prototype),
+    node("origin", "origin", Shape::Origin),
 ];
 
 /// The `props` of a component are its property definitions, and those of an
@@ -687,6 +691,9 @@ fn how(spec: &Spec) -> String {
         ),
         Shape::Bind => format!(
             "bind a layer of a component to its properties, such as `{attr}={{{{visible: \"showIcon\"}}}}` with `visible`, `content` or `component`"
+        ),
+        Shape::Origin => format!(
+            "write an object with `tool`, `file`, `component` and `layers`, such as `{attr}={{{{tool: \"penpot\", file: \"<file id>\", component: \"<component id>\", layers: {{\"<layer id>\": \"k3f9x2qa\"}}}}}}`"
         ),
     }
 }
@@ -856,6 +863,9 @@ fn convert(spec: &Spec, value: Value) -> Result<Value, Problem> {
         Shape::Values => check::<PropValues>(spec, &value).map(|()| value),
         Shape::Overrides => check::<Overrides>(spec, &value).map(|()| value),
         Shape::Bind => check::<Bind>(spec, &value).map(|()| value),
+        Shape::Origin => Origin::from_value(&value)
+            .map_err(|error| from_text(spec, &error))
+            .map(|_| value),
         Shape::Modes => check::<BTreeMap<String, String>>(spec, &value).map(|()| value),
         Shape::Flows => Flow::list_from_value(&value)
             .map_err(|error| from_text(spec, &error))

@@ -168,6 +168,7 @@ struct Pen {
     content: L<Value>,
     metadata: L<Value>,
     component_id: L<String>,
+    component_file: L<String>,
     component_root: L<bool>,
     main_instance: L<bool>,
     parent_id: L<String>,
@@ -309,7 +310,7 @@ pub fn convert_file(path: &Path) -> Result<Conversion, ReadError> {
         shown: path.display().to_string(),
         buffer: Vec::new(),
     };
-    let file = reader.first_file()?;
+    let (file, _) = reader.main_file()?;
     let heads = reader.page_heads(&file.id)?;
     let mut converter = Converter {
         reader,
@@ -864,11 +865,20 @@ impl<R: Read + Seek> Converter<'_, R> {
             } else {
                 "copy"
             };
-            self.report(
-                who,
-                Some("componentId"),
-                format!("the shape is the root of a {role} of component {component}; the component link is not converted, so it is drawn as the plain shapes it holds"),
-            );
+            let library = pen
+                .component_file
+                .0
+                .as_deref()
+                .filter(|file| self.export_file().is_some_and(|own| own != *file));
+            let reason = match library {
+                Some(file) => format!(
+                    "the shape is the root of a {role} of component {component} of the library file {file}, which the export does not bundle and the project's design system does not have, so it is drawn as the plain shapes it holds; import the library first, or export the file with its libraries"
+                ),
+                None => format!(
+                    "the shape is the root of a {role} of component {component}; the component link is not converted, so it is drawn as the plain shapes it holds"
+                ),
+            };
+            self.report(who, Some("componentId"), reason);
         }
         if kind == "group" && pen.masked_group.0 == Some(true) {
             self.report(

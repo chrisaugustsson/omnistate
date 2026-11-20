@@ -154,7 +154,7 @@ pub fn compare_file(path: &Path) -> Result<Comparison, ReadError> {
 /// instances and token references of the board are drawn as the imported
 /// design system resolves them, in the mode of Penpot's active theme.
 pub fn compare_import(path: &Path) -> Result<Comparison, ReadError> {
-    let built = import::build(path)?;
+    let built = import::build(path, &[])?;
     let system = DesignSystem::from_json(&built.import.design_system).map_err(|error| {
         ReadError(format!(
             "the design system imported from {} is refused: {error}",
