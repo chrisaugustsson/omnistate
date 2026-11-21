@@ -360,7 +360,7 @@ What the export holds, and what it becomes:
 | Variants of one set (`variantId`, `variantProperties`) | Components that share the set's name and carry a `variant` property for each Penpot property, listing every value of the set, each with its own value as default |
 | A copy of a component (`componentId`, `componentFile`, `shapeRef`) | An `instance` of that component. An untouched copy has no overrides. A copy of a library component is placed as "Shared libraries" says |
 | A nested copy inside a component | An `instance` inside the component's tree |
-| `touched` on a copy: `text-content-text`, `fill-group`, `visibility-group`, `swap-slot-<id>` | Overrides: `content`, `fills`, `visible`, `component`, keyed by the node of the component whose Penpot shape the layer copies (`shapeRef`) |
+| `touched` on a copy: a changed text (`text-content-text`, or `content-group` and `text-content-*` on a text), `fill-group`, `visibility-group`, `swap-slot-<id>` | Overrides: `content`, `fills`, `visible`, `component`, keyed by the node of the component that the layer copies, following `shapeRef` from shape to shape (a layer of a copy nested in a main copies that main's layer, which copies the nested component's) |
 | `tokens.json` themes (`$themes`) | The modes of the token tree, named as the themes and in their order |
 | Color, spacing and border radius tokens | `color`, `spacing` and `radius` tokens with their Penpot path. A token of a set that every theme enables has one value, a token of a set that one theme enables has that theme's value in its mode. `rgba(r, g, b, a)` becomes `#rrggbbaa`, a number becomes `16px`, and a reference to another token is followed and written out as its value |
 | `appliedTokens` `fill` and `strokeColor` | The fill, the stroke and the text's color stay references: `$color.surface` |
@@ -374,11 +374,21 @@ are (a page of components keeps its look), and the component is converted from
 the same shapes. A board that is itself a copy stays a board, because a page
 holds only boards; its own copies inside are instances.
 
-An instance holds only text, fills, visibility and swapped components, so what
-else a copy changes on a layer (position or size, name, strokes, shadows, text
-style, layout, a swapped component the design system cannot place) is listed
-once per layer with the property `overrides`. A change to a layer inside a
-nested instance cannot be keyed and is listed too.
+An instance holds only text, fills, visibility and swapped components of the
+layers of its own component. A copy that changes anything else (the position
+or size of a layer, its strokes, shadows, text style, vector content, layout or
+clipping, a component swapped in where the component has no instance, or any
+change to a layer of a copy nested in it) is drawn as the plain shapes it
+holds, so the board looks as in Penpot, and the report lists it once with the
+property `overrides` and what it changes; the copies inside it are placed in
+their own right, as instances when they can be. Penpot marks a group of
+properties as changed (`touched`) even when its values are the main's again,
+so a group counts only when the copy's layer differs from the layer it copies,
+read from the export (the bundled library): numbers to a hundredth, a missing
+flag as `false`, and not the size that a text growing with its characters, or a
+layer that hugs its content or fills its parent, takes. A marked name or
+constraints change is never drawn and never counts. When the export does not
+have the layer copied, every marked group counts.
 
 Anything that cannot be imported is in the report, never dropped silently: the
 entries of the converter, each with the page it is on, and entries without a
