@@ -39,6 +39,77 @@ use std::sync::{Arc, Mutex};
 /// answers a waiting client.
 const DRAWN_AT_ONCE: usize = 4;
 
+/// The boards that background writes draw at once, across every write: the
+/// previews of a write that comes while those of another are being drawn wait
+/// for them instead of drawing beside them, so an import of many batches
+/// never draws more than `DRAWN_AT_ONCE` boards at a time.
+static DRAWING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(DRAWN_AT_ONCE);
+
+/// The chunk that the last write gave each board, by workspace and board ID,
+/// for the boards whose previews wait to be drawn in the background. A preview
+/// that a later write has replaced is not drawn: the board's newer chunk is,
+/// and a read draws any preview it misses.
+static LATEST: Mutex<Option<HashMap<(String, String), String>>> = Mutex::new(None);
+
+/// The ID of a board, from its JSON text.
+fn board_id(text: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Id {
+        id: String,
+    }
+    serde_json::from_str::<Id>(text).ok().map(|board| board.id)
+}
+
+/// Draws the preview of a board that a write changed, unless a later write has
+/// changed the board again, and forgets the board once its latest chunk is
+/// drawn.
+async fn make_latest(
+    state: &AppState,
+    workspace_id: &str,
+    sizing: &Sizing,
+    board: (Option<String>, String, String),
+    read: &ImagesRead,
+    decoded: &ImagesDecoded,
+) {
+    let (id, chunk, text) = board;
+    let key = id.map(|id| (workspace_id.to_string(), id));
+    let latest = |key: &(String, String)| {
+        let latest = LATEST.lock().unwrap_or_else(|e| e.into_inner());
+        latest.as_ref().and_then(|map| map.get(key)).cloned()
+    };
+    if let Some(key) = &key
+        && latest(key).is_some_and(|newer| newer != chunk)
+    {
+        return;
+    }
+    let Ok(_drawing) = DRAWING.acquire().await else {
+        return;
+    };
+    // A write may have come while this one waited.
+    if let Some(key) = &key
+        && latest(key).is_some_and(|newer| newer != chunk)
+    {
+        return;
+    }
+    make(
+        state,
+        workspace_id,
+        sizing,
+        (chunk.clone(), text),
+        read,
+        decoded,
+    )
+    .await;
+    if let Some(key) = key {
+        let mut latest = LATEST.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(map) = latest.as_mut()
+            && map.get(&key) == Some(&chunk)
+        {
+            map.remove(&key);
+        }
+    }
+}
+
 /// Where the preview of the board stored in `chunk` is kept, for the design
 /// system version `version`.
 fn stored_key(workspace_id: &str, version: &str, chunk: &str) -> String {
@@ -184,7 +255,9 @@ async fn make_all(
 }
 
 /// Makes the previews of the boards that a write changed, in the background.
-/// `boards` are the chunk and text of each.
+/// `boards` are the chunk and text of each. The drawing waits for the
+/// previews of earlier writes (`DRAWING`), and a board that a later write
+/// changes again is drawn once, as the later write left it (`LATEST`).
 pub(crate) fn store(
     state: &AppState,
     workspace_id: &str,
@@ -193,6 +266,19 @@ pub(crate) fn store(
     components: Vec<Value>,
     boards: Vec<(String, String)>,
 ) {
+    let boards: Vec<(Option<String>, String, String)> = boards
+        .into_iter()
+        .map(|(chunk, text)| (board_id(&text), chunk, text))
+        .collect();
+    {
+        let mut latest = LATEST.lock().unwrap_or_else(|e| e.into_inner());
+        let map = latest.get_or_insert_with(HashMap::new);
+        for (id, chunk, _) in &boards {
+            if let Some(id) = id {
+                map.insert((workspace_id.to_string(), id.clone()), chunk.clone());
+            }
+        }
+    }
     let (state, workspace_id) = (state.clone(), workspace_id.to_string());
     tokio::spawn(async move {
         let sizing = Sizing::without_stored(
@@ -201,7 +287,18 @@ pub(crate) fn store(
             &components,
         )
         .await;
-        make_all(&state, &workspace_id, &sizing, boards, DRAWN_AT_ONCE).await;
+        let read = ImagesRead::default();
+        let decoded = ImagesDecoded::default();
+        let _ = each_concurrently_up_to(DRAWN_AT_ONCE, boards, move |board| {
+            let (state, workspace_id, sizing) =
+                (state.clone(), workspace_id.clone(), sizing.clone());
+            let (read, decoded) = (read.clone(), decoded.clone());
+            async move {
+                make_latest(&state, &workspace_id, &sizing, board, &read, &decoded).await;
+                Ok(())
+            }
+        })
+        .await;
     });
 }
 
