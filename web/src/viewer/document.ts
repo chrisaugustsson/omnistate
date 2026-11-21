@@ -14,7 +14,7 @@ import { FRAME_SCRIPT } from "./frame-script";
 const VIEWER_STYLES = `
 html, body { margin: 0; background: #fff; }
 body { position: relative; padding: 1.5rem 3.5rem 4rem; }
-.omni-doc [data-omni-id] { cursor: pointer; }
+html.picking .omni-doc [data-omni-id] { cursor: pointer; }
 .omni-doc [data-omni-id].is-hover {
   outline: 2px solid rgba(9, 105, 218, 0.4);
   outline-offset: 2px;

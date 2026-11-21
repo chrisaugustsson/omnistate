@@ -21,6 +21,9 @@
 //   padding, and tells the page the doc's height with `viewer.size` (and again
 //   whenever it changes); a block to reveal is not scrolled to in the frame but
 //   told to the page with `viewer.reveal` and its `top`, for the page to scroll.
+// - `viewer.show` with `picking: false`: the reviewer is not commenting, so
+//   hovering highlights nothing and a click on a block is the doc's own (a
+//   diagram's buttons and cards work); only a click on a pin still selects.
 //
 // A frame in a browser tab that loads in the background is 0 wide and 0 tall
 // until the tab is shown, and nothing can be measured in it. The doc's HTML
@@ -30,7 +33,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
   var page = window.parent;
   var doc = document.getElementById("doc");
   var pinLayer = document.getElementById("pins");
-  var shown = { html: null, pins: [], selected: null, revealed: null, fit: false, height: -1 };
+  var shown = { html: null, pins: [], selected: null, revealed: null, fit: false, height: -1, picking: true };
   var hovered = null;
   var waiting = false;
 
@@ -136,6 +139,11 @@ export const FRAME_SCRIPT = String.raw`(function () {
       shown.fit = true;
       document.documentElement.classList.add("fit");
     }
+    // Picking blocks to comment on is on unless the page turns it off; off, the
+    // doc is a plain page: no highlight, and a click belongs to the doc's own content.
+    shown.picking = message.picking !== false;
+    document.documentElement.classList.toggle("picking", shown.picking);
+    if (!shown.picking) setHover(null);
     shown.pins = Array.isArray(message.pins) ? message.pins : [];
     shown.selected = typeof message.selected === "string" ? message.selected : null;
     if (typeof message.html === "string" && message.html !== shown.html) {
@@ -169,7 +177,7 @@ export const FRAME_SCRIPT = String.raw`(function () {
   });
 
   document.addEventListener("mouseover", function (event) {
-    setHover(blockOf(event.target));
+    setHover(shown.picking ? blockOf(event.target) : null);
   });
   document.addEventListener("mouseout", function (event) {
     if (!event.relatedTarget) setHover(null);
@@ -182,6 +190,8 @@ export const FRAME_SCRIPT = String.raw`(function () {
     var target = event.target instanceof Element ? event.target : null;
     if (target && target.closest("a")) event.preventDefault();
     var pin = target && target.closest("[data-pin-for]");
+    // Not picking, only a pin selects: it opens the comments it counts.
+    if (!pin && !shown.picking) return;
     var block = pin ? find(pin.getAttribute("data-pin-for")) : blockOf(target);
     post({ type: "viewer.select", node: block ? block.getAttribute("data-omni-id") : null });
   });

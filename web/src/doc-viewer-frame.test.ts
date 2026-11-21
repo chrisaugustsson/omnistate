@@ -228,6 +228,7 @@ type Shown = {
   selected?: string | null;
   reveal?: string;
   fit?: boolean;
+  picking?: boolean;
 };
 
 /** Posts `viewer.show` to the frame. */
@@ -565,6 +566,27 @@ document.getElementById("measured").textContent = "Measured " + window.innerWidt
     await settle(() => row(target, "p0000001"), plain, false, "the commented block has a pin");
     await settle(() => boxOf(target, "p0000005"), far, true, "a block without comments has none");
     expect(await target.frame.evaluate(() => document.body.innerText)).toMatch(/(^|\D)2(\D|$)/);
+  });
+
+  test("not picking, hovering highlights nothing and a click on a block is the doc's own, but a pin still selects", async () => {
+    const target = await openViewer();
+    await show(target, { html: SHORT_DOC, pins: [{ node: "p0000001", count: 1 }], picking: false }, "p0000003");
+    const selects = async () => (await got(target)).filter((m) => m?.type === "viewer.select").map((m) => m.node);
+    const third = await row(target, "p0000003");
+
+    await pointAt(target, "p0000003");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect((await row(target, "p0000003")).equals(third), "the hovered block is not highlighted").toBe(true);
+
+    await target.frame.click('[data-omni-id="p0000002"]', { force: true });
+    await target.frame.dispatchEvent('[data-pin-for="p0000001"]', "click");
+    // Messages arrive in order, so once the pin's has, a message for the block would have too.
+    await expect.poll(selects, { timeout: PATIENCE }).toEqual(["p0000001"]);
+
+    await show(target, { html: SHORT_DOC, pins: [{ node: "p0000001", count: 1 }], picking: true }, "p0000003");
+    await target.page.mouse.move(5, 5, { steps: 8 });
+    await pointAt(target, "p0000003");
+    await settle(() => row(target, "p0000003"), third, false, "picking again, the hovered block is highlighted");
   });
 
   test("a block named to reveal is scrolled into view", async () => {

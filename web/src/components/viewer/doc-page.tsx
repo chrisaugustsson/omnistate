@@ -351,9 +351,10 @@ function HtmlDocViewer({
                 workspaceId={workspaceId}
                 html={html}
                 pins={pins}
-                selected={selected}
+                selected={review ? selected : null}
                 reveal={reveal}
                 onSelect={setSelected}
+                picking={review}
                 fit
                 className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
               />
@@ -386,9 +387,10 @@ function HtmlDocViewer({
               workspaceId={workspaceId}
               html={html}
               pins={pins}
-              selected={selected}
+              selected={review ? selected : null}
               reveal={reveal}
               onSelect={setSelected}
+              picking={review}
               fit
               className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
             />
@@ -438,9 +440,10 @@ function HtmlDocViewer({
               workspaceId={workspaceId}
               html={html}
               pins={pins}
-              selected={selected}
+              selected={review ? selected : null}
               reveal={reveal}
               onSelect={setSelected}
+              picking={review}
               className="block min-h-0 w-full flex-1 bg-white"
             />
           </div>
