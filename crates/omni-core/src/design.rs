@@ -41,7 +41,10 @@
 //!   only its `component`, its `props` and its `overrides` (`content`, `fills`,
 //!   `visible` and `component`, by the ID of a node of the component), and a
 //!   node inside an instance is addressed as `<instanceId>/<componentNodeId>`
-//!   (`NodeAddress`).
+//!   (`NodeAddress`). A component that was imported from another tool keeps
+//!   where it came from in `origin` (`tool`, `file`, `component` and
+//!   `layers`, the node of the component that each layer of the tool's
+//!   component became), so that a later import can place it again.
 //!
 //! Lengths are CSS pixels and colors are `#rrggbb` or `#rrggbbaa`. Every
 //! color, every length except `x` and `y`, every opacity and font value, and a
@@ -140,7 +143,7 @@ mod value;
 
 pub use address::{InvalidNodeAddress, NodeAddress};
 pub use component::{
-    BIND_FIELDS, Bind, OVERRIDE_FIELDS, Override, Overrides, PROP_KINDS, PropDef, PropDefs,
+    BIND_FIELDS, Bind, OVERRIDE_FIELDS, Origin, Override, Overrides, PROP_KINDS, PropDef, PropDefs,
     PropValue, PropValues,
 };
 pub use edit::{DesignDoc, Variants};

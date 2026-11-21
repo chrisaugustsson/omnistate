@@ -66,6 +66,7 @@ const NOT_TOKENS: &[&str] = &[
     "props",
     "overrides",
     "bind",
+    "origin",
     "children",
 ];
 
@@ -615,7 +616,9 @@ impl Resolver<'_> {
             .as_object_mut()
             .and_then(|frame| frame.remove("children"));
         if let Some(frame) = frame.as_object_mut() {
-            for key in PLACEMENT.iter().chain(["props", "bind"].iter()) {
+            // What only a component has: its properties, and where an import
+            // brought it from. A frame that kept either would not read.
+            for key in PLACEMENT.iter().chain(["props", "bind", "origin"].iter()) {
                 frame.remove(*key);
             }
             frame.insert("type".to_string(), json!("frame"));

@@ -199,7 +199,7 @@ fn linked_project(agent: &Agent) -> Result<String> {
             matched,
             workspace_id,
         } => bail!(
-            "{} is linked to a project of another workspace ({workspace_id}); run omni link here, or omni login",
+            "{} is linked to a project of another workspace ({workspace_id}); run omni link here, pass --project, or leave out --workspace and OMNI_WORKSPACE",
             matched.display()
         ),
         Resolution::None => bail!(

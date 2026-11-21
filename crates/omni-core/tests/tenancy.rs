@@ -7,16 +7,16 @@
 //! and then act as the API role (`omni_api`) with `SET ROLE`. The schema these
 //! tests pin down:
 //!
-//! - Global tables: `users` (`email`), `login_identities`, `sessions`. Tenant
-//!   tables: `workspaces` (`name`, scoped by `id`), `memberships`
-//!   (`workspace_id`, `user_id`) and `api_keys` (`workspace_id`, `prefix`,
-//!   `key_hash`, `created_by_membership_id`, which is nullable).
+//! - Global tables: `users` (`email`), `login_identities`, `sessions` and
+//!   `api_keys` (`user_id`, `prefix`, `key_hash`): a key belongs to a user, not
+//!   to a workspace. Tenant tables: `workspaces` (`name`, scoped by `id`) and
+//!   `memberships` (`workspace_id`, `user_id`).
 //! - Every table has a `uuid` column `id` with a default that generates a
 //!   UUIDv7, and the database refuses an explicit id that is not a UUIDv7.
 //!   Every other column the tests do not name is nullable or has a default.
-//! - `memberships.user_id` references `users (id)`.
+//! - `memberships.user_id` and `api_keys.user_id` reference `users (id)`.
 //! - `resolve_api_key(prefix)` returns the matching `api_keys` rows with at
-//!   least the columns `id` and `workspace_id`, `user_memberships(user_id)`
+//!   least the columns `id` and `user_id`, `user_memberships(user_id)`
 //!   the user's `memberships` rows with at least `id` and `workspace_id`.
 //! - The API role is `omni_api`: it can log in, may SELECT, INSERT and UPDATE
 //!   the tenant tables, and may not DELETE from or TRUNCATE them. The
@@ -34,8 +34,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const TEST_DB: &str = "omni_us011_tenancy";
 const API_ROLE: &str = "omni_api";
-const GLOBAL_TABLES: [&str; 3] = ["users", "login_identities", "sessions"];
-const TENANT_TABLES: [&str; 3] = ["workspaces", "memberships", "api_keys"];
+const GLOBAL_TABLES: [&str; 4] = ["users", "login_identities", "sessions", "api_keys"];
+const TENANT_TABLES: [&str; 2] = ["workspaces", "memberships"];
 /// The tenant tables whose rows are never changed: the API role may not UPDATE
 /// them. They are the node index, the chunk index of US-030, the forum's posts
 /// (US-033), the replies to comments (US-038), the log of the writes to docs
@@ -272,12 +272,12 @@ async fn new_membership(conn: &mut PgConnection, workspace: &str, user: &str) ->
     .await
 }
 
-async fn new_api_key(conn: &mut PgConnection, workspace: &str, prefix: &str) -> String {
+async fn new_api_key(conn: &mut PgConnection, user: &str, prefix: &str) -> String {
     new_id(
         conn,
         &format!(
-            "insert into api_keys (workspace_id, prefix, key_hash) \
-             values ('{workspace}', '{prefix}', 'abc{}') returning id::text",
+            "insert into api_keys (user_id, prefix, key_hash) \
+             values ('{user}', '{prefix}', 'abc{}') returning id::text",
             unique_suffix()
         ),
     )
@@ -293,8 +293,8 @@ struct Seed {
     prefix_b: String,
 }
 
-/// Two workspaces, each with a membership and an API key, seeded as the admin
-/// role. Call it outside of `block`.
+/// Two workspaces with one member in both, and two API keys of two users,
+/// seeded as the admin role. Call it outside of `block`.
 fn seed() -> &'static Seed {
     static SEED: OnceLock<Seed> = OnceLock::new();
     let db = test_db();
@@ -311,8 +311,8 @@ fn seed() -> &'static Seed {
             let prefix_b = format!("omnib{}", unique_suffix());
             new_membership(&mut conn, &ws_a, &user_in_both).await;
             new_membership(&mut conn, &ws_b, &user_in_both).await;
-            new_api_key(&mut conn, &ws_a, &prefix_a).await;
-            new_api_key(&mut conn, &ws_b, &prefix_b).await;
+            new_api_key(&mut conn, &user_in_both, &prefix_a).await;
+            new_api_key(&mut conn, &user_in_none, &prefix_b).await;
             Seed {
                 ws_a,
                 ws_b,
@@ -444,8 +444,8 @@ fn the_database_refuses_a_record_id_that_is_not_a_uuid_v7() {
                  values ('{V4_ID}', '{workspace}', '{user}')"
             ),
             format!(
-                "insert into api_keys (id, workspace_id, prefix, key_hash) \
-                 values ('{V4_ID}', '{workspace}', 'v4prefix', 'abc123')"
+                "insert into api_keys (id, user_id, prefix, key_hash) \
+                 values ('{V4_ID}', '{user}', 'v4prefix', 'abc123')"
             ),
         ];
         for sql in rejected {
@@ -559,9 +559,12 @@ fn foreign_keys_between_tenant_tables_include_workspace_id() {
             has("memberships", "workspaces"),
             "memberships -> workspaces"
         );
-        assert!(has("api_keys", "workspaces"), "api_keys -> workspaces");
         assert!(has("memberships", "users"), "memberships -> users");
-        assert!(has("api_keys", "memberships"), "api_keys -> memberships");
+        assert!(has("api_keys", "users"), "api_keys -> users");
+        assert!(
+            !has("api_keys", "workspaces") && !has("api_keys", "memberships"),
+            "a key belongs to a user, not to a workspace"
+        );
     });
 }
 
@@ -571,25 +574,31 @@ fn the_database_rejects_a_row_that_references_another_workspaces_row() {
     block(async {
         let mut conn = admin_connection(db).await;
         assert_tables_exist(&mut conn).await;
-        let user = new_user(&mut conn).await;
         let a = new_workspace(&mut conn).await;
         let b = new_workspace(&mut conn).await;
-        let membership_in_a = new_membership(&mut conn, &a, &user).await;
-        let prefix = format!("fk{}", unique_suffix());
+        let project_in_a = new_id(
+            &mut conn,
+            &format!(
+                "insert into projects (workspace_id, name) values ('{a}', 'p{}') returning id::text",
+                unique_suffix()
+            ),
+        )
+        .await;
+        let name = format!("fk{}", unique_suffix());
 
-        // The same membership is fine for a key of its own workspace.
+        // The same project is fine for a part of its own workspace.
         sqlx::query(&format!(
-            "insert into api_keys (workspace_id, prefix, key_hash, created_by_membership_id) \
-             values ('{a}', '{prefix}a', 'abc1', '{membership_in_a}')"
+            "insert into parts (workspace_id, project_id, name, kind) \
+             values ('{a}', '{project_in_a}', '{name}a', 'app')"
         ))
         .execute(&mut conn)
         .await
-        .expect("a key that references a membership of its own workspace");
+        .expect("a part that references a project of its own workspace");
 
-        // A key of workspace B must not reference workspace A's membership.
+        // A part of workspace B must not reference workspace A's project.
         let error = sqlx::query(&format!(
-            "insert into api_keys (workspace_id, prefix, key_hash, created_by_membership_id) \
-             values ('{b}', '{prefix}b', 'abc2', '{membership_in_a}')"
+            "insert into parts (workspace_id, project_id, name, kind) \
+             values ('{b}', '{project_in_a}', '{name}b', 'app')"
         ))
         .execute(&mut conn)
         .await
@@ -598,7 +607,7 @@ fn the_database_rejects_a_row_that_references_another_workspaces_row() {
 
         // Nor can a row be moved to another workspace than its parent's.
         let moved = sqlx::query(&format!(
-            "update api_keys set workspace_id = '{b}' where prefix = '{prefix}a'"
+            "update parts set workspace_id = '{b}' where name = '{name}a'"
         ))
         .execute(&mut conn)
         .await
@@ -781,22 +790,33 @@ fn rows_of_another_workspace_cannot_be_written_or_changed() {
     block(async {
         let mut conn = api_connection(db).await;
 
-        // A key of the current workspace can be updated: the control case.
+        // A membership of the current workspace can be updated: the control case.
         let mut tx = conn.begin().await.unwrap();
         set_workspace(&mut tx, &seed.ws_a).await;
-        let own = sqlx::query("update api_keys set prefix = prefix")
-            .execute(&mut *tx)
-            .await
-            .expect("update own keys");
-        assert_eq!(own.rows_affected(), 1, "the one key of workspace A");
+        let own = sqlx::query(&format!(
+            "update memberships set user_id = user_id where user_id = '{}'",
+            seed.user_in_both
+        ))
+        .execute(&mut *tx)
+        .await
+        .expect("update own memberships");
+        assert_eq!(
+            own.rows_affected(),
+            1,
+            "the user's membership of workspace A"
+        );
         let other = sqlx::query(&format!(
-            "update api_keys set prefix = prefix where workspace_id = '{}'",
+            "update memberships set user_id = user_id where workspace_id = '{}'",
             seed.ws_b
         ))
         .execute(&mut *tx)
         .await
-        .expect("update other workspace's keys");
-        assert_eq!(other.rows_affected(), 0, "workspace B's key is not visible");
+        .expect("update other workspace's memberships");
+        assert_eq!(
+            other.rows_affected(),
+            0,
+            "workspace B's membership is not visible"
+        );
         drop(tx);
 
         // A row cannot be inserted into, or moved to, another workspace.
@@ -815,8 +835,8 @@ fn rows_of_another_workspace_cannot_be_written_or_changed() {
         let mut tx = conn.begin().await.unwrap();
         set_workspace(&mut tx, &seed.ws_a).await;
         let error = sqlx::query(&format!(
-            "update api_keys set workspace_id = '{}'",
-            seed.ws_b
+            "update memberships set workspace_id = '{}' where user_id = '{}'",
+            seed.ws_b, seed.user_in_both
         ))
         .execute(&mut *tx)
         .await
@@ -936,33 +956,29 @@ fn only_resolve_api_key_and_user_memberships_are_security_definer_functions() {
 }
 
 #[test]
-fn resolve_api_key_finds_a_key_by_prefix_before_the_workspace_is_known() {
+fn resolve_api_key_finds_a_key_and_its_user_by_prefix() {
     let db = test_db();
     let seed = seed();
     block(async {
         let mut conn = api_connection(db).await;
-        // The key's own table is hidden without a workspace...
-        assert_eq!(count_rows(&mut conn, "api_keys").await, 0);
-
-        // ...but the function resolves the key, and only that key.
-        for (prefix, workspace) in [(&seed.prefix_a, &seed.ws_a), (&seed.prefix_b, &seed.ws_b)] {
+        for (prefix, user) in [
+            (&seed.prefix_a, &seed.user_in_both),
+            (&seed.prefix_b, &seed.user_in_none),
+        ] {
             let rows = sqlx::query(&format!(
-                "select workspace_id::text, id::text from resolve_api_key('{prefix}')"
+                "select user_id::text, id::text from resolve_api_key('{prefix}')"
             ))
             .fetch_all(&mut conn)
             .await
             .unwrap_or_else(|e| panic!("resolve_api_key('{prefix}'): {e}"));
             assert_eq!(rows.len(), 1, "resolve_api_key('{prefix}')");
-            assert_eq!(&rows[0].get::<String, _>(0), workspace);
+            assert_eq!(&rows[0].get::<String, _>(0), user);
         }
         let none = sqlx::query("select id::text from resolve_api_key('no-such-prefix')")
             .fetch_all(&mut conn)
             .await
             .expect("resolve an unknown prefix");
         assert!(none.is_empty(), "an unknown prefix resolves to nothing");
-
-        // Resolving a key does not widen what the connection can read.
-        assert_eq!(count_rows(&mut conn, "api_keys").await, 0);
     });
 }
 

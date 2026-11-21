@@ -187,8 +187,10 @@ fn fixture() -> &'static Fixture {
             )
             .await;
             text(
-                "insert into api_keys (workspace_id, prefix, key_hash, scopes) \
-                 values ($1::uuid, $2, encode(sha256(convert_to($3, 'UTF8')), 'hex'), '{*}') \
+                "with agent as (insert into users (email) values ($2 || '@agents.example.test') returning id), \
+                 member as (insert into memberships (workspace_id, user_id) select $1::uuid, id from agent) \
+                 insert into api_keys (user_id, prefix, key_hash, scopes) \
+                 select id, $2, encode(sha256(convert_to($3, 'UTF8')), 'hex'), '{*}' from agent \
                  returning id::text",
                 &[&workspace, KEY_PREFIX, &secret],
             )

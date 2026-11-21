@@ -153,6 +153,27 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
+/// The user a request acts for: the user of the session cookie, or the user
+/// an API key belongs to. A request with neither is rejected with 401.
+pub struct AccountUser {
+    pub user_id: String,
+}
+
+impl FromRequestParts<AppState> for AccountUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let user_id = match identify(parts, state).await? {
+            Caller::Session { user, .. } => user.id,
+            Caller::Key(key) => key.user_id,
+        };
+        Ok(Self { user_id })
+    }
+}
+
 /// The value of the session cookie, if the request has a non-empty one.
 pub(crate) fn session_token(parts: &Parts) -> Option<String> {
     parts
@@ -233,25 +254,35 @@ pub async fn me(current: CurrentUser) -> Json<UserResponse> {
     Json(UserResponse::from(current.user))
 }
 
-/// The workspaces the logged-in user is a member of, by name. It is how
-/// `omni login` offers a choice before any workspace is picked.
+/// The workspaces the user is a member of, by name: the user of the session,
+/// or the user of the API key, whose key reaches exactly these. It is how
+/// `omni whoami` and `omni workspace list` show where a key works.
 #[utoipa::path(
     get,
     path = "/api/v1/auth/workspaces",
     responses(
         (status = 200, description = "The user's workspaces, ordered by name", body = WorkspaceListResponse),
-        (status = 401, description = "No live session", body = ErrorBody),
-        (status = 403, description = "Called with an API key (an Authorization header); human only", body = ErrorBody),
+        (status = 401, description = "No live session or valid API key", body = ErrorBody),
         (status = 503, description = "The database or the login provider cannot answer", body = ErrorBody),
     )
 )]
 pub async fn workspaces(
     State(state): State<AppState>,
-    current: CurrentUser,
+    current: AccountUser,
 ) -> Result<Json<WorkspaceListResponse>, ApiError> {
+    let workspaces = user_workspaces(&state, &current.user_id).await?;
+    Ok(Json(WorkspaceListResponse { workspaces }))
+}
+
+/// The workspaces a user is a member of, ordered by name: the ones a session
+/// of the user, or a key of theirs, reaches.
+pub(crate) async fn user_workspaces(
+    state: &AppState,
+    user_id: &str,
+) -> Result<Vec<WorkspaceBody>, ApiError> {
     let memberships: Vec<(String,)> =
         sqlx::query_as("SELECT workspace_id::text FROM user_memberships($1::uuid)")
-            .bind(&current.user.id)
+            .bind(user_id)
             .fetch_all(&state.pool)
             .await
             .map_err(ApiError::database)?;
@@ -272,5 +303,5 @@ pub async fn workspaces(
         }
     }
     workspaces.sort_by(|a, b| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
-    Ok(Json(WorkspaceListResponse { workspaces }))
+    Ok(workspaces)
 }

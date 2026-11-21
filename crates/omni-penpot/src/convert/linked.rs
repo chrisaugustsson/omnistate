@@ -8,8 +8,16 @@
 //! names the main's shape each of its own shapes copies (`shapeRef`), so the
 //! changes the designer made to the copy (`touched`) can be keyed by the nodes
 //! of the component.
+//!
+//! A copy names the file of its component too (`componentFile`). A component
+//! of another file, a library, is placed from the project's design system when
+//! an earlier import brought it there (its `origin` names the same Penpot file
+//! and component), else converted from the library's file when the export
+//! bundles it ("Export file + libraries"), else the copy stays the plain
+//! shapes it holds. A component of the file itself that the design system
+//! already has is placed from there too, and not imported again.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::*;
@@ -17,12 +25,21 @@ use crate::import::tokens::{self, Note, Tokens};
 
 /// What the converter needs to know in an import.
 pub(crate) struct Linked {
+    /// The Penpot id of the file the export is of.
+    file: String,
+    /// The components of the file and of the libraries the export bundles.
     components: HashMap<String, RawComponent>,
+    /// The components of the project's design system that an earlier import
+    /// brought from Penpot, by the Penpot ids of their file and component.
+    known: HashMap<(String, String), Rc<Comp>>,
     done: HashMap<String, Option<Rc<Comp>>>,
     /// The components being converted, which a component cannot place.
     progress: HashSet<String>,
     /// The folder and the name of each page, by the page's id.
     pages: HashMap<String, (String, String)>,
+    /// The folder of the page of every shape of the export, by its id, to
+    /// follow what a copy copies (`shapeRef`) from page to page.
+    shapes: HashMap<String, String>,
     /// The token path a Penpot token name links to, written `$color.surface`.
     links: HashMap<String, String>,
 }
@@ -30,6 +47,8 @@ pub(crate) struct Linked {
 /// A component of the export, as its file says.
 #[derive(Clone)]
 pub(crate) struct RawComponent {
+    /// The Penpot id of the file that defines the component.
+    pub(crate) file: String,
     pub(crate) id: String,
     /// The name the component gets: Penpot's name, with its path in front.
     pub(crate) name: String,
@@ -42,13 +61,20 @@ pub(crate) struct RawComponent {
 /// A component as a node, with where its parts came from.
 pub(crate) struct Comp {
     node_id: String,
-    /// The box Penpot stores for the main instance.
+    /// The box Penpot stores for the main instance. An axis that a component
+    /// of the design system does not fix is NaN.
     bounds: Rect,
     /// The node and its type for each shape of the main instance that became
     /// one, by the Penpot id of the shape.
     nodes: HashMap<String, (String, String)>,
+    /// The component's JSON node; null for a component of the design system,
+    /// which the import does not send again.
     json: Value,
 }
+
+/// What a layer of a copy copies ([`Converter::copied`]): the node of the
+/// component and its type, and the layer to compare the copy's with.
+type Copied = (Option<(String, String)>, Option<Value>);
 
 /// What an import reads from an export before it is put together.
 pub(crate) struct ReadLinks {
@@ -62,6 +88,9 @@ pub(crate) struct ReadLinks {
     /// The components as JSON nodes, in order.
     pub(crate) components: Vec<Value>,
     pub(crate) tokens: Tokens,
+    /// The token trees of the libraries the export bundles, which the file's
+    /// own tokens go on top of.
+    pub(crate) library_tokens: Vec<Value>,
     /// How many node IDs the conversion has handed out.
     pub(crate) ids: u64,
 }
@@ -112,7 +141,7 @@ fn text_at(value: &Value, key: &str) -> String {
 /// The components of the files, in order, with the properties of their variant
 /// sets: the components with one `variantId` are the variants of one set, and
 /// each one's properties list every value of the set with its own as default.
-fn raw_components(files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
+fn raw_components(file_id: &str, files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
     struct Found<'a> {
         file: &'a Value,
         id: String,
@@ -205,6 +234,7 @@ fn raw_components(files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
                     Value::Object(props)
                 });
             RawComponent {
+                file: file_id.to_string(),
                 id: f.id.clone(),
                 name: if f.path.is_empty() {
                     f.name.clone()
@@ -219,21 +249,13 @@ fn raw_components(files: &[Value], notes: &mut Vec<Note>) -> Vec<RawComponent> {
         .collect()
 }
 
-/// Reads the `.penpot` export at `path` for an import: its boards, with the
-/// component copies as instances, its components, and its design tokens.
-pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
-    let mut archive = open_archive(path)?;
-    let objects = object_files(&archive);
-    let mut reader = Reader {
-        archive: &mut archive,
-        shown: path.display().to_string(),
-        buffer: Vec::new(),
-    };
-    let file = reader.first_file()?;
-    let heads = reader.page_heads(&file.id)?;
-
-    let mut notes = Vec::new();
-    let root = format!("files/{}/", file.id);
+/// The design tokens, library colors and typographies of the file whose
+/// entries are under `root` (`files/<file id>/`).
+fn file_tokens<R: Read + Seek>(
+    reader: &mut Reader<'_, R>,
+    root: &str,
+    notes: &mut Vec<Note>,
+) -> Result<Tokens, ReadError> {
     let tokens_file = format!("{root}tokens.json");
     let tokens_json = match reader.load(&tokens_file)? {
         None => None,
@@ -249,22 +271,139 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
             }
         },
     };
-    let colors = json_entries(&mut reader, &format!("{root}colors/"), &mut notes)?;
-    let typographies = json_entries(&mut reader, &format!("{root}typographies/"), &mut notes)?;
+    let colors = json_entries(reader, &format!("{root}colors/"), notes)?;
+    let typographies = json_entries(reader, &format!("{root}typographies/"), notes)?;
+    Ok(tokens::build(tokens_json.as_ref(), &colors, &typographies))
+}
+
+/// The components of the project's design system that an earlier import
+/// brought from Penpot, by the Penpot ids of their file and component, from
+/// the design system's `$components`. A component without a Penpot `origin`
+/// is not one of them.
+fn known_components(design_system: &[Value]) -> HashMap<(String, String), Rc<Comp>> {
+    fn kinds(node: &Value, out: &mut HashMap<String, String>) {
+        if let (Some(id), Some(kind)) = (node["id"].as_str(), node["type"].as_str()) {
+            out.insert(id.to_string(), kind.to_string());
+        }
+        for child in node["children"].as_array().into_iter().flatten() {
+            kinds(child, out);
+        }
+    }
+    let mut known = HashMap::new();
+    for component in design_system {
+        let origin = &component["origin"];
+        let (Some("penpot"), Some(file), Some(id), Some(node_id)) = (
+            origin["tool"].as_str(),
+            origin["file"].as_str(),
+            origin["component"].as_str(),
+            component["id"].as_str(),
+        ) else {
+            continue;
+        };
+        let mut found = HashMap::new();
+        kinds(component, &mut found);
+        let nodes = origin["layers"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(layer, node)| {
+                let node = node.as_str()?;
+                Some((layer.clone(), (node.to_string(), found.get(node)?.clone())))
+            })
+            .collect();
+        let fixed = |axis: &str| component[axis]["fixed"].as_f64().unwrap_or(f64::NAN);
+        known
+            .entry((file.to_string(), id.to_string()))
+            .or_insert_with(|| {
+                Rc::new(Comp {
+                    node_id: node_id.to_string(),
+                    bounds: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: fixed("width"),
+                        height: fixed("height"),
+                    },
+                    nodes,
+                    json: Value::Null,
+                })
+            });
+    }
+    known
+}
+
+/// Reads the `.penpot` export at `path` for an import: its boards, with the
+/// component copies as instances, its components, and its design tokens.
+/// `design_system` holds the components the project's design system has, as
+/// JSON nodes: the copies of those an earlier import brought from Penpot are
+/// placed from there, and they are not imported again.
+pub(crate) fn run(path: &Path, design_system: &[Value]) -> Result<ReadLinks, ReadError> {
+    let mut archive = open_archive(path)?;
+    let objects = object_files(&archive);
+    let mut reader = Reader {
+        archive: &mut archive,
+        shown: path.display().to_string(),
+        buffer: Vec::new(),
+    };
+    let (file, libraries) = reader.main_file()?;
+    let heads = reader.page_heads(&file.id)?;
+
+    let mut notes = Vec::new();
+    let root = format!("files/{}/", file.id);
+    let mut tokens = file_tokens(&mut reader, &root, &mut notes)?;
     let files = json_entries(&mut reader, &format!("{root}components/"), &mut notes)?;
-    let raw = raw_components(&files, &mut notes);
+    let mut raw = raw_components(&file.id, &files, &mut notes);
+    let mut pages: HashMap<String, (String, String)> = heads
+        .iter()
+        .map(|head| (head.id.clone(), (head.dir.clone(), head.name.clone())))
+        .collect();
+
+    // The libraries the export bundles: their components, which a copy may
+    // place, and their tokens, which the file's own go on top of.
+    let mut library_tokens = Vec::new();
+    for library in &libraries {
+        for head in reader.page_heads(&library.id)? {
+            pages
+                .entry(head.id.clone())
+                .or_insert((head.dir.clone(), head.name.clone()));
+        }
+        let root = format!("files/{}/", library.id);
+        let theirs = file_tokens(&mut reader, &root, &mut notes)?;
+        for (name, link) in theirs.links {
+            tokens.links.entry(name).or_insert(link);
+        }
+        if tokens.active.is_none() {
+            tokens.active = theirs.active;
+        }
+        library_tokens.push(theirs.tree);
+        let files = json_entries(&mut reader, &format!("{root}components/"), &mut notes)?;
+        for component in raw_components(&library.id, &files, &mut notes) {
+            if !raw.iter().any(|known| known.id == component.id) {
+                raw.push(component);
+            }
+        }
+    }
     let order: Vec<String> = raw.iter().map(|component| component.id.clone()).collect();
 
-    let mut tokens = tokens::build(tokens_json.as_ref(), &colors, &typographies);
     tokens.notes.splice(0..0, notes);
+    let shapes: HashMap<String, String> = reader
+        .archive
+        .file_names()
+        .filter_map(|name| {
+            let name = name.ok()?;
+            let (dir, file) = name.rsplit_once('/')?;
+            let id = file.strip_suffix(".json")?;
+            dir.contains("/pages/")
+                .then(|| (id.to_string(), dir.to_string()))
+        })
+        .collect();
     let linked = Linked {
+        shapes,
+        file: file.id.clone(),
         components: raw.into_iter().map(|c| (c.id.clone(), c)).collect(),
+        known: known_components(design_system),
         done: HashMap::new(),
         progress: HashSet::new(),
-        pages: heads
-            .iter()
-            .map(|head| (head.id.clone(), (head.dir.clone(), head.name.clone())))
-            .collect(),
+        pages,
         links: tokens.links.clone(),
     };
     let mut converter = Converter {
@@ -292,9 +431,24 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
         ranges.push((first, boards.len()));
     }
     converter.resolve_interactions(&mut boards);
+    // Every component of the file, and the ones of the libraries that
+    // something placed, but none that the design system already has.
     let mut components = Vec::new();
     for id in &order {
-        if let Some(comp) = converter.component(id)? {
+        let linked = converter.linked.as_ref().expect("this is an import");
+        let raw = &linked.components[id];
+        if linked
+            .known
+            .contains_key(&(raw.file.clone(), raw.id.clone()))
+        {
+            continue;
+        }
+        let comp = if raw.file == linked.file {
+            converter.component(id)?
+        } else {
+            linked.done.get(id).cloned().flatten()
+        };
+        if let Some(comp) = comp {
             components.push(comp.json.clone());
         }
     }
@@ -316,8 +470,154 @@ pub(crate) fn run(path: &Path) -> Result<ReadLinks, ReadError> {
             .collect(),
         components,
         tokens,
+        library_tokens,
         ids: converter.next_id,
     })
+}
+
+/// The number at `key` of a shape's JSON, 0 when it has none.
+fn num(shape: &Value, key: &str) -> f64 {
+    shape[key].as_f64().unwrap_or(0.0)
+}
+
+/// A shape's JSON read as the converter reads shapes.
+fn pen_of(shape: &Value) -> Pen {
+    serde_json::from_value(shape.clone()).unwrap_or_default()
+}
+
+/// `value` without the keys that hold text or bookkeeping rather than style:
+/// the characters of a text, Penpot's keys of its parts, and the library
+/// typography a text was set from.
+fn styles_of(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(key.as_str(), "text" | "key" | "id")
+                        && !key.starts_with("typographyRef")
+                })
+                .map(|(key, value)| (key.clone(), styles_of(value)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(styles_of).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Whether two of Penpot's values are alike: numbers to a hundredth, a
+/// missing flag as `false`, objects key by key and lists item by item.
+fn alike(a: Option<&Value>, b: Option<&Value>) -> bool {
+    let flag = |value: Option<&Value>| match value {
+        None | Some(Value::Null) => Some(false),
+        Some(Value::Bool(flag)) => Some(*flag),
+        _ => None,
+    };
+    if let (Some(a), Some(b)) = (flag(a), flag(b)) {
+        return a == b;
+    }
+    match (a, b) {
+        (Some(Value::Number(a)), Some(Value::Number(b))) => match (a.as_f64(), b.as_f64()) {
+            (Some(a), Some(b)) => (a - b).abs() < 0.01,
+            _ => a == b,
+        },
+        (Some(Value::Object(a)), Some(Value::Object(b))) => a
+            .keys()
+            .chain(b.keys())
+            .all(|key| alike(a.get(key), b.get(key))),
+        (Some(Value::Array(a)), Some(Value::Array(b))) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| alike(Some(a), Some(b)))
+        }
+        (a, b) => a == b,
+    }
+}
+
+/// Whether two numbers are the same to half a pixel.
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 0.5
+}
+
+/// Whether the group of properties `group` of a copy's layer is the same as
+/// that of the main's layer it copies. `flows` is whether the layer's parent
+/// lays it out, so its place is not its own; places are compared from the
+/// top left of the copy and of the main (`copy_at`, `main_at`).
+fn same_group(
+    group: &str,
+    copy: &Value,
+    main: &Value,
+    flows: bool,
+    copy_at: (f64, f64),
+    main_at: Option<(f64, f64)>,
+) -> bool {
+    let same = |key: &str| alike(copy.get(key), main.get(key));
+    let styles = |key: &str| alike(Some(&styles_of(&copy[key])), Some(&styles_of(&main[key])));
+    match group {
+        "geometry-group" => {
+            // A text that grows with its characters takes the size they give
+            // it, in the instance as in Penpot.
+            let grows = copy["type"] == "text";
+            let (mut wide, mut tall) = match copy["growType"].as_str() {
+                Some("auto-width") if grows => (true, true),
+                Some("auto-height") if grows => (false, true),
+                _ => (false, false),
+            };
+            // So does a layer that hugs its content or fills its parent.
+            let follows = |key: &str| matches!(copy[key].as_str(), Some("auto" | "fill"));
+            wide |= follows("layoutItemHSizing");
+            tall |= follows("layoutItemVSizing");
+            let sized = (wide || near(num(copy, "width"), num(main, "width")))
+                && (tall || near(num(copy, "height"), num(main, "height")))
+                && alike(copy.get("rotation"), main.get("rotation"));
+            let placed = flows && copy["layoutItemAbsolute"] != json!(true)
+                || main_at.is_some_and(|main_at| {
+                    near(num(copy, "x") - copy_at.0, num(main, "x") - main_at.0)
+                        && near(num(copy, "y") - copy_at.1, num(main, "y") - main_at.1)
+                });
+            sized && placed
+        }
+        "stroke-group" => same("strokes"),
+        "visibility-group" => same("hidden"),
+        "text-content-text" => alike(copy.get("content"), main.get("content")),
+        "layer-effects-group" | "shadow-group" => same("shadow") && same("blur"),
+        "show-content" => same("showContent"),
+        "fill-group" => same("fills") && styles("content"),
+        "text-content-attribute" | "text-font-group" | "text-content-structure" => {
+            styles("content")
+        }
+        "content-group" => match (copy["content"].as_str(), main["content"].as_str()) {
+            (Some(ours), Some(theirs)) => {
+                shift_path(ours, num(copy, "x"), num(copy, "y"))
+                    == shift_path(theirs, num(main, "x"), num(main, "y"))
+            }
+            _ => styles("content"),
+        },
+        other if other.starts_with("layout-") => {
+            let keys = |shape: &Value| -> Vec<String> {
+                shape
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, _)| key.clone())
+                    .filter(|key| key.starts_with("layout"))
+                    .collect()
+            };
+            keys(copy)
+                .into_iter()
+                .chain(keys(main))
+                .all(|key| alike(copy.get(&key), main.get(&key)))
+        }
+        _ => false,
+    }
+}
+
+/// The node IDs of `value` and of every node below it.
+fn node_ids<'a>(value: &'a Value, out: &mut HashSet<&'a str>) {
+    if let Some(id) = value["id"].as_str() {
+        out.insert(id);
+    }
+    for child in value["children"].as_array().into_iter().flatten() {
+        node_ids(child, out);
+    }
 }
 
 /// Sets `field` of the override of `key`.
@@ -348,11 +648,48 @@ fn describe(group: &str) -> String {
 }
 
 impl<R: Read + Seek> Converter<'_, R> {
-    /// Whether the export defines the component that `pen` is a part of.
+    /// Whether the component that `pen` is a part of can be placed: the
+    /// design system has it, or the export defines it.
     pub(super) fn links_component(&self, pen: &Pen) -> bool {
         match (&self.linked, pen.component_id.0.as_deref()) {
-            (Some(linked), Some(id)) => linked.components.contains_key(id),
+            (Some(linked), Some(id)) => {
+                let file = pen.component_file.0.as_deref();
+                linked
+                    .known
+                    .contains_key(&(file.unwrap_or(&linked.file).to_string(), id.to_string()))
+                    || linked
+                        .components
+                        .get(id)
+                        .is_some_and(|raw| file.is_none_or(|file| file == raw.file))
+            }
             _ => false,
+        }
+    }
+
+    /// The Penpot id of the file of the export, None in a plain conversion.
+    pub(super) fn export_file(&self) -> Option<&str> {
+        self.linked.as_ref().map(|linked| linked.file.as_str())
+    }
+
+    /// The component `id` of the file `file` (the export's own when None) as
+    /// a copy places it: the design system's when it has it, else the one the
+    /// export defines. None if neither is there or it cannot be converted.
+    fn place(&mut self, file: Option<&str>, id: &str) -> Result<Option<Rc<Comp>>, ReadError> {
+        let Some(linked) = self.linked.as_ref() else {
+            return Ok(None);
+        };
+        let key = (file.unwrap_or(&linked.file).to_string(), id.to_string());
+        if let Some(known) = linked.known.get(&key) {
+            return Ok(Some(known.clone()));
+        }
+        let defined = linked
+            .components
+            .get(id)
+            .is_some_and(|raw| file.is_none_or(|file| file == raw.file));
+        if defined {
+            self.component(id)
+        } else {
+            Ok(None)
         }
     }
 
@@ -445,7 +782,10 @@ impl<R: Read + Seek> Converter<'_, R> {
         let left_out = std::mem::take(&mut self.left_out);
         let refs = self.refs.replace(HashMap::new());
         let outer = std::mem::replace(&mut self.page_name, page);
+        // A library's component finds its images in the library's file.
+        let file = std::mem::replace(&mut self.file_id, raw.file.clone());
         let body = self.component_body(raw, &dir);
+        self.file_id = file;
         self.page_name = outer;
         self.refs = refs;
         self.left_out = left_out;
@@ -525,6 +865,16 @@ impl<R: Read + Seek> Converter<'_, R> {
             justify_items: None,
         };
         let mut value = self.frame(dir, &common, &pen, "frame", &parent, &board, &mut seen)?;
+        let nodes = self.refs.take().unwrap_or_default();
+        // Where the component came from, and the node each layer of Penpot's
+        // became, for an import that places it later.
+        let mut kept = HashSet::new();
+        node_ids(&value, &mut kept);
+        let layers: BTreeMap<&String, &String> = nodes
+            .iter()
+            .filter(|(_, (node, _))| kept.contains(node.as_str()))
+            .map(|(layer, (node, _))| (layer, node))
+            .collect();
         let node = value.as_object_mut().expect("a frame is an object");
         for key in [
             "x",
@@ -543,6 +893,10 @@ impl<R: Read + Seek> Converter<'_, R> {
         if let Some(props) = &raw.props {
             node.insert("props".into(), props.clone());
         }
+        node.insert(
+            "origin".into(),
+            json!({ "tool": "penpot", "file": raw.file, "component": raw.id, "layers": layers }),
+        );
         let node_id = node
             .get("id")
             .and_then(Value::as_str)
@@ -551,7 +905,7 @@ impl<R: Read + Seek> Converter<'_, R> {
         Ok(Some(Comp {
             node_id,
             bounds: common.bounds,
-            nodes: self.refs.take().unwrap_or_default(),
+            nodes,
             json: value,
         }))
     }
@@ -568,14 +922,15 @@ impl<R: Read + Seek> Converter<'_, R> {
         board: &Board,
         seen: &mut HashSet<String>,
     ) -> Result<Option<Value>, ReadError> {
-        let Some(id) = pen.component_id.0.as_deref().filter(|id| {
-            self.linked
-                .as_ref()
-                .is_some_and(|linked| linked.components.contains_key(*id))
-        }) else {
+        let Some(id) = pen
+            .component_id
+            .0
+            .as_deref()
+            .filter(|_| self.links_component(pen))
+        else {
             return Ok(None);
         };
-        let Some(comp) = self.component(id)? else {
+        let Some(comp) = self.place(pen.component_file.0.as_deref(), id)? else {
             let who = Who {
                 board,
                 id: &common.id,
@@ -588,6 +943,24 @@ impl<R: Read + Seek> Converter<'_, R> {
             );
             return Ok(None);
         };
+        // A copy that changes what no override can hold is drawn as the plain
+        // shapes it holds, as Penpot shows it; the copies inside it are
+        // instances in their own right.
+        if let Some(changes) = self.unexpressed(dir, pen, &comp)? {
+            let who = Who {
+                board,
+                id: &common.id,
+                name: &common.name,
+            };
+            self.report(
+                &who,
+                Some("overrides"),
+                format!(
+                    "the copy changes {changes}, which an instance cannot hold, so it is drawn as the plain shapes it holds"
+                ),
+            );
+            return Ok(None);
+        }
         let mut node = self.base("instance", common, pen, parent);
         let by_item = Self::sized_by_item(parent, pen);
         for (axis, item, own, theirs) in [
@@ -624,6 +997,177 @@ impl<R: Read + Seek> Converter<'_, R> {
             node.insert("overrides".into(), Value::Object(overrides));
         }
         Ok(Some(Value::Object(node)))
+    }
+
+    /// What a layer of a copy copies, following `shapeRef` from shape to
+    /// shape: a layer of a copy nested in a component's main copies the layer
+    /// of that main, which copies the layer of the nested component. Gives
+    /// the node of `comp` it comes to, if any, and the layer to compare the
+    /// copy's with: that node's, or else the first one copied.
+    fn copied(&mut self, reference: Option<&str>, comp: &Comp) -> Result<Copied, ReadError> {
+        let mut first: Option<Value> = None;
+        let mut next = reference.map(str::to_string);
+        // A chain of copies is only so long.
+        for _ in 0..16 {
+            let Some(id) = next.take() else { break };
+            let dir = self
+                .linked
+                .as_ref()
+                .and_then(|linked| linked.shapes.get(&id))
+                .cloned();
+            let shape = match dir {
+                Some(dir) => self.raw(&dir, &id)?,
+                None => None,
+            };
+            if let Some(node) = comp.nodes.get(&id) {
+                return Ok((Some(node.clone()), shape.or(first)));
+            }
+            let Some(shape) = shape else { break };
+            next = shape["shapeRef"].as_str().map(str::to_string);
+            if first.is_none() {
+                first = Some(shape);
+            }
+        }
+        Ok((None, first))
+    }
+
+    /// The node of `comp` that the slot `slot` of a swap (`swap-slot-<id>`)
+    /// names: the layer itself, or the layer of `comp` it copies when the slot
+    /// is a layer of the main of a component that holds this copy.
+    fn slot(&mut self, slot: &str, comp: &Comp) -> Result<Option<(String, String)>, ReadError> {
+        match comp.nodes.get(slot) {
+            Some(node) => Ok(Some(node.clone())),
+            None => Ok(self.copied(Some(slot), comp)?.0),
+        }
+    }
+
+    /// The shape file `id` in `dir` as JSON, without marking it seen.
+    fn raw(&mut self, dir: &str, id: &str) -> Result<Option<Value>, ReadError> {
+        if self.reader.load(&format!("{dir}/{id}.json"))?.is_none() {
+            return Ok(None);
+        }
+        Ok(serde_json::from_slice(&self.reader.buffer).ok())
+    }
+
+    /// What a copy changes that its instance cannot hold, described for the
+    /// report, or None when every change it makes is an override (text,
+    /// fills, visibility, a swapped component) of a layer of its component.
+    /// Penpot marks a group of properties as changed (`touched`) even when
+    /// the values are the main's again, so a group counts only when the
+    /// layer differs from the layer it copies ([`Self::copied`]); when the
+    /// export does not have that layer, every marked group counts. A change to
+    /// a layer of a copy nested in this one cannot be keyed by a node of this
+    /// component, so it counts too.
+    fn unexpressed(
+        &mut self,
+        dir: &str,
+        root: &Pen,
+        comp: &Comp,
+    ) -> Result<Option<String>, ReadError> {
+        let root_id = root.id.0.clone().unwrap_or_default();
+        let origin = |shape: &Value| (num(shape, "x"), num(shape, "y"));
+        let copy_root = self.raw(dir, &root_id)?.unwrap_or(Value::Null);
+        let main_root = self.copied(root.shape_ref.0.as_deref(), comp)?.1;
+        let anchors = (origin(&copy_root), main_root.as_ref().map(origin));
+        let mut found: Vec<String> = Vec::new();
+        // The shapes to look at, with whether their parent lays them out.
+        let mut pending = vec![(root_id.clone(), false)];
+        let mut visited = HashSet::new();
+        while let Some((id, flows)) = pending.pop() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            let Some(copy) = self.raw(dir, &id)? else {
+                continue;
+            };
+            let is_root = id == root_id;
+            let reference = copy["shapeRef"].as_str().map(str::to_string);
+            let (target, main) = if is_root {
+                (
+                    Some((comp.node_id.clone(), "board".to_string())),
+                    main_root.clone(),
+                )
+            } else {
+                self.copied(reference.as_deref(), comp)?
+            };
+            // The characters of a text are an override only of a text of the
+            // component itself, not of one inside a copy nested in it.
+            if copy["type"] == "text"
+                && target
+                    .as_ref()
+                    .is_none_or(|(_, kind)| kind.as_str() != "text")
+                && let Some(main) = &main
+                && text_of(&pen_of(&copy)) != text_of(&pen_of(main))
+            {
+                let what = "its text".to_string();
+                if !found.contains(&what) {
+                    found.push(what);
+                }
+            }
+            let mut descend = true;
+            let groups: Vec<String> = copy["touched"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|group| group.as_str().map(str::to_string))
+                .collect();
+            for group in &groups {
+                if let Some(slot) = group.strip_prefix("swap-slot-") {
+                    let slot = self.slot(slot, comp)?;
+                    let swapped = match (slot, copy["componentId"].as_str()) {
+                        (Some((_, kind)), Some(other)) if kind.as_str() == "instance" => {
+                            let file = copy["componentFile"].as_str().map(str::to_string);
+                            self.place(file.as_deref(), other)?.is_some()
+                        }
+                        _ => false,
+                    };
+                    if swapped {
+                        descend = false;
+                    } else {
+                        found.push("the component swapped in".to_string());
+                    }
+                    continue;
+                }
+                let kind = target.as_ref().map(|(_, kind)| kind.as_str());
+                let held = match group.as_str() {
+                    // Not drawn, or the instance's own.
+                    "name-group" | "constraints-group" => true,
+                    "visibility-group" | "geometry-group" if is_root => true,
+                    other if is_root && other.starts_with("layout-item-") => true,
+                    "visibility-group" => kind.is_some(),
+                    "text-content-text" => {
+                        kind == Some("text") && text_of(&pen_of(&copy)).is_some()
+                    }
+                    "fill-group" => matches!(kind, Some("board" | "frame" | "vector")),
+                    _ => false,
+                };
+                if held {
+                    continue;
+                }
+                // A change to values the main has too changes nothing, be the
+                // layer one of the component's or one of a copy inside it.
+                let same = main.as_ref().is_some_and(|main| {
+                    same_group(group, &copy, main, flows, anchors.0, anchors.1)
+                });
+                if !same {
+                    let what = describe(group);
+                    if !found.contains(&what) {
+                        found.push(what);
+                    }
+                }
+            }
+            if descend {
+                let lays_out = copy["layout"]
+                    .as_str()
+                    .is_some_and(|layout| !layout.is_empty());
+                for child in copy["shapes"].as_array().into_iter().flatten() {
+                    if let Some(child) = child.as_str() {
+                        pending.push((child.to_string(), lays_out));
+                    }
+                }
+            }
+        }
+        Ok((!found.is_empty()).then(|| found.join(", ")))
     }
 
     /// What the designer changed in a copy: the changes of its shapes that an
@@ -684,37 +1228,37 @@ impl<R: Read + Seek> Converter<'_, R> {
         let target: Option<(String, String)> = if is_root {
             Some((comp.node_id.clone(), "board".to_string()))
         } else {
-            pen.shape_ref
-                .0
-                .as_ref()
-                .and_then(|reference| comp.nodes.get(reference))
-                .cloned()
+            self.copied(pen.shape_ref.0.as_deref(), comp)?.0
         };
-        let mut left: Vec<String> = Vec::new();
         let mut descend = true;
         for group in pen.touched.0.as_deref().unwrap_or_default() {
             if let Some(slot) = group.strip_prefix("swap-slot-") {
-                let swapped = match (comp.nodes.get(slot), pen.component_id.0.as_deref()) {
-                    (Some((key, kind)), Some(component)) if kind.as_str() == "instance" => {
-                        self.component(component)?.map(|inner| (key, inner))
-                    }
+                let slot = self.slot(slot, comp)?;
+                let swapped = match (slot, pen.component_id.0.as_deref()) {
+                    (Some((key, kind)), Some(component)) if kind.as_str() == "instance" => self
+                        .place(pen.component_file.0.as_deref(), component)?
+                        .map(|inner| (key, inner)),
                     _ => None,
                 };
-                match swapped {
-                    Some((key, inner)) => {
-                        put(out, key, "component", json!(inner.node_id));
-                        // What is inside belongs to the other component.
-                        descend = false;
-                    }
-                    None => left.push("the component swapped in".to_string()),
+                if let Some((key, inner)) = swapped {
+                    put(out, &key, "component", json!(inner.node_id));
+                    // What is inside belongs to the other component.
+                    descend = false;
                 }
                 continue;
             }
             match (group.as_str(), &target) {
-                ("text-content-text", Some((key, kind))) if kind.as_str() == "text" => {
-                    match text_of(pen) {
-                        Some(text) => put(out, key, "content", json!(text)),
-                        None => left.push(describe(group)),
+                // Penpot marks a changed text with any of these.
+                (
+                    "text-content-text"
+                    | "content-group"
+                    | "text-content-attribute"
+                    | "text-font-group"
+                    | "text-content-structure",
+                    Some((key, kind)),
+                ) if kind.as_str() == "text" => {
+                    if let Some(text) = text_of(pen) {
+                        put(out, key, "content", json!(text));
                     }
                 }
                 ("fill-group", Some((key, kind)))
@@ -733,27 +1277,11 @@ impl<R: Read + Seek> Converter<'_, R> {
                 ("visibility-group", Some((key, _))) if !is_root => {
                     put(out, key, "visible", json!(!pen.hidden.0.unwrap_or(false)));
                 }
-                // The copy's own place, size, name and visibility are the
-                // instance's.
-                ("visibility-group" | "geometry-group" | "name-group", _) if is_root => {}
-                (other, _) if is_root && other.starts_with("layout-item-") => {}
-                (other, _) => {
-                    let what = describe(other);
-                    if !left.contains(&what) {
-                        left.push(what);
-                    }
-                }
+                // What else a group marks is the instance's own (its place,
+                // size, name and visibility) or what the main has too:
+                // `unexpressed` let the copy be an instance only then.
+                _ => {}
             }
-        }
-        if !left.is_empty() {
-            self.report(
-                &who,
-                Some("overrides"),
-                format!(
-                    "the copy changes {} of this layer; an instance holds only text, fills, visibility and swapped components, so the change is not imported",
-                    left.join(", ")
-                ),
-            );
         }
         Ok(descend)
     }

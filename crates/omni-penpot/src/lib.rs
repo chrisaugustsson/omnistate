@@ -104,9 +104,13 @@ impl std::error::Error for ReadError {}
 struct Manifest {
     #[serde(default)]
     files: Vec<ManifestFile>,
+    /// Which file uses which library, as `[file id, library id]` pairs. An
+    /// "Export file + libraries" export lists the libraries it bundles here.
+    #[serde(default)]
+    relations: Vec<serde_json::Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ManifestFile {
     id: String,
     #[serde(default)]
@@ -192,7 +196,7 @@ pub fn read_file(path: &Path) -> Result<PenpotFile, ReadError> {
         shown: path.display().to_string(),
         buffer: Vec::new(),
     };
-    let entry = reader.first_file()?;
+    let (entry, _) = reader.main_file()?;
     let mut pages = Vec::new();
     for head in reader.page_heads(&entry.id)? {
         pages.push(reader.page(&head)?);
@@ -260,14 +264,35 @@ impl<R: Read + Seek> Reader<'_, R> {
             .collect()
     }
 
-    /// The file that the manifest lists first, the one the crate reads.
-    fn first_file(&mut self) -> Result<ManifestFile, ReadError> {
+    /// The file the crate reads, and the other files of the export, the
+    /// libraries an "Export file + libraries" export bundles with it. The file
+    /// is the first one the manifest lists that is no library of another file
+    /// of the export (`relations`), or the first one when every file is.
+    fn main_file(&mut self) -> Result<(ManifestFile, Vec<ManifestFile>), ReadError> {
         let manifest: Manifest = self.json("manifest.json")?;
-        manifest
+        let libraries: HashSet<&str> = manifest
+            .relations
+            .iter()
+            .filter_map(|relation| {
+                let pair = relation.as_array()?;
+                let (file, library) = (pair.first()?.as_str()?, pair.get(1)?.as_str()?);
+                (file != library).then_some(library)
+            })
+            .collect();
+        let main = manifest
             .files
-            .into_iter()
-            .next()
-            .ok_or_else(|| ReadError(format!("manifest.json of {} lists no file", self.shown)))
+            .iter()
+            .position(|file| !libraries.contains(file.id.as_str()))
+            .unwrap_or(0);
+        let mut files = manifest.files.clone();
+        if files.is_empty() {
+            return Err(ReadError(format!(
+                "manifest.json of {} lists no file",
+                self.shown
+            )));
+        }
+        let entry = files.remove(main);
+        Ok((entry, files))
     }
 
     /// The pages of the file `file_id`, in the order of their index.

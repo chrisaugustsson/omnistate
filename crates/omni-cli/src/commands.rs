@@ -1,4 +1,5 @@
-//! The commands: `login`, `key list|revoke`, `whoami`, `api` and `config show`;
+//! The commands: `login`, `key list|revoke`, `workspace list|use`, `whoami`,
+//! `api` and `config show`;
 //! the project commands are in `projects`, the doc commands in `docs`, the
 //! token commands in `tokens` and the Penpot import in `import`.
 //!
@@ -51,6 +52,9 @@ pub fn run(args: &Args) -> Result<()> {
             bail!("`omni key revoke` needs the key's ID; `omni key list` shows them")
         }
         ["key", ..] => bail!("usage: omni key list | omni key revoke <key-id>"),
+        ["workspace", "list"] => workspace_list(args),
+        ["workspace", "use", given] => workspace_use(args, given),
+        ["workspace", ..] => bail!("usage: omni workspace list | omni workspace use <name|id>"),
         ["project", "create"] => {
             bail!("`omni project create` needs a name: omni project create <name>")
         }
@@ -320,31 +324,117 @@ fn settings(args: &Args) -> Result<Settings> {
     Ok(Settings { stored, server })
 }
 
-/// What a command made with an API key needs: where to send it and the headers
-/// that authenticate it and say which agent it is.
+/// What a command made with an API key needs: where to send it, the workspace
+/// it works in and the headers that authenticate it and say which agent it is.
 pub(crate) struct Agent {
     server: Server,
     pub(crate) workspace_id: String,
     headers: Vec<(String, String)>,
 }
 
+/// The hint that ends every message about a missing or unknown workspace.
+const WORKSPACE_HINT: &str = "pass --workspace <name|id>, link the folder with omni link <project>, or set a default with omni workspace use <name|id>";
+
+/// The agent of a command that works in a workspace: the key reaches every
+/// workspace of its user, and the command picks one (`chosen_workspace`).
 pub(crate) fn agent(args: &Args) -> Result<Agent> {
+    let (mut agent, stored) = key_agent(args)?;
+    let Some(given) = chosen_workspace(args, &stored) else {
+        bail!("no workspace for this command: {WORKSPACE_HINT}");
+    };
+    agent.workspace_id = workspace_id_of(&agent, &given)?;
+    Ok(agent)
+}
+
+/// The agent of the stored key, before any workspace is picked: its
+/// `workspace_id` is empty. Also returns the stored login.
+fn key_agent(args: &Args) -> Result<(Agent, Stored)> {
     let settings = settings(args)?;
-    let (Some(server), Some(workspace_id), Some(api_key)) = (
-        settings.server,
-        settings.stored.workspace_id,
-        settings.stored.api_key,
-    ) else {
-        bail!("not logged in: run `omni login` to get an API key for a workspace");
+    let (Some(server), Some(api_key)) = (settings.server, settings.stored.api_key.clone()) else {
+        bail!("not logged in: run `omni login` to get an API key");
     };
     let identity = Identity::resolve(args)?;
     let mut headers = vec![("Authorization".to_string(), format!("Bearer {api_key}"))];
     headers.extend(identity.headers());
-    Ok(Agent {
+    let agent = Agent {
         server: Server::parse(&server)?,
-        workspace_id,
+        workspace_id: String::new(),
         headers,
-    })
+    };
+    Ok((agent, settings.stored))
+}
+
+/// The workspace a command works in, as given (a name or an ID): `--workspace`,
+/// else `OMNI_WORKSPACE`, else the workspace of the folder's link, else the
+/// default in the config file. The link follows the rules of
+/// `links::resolve`: a link in the default workspace wins, else the nearest
+/// link of any other workspace. `None` when nothing names one.
+fn chosen_workspace(args: &Args, stored: &Stored) -> Option<String> {
+    let given = args
+        .workspace
+        .clone()
+        .or_else(|| std::env::var("OMNI_WORKSPACE").ok())
+        .map(|given| given.trim().to_string())
+        .filter(|given| !given.is_empty());
+    if given.is_some() {
+        return given;
+    }
+    let default = stored.workspace_id.clone();
+    let folder = std::env::current_dir().and_then(std::fs::canonicalize).ok();
+    let linked = folder.and_then(|folder| {
+        let table = links::Links::load()
+            .ok()
+            .filter(|table| !table.is_empty())?;
+        match links::resolve(&table, default.as_deref().unwrap_or(""), &folder) {
+            links::Resolution::OtherWorkspace { workspace_id, .. } => Some(workspace_id),
+            links::Resolution::Linked { .. } | links::Resolution::None => None,
+        }
+    });
+    linked.or(default)
+}
+
+/// The workspace ID that a name or ID given by the user stands for: an ID is
+/// used as it is, a name is looked up (ignoring case) among the workspaces the
+/// key reaches.
+fn workspace_id_of(agent: &Agent, given: &str) -> Result<String> {
+    if projects::is_uuid(given) {
+        return Ok(given.to_ascii_lowercase());
+    }
+    let reached = reached_workspaces(agent)?;
+    let matches: Vec<&(String, String)> = reached
+        .iter()
+        .filter(|(_, name)| name.eq_ignore_ascii_case(given))
+        .collect();
+    match matches.as_slice() {
+        [(id, _)] => Ok(id.clone()),
+        [] => bail!(
+            "no workspace named {given:?} that your key reaches; `omni workspace list` shows them"
+        ),
+        _ => bail!(
+            "{} workspaces are named {given:?}; pass the ID instead (`omni workspace list` shows them)",
+            matches.len()
+        ),
+    }
+}
+
+/// The workspaces the key reaches, as `(id, name)`: every workspace its user
+/// is a member of, ordered by name.
+fn reached_workspaces(agent: &Agent) -> Result<Vec<(String, String)>> {
+    let response = agent.request("GET", "/api/v1/auth/workspaces", None)?;
+    let body = Value::parse(&response.text()).map_err(|_| {
+        CliError::new("the server's list of workspaces is not readable; is it an OmniState API?")
+    })?;
+    Ok(workspace_pairs(&body))
+}
+
+/// The `(id, name)` pairs of the `workspaces` list of a response body.
+fn workspace_pairs(body: &Value) -> Vec<(String, String)> {
+    body.get("workspaces")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|ws| Some((ws.str_at("id")?.to_string(), ws.str_at("name")?.to_string())))
+        .collect()
 }
 
 impl Agent {
@@ -519,7 +609,7 @@ fn api_error(response: &Response) -> CliError {
             "{code}: the design system does not list that mode; `omni tokens export` shows its modes"
         ),
         (404, _) => format!(
-            "{code}: there is no such workspace or record, or you cannot reach it; check `omni config show`"
+            "{code}: there is no such workspace or record, or you cannot reach it; `omni whoami` shows the workspace in use and the ones your key reaches"
         ),
         (503, _) => format!(
             "{code}: the server cannot reach its database or storage right now; try again shortly"
@@ -576,8 +666,54 @@ fn refused_operation(body: &Value) -> Option<String> {
 
 // whoami and api ----------------------------------------------------------------
 
+/// The workspace a command here would work in, who the key acts as, and every
+/// workspace the key reaches. With a workspace in use it is one request, the
+/// API's `whoami`, whose answer lists the workspaces too; without one, the
+/// list alone.
 fn whoami(args: &Args) -> Result<()> {
-    let agent = agent(args)?;
+    let (mut agent, stored) = key_agent(args)?;
+    let chosen = chosen_workspace(args, &stored);
+    let Some(given) = chosen else {
+        let response = agent.request("GET", "/api/v1/auth/workspaces", None)?;
+        let body = Value::parse(&response.text()).map_err(|_| {
+            CliError::new(
+                "the server's list of workspaces is not readable; is it an OmniState API?",
+            )
+        })?;
+        let workspaces = workspace_pairs(&body);
+        if args.json {
+            let object = Value::Object(vec![
+                ("workspace_id".to_string(), Value::Null),
+                (
+                    "actor".to_string(),
+                    Value::Object(vec![(
+                        "kind".to_string(),
+                        Value::String("agent".to_string()),
+                    )]),
+                ),
+                (
+                    "workspaces".to_string(),
+                    body.get("workspaces")
+                        .cloned()
+                        .unwrap_or(Value::Array(Vec::new())),
+                ),
+            ]);
+            say(&object.to_string());
+        } else {
+            let mut lines = vec![
+                format!("workspace: (none) {WORKSPACE_HINT}"),
+                "actor: agent".to_string(),
+            ];
+            lines.extend(workspace_lines(
+                &workspaces,
+                None,
+                stored.workspace_id.as_deref(),
+            ));
+            say(&lines.join("\n"));
+        }
+        return Ok(());
+    };
+    agent.workspace_id = workspace_id_of(&agent, &given)?;
     let response = agent.request(
         "GET",
         &format!("/api/v1/w/{}/whoami", agent.workspace_id),
@@ -594,12 +730,114 @@ fn whoami(args: &Args) -> Result<()> {
                 .get("actor")
                 .and_then(|actor| actor.str_at("kind"))
                 .unwrap_or("unknown");
-            say(&format!(
-                "workspace: {}\nactor: {kind}",
-                body.str_at("workspace_id").unwrap_or(&agent.workspace_id)
+            let current = body.str_at("workspace_id").unwrap_or(&agent.workspace_id);
+            let mut lines = vec![format!("workspace: {current}"), format!("actor: {kind}")];
+            lines.extend(workspace_lines(
+                &workspace_pairs(&body),
+                Some(current),
+                stored.workspace_id.as_deref(),
             ));
+            say(&lines.join("\n"));
         }
         Err(_) => say(text.trim_end()),
+    }
+    Ok(())
+}
+
+/// The lines that list the workspaces a key reaches, the one in use and the
+/// default marked; none when the list is empty.
+fn workspace_lines(
+    workspaces: &[(String, String)],
+    current: Option<&str>,
+    default: Option<&str>,
+) -> Vec<String> {
+    if workspaces.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec!["workspaces the key reaches:".to_string()];
+    for (id, name) in workspaces {
+        let mut marks = Vec::new();
+        if current.is_some_and(|c| c.eq_ignore_ascii_case(id)) {
+            marks.push("in use");
+        }
+        if default.is_some_and(|d| d.eq_ignore_ascii_case(id)) {
+            marks.push("default");
+        }
+        let marks = if marks.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", marks.join(", "))
+        };
+        lines.push(format!("  {name}  {id}{marks}"));
+    }
+    lines
+}
+
+// workspace list | use ----------------------------------------------------------
+
+/// `omni workspace list`: the workspaces the key reaches, the one a command
+/// here would use and the default marked.
+fn workspace_list(args: &Args) -> Result<()> {
+    let (agent, stored) = key_agent(args)?;
+    let workspaces = reached_workspaces(&agent)?;
+    let current = match chosen_workspace(args, &stored) {
+        Some(given) => workspace_id_of(&agent, &given).ok(),
+        None => None,
+    };
+    if args.json {
+        let items = workspaces
+            .iter()
+            .map(|(id, name)| {
+                let is = |other: Option<&str>| {
+                    Value::Bool(other.is_some_and(|o| o.eq_ignore_ascii_case(id)))
+                };
+                Value::Object(vec![
+                    ("id".to_string(), Value::String(id.clone())),
+                    ("name".to_string(), Value::String(name.clone())),
+                    ("in_use".to_string(), is(current.as_deref())),
+                    ("default".to_string(), is(stored.workspace_id.as_deref())),
+                ])
+            })
+            .collect();
+        say(&Value::Object(vec![("workspaces".to_string(), Value::Array(items))]).to_string());
+    } else if workspaces.is_empty() {
+        say("your key reaches no workspace: you are not a member of any");
+    } else {
+        let lines = workspace_lines(
+            &workspaces,
+            current.as_deref(),
+            stored.workspace_id.as_deref(),
+        );
+        say(&lines[1..].join("\n"));
+    }
+    Ok(())
+}
+
+/// `omni workspace use <name|id>`: stores the default workspace, the one a
+/// command works in when neither `--workspace`, `OMNI_WORKSPACE` nor the
+/// folder's link names one. It must be one the key reaches.
+fn workspace_use(args: &Args, given: &str) -> Result<()> {
+    let (agent, mut stored) = key_agent(args)?;
+    let workspaces = reached_workspaces(&agent)?;
+    let wanted = workspace_id_of(&agent, given)?;
+    let Some((id, name)) = workspaces
+        .iter()
+        .find(|(id, _)| id.eq_ignore_ascii_case(&wanted))
+    else {
+        bail!(
+            "your key does not reach the workspace {given}; `omni workspace list` shows the ones it does"
+        );
+    };
+    stored.workspace_id = Some(id.clone());
+    config::save(&stored)?;
+    if args.json {
+        say(&Value::Object(vec![
+            ("workspace_id".to_string(), Value::String(id.clone())),
+            ("name".to_string(), Value::String(name.clone())),
+        ])
+        .to_string());
+    } else {
+        say(&format!("the default workspace is now {name} ({id})"));
     }
     Ok(())
 }
@@ -666,7 +904,15 @@ pub(crate) fn read_body(source: &str) -> Result<Vec<u8>> {
 fn config_show(args: &Args) -> Result<()> {
     let settings = settings(args)?;
     let folder = std::env::current_dir().and_then(std::fs::canonicalize).ok();
-    let project = match (&settings.stored.workspace_id, folder) {
+    // The workspace a command here would use, as given; a name is not looked
+    // up. Logged out, no command would run, so there is none.
+    let workspace = settings
+        .stored
+        .api_key
+        .is_some()
+        .then(|| chosen_workspace(args, &settings.stored))
+        .flatten();
+    let project = match (&workspace, folder) {
         (Some(workspace_id), Some(folder)) => match links::Links::load() {
             Ok(table) => match links::resolve(&table, workspace_id, &folder) {
                 links::Resolution::Linked { project_id, .. } => Some(project_id),
@@ -684,6 +930,7 @@ fn config_show(args: &Args) -> Result<()> {
         let fields = [
             ("server", text_or_null(&settings.server)),
             ("workspace_id", text_or_null(&settings.stored.workspace_id)),
+            ("workspace", text_or_null(&workspace)),
             ("email", text_or_null(&settings.stored.email)),
             ("project", text_or_null(&project)),
             (
@@ -703,9 +950,10 @@ fn config_show(args: &Args) -> Result<()> {
     } else {
         let show = |value: &Option<String>| value.clone().unwrap_or_else(|| "(none)".to_string());
         say(&format!(
-            "server: {}\nworkspace_id: {}\nemail: {}\nproject: {}\nlinks_file: {}\nconfig_file: {}\nlogged_in: {}",
+            "server: {}\nworkspace_id: {}\nworkspace: {}\nemail: {}\nproject: {}\nlinks_file: {}\nconfig_file: {}\nlogged_in: {}",
             show(&settings.server),
             show(&settings.stored.workspace_id),
+            show(&workspace),
             show(&settings.stored.email),
             show(&project),
             links_file.display(),
@@ -846,15 +1094,32 @@ fn login(args: &Args) -> Result<()> {
     let password = ask("Password: ", true)?;
     let session = Session::open(&server, &email, &password)?;
 
-    let result = login_with(&session, &server_text);
+    let result = login_with(
+        &session,
+        &server_text,
+        settings.stored.workspace_id.as_deref(),
+    );
     session.close();
     let done = result?;
 
     if args.json {
+        let workspaces = done
+            .workspaces
+            .iter()
+            .map(|(id, name)| {
+                Value::Object(vec![
+                    ("id".to_string(), Value::String(id.clone())),
+                    ("name".to_string(), Value::String(name.clone())),
+                ])
+            })
+            .collect();
         let fields = [
             ("email", Value::String(done.email)),
-            ("workspace_id", Value::String(done.workspace_id)),
-            ("workspace_name", Value::String(done.workspace_name)),
+            (
+                "workspace_id",
+                done.default.clone().map_or(Value::Null, Value::String),
+            ),
+            ("workspaces", Value::Array(workspaces)),
             ("server", Value::String(done.server)),
             ("key_prefix", Value::String(done.key_prefix)),
             ("config_file", Value::String(done.path)),
@@ -867,69 +1132,67 @@ fn login(args: &Args) -> Result<()> {
         );
         say(&object.to_string());
     } else {
-        say(&format!(
-            "logged in as {} in workspace {} ({})\nkey {} is stored in {}",
-            done.email, done.workspace_name, done.workspace_id, done.key_prefix, done.path
-        ));
+        let mut lines = vec![
+            format!("logged in as {}", done.email),
+            format!("key {} is stored in {}", done.key_prefix, done.path),
+        ];
+        if done.workspaces.is_empty() {
+            lines.push(
+                "you are not a member of any workspace yet; the key reaches each one you join"
+                    .to_string(),
+            );
+        } else {
+            lines.extend(workspace_lines(
+                &done.workspaces,
+                None,
+                done.default.as_deref(),
+            ));
+        }
+        if done.default.is_none() && done.workspaces.len() > 1 {
+            lines.push(format!("no default workspace: {WORKSPACE_HINT}"));
+        }
+        say(&lines.join("\n"));
     }
     Ok(())
 }
 
 struct LoggedIn {
     email: String,
-    workspace_id: String,
-    workspace_name: String,
+    /// The workspaces the key reaches, as `(id, name)`.
+    workspaces: Vec<(String, String)>,
+    /// The default workspace stored with the key, if any.
+    default: Option<String>,
     server: String,
     key_prefix: String,
     path: String,
 }
 
-/// Picks a workspace, creates an API key in it and stores the key.
-fn login_with(session: &Session, server_text: &str) -> Result<LoggedIn> {
+/// Creates an API key for the user and stores it. The key reaches every
+/// workspace the user is a member of, so no workspace is picked. The default
+/// workspace stays what it was while the user is still a member of it; a user
+/// of exactly one workspace gets that one.
+fn login_with(
+    session: &Session,
+    server_text: &str,
+    previous_default: Option<&str>,
+) -> Result<LoggedIn> {
     let listed = session.request("GET", "/api/v1/auth/workspaces")?;
     let body = Value::parse(&listed.text()).map_err(|_| {
         CliError::new("the server's list of workspaces is not readable; is it an OmniState API?")
     })?;
-    let workspaces: Vec<(String, String)> = body
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|ws| Some((ws.str_at("id")?.to_string(), ws.str_at("name")?.to_string())))
-        .collect();
-
-    let (workspace_id, workspace_name) = match workspaces.as_slice() {
-        [] => bail!(
-            "{} is not a member of any workspace, so there is nothing to log in to",
-            session.email
-        ),
-        [only] => {
-            eprintln!("Workspace: {} ({})", only.1, only.0);
-            only.clone()
-        }
-        many => {
-            eprintln!("Workspaces:");
-            for (number, (id, name)) in many.iter().enumerate() {
-                eprintln!("  {}) {name} ({id})", number + 1);
-            }
-            let answer = ask(&format!("Pick a workspace [1-{}]: ", many.len()), false)?;
-            let picked = answer
-                .trim()
-                .parse::<usize>()
-                .ok()
-                .filter(|n| (1..=many.len()).contains(n));
-            match picked {
-                Some(n) => many[n - 1].clone(),
-                None => bail!(
-                    "{:?} is not a workspace number; run `omni login` again and pick 1 to {}",
-                    answer.trim(),
-                    many.len()
-                ),
-            }
-        }
+    let workspaces = workspace_pairs(&body);
+    let kept = previous_default.and_then(|previous| {
+        workspaces
+            .iter()
+            .find(|(id, _)| id.eq_ignore_ascii_case(previous))
+            .map(|(id, _)| id.clone())
+    });
+    let default = match workspaces.as_slice() {
+        [(only, _)] => Some(only.clone()),
+        _ => kept,
     };
 
-    let created = session.request("POST", &format!("/api/v1/w/{workspace_id}/api-keys"))?;
+    let created = session.request("POST", "/api/v1/api-keys")?;
     let created = Value::parse(&created.text())
         .map_err(|_| CliError::new("the server's answer about the new key is not readable"))?;
     let (Some(secret), Some(prefix)) = (
@@ -942,14 +1205,14 @@ fn login_with(session: &Session, server_text: &str) -> Result<LoggedIn> {
     let server = server_text.trim().trim_end_matches('/').to_string();
     let path = config::save(&Stored {
         server: Some(server.clone()),
-        workspace_id: Some(workspace_id.clone()),
+        workspace_id: default.clone(),
         api_key: Some(secret.to_string()),
         email: Some(session.email.clone()),
     })?;
     Ok(LoggedIn {
         email: session.email.clone(),
-        workspace_id,
-        workspace_name,
+        workspaces,
+        default,
         server,
         key_prefix: prefix.to_string(),
         path: path.display().to_string(),
@@ -970,8 +1233,7 @@ fn key(args: &Args, action: KeyAction) -> Result<()> {
         bail!("{id:?} is not a key ID; `omni key list` shows them");
     }
     let settings = settings(args)?;
-    let (Some(server_text), Some(workspace_id)) = (settings.server, settings.stored.workspace_id)
-    else {
+    let Some(server_text) = settings.server else {
         bail!("not logged in: run `omni login` first");
     };
     let server = Server::parse(&server_text)?;
@@ -984,11 +1246,8 @@ fn key(args: &Args, action: KeyAction) -> Result<()> {
     // The human's session lasts for this command only and is ended with it.
     let session = Session::open(&server, &email, &password)?;
     let result = match action {
-        KeyAction::List => session.request("GET", &format!("/api/v1/w/{workspace_id}/api-keys")),
-        KeyAction::Revoke(id) => session.request(
-            "POST",
-            &format!("/api/v1/w/{workspace_id}/api-keys/{id}/revoke"),
-        ),
+        KeyAction::List => session.request("GET", "/api/v1/api-keys"),
+        KeyAction::Revoke(id) => session.request("POST", &format!("/api/v1/api-keys/{id}/revoke")),
     };
     session.close();
     let response = result?;

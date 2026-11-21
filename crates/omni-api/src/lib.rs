@@ -258,15 +258,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(session::logout))
         .route("/api/v1/auth/me", get(session::me))
         .route("/api/v1/auth/workspaces", get(session::workspaces))
-        .route("/api/v1/w/{workspace_id}/whoami", get(workspace::whoami))
         .route(
-            "/api/v1/w/{workspace_id}/api-keys",
+            "/api/v1/api-keys",
             get(api_keys::list).post(api_keys::create),
         )
-        .route(
-            "/api/v1/w/{workspace_id}/api-keys/{key_id}/revoke",
-            post(api_keys::revoke),
-        )
+        .route("/api/v1/api-keys/{key_id}/revoke", post(api_keys::revoke))
+        .route("/api/v1/w/{workspace_id}/whoami", get(workspace::whoami))
         .route(
             "/api/v1/w/{workspace_id}/projects",
             get(projects::list_projects).post(projects::create_project),

@@ -553,3 +553,36 @@ impl<'de> Deserialize<'de> for Bind {
         Self::from_value(&value).map_err(serde::de::Error::custom)
     }
 }
+
+/// Where a component imported from another tool came from, so that a later
+/// import from that tool can recognise it and place it again rather than
+/// import it a second time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    /// The tool, such as `penpot`.
+    pub tool: String,
+    /// The tool's ID of the file that defines the component.
+    pub file: String,
+    /// The tool's ID of the component in that file.
+    pub component: String,
+    /// The node of this component that each layer of the tool's component
+    /// became, by the tool's ID of the layer.
+    #[serde(default)]
+    pub layers: BTreeMap<String, NodeId>,
+}
+
+impl Origin {
+    /// The origin in a component's `origin`, or why it is not one.
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        let origin: Origin = serde_json::from_value(value.clone()).map_err(|error| {
+            format!(
+                "`origin` is not an origin ({error}): write an object with `tool`, `file`, `component` and `layers`"
+            )
+        })?;
+        if origin.tool.is_empty() || origin.file.is_empty() || origin.component.is_empty() {
+            return Err("the `tool`, `file` and `component` of an `origin` are not empty".into());
+        }
+        Ok(origin)
+    }
+}

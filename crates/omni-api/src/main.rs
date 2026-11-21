@@ -1,6 +1,10 @@
 use omni_api::{AppState, Config, delete_workspace, setup};
 use std::io::BufRead;
 
+/// See the comment on `mimalloc` in Cargo.toml.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() {
     if let Err(message) = run().await {

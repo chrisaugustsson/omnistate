@@ -82,6 +82,8 @@ struct Fixture {
     url: String,
     workspace: String,
     secret: String,
+    /// The user the agent's key belongs to, who owns the tracks it creates.
+    agent_user: String,
     /// Keeps the API's runtime, and so the server, alive.
     _runtime: tokio::runtime::Runtime,
 }
@@ -106,7 +108,7 @@ fn fixture() -> &'static Fixture {
                 .expect("apply the migrations to the scratch database");
         });
         let secret = format!("{KEY_PREFIX}_{}", "0123456789abcdef".repeat(4));
-        let workspace = block(async {
+        let (workspace, agent_user) = block(async {
             let mut conn = admin_connection().await;
             let mut text = async |sql: &str, binds: &[&str]| -> String {
                 let mut query = sqlx::query_scalar::<_, String>(sql);
@@ -138,14 +140,16 @@ fn fixture() -> &'static Fixture {
                 &[&workspace, &user],
             )
             .await;
-            text(
-                "insert into api_keys (workspace_id, prefix, key_hash, scopes) \
-                 values ($1::uuid, $2, encode(sha256(convert_to($3, 'UTF8')), 'hex'), '{*}') \
-                 returning id::text",
+            let agent_user = text(
+                "with agent as (insert into users (email) values ($2 || '@agents.example.test') returning id), \
+                 member as (insert into memberships (workspace_id, user_id) select $1::uuid, id from agent) \
+                 insert into api_keys (user_id, prefix, key_hash, scopes) \
+                 select id, $2, encode(sha256(convert_to($3, 'UTF8')), 'hex'), '{*}' from agent \
+                 returning user_id::text",
                 &[&workspace, KEY_PREFIX, &secret],
             )
             .await;
-            workspace
+            (workspace, agent_user)
         });
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -173,6 +177,7 @@ fn fixture() -> &'static Fixture {
             url: format!("http://127.0.0.1:{port}"),
             workspace,
             secret,
+            agent_user,
             _runtime: runtime,
         }
     })
@@ -289,11 +294,11 @@ fn a_track_is_created_listed_and_shown_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{checkout}  Checkout  Wision  planning  -"),
-            format!("{wish_list}  Wish list  Wision  planning  -"),
+            format!("{checkout}  Checkout  Wision  planning  {}", f.agent_user),
+            format!("{wish_list}  Wish list  Wision  planning  {}", f.agent_user),
         ],
         "the tracks in creation order, `<id>  <name>  <part>  <state>  <owner>`; \
-         the fixture's key has no creator, so no member owns them"
+         the key's user created them, so that user owns them"
     );
 
     for which in [checkout.as_str(), "Checkout"] {
@@ -489,8 +494,11 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     assert_eq!(
         non_empty_lines(&listed.stdout),
         [
-            format!("{checkout}  Express checkout  Wision  planning  -"),
-            format!("{search}  Search  Wision  planning  -"),
+            format!(
+                "{checkout}  Express checkout  Wision  planning  {}",
+                f.agent_user
+            ),
+            format!("{search}  Search  Wision  planning  {}", f.agent_user),
         ],
         "the renamed track keeps its ID"
     );
@@ -522,7 +530,10 @@ fn a_track_is_renamed_and_deleted_from_the_command_line() {
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     assert_eq!(
         non_empty_lines(&listed.stdout),
-        [format!("{search}  Search  Wision  planning  -")],
+        [format!(
+            "{search}  Search  Wision  planning  {}",
+            f.agent_user
+        )],
         "the deleted track is in no list"
     );
     let shown = run(&home, &["track", "show", &checkout, "--project", &project]);

@@ -291,6 +291,41 @@ fn a_component_round_trips_through_tags_and_json() {
 }
 
 #[test]
+fn an_imported_component_keeps_its_origin_through_tags_and_json() {
+    let source = BUTTON.replacen(
+        "<Component id=\"btn00001\" name=\"Button\"",
+        r#"<Component id="btn00001" name="Button" origin={{tool: "penpot", file: "f0000000-0000-4000-8000-000000000001", component: "c0000000-0000-4000-8000-000000000001", layers: {"a0000000-0000-4000-8000-000000000001": "txt00001"}}}"#,
+        1,
+    );
+    let button = existing(&source);
+    let json = to_json(&button);
+    assert_eq!(
+        json["origin"],
+        json!({
+            "tool": "penpot",
+            "file": "f0000000-0000-4000-8000-000000000001",
+            "component": "c0000000-0000-4000-8000-000000000001",
+            "layers": { "a0000000-0000-4000-8000-000000000001": "txt00001" }
+        }),
+        "{json:#}"
+    );
+    let printed = assert_tags_round_trip(&button);
+    assert!(printed.contains("origin="), "{printed}");
+    assert_round_trips(&json);
+
+    let frame = json!({
+        "id": "frm00001", "type": "frame", "name": "Frame",
+        "width": { "fixed": 10 }, "height": { "fixed": 10 },
+        "layout": { "mode": "none" }, "origin": json["origin"].clone()
+    });
+    let error = assert_rejected(&frame, "only a component has an origin");
+    assert!(error.contains("origin"), "{error}");
+    let mut empty = json.clone();
+    empty["origin"]["file"] = json!("");
+    assert_rejected(&empty, "an origin names its file");
+}
+
+#[test]
 fn a_property_of_another_kind_is_rejected_and_the_fix_lists_the_four_kinds() {
     let source = button_with_props(
         r#"{{style: {type: "number", default: 1}, showIcon: {type: "boolean", default: true}, label: {type: "text", default: "Buy"}, icon: {type: "slot", default: "cart0001"}}}"#,

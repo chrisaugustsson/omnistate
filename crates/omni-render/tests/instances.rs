@@ -1493,3 +1493,46 @@ fn a_dimension_token_on_line_height_is_pixels_and_a_number_token_a_multiple_of_t
     );
     assert!(scene.errors().is_empty(), "nothing is missing");
 }
+
+#[test]
+fn a_component_imported_with_an_origin_is_drawn_like_any_other() {
+    // An import keeps where a component came from (`origin`); the instance
+    // draws the component's tree, and the board around it still resolves.
+    let imported = json!({
+        "id": "cp000001",
+        "type": "component",
+        "name": "Imported",
+        "width": fixed(60.0),
+        "height": fixed(40.0),
+        "layout": {"mode": "none"},
+        "fills": solid("$color.brand"),
+        "origin": {
+            "tool": "penpot",
+            "file": "f0000000-0000-4000-8000-000000000001",
+            "component": "c0000000-0000-4000-8000-000000000001",
+            "layers": {"a0000000-0000-4000-8000-000000000001": "cp000001"}
+        },
+        "children": []
+    });
+    let system = system_with(vec![imported]);
+    let placed = json!({
+        "id": "cq000001", "type": "instance", "name": "Imported",
+        "component": "cp000001", "x": 20, "y": 20
+    });
+    let page = board_page("p0000009", "a0000009", "$color.surface", vec![placed]);
+    let mut scene = Scene::with_system(node(&page), Assets::new(), system);
+    let pixels = render(&mut scene);
+    assert_rgb(
+        &pixels,
+        (40, 40),
+        RED,
+        "the instance, filled with $color.brand",
+    );
+    assert_rgb(
+        &pixels,
+        (200, 150),
+        WHITE,
+        "the board, filled with $color.surface",
+    );
+    assert!(scene.errors().is_empty(), "nothing is missing");
+}

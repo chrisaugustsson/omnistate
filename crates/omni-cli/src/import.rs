@@ -16,13 +16,24 @@
 //!   instances, in the UI pillar of the track when there is `--track`, else
 //!   at the app level.
 //!
+//! Every imported component keeps its Penpot file and component as its
+//! `origin`. When the project's design system already has components from
+//! Penpot, the export is read again onto them: a copy of one of them, of the
+//! file itself or of a library imported before, becomes an instance of it, and
+//! it is not imported a second time. A copy of a library component that the
+//! design system lacks is imported from the library when the export bundles it
+//! ("Export file + libraries"), else it is drawn as the plain shapes it holds
+//! and the report says so.
+//!
 //! Whatever cannot be imported is in the report, which `--json` prints whole.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use omni_penpot::ReadError;
-use omni_penpot::import::{Ids, Import, ImportEntry, PageTags, import_file};
+use omni_penpot::import::{
+    Ids, Import, ImportEntry, PageTags, design_system_components, import_file, import_file_onto,
+};
 
 use crate::args::Args;
 use crate::attach;
@@ -73,15 +84,9 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
     let Some(file) = file else {
         bail!("this command needs the Penpot export to import, a .penpot file: {USAGE}");
     };
+    // The export is read before anything is sent.
     let mut import = import_file(Path::new(file)).map_err(read_error)?;
-    for attachment in &import.attachments {
-        if attachment.bytes.len() > attach::MAX_UPLOAD {
-            bail!(
-                "the image or font file {} of {file} is larger than 20 MB, the limit for an attachment; nothing was imported",
-                attachment.id
-            );
-        }
-    }
+    check_sizes(&import, file)?;
 
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
@@ -91,6 +96,23 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
         |name| name.to_string_lossy().into_owned(),
     );
     let base = format!("/api/v1/w/{}/projects/{project}", agent.workspace_id);
+
+    // Read again onto the components the design system has from Penpot, so
+    // that their copies become instances of them.
+    let system = read_design_system(&agent, &base)?;
+    if let Some((_, head)) = &system.doc {
+        let known = design_system_components(head).map_err(read_error)?;
+        if known.iter().any(|component| {
+            component
+                .get("origin")
+                .and_then(|origin| origin.get("tool"))
+                .and_then(|tool| tool.as_str())
+                == Some("penpot")
+        }) {
+            import = import_file_onto(Path::new(file), &known).map_err(read_error)?;
+            check_sizes(&import, file)?;
+        }
+    }
 
     let mut ids = Ids::default();
     for attachment in &import.attachments {
@@ -107,7 +129,19 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
     let components = import.component_count();
     let mut design_system = None;
     if import.has_tokens() || components > 0 {
-        design_system = Some(send_design_system(&agent, &base, &mut import, &mut ids)?);
+        design_system = Some(send_design_system(
+            &agent,
+            &base,
+            &system,
+            &mut import,
+            &mut ids,
+        )?);
+    } else if let Some((_, head)) = &system.doc {
+        // Nothing to add to the design system, but the instances of the
+        // design place its components, whose IDs `ids` learns here.
+        import = import
+            .onto_design_system_head(&system.tokens, head, &mut ids)
+            .map_err(read_error)?;
     }
     let design = if import.pages.is_empty() {
         None
@@ -161,6 +195,42 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Fails when an image or font file of the import is too large to upload.
+fn check_sizes(import: &Import, file: &str) -> Result<()> {
+    for attachment in &import.attachments {
+        if attachment.bytes.len() > attach::MAX_UPLOAD {
+            bail!(
+                "the image or font file {} of {file} is larger than 20 MB, the limit for an attachment; nothing was imported",
+                attachment.id
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The project's design system as the server has it.
+struct DesignSystem {
+    /// The answer about its tokens (`GET .../tokens`), as JSON text.
+    tokens: String,
+    /// Its doc's ID and the answer about its head (`GET .../docs/{id}/html`),
+    /// None for a project without a design system.
+    doc: Option<(String, String)>,
+}
+
+fn read_design_system(agent: &Agent, base: &str) -> Result<DesignSystem> {
+    let tokens = agent
+        .request("GET", &format!("{base}/tokens"), None)?
+        .text();
+    let doc = match parsed(&tokens, "the tokens")?.str_at("doc_id") {
+        Some(doc) => {
+            let head = agent.request("GET", &format!("{base}/docs/{doc}/html"), None)?;
+            Some((doc.to_string(), head.text()))
+        }
+        None => None,
+    };
+    Ok(DesignSystem { tokens, doc })
+}
+
 /// The project's design system doc, started when it has none, with the tokens
 /// and the components of the import written to its head. When the project's
 /// design system already holds tokens or components, `import` becomes the
@@ -168,18 +238,16 @@ pub fn penpot(args: &Args, file: Option<&str>) -> Result<()> {
 fn send_design_system(
     agent: &Agent,
     base: &str,
+    system: &DesignSystem,
     import: &mut Import,
     ids: &mut Ids,
 ) -> Result<String> {
-    let known = agent.request("GET", &format!("{base}/tokens"), None)?;
-    let known = known.text();
-    let doc = match parsed(&known, "the tokens")?.str_at("doc_id") {
-        Some(doc) => {
-            let head = agent.request("GET", &format!("{base}/docs/{doc}/html"), None)?;
+    let doc = match &system.doc {
+        Some((doc, head)) => {
             *import = import
-                .onto_design_system_head(&known, &head.text(), ids)
+                .onto_design_system_head(&system.tokens, head, ids)
                 .map_err(read_error)?;
-            doc.to_string()
+            doc.clone()
         }
         None => {
             let body = format!(

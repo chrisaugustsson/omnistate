@@ -26,6 +26,11 @@ omni-core = { path = "../omni-core" }
 # Lays out the boards of a design outline, so that each placeholder has the
 # box of its content (src/placeholders.rs).
 omni-render = { path = "../omni-render" }
+# The allocator of the API. glibc's keeps what a thread freed in that
+# thread's arena, so the many threads that draw previews and lay out boards
+# left gigabytes held after a big Penpot import, until the container ran out
+# of memory; mimalloc gives freed memory back.
+mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 # tests/boards.rs checks that a chunk is named by the BLAKE3 hash of its bytes.
