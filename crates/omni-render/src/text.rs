@@ -11,11 +11,14 @@ use skia_safe::textlayout::{
     FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, RectHeightStyle, RectWidthStyle,
     TextStyle, TypefaceFontProvider,
 };
+use skia_safe::typeface::TypefaceId;
 use skia_safe::{
     Canvas, Color, Data, Font, FontArguments, FontHinting, FontMgr, FontStyle, FourByteTag, Paint,
     Rect, Typeface,
 };
+use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 /// Inter Regular, under the SIL Open Font License (`fonts/LICENSE.txt`).
 /// Skia has no system fonts in the browser, so the font is compiled in.
@@ -96,9 +99,7 @@ impl Fonts {
     pub fn add_font(&mut self, family: &str, data: &[u8]) -> Result<(), String> {
         let sfnt = sfnt(data)
             .map_err(|error| format!("the bytes for font family {family:?} are {error}"))?;
-        let typeface = FontMgr::custom_empty()
-            .unwrap_or_default()
-            .new_from_data(Data::new_copy(&sfnt), None)
+        let typeface = typeface_of(&sfnt)
             .ok_or_else(|| format!("the bytes for font family {family:?} are not a font"))?;
         self.provider.register_typeface(typeface, family);
         self.collection.clear_caches();
@@ -169,11 +170,77 @@ fn at_weight(typeface: Typeface, weight: i32) -> (Typeface, u32) {
         return (typeface, own);
     };
     let value = (weight as f32).clamp(min, max);
+    let key = (typeface.unique_id(), value.to_bits());
+    let mut instances = INSTANCES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(Shared(instance)) = instances.get(&key) {
+        return (instance.clone(), value.round() as u32);
+    }
     let coordinates = [Coordinate { axis: WGHT, value }];
     let instance = typeface
         .clone_with_arguments(&weight_arguments(&coordinates))
         .unwrap_or(typeface);
+    if instances.len() >= MOST_TYPEFACES {
+        instances.clear();
+    }
+    instances.insert(key, Shared(instance.clone()));
     (instance, value.round() as u32)
+}
+
+/// A typeface that every thread may use. skia-safe lets a handle move to
+/// another thread only while nothing else holds it.
+struct Shared(Typeface);
+
+// SAFETY: an SkTypeface does not change once it is made and its reference
+// count is atomic; Skia itself shares one typeface between threads. These
+// handles are only cloned (which raises the count) and read.
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
+
+/// How many typefaces, and how many weight instances, are kept before the
+/// memory is cleared: far more than the fonts of a few design systems.
+const MOST_TYPEFACES: usize = 512;
+
+/// The typefaces made from font files so far, by the BLAKE3 hash of the
+/// file's sfnt bytes. Every typeface gets an ID of its own, and Skia's and
+/// HarfBuzz's caches, which the whole process shares, keep what they work out
+/// for a typeface by that ID. A typeface made again for every picture filled
+/// them with entries that no later picture used: the API grew by about 12 MB
+/// per font file per picture, and kept it (36 font files, 8 pictures at once:
+/// 1.6 GB). Made once, every picture finds what the last one worked out.
+static TYPEFACES: LazyLock<Mutex<HashMap<[u8; 32], Shared>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The instances of variable fonts at a weight, by the typeface's ID and the
+/// weight's bits, made once for the same reason.
+static INSTANCES: LazyLock<Mutex<HashMap<(TypefaceId, u32), Shared>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The bundled Inter, made once.
+static BUNDLED_INTER: LazyLock<Shared> = LazyLock::new(|| {
+    Shared(
+        FontMgr::custom_empty()
+            .unwrap_or_default()
+            .new_from_data(Data::new_copy(INTER_REGULAR), None)
+            .expect("Skia loads the bundled Inter font"),
+    )
+});
+
+/// The typeface of the font file `sfnt`, made the first time these bytes come
+/// and the same one each time after; `None` if the bytes are not a font.
+fn typeface_of(sfnt: &[u8]) -> Option<Typeface> {
+    let key = omni_core::hash::blake3(sfnt);
+    let mut typefaces = TYPEFACES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(Shared(typeface)) = typefaces.get(&key) {
+        return Some(typeface.clone());
+    }
+    let typeface = FontMgr::custom_empty()
+        .unwrap_or_default()
+        .new_from_data(Data::new_copy(sfnt), None)?;
+    if typefaces.len() >= MOST_TYPEFACES {
+        typefaces.clear();
+    }
+    typefaces.insert(key, Shared(typeface.clone()));
+    Some(typeface)
 }
 
 /// A font face: the family, weight and slant that text asks for or is drawn in.
@@ -205,10 +272,7 @@ pub struct StandIn {
 /// it loads the font through an empty FreeType font manager; elsewhere the
 /// platform font manager loads it (CoreText on macOS).
 pub(crate) fn inter() -> Typeface {
-    FontMgr::custom_empty()
-        .unwrap_or_default()
-        .new_from_data(Data::new_copy(INTER_REGULAR), None)
-        .expect("Skia loads the bundled Inter font")
+    BUNDLED_INTER.0.clone()
 }
 
 /// The content of a text node, shaped in its font by Skia's paragraph layout
@@ -821,7 +885,41 @@ fn font_style(text: &Text) -> FontStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::sfnt;
+    use super::{Fonts, INTER_REGULAR, at_weight, inter, sfnt};
+    use skia_safe::FontStyle;
+
+    /// The same font file, given again for a later picture, is the typeface it
+    /// was the first time: a new typeface for every picture filled Skia's and
+    /// HarfBuzz's caches, which the process keeps, with entries no picture used
+    /// again (about 12 MB per font file per picture).
+    #[test]
+    fn a_font_file_given_again_is_the_typeface_it_was_the_first_time() {
+        let face_of = |bytes: &[u8]| {
+            let mut fonts = Fonts::bundled();
+            fonts
+                .add_font("Probe", bytes)
+                .expect("the bytes are a font");
+            fonts.typeface("Probe", FontStyle::normal()).unique_id()
+        };
+        assert_eq!(face_of(INTER_REGULAR), face_of(INTER_REGULAR));
+        assert_eq!(inter().unique_id(), inter().unique_id());
+
+        let woff2 = include_bytes!("../tests/fonts/Inter-Variable-latin.woff2");
+        let variable = face_of(woff2);
+        assert_ne!(
+            variable,
+            face_of(INTER_REGULAR),
+            "another file is another typeface"
+        );
+        let mut fonts = Fonts::bundled();
+        fonts
+            .add_font("Probe", woff2)
+            .expect("the bytes are a font");
+        let base = fonts.typeface("Probe", FontStyle::normal());
+        let bold = |base| at_weight(base, 700).0.unique_id();
+        assert_eq!(bold(base.clone()), bold(base.clone()));
+        assert_ne!(bold(base.clone()), at_weight(base, 300).0.unique_id());
+    }
 
     /// The FreeType in the WebAssembly build reads no WOFF2 (native Skia
     /// does, so the tests in `tests/` cannot tell), so a WOFF2 file must reach
