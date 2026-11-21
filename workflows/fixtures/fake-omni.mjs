@@ -25,13 +25,14 @@
 // node or question the state lacks is the CLI's not_found (exit 1). `ask` adds an
 // open question asked by the agent OMNI_RUN and OMNI_ROLE name, and prints its ID.
 // `doc list` prints the state's docList and `link` its link, which fails as the CLI
-// does in a folder that is not linked. The feature's export writes a .png and a .tags
+// does in a folder that is not linked. The track's export writes a .png and a .tags
 // per entry of the state's boards, named as the CLI names them:
 // <out>/ui/<doc title as a slug>-<last 8 characters of the doc ID>/<board name as a
 // slug>-<board>, the title taken from docList ("doc" without one), and lists each
 // .tags file in <out>/manifest.json as {path, doc_id, board_id, board}. `checks`
 // without checks in the state reads the [checks] table of the .omni.toml in the
 // current folder, and fails as the CLI does without that file.
+// A call without --as, or OMNI_RUN and OMNI_ROLE, fails as the CLI does: no agent identity.
 // Calls at once each read, change and write the state under a lock file
 // beside it, and a write replaces the file whole, as the server serves
 // requests at once without losing one.
@@ -40,6 +41,11 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 const argv = process.argv.slice(2);
+// Like the CLI, a call needs an agent identity: --as, or OMNI_RUN and OMNI_ROLE.
+if (!argv.includes("--as") && !(process.env.OMNI_RUN && process.env.OMNI_ROLE)) {
+  process.stderr.write("omni: no agent identity: pass --as <run>/<role>, such as --as run-7/explorer, or set OMNI_RUN and OMNI_ROLE\n");
+  process.exit(1);
+}
 const named = (variable) => process.env[variable] && `${argv.join(" ")} `.startsWith(`${process.env[variable]} `);
 const hold = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_OMNI_HANG_MS) || 30000);
 if (named("FAKE_OMNI_HANG")) hold();
@@ -97,7 +103,7 @@ const node = (given) => {
   const n = (state.behaviour?.nodes || []).find((x) => x.id === given || x.path === (given === "." ? "" : given));
   if (!n) {
     save();
-    process.stderr.write(`not_found: no node ${given} in this feature\n`);
+    process.stderr.write(`not_found: no node ${given} in this track\n`);
     process.exit(1);
   }
   return n;
@@ -136,7 +142,7 @@ if (noun === "--help") {
     process.exit(1);
   }
   const id = randomUUID();
-  state.threads.push({ id, title: target, feature: flag("--feature"), posts: [] });
+  state.threads.push({ id, title: target, track: flag("--track"), posts: [] });
   save();
   out(`${id}\n`);
 } else if (noun === "thread" && verb === "read") {
@@ -210,7 +216,7 @@ if (noun === "--help") {
   const question = (state.behaviour?.questions || []).find((q) => q.id === target);
   save();
   if (!question) {
-    process.stderr.write(`not_found: no question ${target} in this feature\n`);
+    process.stderr.write(`not_found: no question ${target} in this track\n`);
     process.exit(1);
   }
   out(JSON.stringify({ question }));
@@ -315,7 +321,7 @@ if (noun === "--help") {
     const c = typeof s.criteria[i] === "string" ? { text: s.criteria[i], human_check: false } : s.criteria[i];
     s.criteria[i] = { ...c, ticked: true, ...(argv.includes("--pending") ? { pending: true } : {}) };
   }
-  else if (verb === "files") s.files_changed = argv.slice(3).filter((a, i, rest) => a !== "--run" && a !== "--feature" && a !== "--json" && rest[i - 1] !== "--run" && rest[i - 1] !== "--feature");
+  else if (verb === "files") s.files_changed = argv.slice(3).filter((a, i, rest) => a !== "--run" && a !== "--track" && a !== "--json" && rest[i - 1] !== "--run" && rest[i - 1] !== "--track");
   else {
     process.stderr.write(`fake omni: unknown story verb ${verb}\n`);
     process.exit(2);

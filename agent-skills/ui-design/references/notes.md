@@ -1,17 +1,17 @@
 # The design notes
 
-One html doc on the feature, pillar `ui`, titled "Design notes". It tells the human what the last run did, and tells the next run which board shows which situation. Boards and behaviour nodes have no link of their own in OmniState; this doc's table is the link.
+One html doc on the track, pillar `ui`, titled "Design notes". It tells the human what the last run did, and tells the next run which board shows which situation. Boards and behaviour nodes have no link of their own in OmniState; this doc's table is the link.
 
 Write it as one `<section>` with these parts, one fact per block (a paragraph, a list item, a table row), so a comment can point at it:
 
 1. **`<h2>Last run</h2>`**: what was drawn or changed (boards by name), what the checks found and what is still open, each comment answered and how, and the tree nodes that left the tree while their board stays.
 2. **`<h2>Motion for the code</h2>`**: the list "Beyond the prototype" of [motion.md](motion.md), with this design's values.
-3. **`<h2>Assumed</h2>`**, only for a feature without a behaviour tree: each assumption in one line.
+3. **`<h2>Assumed</h2>`**, only for a track without a behaviour tree: each assumption in one line.
 4. **`<h2>Boards and situations</h2>`**: the table below.
 
 ## The table
 
-One row per behaviour node the design covers, in tree order. A user story's own node has a row too, naming the board where the story begins, and the root has one saying `no board: the feature as a whole`. For a feature without a tree: one row per board, with the path of the job it serves in the Node column (the plan's path for the job, then a short name for the situation: `rename/name-taken`) and nothing in the Node ID and Seen as columns.
+One row per behaviour node the design covers, in tree order. A user story's own node has a row too, naming the board where the story begins, and the root has one saying `no board: the track as a whole`. For a track without a tree: one row per board, with the path of the job it serves in the Node column (the plan's path for the job, then a short name for the situation: `rename/name-taken`) and nothing in the Node ID and Seen as columns.
 
 | Column | Holds |
 | --- | --- |
@@ -26,8 +26,8 @@ One row per behaviour node the design covers, in tree order. A user story's own 
 A node's fingerprint changes when the node is edited or moved, when a question or remark is added to it, and when an answer on it changes. Compute all of them with:
 
 ```sh
-omni --as <run>/<role> --feature "<feature>" behaviour list --json > <scratch>/nodes.json
-omni --as <run>/<role> --feature "<feature>" behaviour questions --json > <scratch>/questions.json
+omni --as <run>/<role> --track "<track>" behaviour list --json > <scratch>/nodes.json
+omni --as <run>/<role> --track "<track>" behaviour questions --json > <scratch>/questions.json
 jq -r --slurpfile q <scratch>/questions.json '
   ($q[0].questions | group_by(.node_id)
     | map({key: .[0].node_id, value: "q\(length).s\(map(.version) | add)"}) | from_entries) as $f
@@ -52,7 +52,7 @@ A change in the tree's rules does not change a fingerprint. The human points at 
 
 ## Writing it
 
-Create the doc once (`omni --as <run>/<role> doc create --feature "<feature>" --kind html --pillar ui --title "Design notes"`) and insert the section:
+Create the doc once (`omni --as <run>/<role> doc create --track "<track>" --kind html --pillar ui --title "Design notes"`) and insert the section:
 
 ```sh
 jq -Rs '[{op:"insert",parent:null,position:{after:null},content:.}]' <scratch>/notes.html \

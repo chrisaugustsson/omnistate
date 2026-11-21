@@ -1,27 +1,27 @@
 ---
 name: omni-stories
-description: Split a feature into small tasks on its board in OmniState, the normal path of each user story first and its side situations after it, with criteria taken from the behaviour tree and every tree node covered by a task. Use when a feature's behaviour, UI and how are settled and the human wants its tasks cut, when the tree changed after tasks were cut, or says 'omni-stories'.
+description: Split a track into small tasks on its board in OmniState, the normal path of each user story first and its side situations after it, with criteria taken from the behaviour tree and every tree node covered by a task. Use when a track's behaviour, UI and how are settled and the human wants its tasks cut, when the tree changed after tasks were cut, or says 'omni-stories'.
 ---
 
-Split a feature into **tasks** on its board, each a slice an agent can build and a reviewer can check on its own. A task is a story record: the commands (`omni story ...`) and the keys (`US-<n>`) still say story. A **user story** is something else: a node of the behaviour tree, one role doing one flow.
+Split a track into **tasks** on its board, each a slice an agent can build and a reviewer can check on its own. A task is a story record: the commands (`omni story ...`) and the keys (`US-<n>`) still say story. A **user story** is something else: a node of the behaviour tree, one role doing one flow.
 
 The split runs hands off. It saves without asking, and what only the human can decide becomes a question on a tree node ([Gaps](#gaps)). It ends with the tasks on the board and a report; the human starts the build.
 
 ## Start
 
-1. Read the feature from `OMNI_FEATURE`; without it, ask the human which feature, and pass `--feature "<name>"` on every `omni story`, `omni behaviour` and `omni design` command. Follow the Start steps of the `omni` skill, with a run name such as `tasks-1` and the role `tasks`.
-2. Find the Spec doc: `omni doc list --feature "<name>" --pillar spec`. Without one, stop: tell the human the split builds on the Spec doc, which `omni-grill` writes.
+1. Read the track from `OMNI_TRACK`; without it, ask the human which track (`omni track list`), and pass `--track "<name>"` on every `omni story`, `omni behaviour` and `omni design` command. Follow the Start steps of the `omni` skill, with a run name such as `tasks-1` and the role `tasks`.
+2. Find the Spec doc: `omni doc list --track "<name>" --pillar spec`. Without one, stop: tell the human the split builds on the Spec doc, which `omni-grill` writes.
 3. Read whatever else exists. Each is optional:
    - **Project spec**: `omni doc list --global --pillar spec`, title `Project spec`. Its `Rules` bind every task; its `Stack` is the technology.
    - **Behaviour tree**: `omni behaviour list --json` gives every node with its `id`, `path`, `level`, `status`, `version`, `open_questions` and `needs_pass` (the model is in the `omni` skill's `behaviour.md`). Then `omni behaviour read <leaf>` for each leaf: it prints the branch above the leaf in full, with the rules that reach it.
-   - **Design**: `omni doc list --feature "<name>" --pillar ui`. Per design doc, `omni design flows --doc <id>` lists its boards, and `omni design read --doc <id> --board <id>` prints one.
-   - **How**: the feature's docs titled `Operations` (pillar `architecture`) and `Tables` (pillar `db`), which `omni-how` writes. They are a starting point: the task that builds a part may change it.
+   - **Design**: `omni doc list --track "<name>" --pillar ui`. Per design doc, `omni design flows --doc <id>` lists its boards, and `omni design read --doc <id> --board <id>` prints one.
+   - **How**: the track's docs titled `Operations` (pillar `architecture`) and `Tables` (pillar `db`), which `omni-how` writes. They are a starting point: the task that builds a part may change it.
    - **Code**: whether the folder holds the product's source. When it does, read the closest existing code, tests and routes for what each task will change.
-   - **Tasks**: `omni story list --json` gives the tasks the feature already has, each with its `text`, `status` and `criteria`.
+   - **Tasks**: `omni story list --json` gives the tasks the track already has, each with its `text`, `status` and `criteria`.
 4. Pick the path:
    - A task exists whose status is not `cancelled`: this is a second run. Read [Run again](#run-again) before you cut.
    - The folder holds no source: [Without code](#without-code) comes first.
-   - The feature has no tree: [Without a tree](#without-a-tree) takes the place of the tree in what follows.
+   - The track has no tree: [Without a tree](#without-a-tree) takes the place of the tree in what follows.
 
 ## What is cut
 
@@ -40,7 +40,7 @@ A task is a vertical slice through every layer it needs (schema, server, command
 - **Standard lines**, added where they apply:
   - `Typecheck/lint passes`, on every task.
   - `Verify in browser using dev-browser skill (<what the page shows>)`, on a task that changes a screen.
-  - `` `Operations` and `Tables` say what the landed code does for every operation and table this task touched (`write-back.md` of the `omni-how` skill) ``, on a task that builds or changes an operation or a table, in a feature that has those docs.
+  - `` `Operations` and `Tables` say what the landed code does for every operation and table this task touched (`write-back.md` of the `omni-how` skill) ``, on a task that builds or changes an operation or a table, in a track that has those docs.
 - **The how.** The Description names the operations and tables the task builds or changes, by the names `Operations` and `Tables` give them. How an operation is called, what it returns and how it fails is the builder's to decide. A table is built whole, as `Tables` states it, by the first task that needs it.
 - **Interfaces** name what the task adds that later tasks use (operations and tables, by those same names) and the existing code it uses, by its names in the code.
 - **Dependencies.** A task that uses an operation, a table or code another task adds names that task in `Blocked by`. With no such dependency it says `Blocked by: none`. Order alone is no reason to block.
@@ -56,7 +56,7 @@ Write each task to a file in the session's scratch directory, in this shape:
 ```markdown
 ### US-<n>: <Title>
 **Description:** <what the user can do when this has landed, in 2-3 sentences>. Builds <operations and tables>.
-Covers, in the feature's behaviour tree (`omni behaviour read <id> --feature "<name>"`):
+Covers, in the track's behaviour tree (`omni behaviour read <id> --track "<name>"`):
 - <node id> v<version> `<node path>`
 **Topic:** <kind: feature | setup | prefactor | bugfix | chart | docs> · <1-3 domain tags>
 **Blocked by:** <US-xxx, ... or none>
@@ -107,7 +107,7 @@ When all are saved, check both:
 
 ## Without code
 
-When the folder holds no source of the product and no task of the feature is titled `Set up the project`, cut that task first, Topic kind `setup`:
+When the folder holds no source of the product and no task of the track is titled `Set up the project`, cut that task first, Topic kind `setup`:
 
 - Its criteria: the folder is a git repository with the setup committed; the app starts with one command, on the stack the Project spec names; the test command runs one test, which passes; a project-level doc in the pillar `architecture`, titled `Setup`, states the folders, the libraries and the commands to start and to test.
 - The builder decides those details, and each `Stack` line of the Project spec that says `open`. Say so in the Description.
@@ -120,7 +120,7 @@ The Spec doc takes the tree's place:
 
 - A user story is one thing the Spec's `Goals` say the user can do, and its side situations are the cases the `Decisions` settle.
 - Criteria come from the goals and the decisions. Each task links the goal items and decision rows it builds (`--link <Spec doc>:<node>`) and has no `Covers` lines.
-- A gap the human would notice: leave the task out, start a thread with `omni thread create "<question>" --feature "<name>"`, and name it in the report. One the human would accept either way: write the criterion with your answer and record it after the add with `omni story decision <key> --run <run> --question "<question>" --choice "<answer>" --by agent`.
+- A gap the human would notice: leave the task out, start a thread with `omni thread create "<question>" --track "<name>"`, and name it in the report. One the human would accept either way: write the criterion with your answer and record it after the add with `omni story decision <key> --run <run> --question "<question>" --choice "<answer>" --by agent`.
 - Coverage: every goal item, and every decision row that changes what the product does, is linked from a task that is not cancelled.
 
 ## Run again
@@ -146,12 +146,12 @@ Done when all of these hold:
 - no task has more than 4 criteria besides the standard lines;
 - each user story's first task covers its normal path, and its other tasks are blocked by it;
 - the two checks of [Saving](#saving) pass;
-- the chat asked the human nothing besides which feature, and the build has not been started;
+- the chat asked the human nothing besides which track, and the build has not been started;
 - the human has the report.
 
 The report, in the chat:
 
-- The tasks added: key and title, which can start now and which wait for which, and the link to the feature (the `omni` skill's Recipes say how a link is built).
+- The tasks added: key and title, which can start now and which wait for which, and the link to the track (the `omni` skill's Recipes say how a link is built).
 - **Waiting**: each node that waits, with the question on it, and what the human does: "Answer on the Behaviour screen, run omni-behaviour, then omni-stories again."
 - **By default**: each answer you recorded as your own, with its node.
 - On a second run: per new task, the node that was new or changed, and each backlog task a new one changes.

@@ -129,4 +129,4 @@ jq -Rs --arg page <page id> '[{op:"insert",parent:$page,position:{after:null},co
 
 Revisions: when a read shows `rev={n}` on a tag, send that number. When it shows none, send `1` for a node you have not edited; a stale one is refused and the error names the current revision, so resend with that.
 
-`omni import penpot <file.penpot> --project <id> [--feature <name>]` brings a Penpot file in as a design doc with its tokens and components.
+`omni import penpot <file.penpot> --project <id> [--track <name>]` brings a Penpot file in as a design doc (in the track's `ui` pillar with `--track`) with its tokens and components.

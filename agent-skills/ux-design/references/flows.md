@@ -1,6 +1,6 @@
 # Flows: from spec to jobs and situations
 
-How to read what users must be able to do, and every situation they can meet, out of a spec. A feature with a behaviour tree has this already: its user stories are the jobs and its nodes the situations. This file is for a feature without one, for `ux-review`, and for its situation checklist (section 5), which `ui-design` holds a screen against to find a state nobody described.
+How to read what users must be able to do, and every situation they can meet, out of a spec. A track with a behaviour tree has this already: its user stories are the jobs and its nodes the situations. This file is for a track without one, for `ux-review`, and for its situation checklist (section 5), which `ui-design` holds a screen against to find a state nobody described.
 
 Every item records:
 

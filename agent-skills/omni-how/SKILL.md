@@ -1,13 +1,13 @@
 ---
 name: omni-how
-description: Work out how a feature is built and write it into OmniState, as a sketch of its operations, its tables in full and an interactive map of how they fit together, with every real choice marked for the human. Use when a feature's behaviour and UI are settled and the human wants its how before tasks are cut, or says 'omni-how'.
+description: Work out how a track is built and write it into OmniState, as a sketch of its operations, its tables in full and an interactive map of how they fit together, with every real choice marked for the human. Use when a track's behaviour and UI are settled and the human wants its how before tasks are cut, or says 'omni-how'.
 ---
 
-Write a feature's **how** into OmniState: a shared outline of how the feature is built, so that agents building different tasks pull in the same direction. It is three docs in the feature, found later by their titles:
+Write a track's **how** into OmniState: a shared outline of how the track is built, so that agents building different tasks pull in the same direction. It is three docs in the track, found later by their titles:
 
 | Title | Pillar | Holds |
 |---|---|---|
-| `Map` | `architecture` | An interactive map of the feature and the existing parts it touches. The human reads it first. |
+| `Map` | `architecture` | An interactive map of the track and the existing parts it touches. The human reads it first. |
 | `Operations` | `architecture` | The operations as a sketch: a name and one line each. |
 | `Tables` | `db` | The tables in full: columns, types and keys. |
 
@@ -17,14 +17,14 @@ You write it alone. Where you meet a real **choice** you pick, give the reason a
 
 ## Start
 
-1. Read the feature from `OMNI_FEATURE`; without it, ask the human which feature, and pass `--feature "<name>"` on every `omni behaviour` and `omni design` command too. Follow the Start steps of the `omni` skill, with a run name such as `how-1` and the role `how`.
-2. Find the Spec doc: `omni doc list --feature "<name>" --pillar spec`. Without one, stop: tell the human the how builds on the Spec doc, which `omni-grill` writes.
+1. Read the track from `OMNI_TRACK`; without it, ask the human which track, and pass `--track "<name>"` on every `omni behaviour` and `omni design` command too. Follow the Start steps of the `omni` skill, with a run name such as `how-1` and the role `how`.
+2. Find the Spec doc: `omni doc list --track "<name>" --pillar spec`. Without one, stop: tell the human the how builds on the Spec doc, which `omni-grill` writes.
 3. Read whatever else exists. Each is optional:
    - **Project spec**: `omni doc list --global --pillar spec`, title `Project spec`. Its `Rules` bind the how; its `Stack` is the technology.
    - **Behaviour tree**: `omni behaviour list` for the nodes with their summaries, then `omni behaviour read <node>` for each node that has children: it prints the branch above it in full (the `omni` skill's `behaviour.md`). Read a leaf only when its summary leaves open what the product must do. A user story is **in scope** unless its status is `out-of-scope`.
-   - **Design**: `omni doc list --feature "<name>" --pillar ui`. Per design doc, `omni design flows --doc <id>` lists its boards and flows, and `omni design read --doc <id> --board <id>` prints a board.
+   - **Design**: `omni doc list --track "<name>" --pillar ui`. Per design doc, `omni design flows --doc <id>` lists its boards and flows, and `omni design read --doc <id> --board <id>` prints a board.
    - **App-level docs**: the `architecture` and `db` pillars of `omni doc list --global`.
-   - **Earlier how**: docs titled `Map`, `Operations` or `Tables` in the feature.
+   - **Earlier how**: docs titled `Map`, `Operations` or `Tables` in the track.
    - **Code**: whether the current folder holds the product's source.
 4. Tell the human what you found, one line per source, and carry on:
 
@@ -43,15 +43,15 @@ What a missing source changes, which the same message says:
 
 Delegate the reading to read-only sub-agents, in parallel, one question each (without sub-agents, read it yourself). Ask for facts with file paths:
 
-- What exists that the feature touches: the screens or commands, operations, tables and outside services that the user stories pass through or the Spec names, and which of them call which. Give the agent the story sentences and the Spec's goals. Per part: its name as the code has it, one line on what it does, its file.
-- Every table the feature reads or writes, as the schema or the migrations state it: all columns with type, null and default, and the keys and indexes.
+- What exists that the track touches: the screens or commands, operations, tables and outside services that the user stories pass through or the Spec names, and which of them call which. Give the agent the story sentences and the Spec's goals. Per part: its name as the code has it, one line on what it does, its file.
+- Every table the track reads or writes, as the schema or the migrations state it: all columns with type, null and default, and the keys and indexes.
 - The conventions a new operation and a new table follow here: how an operation is exposed, named and reports a failure; how tables and columns are named; the type of a key, timestamps, who owns a row, how a deletion is stored; where migrations live.
 
 Done when every existing part you are about to name traces to a file a sub-agent named.
 
 ### Without code
 
-A project with no code has nothing to read and no conventions to follow. The `Stack` part of the Project spec is the technology. Each `Stack` line that says `open` and that this feature's how depends on, and each convention from the last bullet above that the feature needs, is a **choice**: pick it, give the reason and mark it. With neither code nor Project spec, the stack itself is the first choice. Every part is new, so nothing on the map is faint.
+A project with no code has nothing to read and no conventions to follow. The `Stack` part of the Project spec is the technology. Each `Stack` line that says `open` and that this track's how depends on, and each convention from the last bullet above that the track needs, is a **choice**: pick it, give the reason and mark it. With neither code nor Project spec, the stack itself is the first choice. Every part is new, so nothing on the map is faint.
 
 ## The outline
 
@@ -63,26 +63,26 @@ A table holds what must outlast a request: the things the Spec and the tree say 
 
 The code's conventions are settled: follow them in every name, type and key.
 
-Write both docs as html docs (the `omni` skill's `html-docs.md`), one row or line per fact, so a comment can point at it. **New** and **changed** are measured against the app before this feature, and stay so once the parts are built. A part of the feature that the code already holds is listed as new or changed like the rest, with its `Shape` written from the code and what is still missing named. The examples are from a booking app on Postgres.
+Write both docs as html docs (the `omni` skill's `html-docs.md`), one row or line per fact, so a comment can point at it. **New** and **changed** are measured against the app before this track, and stay so once the parts are built. A part of the track that the code already holds is listed as new or changed like the rest, with its `Shape` written from the code and what is still missing named. The examples are from a booking app on Postgres.
 
 ### `Operations`
 
-A doc in the pillar `architecture` titled `Operations` (`omni doc create --feature "<name>" --kind html --pillar architecture --title "Operations"`), holding:
+A doc in the pillar `architecture` titled `Operations` (`omni doc create --track "<name>" --kind html --pillar architecture --title "Operations"`), holding:
 
-- One opening line: the feature, and that this is a starting point.
+- One opening line: the track, and that this is a starting point.
 - `New and changed`: a table with one row per operation.
   - `Operation`: its name in plain words, verb first.
   - `What it does`: one line.
   - `Called from`: the screens or commands that call it.
   - `Uses`: the tables it reads or writes and the outside services it reaches.
   - `Shape`: `Not built yet.` The task that builds the operation decides how it is called, what goes in, what comes back and how it fails, and writes that here when it lands.
-- `Builds on`: a table of the existing operations, screens and outside services the feature uses as they are, with `Part`, `What it is`, `Connected to` (what calls it and what it calls, among the parts in the two docs) and `Where` (its file).
+- `Builds on`: a table of the existing operations, screens and outside services the track uses as they are, with `Part`, `What it is`, `Connected to` (what calls it and what it calls, among the parts in the two docs) and `Where` (its file).
 
 ```html
 <tr><td>Book a time</td><td>Stores a booking when the time is still free, and confirms it by email.</td><td>Pick a time</td><td>writes bookings, customers; Email provider</td><td>Not built yet.</td></tr>
 ```
 
-A feature without operations gets the doc with one line that says so.
+A track without operations gets the doc with one line that says so.
 
 ### `Tables`
 
@@ -110,9 +110,9 @@ A doc in the pillar `db` titled `Tables`. Tables are written in full because the
 </ul>
 ```
 
-End with `Used as they are`: a table of the existing tables the feature reads or writes without changing them, with `Table`, `Columns the feature uses`, `Used by` (the operations) and `Where` (the file that defines it).
+End with `Used as they are`: a table of the existing tables the track reads or writes without changing them, with `Table`, `Columns the track uses`, `Used by` (the operations) and `Where` (the file that defines it).
 
-A store that is not a relational database gets the same per collection or file: fields, types, keys. A feature without tables gets the doc with one line that says so.
+A store that is not a relational database gets the same per collection or file: fields, types, keys. A track without tables gets the doc with one line that says so.
 
 ### Choices
 
@@ -125,7 +125,7 @@ For each real choice, pick, and write one block:
 ```
 
 - The block holds the ID, what it concerns, the pick, the reason and what you passed over. The viewer draws it as a green box, and one block per choice lets a comment land on that choice.
-- Where: a choice about an operation goes right after the `New and changed` table; one about a table, after that table's list of keys, or under the opening line of `Tables` when the table has no section; one about the whole feature (the stack, a convention), under the opening line of `Operations`.
+- Where: a choice about an operation goes right after the `New and changed` table; one about a table, after that table's list of keys, or under the opening line of `Tables` when the table has no section; one about the whole track (the stack, a convention), under the opening line of `Operations`.
 - IDs run `C1`, `C2`, ... across both docs in the order written and are never renumbered.
 
 ## The map
@@ -148,7 +148,7 @@ With an earlier how, the run brings the docs in line with what is true now and d
 
 Done when all of these hold:
 
-- every user story in scope (without a tree: every thing the `Goals` say the user can do) is carried by the rows of `Operations`, or the doc says the feature has none;
+- every user story in scope (without a tree: every thing the `Goals` say the user can do) is carried by the rows of `Operations`, or the doc says the track has none;
 - every new or changed table in `Tables` has each column typed and its keys listed;
 - every pick you made under [Choices](#choices) is a block with an ID;
 - the `Map` doc plays one flow per user story in scope, or the report says why no map was drawn;
@@ -166,4 +166,4 @@ Leave out a part that has nothing in it.
 
 ## After this step
 
-The two outline docs stay true through the tasks that build the feature. `write-back.md` in this skill's folder is the rule a building task follows when it builds an operation or changes the how. It stands on its own, for the tasks and deliver steps to hand to their agents.
+The two outline docs stay true through the tasks that build the track. `write-back.md` in this skill's folder is the rule a building task follows when it builds an operation or changes the how. It stands on its own, for the tasks and deliver steps to hand to their agents.

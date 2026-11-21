@@ -1,6 +1,6 @@
 # The map
 
-The map is what the human reads first: cards for the feature's screens, operations, tables and outside services, wires for what calls what, and one playable flow per user story. It shows the feature and the existing parts it touches, never the whole app. It is a page of the `system-map` skill, stored in OmniState as an html doc.
+The map is what the human reads first: cards for the track's screens, operations, tables and outside services, wires for what calls what, and one playable flow per user story. It shows the track and the existing parts it touches, never the whole app. It is a page of the `system-map` skill, stored in OmniState as an html doc.
 
 Read the `system-map` skill first. Its engine is finished and you write data. Follow its steps 2 to 5 (copy the template, write the data, lay out, verify in a browser) with what this file adds:
 
@@ -22,7 +22,7 @@ Without the `system-map` skill installed, draw no map and say so in the report, 
 | Table | `db` | the table's name |
 | Outside service | `cloud`, with `ext: 1` | its name |
 
-- `id`: kebab-case. A part listed under `Builds on` or `Used as they are` gets an id that starts with `x-`: the page draws those cards **faint**. The feature's own parts, new and changed, are drawn at full strength, also on a rerun after they are built.
+- `id`: kebab-case. A part listed under `Builds on` or `Used as they are` gets an id that starts with `x-`: the page draws those cards **faint**. The track's own parts, new and changed, are drawn at full strength, also on a rerun after they are built.
 - `sub`: `new`, `changed: <what>` or `exists`.
 - `about`: the part's one line, and `Choice C<n>: <the pick>` for each choice that concerns it.
 
@@ -34,7 +34,7 @@ Without the `system-map` skill installed, draw no map and say so in the report, 
 
 A new or changed card that no flow lights is a finding: an operation no story needs, or a step you left out of a flow. Settle it in the docs or the flow before you go on.
 
-**Header and caption.** Eyebrow `How · <feature>`, the feature's name as `h1`, a lede of one or two sentences. The caption says what the feature adds and changes, in counts, that fainter cards exist today and stay as they are, and that the outline is in the docs `Operations` and `Tables`. The map's `id` is `how-` and the feature's name in kebab-case.
+**Header and caption.** Eyebrow `How · <track>`, the track's name as `h1`, a lede of one or two sentences. The caption says what the track adds and changes, in counts, that fainter cards exist today and stay as they are, and that the outline is in the docs `Operations` and `Tables`. The map's `id` is `how-` and the track's name in kebab-case.
 
 **`MAP:BODY`** holds exactly this block. It fits the page to OmniState's doc viewer and draws the `x-` cards faint:
 
@@ -65,7 +65,7 @@ figure { padding: 0; border: 0; text-align: left; }
    The title and the font links above the `<style>` stay out: the viewer has no network, and the page falls back to system fonts.
 
 2. Write it.
-   - The feature has no `Map` doc: `omni doc create --feature "<name>" --kind html --pillar architecture --title "Map"`, then
+   - The track has no `Map` doc: `omni doc create --track "<name>" --kind html --pillar architecture --title "Map"`, then
 
      ```
      jq -Rs '[{op:"insert",parent:null,position:{after:null},content:.}]' map-doc.html | omni doc edit <doc> --body-file - --as <run>/how

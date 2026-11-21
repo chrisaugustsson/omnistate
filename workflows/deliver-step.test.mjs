@@ -88,9 +88,9 @@ function story(key, fields = {}) {
   return { key, title: `Story ${key}`, text: "", criteria: [], status: "backlog", blocked: false, holder: null, version: 1, decisions: [], links: [], blocked_by: [], files_planned: [], ...fields };
 }
 
-// A thread on the feature as `omni thread read` shows it; conclusion null when open.
+// A thread on the track as `omni thread read` shows it; conclusion null when open.
 function thread(id, title, conclusion = null) {
-  return { id, title, feature: "board", posts: [], conclusion };
+  return { id, title, track: "board", posts: [], conclusion };
 }
 
 const questionLink = (id) => ({ thread_id: id, label: "question" });
@@ -138,8 +138,8 @@ function helperRun(dirs, argv, env = {}) {
 }
 
 // start's flags as the command carries them, with the hash of its payload object.
-function startArgv({ feature = "board", op = "start-1", force = false } = {}) {
-  return ["start", "--op", op, "--feature", feature, ...(force ? ["--force"] : []), "--hash", fnv1a(JSON.stringify({ opId: op, feature, force }))];
+function startArgv({ track = "board", op = "start-1", force = false } = {}) {
+  return ["start", "--op", op, "--track", track, ...(force ? ["--force"] : []), "--hash", fnv1a(JSON.stringify({ opId: op, track, force }))];
 }
 
 function start(dirs, options = {}) {
@@ -800,7 +800,7 @@ test("a batch takes neither start, finish nor a batch, nor a step the helper lac
 
 // ---- start: the lock --------------------------------------------------------------
 
-test("start takes .omni/run.lock: the run, the feature, the session's pid, the op, and a heartbeat that starts at the run's start; received is the hash of {opId, feature, force}", (t) => {
+test("start takes .omni/run.lock: the run, the track, the session's pid, the op, and a heartbeat that starts at the run's start; received is the hash of {opId, track, force}", (t) => {
   const dirs = scratch(t);
 
   const body = start(dirs, { op: "start-7" });
@@ -808,10 +808,10 @@ test("start takes .omni/run.lock: the run, the feature, the session's pid, the o
   assert.equal(body.ok, true);
   assert.match(body.run, /^run-\d{8}-\d{6}-\d+$/);
   const lock = readLock(dirs);
-  assert.deepEqual({ ...lock, started: null, heartbeat: null }, { run: body.run, feature: "board", pid: dirs.session, op: "start-7", started: null, heartbeat: null });
+  assert.deepEqual({ ...lock, started: null, heartbeat: null }, { run: body.run, track: "board", pid: dirs.session, op: "start-7", started: null, heartbeat: null });
   assert.equal(lock.heartbeat, lock.started);
   assert.ok(Date.now() - Date.parse(lock.started) < 60000);
-  assert.equal(body.received, fnv1a(JSON.stringify({ opId: "start-7", feature: "board", force: false })));
+  assert.equal(body.received, fnv1a(JSON.stringify({ opId: "start-7", track: "board", force: false })));
 });
 
 test("start names the run by the local time of its start", (t) => {
@@ -826,15 +826,15 @@ test("start names the run by the local time of its start", (t) => {
   assert.match(body.run, new RegExp(`^run-${local}-\\d+$`));
 });
 
-test("a lock whose session lives and whose heartbeat is under 2 hours old refuses the run, naming it and its feature, and nothing is touched: the board is only read", (t) => {
+test("a lock whose session lives and whose heartbeat is under 2 hours old refuses the run, naming it and its track, and nothing is touched: the board is only read", (t) => {
   const dirs = scratch(t, [story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } })]);
-  const held = { run: "run-20261107-090000-1", feature: "billing", pid: liveProcess(t), op: "start-1", started: ago(3 * 3600000), heartbeat: ago(90 * 60000) };
+  const held = { run: "run-20261107-090000-1", track: "billing", pid: liveProcess(t), op: "start-1", started: ago(3 * 3600000), heartbeat: ago(90 * 60000) };
   writeLock(dirs, held);
 
   const body = start(dirs);
 
   assert.equal(body.ok, false);
-  assert.match(body.error, /^the tree is held by run run-20261107-090000-1 for feature billing, .*start with force if that run is dead$/);
+  assert.match(body.error, /^the tree is held by run run-20261107-090000-1 for track billing, .*start with force if that run is dead$/);
   assert.deepEqual(readLock(dirs), held);
   // The only call is the read of the board that tells a setup run from another.
   assert.deepEqual(dirs.state().calls.map((c) => c.argv.slice(0, 2).join(" ")), ["story list"]);
@@ -843,36 +843,36 @@ test("a lock whose session lives and whose heartbeat is under 2 hours old refuse
 
 test("a lock whose session has ended is taken over, and the start logs it", (t) => {
   const dirs = scratch(t);
-  writeLock(dirs, { run: "run-old", feature: "billing", pid: deadPid(), op: "start-1", started: ago(60000), heartbeat: ago(60000) });
+  writeLock(dirs, { run: "run-old", track: "billing", pid: deadPid(), op: "start-1", started: ago(60000), heartbeat: ago(60000) });
 
   const body = start(dirs);
 
   assert.equal(body.ok, true);
   assert.equal(readLock(dirs).run, body.run);
-  assert.ok(body.log.some((l) => /^Took over the lock of run run-old for feature billing: its session \(pid \d+\) has ended$/.test(l)), body.log.join("\n"));
+  assert.ok(body.log.some((l) => /^Took over the lock of run run-old for track billing: its session \(pid \d+\) has ended$/.test(l)), body.log.join("\n"));
 });
 
 test("a lock whose heartbeat is more than 2 hours old is taken over while its session still lives, and the start logs it", (t) => {
   const dirs = scratch(t);
-  writeLock(dirs, { run: "run-old", feature: "billing", pid: liveProcess(t), op: "start-1", started: ago(5 * 3600000), heartbeat: ago(2 * 3600000 + 60000) });
+  writeLock(dirs, { run: "run-old", track: "billing", pid: liveProcess(t), op: "start-1", started: ago(5 * 3600000), heartbeat: ago(2 * 3600000 + 60000) });
 
   const body = start(dirs);
 
   assert.equal(body.ok, true);
   assert.equal(readLock(dirs).run, body.run);
-  assert.ok(body.log.some((l) => /^Took over the lock of run run-old for feature billing: its last heartbeat, \S+, is more than 2 hours old$/.test(l)), body.log.join("\n"));
+  assert.ok(body.log.some((l) => /^Took over the lock of run run-old for track billing: its last heartbeat, \S+, is more than 2 hours old$/.test(l)), body.log.join("\n"));
 });
 
 test("start with force takes over a live lock", (t) => {
   const dirs = scratch(t);
-  writeLock(dirs, { run: "run-old", feature: "billing", pid: liveProcess(t), op: "start-1", started: ago(60000), heartbeat: ago(60000) });
+  writeLock(dirs, { run: "run-old", track: "billing", pid: liveProcess(t), op: "start-1", started: ago(60000), heartbeat: ago(60000) });
 
   const body = start(dirs, { force: true });
 
   assert.equal(body.ok, true);
   assert.equal(readLock(dirs).run, body.run);
-  assert.ok(body.log.includes("Took over the lock of run run-old for feature billing: start with force"), body.log.join("\n"));
-  assert.equal(body.received, fnv1a(JSON.stringify({ opId: "start-1", feature: "board", force: true })));
+  assert.ok(body.log.includes("Took over the lock of run run-old for track billing: start with force"), body.log.join("\n"));
+  assert.equal(body.received, fnv1a(JSON.stringify({ opId: "start-1", track: "board", force: true })));
 });
 
 test("the same start again from the same session, before its run made any call, gets the first start's body back; once the run has called, it is refused", (t) => {
@@ -886,7 +886,7 @@ test("the same start again from the same session, before its run made any call, 
   assert.deepEqual(again, first);
   assert.deepEqual(dirs.writes(), ["release US-1"]);
   assert.equal(late.ok, false);
-  assert.match(late.error, new RegExp(`^the tree is held by run ${first.run} for feature board`));
+  assert.match(late.error, new RegExp(`^the tree is held by run ${first.run} for track board`));
 });
 
 test("the same start from the same session is answered from its record only within 5 minutes of it; a forced start's retry too, which gets the run its first try started instead of taking its lock over", (t) => {
@@ -904,8 +904,8 @@ test("the same start from the same session is answered from its record only with
   const next = start(dirs);
 
   assert.equal(later.ok, false);
-  assert.match(later.error, new RegExp(`^the tree is held by run ${first.run} for feature board`));
-  assert.deepEqual([forced.ok, forced.received], [true, fnv1a(JSON.stringify({ opId: "start-1", feature: "board", force: true }))]);
+  assert.match(later.error, new RegExp(`^the tree is held by run ${first.run} for track board`));
+  assert.deepEqual([forced.ok, forced.received], [true, fnv1a(JSON.stringify({ opId: "start-1", track: "board", force: true }))]);
   assert.notEqual(forced.run, first.run);
   assert.deepEqual(forcedAgain, forced);
   assert.equal(lockAfter.run, forced.run);
@@ -925,7 +925,7 @@ test("start reads and takes the lock while it holds the lock's own lock: a start
   const closed = new Promise((resolve) => child.on("close", resolve));
   await pause(1500);
   const whileHeld = out;
-  const other = { run: "run-20261107-120000-1", feature: "billing", pid: liveProcess(t), op: "start-1", started: ago(1000), heartbeat: ago(1000) };
+  const other = { run: "run-20261107-120000-1", track: "billing", pid: liveProcess(t), op: "start-1", started: ago(1000), heartbeat: ago(1000) };
   writeLock(dirs, other);
   rmSync(`${dirs.lock}.lock`);
   await closed;
@@ -933,13 +933,13 @@ test("start reads and takes the lock while it holds the lock's own lock: a start
   assert.equal(whileHeld, "", "no answer while the lock's lock is held");
   const body = JSON.parse(out).body;
   assert.equal(body.ok, false);
-  assert.match(body.error, /^the tree is held by run run-20261107-120000-1 for feature billing/);
+  assert.match(body.error, /^the tree is held by run run-20261107-120000-1 for track billing/);
   assert.deepEqual(readLock(dirs), other);
 });
 
 test("a start that stops keeps the log of what it did before it stopped", (t) => {
   const dirs = scratch(t);
-  writeLock(dirs, { run: "run-old", feature: "billing", pid: deadPid(), op: "start-1", started: ago(60000), heartbeat: ago(60000) });
+  writeLock(dirs, { run: "run-old", track: "billing", pid: deadPid(), op: "start-1", started: ago(60000), heartbeat: ago(60000) });
   landOn(dirs, "deliver/board", "landed.rs");
   commit(dirs.repo, "main.rs");
 
@@ -947,7 +947,7 @@ test("a start that stops keeps the log of what it did before it stopped", (t) =>
 
   assert.equal(body.ok, false);
   assert.match(body.error, /^deliver\/board and HEAD have diverged/);
-  assert.ok(body.log.some((l) => /^Took over the lock of run run-old for feature billing: its session \(pid \d+\) has ended$/.test(l)), JSON.stringify(body.log));
+  assert.ok(body.log.some((l) => /^Took over the lock of run run-old for track billing: its session \(pid \d+\) has ended$/.test(l)), JSON.stringify(body.log));
 });
 
 test("without OMNI_DELIVER_SESSION_PID the lock holds the nearest ancestor that is not a shell: the process that ran the helper, directly or through sh", (t) => {
@@ -989,12 +989,12 @@ test("start leaves .git/info/exclude alone when the checkout already ignores .om
   assert.equal(readFileSync(join(dirs.repo, ".git", "info", "exclude"), "utf8"), before);
 });
 
-test("start creates deliver/<slug> at the checkout's HEAD when it is missing, the slug being the feature lowercased with each non-alphanumeric a dash; the checkout's branch and files stay as they were", (t) => {
+test("start creates deliver/<slug> at the checkout's HEAD when it is missing, the slug being the track lowercased with each non-alphanumeric a dash; the checkout's branch and files stay as they were", (t) => {
   const dirs = scratch(t);
   writeFileSync(join(dirs.repo, "README"), "edited, not committed\n");
   const head = sha(dirs, "HEAD");
 
-  const body = start(dirs, { feature: "Link a Folder: v2" });
+  const body = start(dirs, { track: "Link a Folder: v2" });
 
   assert.equal(body.branch, "deliver/link-a-folder--v2");
   assert.deepEqual([sha(dirs, "refs/heads/deliver/link-a-folder--v2"), body.tip], [head, head]);
@@ -1050,16 +1050,18 @@ test("start gives the checks fast, stack_up, stack, stack_reset, seed and lint a
   assert.deepEqual(body.checks, { fast: "make fast", stack_up: "", stack: "make stack", stack_reset: "make stack-down", seed: "make seed NAME=x", lint: "" });
 });
 
-test("start gives as setup the first project-level architecture doc titled Setup in any letter case that the project's doc list gives, read with --global; a feature's doc, another pillar or another title is not it, and with none setup is null", (t) => {
+test("start gives as setup the first app-level architecture doc titled Setup in any letter case that the project's doc list gives, read with --global; a doc of a track, a feature or a part, another pillar or another title is not it, and with none setup is null", (t) => {
   const docList = [
+    { id: "d-track", kind: "html", pillar: "architecture", title: "Setup", track_id: "t-1" },
     { id: "d-feature", kind: "html", pillar: "architecture", title: "Setup", feature_id: "f-1" },
+    { id: "d-part", kind: "html", pillar: "architecture", title: "Setup", part_id: "p-1" },
     { id: "d-spec", kind: "html", pillar: "spec", title: "Setup" },
     { id: "d-notes", kind: "html", pillar: "architecture", title: "Setup notes" },
     { id: "d-setup", kind: "html", pillar: "architecture", title: "SETUP" },
     { id: "d-second", kind: "html", pillar: "architecture", title: "setup" },
   ];
   const dirs = scratch(t, [], [], { docList });
-  const bare = scratch(t, [], [], { docList: docList.slice(0, 3) });
+  const bare = scratch(t, [], [], { docList: docList.slice(0, 5) });
 
   const body = start(dirs);
 
@@ -1068,7 +1070,7 @@ test("start gives as setup the first project-level architecture doc titled Setup
   assert.ok(dirs.state().calls.some((c) => c.argv.join(" ") === "doc list --global --json"), JSON.stringify(dirs.state().calls.map((c) => c.argv)));
 });
 
-test("start gives as how the IDs of the feature's docs titled Operations with pillar architecture and Tables with pillar db, or null for one it lacks, and null for both when the docs cannot be listed, which it logs", (t) => {
+test("start gives as how the IDs of the track's docs titled Operations with pillar architecture and Tables with pillar db, or null for one it lacks, and null for both when the docs cannot be listed, which it logs", (t) => {
   const docList = [
     { id: "d-ops-spec", kind: "html", pillar: "spec", title: "Operations" },
     { id: "d-ops", kind: "html", pillar: "architecture", title: "Operations" },
@@ -1191,7 +1193,7 @@ test("a start that cannot write the stories folder beside the checkout stops bef
 
 // ---- start: reconcile ---------------------------------------------------------------
 
-test("start releases the stories another run holds, and the working ones nobody holds, to their waiting states, keeping an implementing story's worktree, and lists them; of the feature's stories it gives only their keys and counts, since outputs stay small", (t) => {
+test("start releases the stories another run holds, and the working ones nobody holds, to their waiting states, keeping an implementing story's worktree, and lists them; of the track's stories it gives only their keys and counts, since outputs stay small", (t) => {
   const dirs = scratch(t, [
     story("US-1", { status: "review", holder: { run: "run-old", stage: "review" } }),
     story("US-2", { status: "testing", holder: { run: "run-old", stage: "testing" } }),
@@ -1243,14 +1245,14 @@ test("start in a folder that is no git repository, with a backlog task Set up th
   assert.equal(dirs.state().calls.some((c) => c.argv[0] === "checks"), false);
 });
 
-test("start in a folder without a repository refuses when the feature has no task Set up the project, or only one that is done or cancelled, before the lock: nothing is left behind", (t) => {
+test("start in a folder without a repository refuses when the track has no task Set up the project, or only one that is done or cancelled, before the lock: nothing is left behind", (t) => {
   for (const stories of [[story("US-1")], [setupStory("US-1", { status: "done" })], [setupStory("US-1", { status: "cancelled" })]]) {
     const dirs = noRepo(scratch(t, stories));
 
     const body = start(dirs);
 
     assert.deepEqual([body.ok, body.retry], [false, false]);
-    assert.equal(body.error, `${dirs.repo} has no git repository, and the feature has no task "Set up the project" to make one: split the feature with omni-stories first`);
+    assert.equal(body.error, `${dirs.repo} has no git repository, and the track has no task "Set up the project" to make one: split the track with omni-stories first`);
     assert.equal(existsSync(dirs.lock), false);
     assert.equal(existsSync(join(dirs.root, "app-stories")), false);
     assert.equal(dirs.state().threads.length, 0);
@@ -1373,7 +1375,7 @@ test("setup-land records the paths git ls-files gives as the task's files, ticks
 });
 
 test("repo-open creates deliver/<slug> at HEAD and the lane worktree, and gives the checks, base as the branch checked out and setup as the project-level Setup doc of pillar architecture, else null", (t) => {
-  const docList = [{ id: "d0", kind: "html", pillar: "architecture", title: "Setup", feature_id: "f1" }, { id: "d1", kind: "html", pillar: "spec", title: "Setup" }, { id: "d2", kind: "html", pillar: "architecture", title: "SETUP" }, { id: "d3", kind: "html", pillar: "architecture", title: "setup" }];
+  const docList = [{ id: "d0", kind: "html", pillar: "architecture", title: "Setup", track_id: "t1" }, { id: "d1", kind: "html", pillar: "spec", title: "Setup" }, { id: "d2", kind: "html", pillar: "architecture", title: "SETUP" }, { id: "d3", kind: "html", pillar: "architecture", title: "setup" }];
   const { dirs, run } = setupRun(t, [setupStory("US-1"), story("US-2")], { docList, checks: { fast: "make check" } });
   dirs.edit((s) => { s.stories[0].status = "done"; });
   gitInit(dirs);
@@ -1400,7 +1402,7 @@ test("repo-open refuses for good a root that is no repository, and one without a
   const empty = step(dirs, run, "repo-open", {});
 
   assert.deepEqual([none.ok, none.retry, none.error], [false, false, `${dirs.repo} is not a git repository`]);
-  assert.deepEqual([empty.ok, empty.retry, empty.error], [false, false, `${dirs.repo} has no commit to start the feature's branch from`]);
+  assert.deepEqual([empty.ok, empty.retry, empty.error], [false, false, `${dirs.repo} has no commit to start the track's branch from`]);
   assert.equal(existsSync(dirs.lane), false);
 });
 
@@ -1445,7 +1447,7 @@ test("context gives only the facts the script decides by, and no text of the sto
       id: "id-2",
       status: "implemented",
       blocked: true,
-      text: "STORY TEXT: show a badge.\nCovers, in the feature's behaviour tree (`omni behaviour read <id> --feature \"board\"`):\n- node-9 v2 `shows/red`\n- node-4 v1 `shows`",
+      text: "STORY TEXT: show a badge.\nCovers, in the track's behaviour tree (`omni behaviour read <id> --track \"board\"`):\n- node-9 v2 `shows/red`\n- node-4 v1 `shows`",
       criteria: [{ text: "The badge is red", human_check: false }, { text: "A regression test covers the badge", human_check: false }, { text: "It looks right", human_check: true }],
       files_planned: ["src/badge.rs"],
       blocked_by: ["id-1"],
@@ -1507,7 +1509,7 @@ const designState = () => ({
   boards: [{ doc: "0190aaaa-d1d1d1d1", board: "b1", name: "Rename" }, { doc: "0190aaaa-d1d1d1d1", board: "b2", name: "Name taken" }],
 });
 
-test("design-export runs omni export for the linked project and the feature into the run's design folder and leaves the files where it puts them: the manifest gives each board's tags file, with its image beside it; a second design-export under a new opId exports nothing again and gives the same body", (t) => {
+test("design-export runs omni export for the linked project and the track into the run's design folder and leaves the files where it puts them: the manifest gives each board's tags file, with its image beside it; a second design-export under a new opId exports nothing again and gives the same body", (t) => {
   const dirs = scratch(t, [], [], designState());
   const { run } = start(dirs);
   const dir = join(dirs.repo, ".omni", "runs", run, "design");
@@ -1517,7 +1519,7 @@ test("design-export runs omni export for the linked project and the feature into
 
   assert.deepEqual(pick(body), { ok: true, dir, boards: 2 });
   assert.deepEqual(pick(again), pick(body));
-  assert.deepEqual(exportsOf(dirs), [["export", "--project", "p-1", "--feature", "board", "--out", dir]]);
+  assert.deepEqual(exportsOf(dirs), [["export", "--project", "p-1", "--track", "board", "--out", dir]]);
   const entry = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).files.find((f) => f.doc_id === "0190aaaa-d1d1d1d1" && f.board_id === "b1");
   assert.equal(entry.path, "ui/rename-screens-d1d1d1d1/rename-b1.tags");
   assert.equal(existsSync(join(dir, entry.path)), true);
@@ -1726,7 +1728,7 @@ test("files sets the story's files_changed to what its branch changed since it l
   assert.deepEqual(dirs.story("US-1").files_changed, ["board.rs"]);
 });
 
-test("thread-open creates a thread on the feature with its body posted from a file in the run's folder that is gone after; given a key, it links the thread from the story, keeping its links, and blocks it", (t) => {
+test("thread-open creates a thread on the track with its body posted from a file in the run's folder that is gone after; given a key, it links the thread from the story, keeping its links, and blocks it", (t) => {
   const dirs = scratch(t, [story("US-1", { links: [{ doc_id: "doc-spec", node_id: "n1", label: "spec" }] })]);
   const { run } = start(dirs);
   step(dirs, run, "claim", { key: "US-1", stage: "implementing" });
@@ -1734,7 +1736,7 @@ test("thread-open creates a thread on the feature with its body posted from a fi
   const plain = step(dirs, run, "thread-open", { title: "Run question", body: "Plain\n" });
   const linked = step(dirs, run, "thread-open", { title: "US-1: Which colour is the badge?", body: "Options:\n1. Paint it red\n2. Paint it blue\n", key: "US-1" });
 
-  assert.deepEqual(questions(dirs).map((th) => [th.id, th.title, th.feature, th.posts]), [
+  assert.deepEqual(questions(dirs).map((th) => [th.id, th.title, th.track, th.posts]), [
     [plain.thread, "Run question", "board", [{ summary: "Run question", body: "Plain\n" }]],
     [linked.thread, "US-1: Which colour is the badge?", "board", [{ summary: "US-1: Which colour is the badge?", body: "Options:\n1. Paint it red\n2. Paint it blue\n" }]],
   ]);
@@ -1751,9 +1753,9 @@ test("thread-open creates a thread on the feature with its body posted from a fi
 
 // The choice of the decision a question on the tree leaves on its task.
 const askedOn = (question, node) => `Asked on the behaviour tree: question ${question} on node ${node}. The task waits for the answer.`;
-// The asks sent to the tree, as their arguments after `behaviour ask`, without the feature every call names.
-const asks = (dirs) => dirs.state().calls.filter((c) => c.argv[0] === "behaviour" && c.argv[1] === "ask").map((c) => c.argv.slice(2).filter((a, i, all) => a !== "--feature" && all[i - 1] !== "--feature"));
-const covers = (...lines) => `Show a badge.\nCovers, in the feature's behaviour tree (\`omni behaviour read <id> --feature "board"\`):\n${lines.map((l) => `${l}\n`).join("")}`;
+// The asks sent to the tree, as their arguments after `behaviour ask`, without the track every call names.
+const asks = (dirs) => dirs.state().calls.filter((c) => c.argv[0] === "behaviour" && c.argv[1] === "ask").map((c) => c.argv.slice(2).filter((a, i, all) => a !== "--track" && all[i - 1] !== "--track"));
+const covers = (...lines) => `Show a badge.\nCovers, in the track's behaviour tree (\`omni behaviour read <id> --track "board"\`):\n${lines.map((l) => `${l}\n`).join("")}`;
 
 test("question-ask asks on the payload's node with the options numbered and who asks, and the recommendation; the task gets the question with the Asked wording as the agent's decision, and with block true it is blocked with no holder", (t) => {
   const dirs = scratch(t, [story("US-1")], [], { behaviour: { nodes: [{ id: "root", path: "" }, { id: "n1", path: "a" }], questions: [] } });
@@ -1806,7 +1808,7 @@ test("question-ask fails naming the last read's error when the tree has none of 
   const body = step(dirs, run, "question-ask", { key: "US-1", node: "gone", question: "Which red?", recommendation: "#c00", options: [], asker: "the implementer", block: true });
 
   assert.equal(body.ok, false);
-  assert.match(body.error, /not_found: no node \. in this feature/);
+  assert.match(body.error, /not_found: no node \. in this track/);
   assert.deepEqual([asks(dirs), dirs.state().behaviour.questions], [[], []]);
   assert.deepEqual([dirs.story("US-1").decisions, dirs.story("US-1").status, dirs.story("US-1").blocked], [[], "implemented", false]);
 });
@@ -1993,7 +1995,7 @@ test("unblock-pass keeps a task whose asked question cannot be read blocked, rec
 
   const body = step(dirs, run, "unblock-pass");
 
-  assert.deepEqual([body.ok, body.unblocked, body.log], [true, ["US-2"], ["US-1 stays blocked: the question q-gone could not be read: not_found: no question q-gone in this feature"]]);
+  assert.deepEqual([body.ok, body.unblocked, body.log], [true, ["US-2"], ["US-1 stays blocked: the question q-gone could not be read: not_found: no question q-gone in this track"]]);
   assert.deepEqual(dirs.story("US-1").decisions, [asked("Which red?", "q-1"), asked("How big?", "q-gone")]);
   assert.deepEqual([dirs.story("US-1").blocked, dirs.story("US-2").blocked], [true, false]);
 });
@@ -2240,15 +2242,15 @@ test("a story's clarity check is pending again when its text, criteria, decision
 
 // ---- the run's thread, its checks and its timings -------------------------------------
 
-test("start opens the run's thread on the feature, named Run <run> as omni-deliver.js names it, returns it, and keeps it in run.json with the run's start, tip and checks", (t) => {
+test("start opens the run's thread on the track, named Run <run> as omni-deliver.js names it, returns it, and keeps it in run.json with the run's start, tip and checks", (t) => {
   const dirs = scratch(t);
 
   const body = start(dirs);
 
-  assert.deepEqual(dirs.state().threads.map((th) => [th.id, th.title, th.feature, th.posts]), [[body.thread, `Run ${body.run}`, "board", []]]);
+  assert.deepEqual(dirs.state().threads.map((th) => [th.id, th.title, th.track, th.posts]), [[body.thread, `Run ${body.run}`, "board", []]]);
   const info = JSON.parse(readFileSync(runFile(dirs, body.run, "run.json"), "utf8"));
   assert.ok(Date.now() - Date.parse(info.started) < 60000);
-  assert.deepEqual({ ...info, started: null }, { run: body.run, feature: "board", root: dirs.repo, thread: body.thread, started: null, tip: body.tip, checks: body.checks, landed: [] });
+  assert.deepEqual({ ...info, started: null }, { run: body.run, track: "board", root: dirs.repo, thread: body.thread, started: null, tip: body.tip, checks: body.checks, landed: [] });
 });
 
 test("checks-set merges checks into the run's run.json and gives all six back, stack_reset among them; an unknown check, or a command that is not a string, is refused", (t) => {
@@ -3261,7 +3263,7 @@ The lane stopped once: the stack did not start.
 - US-2 Story US-2: thread th-1
 - US-3 Story US-3: blocked
 
-Answer on the feature's Behaviour screen; the next build takes these tasks up.
+Answer on the track's Behaviour screen; the next build takes these tasks up.
 
 ## Failed
 - none
@@ -3342,9 +3344,9 @@ test("the report lists each task once: waiting on an open question with its node
     '- US-1 Story US-1: "Which red?" on a (recommended: #c00)',
     '- US-1 Story US-1: "How big?" on a',
     "- US-2 Story US-2: thread th-1",
-    "- US-3 Story US-3: blocked: the question q-9 could not be read: not_found: no question q-9 in this feature",
+    "- US-3 Story US-3: blocked: the question q-9 could not be read: not_found: no question q-9 in this track",
     "",
-    "Answer on the feature's Behaviour screen; the next build takes these tasks up.",
+    "Answer on the track's Behaviour screen; the next build takes these tasks up.",
   ].join("\n"));
   assert.equal(sectionOf(text, "Failed"), [
     "- US-4 Story US-4: parked after 3 tries",
@@ -3450,7 +3452,7 @@ function withRemote(dirs, name = "origin") {
 }
 const secondLine = (file) => readFileSync(file, "utf8").split("\n")[1];
 
-test("finish pushes deliver/<slug> to the remote of the base branch and opens one pull request into the base, titled with the feature, whose body is the report without its second line, which names the pull request on the Run thread and in report.md", (t) => {
+test("finish pushes deliver/<slug> to the remote of the base branch and opens one pull request into the base, titled with the track, whose body is the report without its second line, which names the pull request on the Run thread and in report.md", (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const remote = withRemote(dirs, "upstream");
   git(dirs.repo, "config", "branch.main.remote", "upstream");
@@ -3472,7 +3474,7 @@ test("finish pushes deliver/<slug> to the remote of the base branch and opens on
   assert.equal(existsSync(dirs.lock), false);
 });
 
-test("finish pushes nothing and opens no pull request, and the report's second line says why and names the branch, with the first reason that holds: no branch checked out, no remote, the base not on the remote, no gh, gh that cannot list pull requests, a branch with nothing the base lacks; a setup run that never opened the repository says the feature has no branch yet", (t) => {
+test("finish pushes nothing and opens no pull request, and the report's second line says why and names the branch, with the first reason that holds: no branch checked out, no remote, the base not on the remote, no gh, gh that cannot list pull requests, a branch with nothing the base lacks; a setup run that never opened the repository says the track has no branch yet", (t) => {
   const cases = [
     ["the checkout has no branch checked out", (dirs) => { withRemote(dirs); withGh(dirs); git(dirs.repo, "checkout", "-q", "--detach"); }],
     ["the checkout has no remote", (dirs) => { withGh(dirs); }],
@@ -3504,7 +3506,7 @@ test("finish pushes nothing and opens no pull request, and the report's second l
   }
   const { dirs, run } = setupRun(t);
   const body = step(dirs, run, "finish", { report: noReport });
-  assert.deepEqual([body.pr, body.pushed, body.why, secondLine(body.report)], [null, false, "the feature has no branch yet", "No pull request: the feature has no branch yet."]);
+  assert.deepEqual([body.pr, body.pushed, body.why, secondLine(body.report)], [null, false, "the track has no branch yet", "No pull request: the track has no branch yet."]);
 });
 
 test("a push or a gh pr create that fails does not stop finish: the report is posted with the error's first line as why the pull request is missing, and the lock is given up", (t) => {

@@ -289,7 +289,7 @@ async function deliver(dirs, args = {}, roles = {}, { fault = () => null, source
   let result = null;
   let error = null;
   try {
-    result = await compile(source)({ feature: "board", helper, ...args }, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log, NoDate, NoRandom);
+    result = await compile(source)({ track: "board", helper, ...args }, rt.agent, rt.parallel, rt.pipeline, rt.phase, rt.log, NoDate, NoRandom);
   } catch (e) {
     error = e;
   }
@@ -309,7 +309,7 @@ async function helperStep(dirs, run, name, fields = {}) {
 // The next run's start, once a run has finished and given the lock up.
 async function nextRun(dirs) {
   const op = `test-start-${++testOps}`;
-  return JSON.parse((await sh(`node ${helper} start --op ${op} --feature board --hash ${fnv1a(JSON.stringify({ opId: op, feature: "board", force: false }))}`, dirs)).stdout).body.run;
+  return JSON.parse((await sh(`node ${helper} start --op ${op} --track board --hash ${fnv1a(JSON.stringify({ opId: op, track: "board", force: false }))}`, dirs)).stdout).body.run;
 }
 
 const couriersOf = (calls) => calls.filter((c) => c.label.startsWith("courier:"));
@@ -354,7 +354,8 @@ const findingsOf = (dirs, key) => (dirs.story(key).findings || []).map((f) => [f
 
 // ---- the fake omni's phase rules ----------------------------------------------------
 
-const omni = (dirs, ...argv) => spawnSync(join(dirs.bin, "omni"), argv, { cwd: dirs.repo, env: dirs.env, encoding: "utf8" });
+// A direct call acts as an agent, which always has an identity.
+const omni = (dirs, ...argv) => spawnSync(join(dirs.bin, "omni"), argv, { cwd: dirs.repo, env: { ...dirs.env, OMNI_RUN: "r", OMNI_ROLE: "test" }, encoding: "utf8" });
 
 test("the fake refuses a claim from a status that is not its stage's waiting state, changing nothing, and claims from the waiting state", (t) => {
   const dirs = scratch(t, [story("US-1"), story("US-2", { status: "implemented" })]);
@@ -430,10 +431,10 @@ test("the script's own fnv1a agrees with the helper's on ASCII, Unicode, emoji a
   }
 });
 
-test("a courier is a haiku agent at low effort with the schema {exitCode, output}: it writes the payload to <root>/.omni/runs/<run>/in/<opId>.json and runs node <helper> <step> --run --payload --hash in a Bash call with the timeout at 600000, steps that always follow each other as one batch, named after them; start goes by flags, its feature quoted and --force from args.force", { timeout: 60000 }, async (t) => {
+test("a courier is a haiku agent at low effort with the schema {exitCode, output}: it writes the payload to <root>/.omni/runs/<run>/in/<opId>.json and runs node <helper> <step> --run --payload --hash in a Bash call with the timeout at 600000, steps that always follow each other as one batch, named after them; start goes by flags, its track quoted and --force from args.force", { timeout: 60000 }, async (t) => {
   const dirs = scratch(t);
 
-  const { result, error, calls, phases } = await deliver(dirs, { feature: "Bob's board", force: true });
+  const { result, error, calls, phases } = await deliver(dirs, { track: "Bob's board", force: true });
 
   assert.equal(error, null);
   const couriers = couriersOf(calls);
@@ -442,14 +443,14 @@ test("a courier is a haiku agent at low effort with the schema {exitCode, output
     assert.deepEqual([c.model, c.effort, c.agentType, c.schema.required], ["haiku", "low", "omni-courier", ["exitCode", "output"]]);
     assert.match(c.prompt, /\. Run the helper\. Use the Bash tool, with its timeout set to 600000, to run this command exactly as written, once:\n/);
   }
-  const startHash = fnv1a(JSON.stringify({ opId: "start-1", feature: "Bob's board", force: true }));
-  assert.deepEqual([fileIn(couriers[0].prompt), commandIn(couriers[0].prompt)], [null, `node ${helper} start --op start-1 --feature 'Bob'\\''s board' --force --hash ${startHash}`]);
+  const startHash = fnv1a(JSON.stringify({ opId: "start-1", track: "Bob's board", force: true }));
+  assert.deepEqual([fileIn(couriers[0].prompt), commandIn(couriers[0].prompt)], [null, `node ${helper} start --op start-1 --track 'Bob'\\''s board' --force --hash ${startHash}`]);
   const file = join(dirs.repo, ".omni", "runs", result.run, "in", "unblock-pass-retry-pass-clarity-pending-1.json");
   const payload = JSON.stringify({ opId: "unblock-pass-retry-pass-clarity-pending-1", steps: [{ name: "unblock-pass", fields: {} }, { name: "retry-pass", fields: {} }, { name: "clarity-pending", fields: {} }] });
   assert.deepEqual([fileIn(couriers[1].prompt), payloadIn(couriers[1].prompt), commandIn(couriers[1].prompt)], [file, payload, `node ${helper} batch --run ${result.run} --payload ${file} --hash ${fnv1a(payload)}`]);
   const list = join(dirs.repo, ".omni", "runs", result.run, "in", "list-1.json");
   assert.deepEqual([fileIn(couriers[2].prompt), payloadIn(couriers[2].prompt), commandIn(couriers[2].prompt)], [list, '{"opId":"list-1"}', `node ${helper} list --run ${result.run} --payload ${list} --hash ${fnv1a('{"opId":"list-1"}')}`]);
-  assert.deepEqual([result.feature, result.branch, JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", result.run, "run.json"), "utf8")).feature], ["Bob's board", "deliver/bob-s-board", "Bob's board"]);
+  assert.deepEqual([result.track, result.branch, JSON.parse(readFileSync(join(dirs.repo, ".omni", "runs", result.run, "run.json"), "utf8")).track], ["Bob's board", "deliver/bob-s-board", "Bob's board"]);
   assert.deepEqual(phases, ["Start", "Unblock", "Clarity", "Deliver", "Report"]);
 });
 
@@ -461,7 +462,7 @@ test("without args.helper a courier runs ~/.claude/omni/deliver-step.mjs, for it
   const couriers = couriersOf(calls);
   assert.equal(couriers.length, 4);
   assert.equal(new Set(couriers.map((c) => c.prompt)).size, 1);
-  assert.match(commandIn(couriers[0].prompt), /^node ~\/\.claude\/omni\/deliver-step\.mjs start --op start-1 --feature 'board' --hash [0-9a-f]{8}$/);
+  assert.match(commandIn(couriers[0].prompt), /^node ~\/\.claude\/omni\/deliver-step\.mjs start --op start-1 --track 'board' --hash [0-9a-f]{8}$/);
   assert.equal(error.message, "courier:start: the courier returned nothing, after 3 retries");
   assert.deepEqual(logs, [1, 2, 3].map((i) => `courier:start: the courier returned nothing; trying again (${i} of 3)`));
 });
@@ -563,12 +564,12 @@ test("a step the helper refuses for good, with retry false, is not sent again: a
   const dirs = scratch(t);
   const now = new Date().toISOString();
   mkdirSync(join(dirs.repo, ".omni"), { recursive: true });
-  writeFileSync(join(dirs.repo, ".omni", "run.lock"), JSON.stringify({ run: "run-20261107-090000-1", feature: "billing", pid: liveProcess(t), op: "start-1", started: now, heartbeat: now }));
+  writeFileSync(join(dirs.repo, ".omni", "run.lock"), JSON.stringify({ run: "run-20261107-090000-1", track: "billing", pid: liveProcess(t), op: "start-1", started: now, heartbeat: now }));
 
   const { error, calls, logs } = await deliver(dirs);
 
   assert.equal(couriersOf(calls).length, 1);
-  assert.match(error.message, /^courier:start: start failed: the tree is held by run run-20261107-090000-1 for feature billing, .*start with force if that run is dead$/);
+  assert.match(error.message, /^courier:start: start failed: the tree is held by run run-20261107-090000-1 for track billing, .*start with force if that run is dead$/);
   assert.deepEqual(logs, []);
 });
 
@@ -897,13 +898,13 @@ test("a second story stopped by the same error, its key aside, stops the run tak
 test("the breaker takes a story's key out of an error only where it stands as a word of its own: two stories stopped by an error that names the branch deliver/us-10, one of them us-1, trip it", { timeout: 60000 }, async (t) => {
   const keys = ["us-1", "us-2"];
   const dirs = scratch(t, keys.map((key) => story(key)));
-  // A lasting cause whose error holds us-1 inside a longer word: the deliver branch of the feature us-10 is deleted.
+  // A lasting cause whose error holds us-1 inside a longer word: the deliver branch of the track us-10 is deleted.
   const roles = { "clarity:us-1": [async (call, serial) => {
     await serial(() => git(dirs.repo, "update-ref", "-d", "refs/heads/deliver/us-10"));
     return { testObligations: [], gaps: [] };
   }] };
 
-  const { result, error } = await deliver(dirs, { feature: "us-10" }, roles);
+  const { result, error } = await deliver(dirs, { track: "us-10" }, roles);
 
   assert.equal(error, null);
   assert.match(result.halted, /^(us-1 and us-2|us-2 and us-1) stopped on the same error$/);
@@ -1185,7 +1186,7 @@ test("from attempt 2 the implementer runs on implRetry, in the same worktree; it
   const counts = (open) => `The story has ${open} of earlier attempts, 1 open finding that used no attempt, and 1 finding from an earlier round. Fix every open one.`;
   assert.deepEqual(impls.map((c) => c.prompt.split("[attempt N] is from an earlier round, and says what failed then. ")[1].split("\n")[0]), [counts("0 open findings"), counts("1 open finding"), counts("2 open findings")]);
   for (const c of impls) {
-    assert.ok(c.prompt.includes(`\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=impl OMNI_FEATURE='board' omni story read US-1 --json\`.`), c.prompt);
+    assert.ok(c.prompt.includes(`\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=impl OMNI_TRACK='board' omni story read US-1 --json\`.`), c.prompt);
     assert.doesNotMatch(c.prompt, /pink|border|README|was blue|The badge is red/);
     assert.doesNotMatch(c.prompt, /since the human's latest answer/);
   }
@@ -1229,7 +1230,7 @@ test("no courier carries story content: however long a story's text, criteria, d
   const roles = ["clarity", "impl", "review", "verify", "tests"];
   for (const role of roles) {
     const [c] = agentsOf(calls, `${role}:US-1`);
-    assert.ok(c.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1 --json\``), `${role}: ${c.prompt}`);
+    assert.ok(c.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_TRACK='board' omni story read US-1 --json\``), `${role}: ${c.prompt}`);
     assert.doesNotMatch(c.prompt, /LONG|regression test covers/, role);
   }
   const outputs = couriersOf(calls).map((c) => [c.label, String(c.output || "").length]);
@@ -1429,7 +1430,7 @@ test("a check's finding quotes the end of the check's log, which the helper read
   assert.deepEqual(result.outcomes, [{ key: "US-1", outcome: "done" }]);
 });
 
-test("an implementer's question the council settles becomes an agent decision and the implementer runs again with it; in a feature without a behaviour tree, a reviewer's question it cannot settle opens a thread and blocks the story, which waits on that thread", { timeout: 60000 }, async (t) => {
+test("an implementer's question the council settles becomes an agent decision and the implementer runs again with it; in a track without a behaviour tree, a reviewer's question it cannot settle opens a thread and blocks the story, which waits on that thread", { timeout: 60000 }, async (t) => {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge is red", human_check: false }] })]);
   const asked = { status: "needs_decision", summary: "Stopped.", question: "Which red?", options: ["#c00", "#f00"], recommendation: "#c00" };
   const blink = { verdict: "needs_decision", criteria: [], defects: [], question: "Should the badge blink?", options: ["Yes", "No"], recommendation: "No" };
@@ -1454,7 +1455,7 @@ test("an implementer's question the council settles becomes an agent decision an
   // Every member reads the story itself; only the spec member reads its linked docs.
   for (const reading of ["spec", "code", "user"]) {
     const [c] = agentsOf(calls, `council:US-1:${reading}`);
-    assert.ok(c.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=council OMNI_FEATURE='board' omni story read US-1 --json\``), c.prompt);
+    assert.ok(c.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=council OMNI_TRACK='board' omni story read US-1 --json\``), c.prompt);
     assert.equal(c.prompt.includes("doc read <doc_id> --node <node_id>"), reading === "spec", reading);
     assert.doesNotMatch(c.prompt, /The badge is red/);
   }
@@ -1466,10 +1467,10 @@ test("an implementer's question the council settles becomes an agent decision an
   assert.deepEqual(result.council, { settled: 1, majority: 0, asked: 1 });
 });
 
-// A feature with a behaviour tree: a root and two nodes.
+// A track with a behaviour tree: a root and two nodes.
 const tree = () => ({ behaviour: { nodes: [{ id: "root", path: "" }, { id: "n1", path: "a" }, { id: "n2", path: "b" }], questions: [] } });
 
-test("in a feature with a behaviour tree, a question of clarity, an implementer or a reviewer the council cannot settle is asked on the node it names, with the council's majority pick or else the asker's as the recommendation: its task is blocked and waits on that question, no thread opens, and another task lands", { timeout: 120000 }, async (t) => {
+test("in a track with a behaviour tree, a question of clarity, an implementer or a reviewer the council cannot settle is asked on the node it names, with the council's majority pick or else the asker's as the recommendation: its task is blocked and waits on that question, no thread opens, and another task lands", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, ["US-1", "US-2", "US-3", "US-4"].map((key) => story(key)), [], tree());
   const roles = {
     "clarity:US-1": [{ testObligations: [], gaps: [gap("Which colour is the badge?", "ux", { node: "n1" })] }],
@@ -1501,7 +1502,7 @@ test("in a feature with a behaviour tree, a question of clarity, an implementer 
   assert.deepEqual(result.council, { settled: 0, majority: 0, asked: 3 });
 });
 
-test("in a feature with a behaviour tree, a question whose ask on the tree fails is an error of its task: the task fails with the error, is not blocked, and no thread opens in its place", { timeout: 120000 }, async (t) => {
+test("in a track with a behaviour tree, a question whose ask on the tree fails is an error of its task: the task fails with the error, is not blocked, and no thread opens in its place", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")], [], tree());
   writeFileSync(join(dirs.bin, "omni"), `#!/bin/sh\nif [ "$1" = behaviour ] && [ "$2" = ask ]; then echo "conflict: the tree is being edited" >&2; exit 1; fi\nexec "${process.execPath}" "${fakeOmni}" "$@"\n`);
   const roles = {
@@ -1518,7 +1519,7 @@ test("in a feature with a behaviour tree, a question whose ask on the tree fails
 });
 
 // A task's text with Covers lines for the given node IDs.
-const coversNodes = (...ids) => `Show a badge.\nCovers, in the feature's behaviour tree (\`omni behaviour read <id> --feature "board"\`):\n${ids.map((id, i) => `- ${id} v1 \`badge/${i}\`\n`).join("")}`;
+const coversNodes = (...ids) => `Show a badge.\nCovers, in the track's behaviour tree (\`omni behaviour read <id> --track "board"\`):\n${ids.map((id, i) => `- ${id} v1 \`badge/${i}\`\n`).join("")}`;
 
 test("a task that covers tree nodes has every building agent read them with omni behaviour read, an answered question settled, a binding rule and an open question undecided; a task that covers none has no word of the tree in any prompt", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [
@@ -1895,10 +1896,10 @@ test("prompts give the context first and the criteria and the task last, tell th
   }
   for (const [prompt, role] of [[clarity.prompt, "clarity"], [impl.prompt, "impl"], [review.prompt, "review"]]) {
     assert.equal(resultFileIn(prompt), join(dirs.repo, ".omni", "runs", result.run, "out", `${role}-US-1-1.json`));
-    assert.ok(prompt.includes(`\n## The story\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni story read US-1 --json\`. It prints the story as JSON:\n`), prompt);
-    assert.ok(prompt.includes(`\n- links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_FEATURE='board' omni doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.\n`), prompt);
+    assert.ok(prompt.includes(`\n## The story\nRead the story US-1 first, from OmniState, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_TRACK='board' omni story read US-1 --json\`. It prints the story as JSON:\n`), prompt);
+    assert.ok(prompt.includes(`\n- links: each one with a doc_id and a node_id is a node of a doc the story links. Read the linked nodes of each of those docs in one call, with \`OMNI_RUN=${result.run} OMNI_ROLE=${role} OMNI_TRACK='board' omni doc read <doc_id> --node <node_id>\`, with one --node for each node of that doc: it prints each node with what is inside it. A doc can be hundreds of KB, so read one whole, without --node, only when a linked node cannot be understood without the rest of it.\n`), prompt);
   }
-  assert.ok(clarity.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=clarity OMNI_FEATURE='board' omni doc list\``));
+  assert.ok(clarity.prompt.includes(`\`OMNI_RUN=${result.run} OMNI_ROLE=clarity OMNI_TRACK='board' omni doc list\``));
   assert.match(clarity.prompt, /\n- decisions: each a question, the choice taken, and by whom, agent or human\. They are settled: a gap one of them already settles is NOT raised again\.\n/);
   assert.match(clarity.prompt, /\n## Acceptance criteria\nThe story's 2 criteria, numbered from 0 to 1 in the order the story gives them\. A criterion with human_check true is confirmed by a human later\.\n/);
   assert.match(impl.prompt, /\n- decisions: each a question, the choice taken, and by whom, agent or human\. They are settled: build against them as if the spec said so\.\n/);
@@ -1911,7 +1912,7 @@ test("prompts give the context first and the criteria and the task last, tell th
 
 // ---- the write-back ---------------------------------------------------------------------
 
-test("in a feature with Operations or Tables, each task that lands gets one docs agent after its lane-land has answered landed, one at a time: blocked and no result leave the task done with a note, nothing adds none, and the run returns each outcome; a task sent back gets none for the try that did not land", { timeout: 120000 }, async (t) => {
+test("in a track with Operations or Tables, each task that lands gets one docs agent after its lane-land has answered landed, one at a time: blocked and no result leave the task done with a note, nothing adds none, and the run returns each outcome; a task sent back gets none for the try that did not land", { timeout: 120000 }, async (t) => {
   const docList = [{ id: "d-tables", kind: "html", pillar: "db", title: "Tables" }];
   const dirs = scratch(t, ["US-1", "US-2", "US-3"].map((key) => story(key, { criteria: [{ text: "The badge is red", human_check: false }] })), [], { docList });
   const roles = {
@@ -1936,7 +1937,7 @@ test("in a feature with Operations or Tables, each task that lands gets one docs
   assert.equal(agentsOf(calls, "verify:US-3").length, 2);
 });
 
-test("a feature with neither Operations nor Tables calls no docs agent, and the run returns no write-back", { timeout: 60000 }, async (t) => {
+test("a track with neither Operations nor Tables calls no docs agent, and the run returns no write-back", { timeout: 60000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")], [], { docList: [{ id: "d-ops", kind: "html", pillar: "spec", title: "Operations" }] });
 
   const { result, error, calls } = await deliver(dirs);
@@ -1950,7 +1951,7 @@ test("a feature with neither Operations nor Tables calls no docs agent, and the 
 
 // One story through every role: a clarity gap the council settles, a review
 // that fails once, so that attempt 2 runs on implRetry, the lane's verifier
-// and test author, the docs agent of a feature with Operations, and the final
+// and test author, the docs agent of a track with Operations, and the final
 // check.
 async function everyRole(t, agentTypes, runtimeOpts = {}) {
   const dirs = scratch(t, [story("US-1", { criteria: [{ text: "The badge has a colour", human_check: false }] })], [], { docList: [{ id: "d-ops", kind: "html", pillar: "architecture", title: "Operations" }] });
@@ -2228,7 +2229,7 @@ test("the verifier's prompt leaves out the seed and lint commands when the check
 
 // ---- the design boards --------------------------------------------------------------
 
-// A feature with one design doc of two boards, b1 and b2, and a linked folder.
+// A track with one design doc of two boards, b1 and b2, and a linked folder.
 const designed = (extra = {}) => ({
   link: { path: "/work/app", matched: "/work/app", workspace_id: "w-1", project_id: "p-1" },
   docList: [{ id: "0190aaaa-d1d1d1d1", kind: "design", pillar: "ui", title: "Screens" }],
@@ -2566,7 +2567,7 @@ test("a test author's question goes to the council, which reads the story's work
   assert.deepEqual(result.council, { settled: 1, majority: 0, asked: 1 });
 });
 
-test("in a feature with a behaviour tree, a test author's question the council cannot settle is asked on its node without blocking: the landed task stays done, its tests are dropped, and the note names the question", { timeout: 120000 }, async (t) => {
+test("in a track with a behaviour tree, a test author's question the council cannot settle is asked on its node without blocking: the landed task stays done, its tests are dropped, and the note names the question", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")], [], tree());
   const roles = {
     "tests:US-1": [authored({ status: "needs_decision", question: "Does the count wrap?", options: ["Yes", "No"], recommendation: "No", node: "n2" })],
@@ -3077,7 +3078,7 @@ test("a lane stop whose release fails stops the lane all the same, with no threa
 
 test("the run ends with the journeys check in the lane worktree, then finish gets the report: every outcome, the council's counts, the journeys and the notes, and the helper adds the blocked stories with their threads from the board, with no courier for them; the report goes on the Run thread, the lock is given up, and the run returns the report's path and the landed state", { timeout: 120000 }, async (t) => {
   // US-2 waits on US-1, so the two land in that order.
-  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] }), story("US-3", { blocked: true, links: [{ thread_id: "th-1", label: "question" }] })], [{ id: "th-1", title: "US-3: Which red?", feature: "board", posts: [], conclusion: null }]);
+  const dirs = scratch(t, [story("US-1"), story("US-2", { blocked_by: ["US-1"] }), story("US-3", { blocked: true, links: [{ thread_id: "th-1", label: "question" }] })], [{ id: "th-1", title: "US-3: Which red?", track: "board", posts: [], conclusion: null }]);
   const roles = {
     final: [{ healthy: true, journeys: ["Badge, then count: works"], report: "One journey spans them." }],
   };
@@ -3161,7 +3162,7 @@ test("finish runs whenever start succeeded: a run that throws posts its report, 
   assert.equal(agentsOf(calls, "courier:finish").length, 1);
 });
 
-test("a run on a checkout whose base branch is on a remote with gh ends with the feature's pull request, which it logs and returns", { timeout: 120000 }, async (t) => {
+test("a run on a checkout whose base branch is on a remote with gh ends with the track's pull request, which it logs and returns", { timeout: 120000 }, async (t) => {
   const dirs = scratch(t, [story("US-1")]);
   const bare = join(dirs.root, "origin.git");
   git(dirs.root, "init", "-q", "--bare", bare);
