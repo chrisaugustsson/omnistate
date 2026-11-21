@@ -630,3 +630,182 @@ fn a_board_whose_picture_the_api_refuses_is_named_on_stderr_and_the_other_files_
         assert!(lines[0].contains(part), "{part} in {}", lines[0]);
     }
 }
+
+// --board and --page -----------------------------------------------------------
+
+/// A design of two pages: Main holds Cart and Pay, Other holds Done. Every
+/// board can be read and has a picture saying which board it is.
+fn two_page_server() -> MockServer {
+    MockServer::start(|request| {
+        let design = format!("{}/docs/{FEATURE_DESIGN}", base());
+        let tail = request.path.strip_prefix(&design).unwrap_or_default();
+        let named = [
+            ("b0ardcar", "Cart"),
+            ("b0ard2nd", "Pay"),
+            ("b0ard3rd", "Done"),
+        ];
+        if tail == "/html?view=outline" {
+            return Reply::json(
+                200,
+                &json!({"outline": [
+                    {"id": "p4ge0001", "name": "Main", "children": [
+                        {"id": "b0ardcar", "name": "Cart", "placeholder": true},
+                        {"id": "b0ard2nd", "name": "Pay", "placeholder": true}
+                    ]},
+                    {"id": "p4ge0002", "name": "Other", "children": [
+                        {"id": "b0ard3rd", "name": "Done", "placeholder": true}
+                    ]}
+                ]}),
+            );
+        }
+        for (id, name) in named {
+            if tail == format!("/boards/{id}") {
+                return Reply::json(
+                    200,
+                    &json!({"tags": format!("<board id=\"{id}\" name=\"{name}\"></board>"),
+                            "node": {"id": id, "name": name, "type": "board"}}),
+                );
+            }
+            if tail == format!("/boards/{id}/png") {
+                return Reply {
+                    status: 200,
+                    headers: vec![("Content-Type".to_string(), "image/png".to_string())],
+                    body: format!("picture of {name}"),
+                };
+            }
+        }
+        answer(
+            request,
+            &app_docs(),
+            &feature_docs(),
+            &tokens_answer(two_mode_tree()),
+        )
+    })
+}
+
+/// The boards the manifest lists, as (board ID, board name).
+fn exported_boards(out: &Path) -> BTreeSet<(String, String)> {
+    read_json(&out.join("manifest.json"))["files"]
+        .as_array()
+        .expect("manifest.json has a files array")
+        .iter()
+        .filter_map(|entry| {
+            Some((
+                entry["board_id"].as_str()?.to_string(),
+                entry["board"].as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn picture_of(out: &Path, board: &str) -> String {
+    let tags = path_where(out, "board_id", board);
+    std::fs::read_to_string(out.join(tags.replace(".tags", ".png")))
+        .unwrap_or_else(|e| panic!("the picture of {board} was written ({e})"))
+}
+
+fn pair(id: &str, name: &str) -> (String, String) {
+    (id.to_string(), name.to_string())
+}
+
+#[test]
+fn boards_named_with_board_are_the_only_ones_written_and_the_outline_is_not_read() {
+    let server = two_page_server();
+    let out = Scratch::new("out");
+
+    let run = export(
+        &server,
+        &out.path,
+        &[
+            "--doc",
+            FEATURE_DESIGN,
+            "--board",
+            "b0ard2nd",
+            "--board",
+            "b0ard3rd",
+        ],
+    );
+
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert_eq!(
+        exported_boards(&out.path),
+        [pair("b0ard2nd", "Pay"), pair("b0ard3rd", "Done")]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(picture_of(&out.path, "b0ard2nd"), "picture of Pay");
+    assert_eq!(picture_of(&out.path, "b0ard3rd"), "picture of Done");
+    let paths: Vec<String> = server.requests().into_iter().map(|r| r.path).collect();
+    assert!(
+        !paths
+            .iter()
+            .any(|p| p.contains("view=outline") || p.contains("b0ardcar")),
+        "no outline and no other board was asked for: {paths:?}"
+    );
+}
+
+#[test]
+fn a_page_writes_every_board_on_it_and_a_board_named_beside_it_is_added() {
+    let server = two_page_server();
+    let out = Scratch::new("out");
+
+    let run = export(
+        &server,
+        &out.path,
+        &[
+            "--doc",
+            FEATURE_DESIGN,
+            "--page",
+            "p4ge0002",
+            "--board",
+            "b0ardcar",
+        ],
+    );
+
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert_eq!(
+        exported_boards(&out.path),
+        [pair("b0ardcar", "Cart"), pair("b0ard3rd", "Done")]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(picture_of(&out.path, "b0ard3rd"), "picture of Done");
+    let paths: Vec<String> = server.requests().into_iter().map(|r| r.path).collect();
+    assert!(
+        !paths.iter().any(|p| p.contains("b0ard2nd")),
+        "Pay, on the other page, was not read: {paths:?}"
+    );
+}
+
+#[test]
+fn board_without_doc_is_refused_before_any_request() {
+    let server = two_page_server();
+    let out = Scratch::new("out");
+
+    let run = export(
+        &server,
+        &out.path,
+        &["--track", FEATURE, "--board", "b0ardcar"],
+    );
+
+    assert_ne!(run.code, 0);
+    assert!(run.stderr.contains("--doc"), "stderr: {}", run.stderr);
+    assert!(server.requests().is_empty());
+    assert!(!out.path.join("manifest.json").exists());
+}
+
+#[test]
+fn a_page_the_doc_lacks_fails_naming_it_and_writes_nothing() {
+    let server = two_page_server();
+    let out = Scratch::new("out");
+
+    let run = export(
+        &server,
+        &out.path,
+        &["--doc", FEATURE_DESIGN, "--page", "p4ge0009"],
+    );
+
+    assert_ne!(run.code, 0);
+    assert!(run.stderr.contains("p4ge0009"), "stderr: {}", run.stderr);
+    assert!(!out.path.join("manifest.json").exists());
+}
