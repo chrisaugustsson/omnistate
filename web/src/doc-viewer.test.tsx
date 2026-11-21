@@ -289,6 +289,7 @@ type Show = {
   selected: string | null;
   claims?: unknown;
   reveal?: string;
+  picking?: boolean;
 };
 
 /** What the page posted to each frame window, recorded from the moment the frame exists. */
@@ -635,20 +636,20 @@ describe("the doc viewer", () => {
       expect(screen.getByRole("button", { name: "Show the review pane" })).toBeTruthy();
     });
 
-    test("selecting a block that has comments shows a hidden pane; a block without comments leaves it hidden", async () => {
+    test("with the pane hidden the frame picks no blocks; selecting a commented block by its pin shows the pane and picks again", async () => {
       fakeApi();
       renderAt(DOC_PATH);
       await findFrame();
       await shown((s) => expect(s.pins).not.toEqual([]));
+      await shown((s) => expect(s.picking).toBe(true));
       hide();
-
-      await select("h0000001");
-      await shown((s) => expect(s.selected).toBe("h0000001"));
-      expect(pane(), "nobody commented on the heading").toBeNull();
+      await shown((s) => expect(s.picking).toBe(false));
 
       await select("p0000002");
       await waitFor(() => expect(pane()).toBeTruthy());
       expect(within(pane()!).getByText("Say which week.")).toBeTruthy();
+      await shown((s) => expect(s.picking).toBe(true));
+      await shown((s) => expect(s.selected).toBe("p0000002"));
     });
 
     test("a link to a comment shows a hidden pane, also when the comment's block was removed", async () => {

@@ -13,6 +13,7 @@ export function ViewerFrame({
   className = "h-[75vh] w-full rounded-md border bg-white",
   title = "Doc",
   fit = false,
+  picking = true,
 }: {
   workspaceId: string;
   html: string | null;
@@ -27,6 +28,8 @@ export function ViewerFrame({
   title?: string;
   /** Sized to the doc, so that it reads as page text and the page scrolls; a block to reveal scrolls the page. */
   fit?: boolean;
+  /** Whether hovering and clicking pick blocks to comment on; off, the doc's own content takes the clicks and only a pin selects. */
+  picking?: boolean;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(0);
@@ -73,9 +76,9 @@ export function ViewerFrame({
   useEffect(() => {
     if (shown === null || !ready) return;
     // The frame's origin is opaque, so "*" is the only target a page can name.
-    const message = { type: "viewer.show", html: shown, pins, selected, ...(reveal ? { reveal } : {}), ...(fit ? { fit } : {}) };
+    const message = { type: "viewer.show", html: shown, pins, selected, ...(reveal ? { reveal } : {}), ...(fit ? { fit } : {}), picking };
     frame.current?.contentWindow?.postMessage(message, "*");
-  }, [shown, pins, selected, reveal, ready, fit]);
+  }, [shown, pins, selected, reveal, ready, fit, picking]);
 
   return (
     <iframe

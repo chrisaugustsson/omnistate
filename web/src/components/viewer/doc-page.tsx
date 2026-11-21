@@ -344,15 +344,17 @@ function HtmlDocViewer({
             <FloatingAlerts>
               {(doc.failed || head.failed) && <FloatingAlert>The doc could not be loaded. Try again in a moment.</FloatingAlert>}
             </FloatingAlerts>
-            <div className="mx-auto w-full max-w-(--main-max) px-6 py-6 lg:px-10">
+            {/* The whole width: a text doc keeps its own readable column inside the frame (doc.css), a wide doc such as a diagram uses the room. */}
+            <div className="w-full px-6 py-6 lg:px-10">
               {html === "" && <PaneEmpty icon={<FileText />}>This doc has no content yet.</PaneEmpty>}
               <ViewerFrame
                 workspaceId={workspaceId}
                 html={html}
                 pins={pins}
-                selected={selected}
+                selected={review ? selected : null}
                 reveal={reveal}
                 onSelect={setSelected}
+                picking={review}
                 fit
                 className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
               />
@@ -385,9 +387,10 @@ function HtmlDocViewer({
               workspaceId={workspaceId}
               html={html}
               pins={pins}
-              selected={selected}
+              selected={review ? selected : null}
               reveal={reveal}
               onSelect={setSelected}
+              picking={review}
               fit
               className="-my-1 -ml-1.5 block w-[calc(100%+6px)] bg-transparent"
             />
@@ -437,9 +440,10 @@ function HtmlDocViewer({
               workspaceId={workspaceId}
               html={html}
               pins={pins}
-              selected={selected}
+              selected={review ? selected : null}
               reveal={reveal}
               onSelect={setSelected}
+              picking={review}
               className="block min-h-0 w-full flex-1 bg-white"
             />
           </div>
