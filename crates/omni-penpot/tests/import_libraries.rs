@@ -168,6 +168,46 @@ fn area_entries() -> Vec<(String, Vec<u8>)> {
     export_entries(AREA_ID, "TireBud - Kassa", &[area_page()])
 }
 
+/// The area file with the board Kassa holding `copies`, exported with its
+/// library.
+fn bundled_with(test: &str, copies: Vec<common::convert::S>) -> PathBuf {
+    let kassa = shape(KASSA, "frame", "Kassa", [0.0, 0.0, 400.0, 200.0])
+        .with(json!({ "fills": solid("#131316") }))
+        .kids(copies);
+    let page = page_of(AREA_PAGE, "Kassa", 0, vec![kassa]);
+    let mut entries = export_entries(AREA_ID, "TireBud - Kassa", &[page]);
+    entries.retain(|(name, _)| name != "manifest.json");
+    entries.extend(
+        library_entries_all()
+            .into_iter()
+            .filter(|(name, _)| name != "manifest.json"),
+    );
+    let manifest = json!({
+        "type": "penpot/export-files", "version": 1,
+        "files": [
+            { "id": AREA_ID, "name": "TireBud - Kassa", "features": [] },
+            { "id": FILE_ID, "name": "TireBud - Syntetisk", "features": [] }
+        ],
+        "relations": [[AREA_ID, FILE_ID]]
+    });
+    entries.insert(
+        0,
+        (
+            "manifest.json".to_string(),
+            manifest.to_string().into_bytes(),
+        ),
+    );
+    write_temp(
+        &format!("bundled-with-{test}.penpot"),
+        &stored_zip(&entries),
+    )
+}
+
+/// A copy of Button / Primär numbered from `copy`, at `y`.
+fn primary_copy(copy: u32, name: &str, y: f64) -> common::convert::S {
+    button_copy(copy, n::PRIMARY, C_PRIMARY, "#01B597", name, [20.0, y])
+}
+
 /// The area file exported alone.
 fn area_export(test: &str) -> PathBuf {
     write_temp(&format!("area-{test}.penpot"), &stored_zip(&area_entries()))
@@ -460,6 +500,89 @@ fn a_bundled_library_the_design_system_has_is_not_imported_again() {
     let board = kassa(&area);
     let copy = find_json(&board, "Köp").unwrap();
     assert_eq!(copy["component"], from_penpot(&stored, C_PRIMARY)["id"]);
+}
+
+// Changes no override holds --------------------------------------------------------------
+
+#[test]
+fn a_change_marked_but_to_the_mains_values_keeps_the_copy_an_instance() {
+    // Penpot marks the Dot's size and strokes as changed, but they are the
+    // main's again.
+    let mut copy = primary_copy(KOP, "Köp", 20.0);
+    set(
+        &mut copy.kids[1],
+        json!({ "touched": ["geometry-group", "stroke-group"] }),
+    );
+    let area = import_onto(&bundled_with("no-op", vec![copy]), &[]);
+    let board = kassa(&area);
+    let kop = find_json(&board, "Köp").unwrap();
+    assert_eq!(kop["type"], "instance", "{kop:#}");
+    let about: Vec<_> = area
+        .report
+        .iter()
+        .filter(|entry| entry.shape_id == uid(KOP) || entry.shape_id == uid(KOP + 2))
+        .collect();
+    assert!(about.is_empty(), "{about:#?}");
+}
+
+#[test]
+fn a_copy_that_changes_what_no_override_holds_is_drawn_as_its_shapes() {
+    // The Dot gets a stroke, which no override holds.
+    let mut copy = primary_copy(KOP, "Köp", 20.0);
+    set(
+        &mut copy.kids[1],
+        json!({
+            "touched": ["stroke-group"],
+            "strokes": [{ "strokeColor": "#FFFFFF", "strokeOpacity": 1, "strokeWidth": 2, "strokeAlignment": "inner", "strokeStyle": "solid" }]
+        }),
+    );
+    let area = import_onto(&bundled_with("strokes", vec![copy]), &[]);
+    let board = kassa(&area);
+    let kop = find_json(&board, "Köp").unwrap();
+    assert_eq!(
+        kop["type"], "frame",
+        "the copy is drawn as Penpot shows it: {kop:#}"
+    );
+    let dot = find_json(kop, "Dot").unwrap();
+    assert_eq!(dot["strokes"][0]["color"], "#ffffff", "{dot:#}");
+    // The bell inside it is a copy of its own, untouched: an instance.
+    let bell = find_json(kop, "Ikon / bell").unwrap();
+    assert_eq!(bell["type"], "instance", "{bell:#}");
+    let entry = area
+        .report
+        .iter()
+        .find(|entry| entry.shape_id == uid(KOP))
+        .unwrap_or_else(|| panic!("the copy is reported: {:#?}", area.report));
+    assert!(entry.reason.contains("its strokes"), "{entry:?}");
+}
+
+#[test]
+fn a_change_inside_a_nested_copy_is_kept_by_that_copy() {
+    // The Glyph of the bell inside the Button turns black: the Button cannot
+    // hold that, the bell can.
+    let mut copy = primary_copy(KOP, "Köp", 20.0);
+    set(
+        &mut copy.kids[3].kids[0],
+        json!({ "touched": ["fill-group"], "fills": solid("#000000") }),
+    );
+    let area = import_onto(&bundled_with("nested", vec![copy]), &[]);
+    let board = kassa(&area);
+    let kop = find_json(&board, "Köp").unwrap();
+    assert_eq!(kop["type"], "frame", "{kop:#}");
+    let bell = find_json(kop, "Ikon / bell").unwrap();
+    assert_eq!(bell["type"], "instance", "{bell:#}");
+    let component = components(&area)
+        .into_iter()
+        .find(|component| component["id"] == bell["component"])
+        .expect("the bell is imported");
+    assert_eq!(component["origin"]["component"], C_BELL);
+    // Keyed by the bell's own Glyph, which the Button's Glyph copies.
+    let glyph = layer(component, n::BELL_GLYPH);
+    assert_eq!(
+        bell["overrides"][glyph.as_str()]["fills"][0]["color"],
+        "#000000",
+        "{bell:#}"
+    );
 }
 
 // Neither -----------------------------------------------------------------------------------
