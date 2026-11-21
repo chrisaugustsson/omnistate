@@ -186,6 +186,10 @@ Usage:
                                       under ui/<doc>/, and the design system's tokens as
                                       tokens.json and tokens.css (variables per mode). The
                                       app level without --track
+  omni export --project <name|id> --doc <id> [--board <id>]... [--page <id>]... --out <dir>
+                                      write only those boards of the design doc, and every
+                                      board on those pages, each with its image; each option
+                                      can be given more than once
   omni import penpot <file.penpot> --project <id> [--track <name>]
                                       import a Penpot export straight into the project: the
                                       pages and boards as a design doc (in the track's UI
@@ -420,9 +424,11 @@ Options (before or after the command):
   --doc <id>            the design doc that `omni design read` reads or `omni design edit` edits
                         (`omni design edit` also takes it as an argument), or the doc whose
                         comments `omni comment list` shows
-  --page <id>           the page of that doc that `omni design flows` lists, instead of every page
+  --page <id>           the page of that doc that `omni design flows` lists, instead of every page;
+                        with `omni export --doc`, a page whose boards to write (repeatable)
   --board <id>          the board of that doc that `omni design read` prints, or that a
-                        `omni design edit` batch stays inside
+                        `omni design edit` batch stays inside; with `omni export --doc`, a
+                        board to write (repeatable)
   --out <path>          where `omni tokens export` writes: a file, or with --per-mode a directory;
                         the folder `omni export` writes to
   --per-mode            `omni tokens export`: tokens.json and one file per collection and mode

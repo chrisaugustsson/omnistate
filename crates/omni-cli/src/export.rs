@@ -61,11 +61,14 @@ fn doc_stem(title: &str, id: &str) -> String {
 /// `omni export --project <p> [--track <name> | --doc <id>] --out <dir>`; `--doc` exports
 /// that one doc, whatever it belongs to (a track, a feature, a part or the app).
 pub fn run(args: &Args) -> Result<()> {
-    const USAGE: &str =
-        "omni export --project <name|id> [--track <name|id> | --doc <id>] --out <dir>";
+    const USAGE: &str = "omni export --project <name|id> [--track <name|id> | --doc <id> [--board <id>]... [--page <id>]...] --out <dir>";
     let Some(out) = args.out.as_deref() else {
         bail!("an export needs the folder to write to: {USAGE}");
     };
+    let picking = !args.boards.is_empty() || !args.pages.is_empty();
+    if picking && args.doc.is_none() {
+        bail!("--board and --page pick boards of one design doc; name it with --doc: {USAGE}");
+    }
     let agent = agent(args)?;
     let project = project_id(args, &agent)?;
     let track = creation_track(args, &agent, &project)?;
@@ -109,7 +112,7 @@ pub fn run(args: &Args) -> Result<()> {
         let seq = latest_seq(&agent, &doc_path)?;
         let stem = doc_stem(&title, &id);
         match kind.as_str() {
-            "html" => {
+            "html" if !picking => {
                 let head = get(&agent, &format!("{doc_path}/html"), "the doc")?;
                 files.push(Exported {
                     path: format!("{pillar}/{stem}.html"),
@@ -122,33 +125,7 @@ pub fn run(args: &Args) -> Result<()> {
                 });
             }
             "design" => {
-                let head = get(
-                    &agent,
-                    &format!("{doc_path}/html?view=outline"),
-                    "the design",
-                )?;
-                let mut boards = Vec::new();
-                for page in head
-                    .get("outline")
-                    .and_then(Value::as_array)
-                    .unwrap_or_default()
-                {
-                    for board in page
-                        .get("children")
-                        .and_then(Value::as_array)
-                        .unwrap_or_default()
-                    {
-                        boards.push((
-                            board.str_at("id").unwrap_or_default().to_string(),
-                            board.str_at("name").unwrap_or_default().to_string(),
-                        ));
-                    }
-                }
-                for (board, name) in boards {
-                    if !is_node_id(&board) {
-                        bail!("the server named a board {board:?}; is it an OmniState API?");
-                    }
-                    let one = get(&agent, &format!("{doc_path}/boards/{board}"), "the board")?;
+                for (board, name, one) in chosen_boards(&agent, &doc_path, args)? {
                     let file = format!("{pillar}/{stem}/{}-{board}", slug(&name));
                     let picture = agent
                         .request_unchecked("GET", &format!("{doc_path}/boards/{board}/png"))?;
@@ -168,6 +145,9 @@ pub fn run(args: &Args) -> Result<()> {
                     });
                 }
             }
+            _ if picking => bail!(
+                "--board and --page pick boards of a design doc, and {id} is a {kind} doc: {USAGE}"
+            ),
             _ => {}
         }
     }
@@ -251,6 +231,83 @@ pub fn run(args: &Args) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The boards of the design at `doc_path` to export, each as its ID, its name
+/// and its read: every board, or with `--board` and `--page` only the boards
+/// named and the boards on the pages named. Boards named alone are read one by
+/// one, without the doc's outline, which lays out every board of the doc.
+fn chosen_boards(
+    agent: &Agent,
+    doc_path: &str,
+    args: &Args,
+) -> Result<Vec<(String, String, Value)>> {
+    for id in args.boards.iter().chain(&args.pages) {
+        if !is_node_id(id) {
+            bail!("{id:?} is no node ID; a board or page ID is 8 letters and digits");
+        }
+    }
+    let read = |board: &str| get(agent, &format!("{doc_path}/boards/{board}"), "the board");
+    if args.pages.is_empty() && !args.boards.is_empty() {
+        let mut chosen = Vec::new();
+        for board in &args.boards {
+            let one = read(board)?;
+            let name = one
+                .get("node")
+                .and_then(|node| node.str_at("name"))
+                .unwrap_or_default()
+                .to_string();
+            chosen.push((board.clone(), name, one));
+        }
+        return Ok(chosen);
+    }
+    let head = get(
+        agent,
+        &format!("{doc_path}/html?view=outline"),
+        "the design",
+    )?;
+    let mut boards = Vec::new();
+    let mut pages_seen = Vec::new();
+    for page in head
+        .get("outline")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+    {
+        let page_id = page.str_at("id").unwrap_or_default();
+        pages_seen.push(page_id.to_string());
+        let whole_page = args.pages.iter().any(|wanted| wanted == page_id);
+        for board in page
+            .get("children")
+            .and_then(Value::as_array)
+            .unwrap_or_default()
+        {
+            let id = board.str_at("id").unwrap_or_default().to_string();
+            if args.pages.is_empty() || whole_page || args.boards.contains(&id) {
+                boards.push((id, board.str_at("name").unwrap_or_default().to_string()));
+            }
+        }
+    }
+    if let Some(missing) = args.pages.iter().find(|page| !pages_seen.contains(page)) {
+        bail!("the doc has no page {missing}; `omni design flows --doc <id>` lists its pages");
+    }
+    if let Some(missing) = args
+        .boards
+        .iter()
+        .find(|board| !boards.iter().any(|(id, _)| id == *board))
+    {
+        bail!(
+            "the doc has no board {missing} at its top level; `omni design flows --doc <id>` lists its boards"
+        );
+    }
+    let mut chosen = Vec::new();
+    for (board, name) in boards {
+        if !is_node_id(&board) {
+            bail!("the server named a board {board:?}; is it an OmniState API?");
+        }
+        let one = read(&board)?;
+        chosen.push((board, name, one));
+    }
+    Ok(chosen)
 }
 
 /// The line about a board whose picture the API refused: its doc, its ID and

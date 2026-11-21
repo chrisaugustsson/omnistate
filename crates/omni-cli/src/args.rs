@@ -65,6 +65,10 @@ pub struct Args {
     pub board: Option<String>,
     /// `omni design flows --doc <id> --page <id>`: the one page to list.
     pub page: Option<String>,
+    /// Every `--board` and `--page` given, in order: `omni export --doc <id>`
+    /// takes each repeatedly and writes only those boards.
+    pub boards: Vec<String>,
+    pub pages: Vec<String>,
     /// `omni doc activity <doc> --limit <n> --before <seq>`: how many entries
     /// to list and where the page ends.
     pub limit: Option<String>,
@@ -351,8 +355,19 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             "--title" => &mut parsed.title,
             "--description" => &mut parsed.description,
             "--doc" => &mut parsed.doc,
-            "--board" => &mut parsed.board,
-            "--page" => &mut parsed.page,
+            "--board" | "--page" => {
+                let Some(value) = inline.or_else(|| args.next()) else {
+                    bail!("{arg} needs a value; see `omni --help`");
+                };
+                if name == "--board" {
+                    parsed.boards.push(value.clone());
+                    parsed.board = Some(value);
+                } else {
+                    parsed.pages.push(value.clone());
+                    parsed.page = Some(value);
+                }
+                continue;
+            }
             "--limit" => &mut parsed.limit,
             "--before" => &mut parsed.before,
             "--kind" => &mut parsed.kind,
