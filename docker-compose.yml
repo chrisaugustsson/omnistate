@@ -39,6 +39,9 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+    # The API comes back on its own when it stops, the out-of-memory killer
+    # included, instead of staying down until someone starts it.
+    restart: unless-stopped
     environment:
       # The API runs as omni_api, which owns no table and cannot bypass
       # row-level security. Start-up applies the migrations as the owner and
